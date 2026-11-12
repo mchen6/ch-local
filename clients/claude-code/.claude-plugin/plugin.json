@@ -1,0 +1,6 @@
+{
+  "name": "ch-packs",
+  "version": "0.1.0",
+  "description": "countinghouse packs for Claude Code: ci_failure_triage answers why CI failed, with a receipt of what was read and returned.",
+  "license": "Apache-2.0"
+}

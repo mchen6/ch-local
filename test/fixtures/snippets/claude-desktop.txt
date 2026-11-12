@@ -1,0 +1,4 @@
+Claude Desktop has no config entry to paste.
+Desktop does not see your shell's environment, and a GitHub token is never written to a config file,
+so the route for Desktop is the .mcpb bundle, which keeps the token in the OS keychain.
+The bundle is not built yet.

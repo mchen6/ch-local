@@ -2,9 +2,35 @@
 
 The countinghouse client-pack launcher: installs pinned packs into ~/.countinghouse, starts the runtime over stdio for Claude Code, Cursor, VS Code and Codex, prints each client's config entry, upgrades on request and never silently.
 
-**Status: name reserved (2026-11-11).** The implementation lands here per
-the pack family's plan (Tasks 11 and 12 of `docs/superpowers/plans/2026-11-11-ch-packs-v1.md`
-in [ch-packs](https://github.com/mchen6/ch-packs)). Nothing to install yet.
+**Status: preview.** `ch-local snippet <client>` and the Claude Code plugin
+are here. `install`, `start`, `uninstall` and `upgrade` land next (Tasks 11
+and 12 of the pack family's plan in [ch-packs](https://github.com/mchen6/ch-packs)).
+
+## What it does
+
+`ch-local snippet <claude-code|cursor|vscode|codex|claude-desktop>` prints
+the client's config entry for the installed launcher on stdout, alone, so it
+can be piped. On stderr it names the Node it pinned and how to reprint the
+entry after a Node upgrade. Every entry runs `<absolute node>
+<home>/bin/ch-local.js start --pack ci-failure-triage --stdio`, where
+`<home>` is `$COUNTINGHOUSE_HOME` (absolute) or `~/.countinghouse`.
+
+No entry sets the GitHub token. The server inherits it from the environment
+the client is started from. Only Codex's entry names the two variables, in
+`env_vars`, because Codex does not pass its environment on by default.
+Claude Desktop gets a note instead of an entry: its route is a `.mcpb` bundle
+that keeps the token in the OS keychain, not built yet.
+
+**The Claude Code plugin.** This repository is also the plugin's marketplace:
+
+    claude plugin marketplace add mchen6/ch-local
+    claude plugin install ch-packs@ch-packs
+
+The plugin (`clients/claude-code`) runs `bin/launch.js` with `node`, which
+starts the installed launcher, passes it a stop, and fetches nothing. Its skill
+tells Claude to call `ci_failure_triage` first when a CI run failed.
+
+One install page per client is in [docs/install](docs/install/README.md).
 
 Part of the countinghouse client packs. The design, the plan and the
 acceptance tests live in [ch-packs](https://github.com/mchen6/ch-packs);

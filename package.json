@@ -1,6 +1,6 @@
 {
   "name": "@countinghouse/ch-local",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "The countinghouse client-pack launcher: installs pinned packs into ~/.countinghouse, starts the runtime over stdio for Claude Code, Cursor, VS Code and Codex, prints each client's config entry, upgrades on request and never silently.",
   "license": "Apache-2.0",
   "repository": {
@@ -13,10 +13,15 @@
   "engines": {
     "node": ">=22.16"
   },
+  "bin": {
+    "ch-local": "bin/ch-local.js"
+  },
   "files": [
-    "README.md"
+    "bin/",
+    "lib/",
+    "clients/"
   ],
   "scripts": {
-    "test": "node -e \"const p=require('./package.json'); if (!/^@countinghouse\\/ch-/.test(p.name)) process.exit(1)\""
+    "test": "node --test \"test/*.test.js\""
   }
 }
