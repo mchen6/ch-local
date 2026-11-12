@@ -6,8 +6,6 @@
       "args": [
         "/home/dev/.countinghouse/bin/ch-local.js",
         "start",
-        "--pack",
-        "ci-failure-triage",
         "--stdio"
       ]
     }

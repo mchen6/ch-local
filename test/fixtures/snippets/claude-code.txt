@@ -1,1 +1,1 @@
-claude mcp add --scope user ci-failure-triage -- /usr/local/bin/node /home/dev/.countinghouse/bin/ch-local.js start --pack ci-failure-triage --stdio
+claude mcp add --scope user ci-failure-triage -- /usr/local/bin/node /home/dev/.countinghouse/bin/ch-local.js start --stdio

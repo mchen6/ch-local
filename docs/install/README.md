@@ -9,7 +9,7 @@ One page per client:
 - [Claude Desktop](claude-desktop.md)
 
 Every client runs the same launcher: the Node you have, with
-`~/.countinghouse/bin/ch-local.js start --pack ci-failure-triage --stdio`
+`~/.countinghouse/bin/ch-local.js start --stdio`
 (`$COUNTINGHOUSE_HOME` instead of `~/.countinghouse` when it is set). The
 launcher is installed once, with `ch-local install --pack ci-failure-triage
 --from <directory of tarballs>`: every tarball is checked against the version

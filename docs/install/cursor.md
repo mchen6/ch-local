@@ -10,7 +10,7 @@ under `mcpServers`:
       "mcpServers": {
         "ci-failure-triage": {
           "command": "/usr/local/bin/node",
-          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--pack", "ci-failure-triage", "--stdio"]
+          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
         }
       }
     }

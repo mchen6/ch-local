@@ -1,0 +1,19 @@
+{
+  "device": {
+    "friendlyName": "ch-pack-smoke",
+    "manufacturer": "ch-local-test",
+    "modelDescription": "ch-local's smoke-test scenario: shouts its text through its one step and says which repository the launcher gave it.",
+    "serviceList": {
+      "urn:ch-local-test:serviceID:echoService": {
+        "actionList": [
+          {
+            "name": "smoke_echo",
+            "description": "Returns the text in capitals (through the step ch-step-smoke) and the default repository the launcher found, or null.",
+            "input": {"schema": "/echoService/smoke_echo/input"},
+            "output": {"schema": "/echoService/smoke_echo/output"}
+          }
+        ]
+      }
+    }
+  }
+}

@@ -10,7 +10,7 @@ format of `~/.copilot/mcp-config.json`. Merge it under `mcpServers`:
         "ci-failure-triage": {
           "type": "stdio",
           "command": "/usr/local/bin/node",
-          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--pack", "ci-failure-triage", "--stdio"]
+          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
         }
       }
     }

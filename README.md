@@ -13,7 +13,7 @@ and installing straight from npm with the first release.
 the client's config entry for the installed launcher on stdout, alone, so it
 can be piped. On stderr it names the Node it pinned and how to reprint the
 entry after a Node upgrade. Every entry runs `<absolute node>
-<home>/bin/ch-local.js start --pack ci-failure-triage --stdio`, where
+<home>/bin/ch-local.js start --stdio`, where
 `<home>` is `$COUNTINGHOUSE_HOME` (absolute) or `~/.countinghouse`.
 
 No entry sets the GitHub token. The server inherits it from the environment
@@ -37,7 +37,10 @@ One install page per client is in [docs/install](docs/install/README.md).
 
 | Command | What it does |
 |---|---|
-| `ch-local install --pack ci-failure-triage --from <dir>` | checks each tarball in `<dir>` against the version and sha512 integrity this launcher pins (a tarball not on the list, a wrong hash or a missing one stops it before anything runs), builds `<home>/app` as an npm project with the pack's lockfile, pinned at release so every dependency's version and integrity is fixed too, by `npm ci --omit=optional --ignore-scripts`, swaps it in only when complete (the old app goes back if it cannot), and writes `<home>/bin/ch-local.js` |
+| `ch-local install --pack ci-failure-triage --from <dir>` | checks each tarball in `<dir>` against the version and sha512 integrity this launcher pins (a tarball not on the list, a wrong hash or a missing one stops it before anything runs). It builds `<home>/app` with the runtime (this launcher and countinghouse) as an npm project with its lockfile, pinned at release so every dependency's version and integrity is fixed too, by `npm ci --omit=optional --ignore-scripts`. The pack's own packages have no npm dependencies and are unpacked beside it by a strict tar reader (files and directories only, no links, size-capped); one that declares dependencies is refused. The new app is swapped in only when complete (the old one goes back if it cannot), and install writes `<home>/bin/ch-local.js` and `<home>/packs.json`. An install replaces the app: other packs are dropped, and named |
+| `ch-local add-pack <name> --from <dir>` | adds another pack this release pins beside the installed ones, checked the same way; a part another pack already uses is shared at its pinned version, and one installed at another version stops it (run `upgrade` first). No client file changes: the entry runs `start`, which loads every pack |
+| `ch-local remove-pack <name>` | removes the pack and each of its parts no other installed pack uses |
+| `ch-local status` | lists each installed pack, its version and tools, and the credential variable it uses or, by name, the ones it is missing |
 | `ch-local snippet <client>` | the client's config entry, on stdout alone |
 | `ch-local add <cursor\|vscode\|codex>` | writes that entry into the client's file and records it in `<home>/installed-clients.json`; run again after a Node upgrade, it rewrites its own entry. It never writes over, or claims, an entry it did not write, and keeps a file's permissions and symlink |
 | `ch-local uninstall [--keep-data]` | takes back exactly the recorded entries, lists `<home>` and asks once, and removes only the names ch-local owns there; `--keep-data` keeps the store, module data, usage and caches but removes the program, the identity secret and `auth.json`; ends by naming the credentials to revoke |
@@ -62,6 +65,19 @@ npm test
 Pure JavaScript, no native module. Node 24 or later today (the runtime's
 floor); 22.16 once countinghouse's floor shim lands (design). CI runs on
 Linux, macOS and Windows.
+
+**Unreleased installs.** Until the first release this launcher pins nothing,
+so `install` and `add-pack` take `--unreleased-pins <file>`, a JSON file of
+`{"pins": {<package>: {"version", "integrity"}}, "runtimeLockfile": {...}}`
+written from the tarballs you built. The home is recorded as unreleased:
+`status` and every `start` say so on one line, and `upgrade` refuses until a
+clean install from a release. It is for development only.
+
+**The smoke test.** `test/smoke.test.js` installs a fixture pack with no
+remotes (`test/fixtures/smoke`) that way and speaks MCP to it through
+`ch-local start --stdio`. It needs a countinghouse tarball
+(`CH_SMOKE_RUNTIME_TGZ=<path to countinghouse-<version>.tgz>`) and is skipped
+without one; CI's smoke job packs countinghouse master.
 
 ## Publishing
 

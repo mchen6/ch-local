@@ -7,7 +7,7 @@
 
     [mcp_servers.ci-failure-triage]
     command = "/usr/local/bin/node"
-    args = ["/home/you/.countinghouse/bin/ch-local.js", "start", "--pack", "ci-failure-triage", "--stdio"]
+    args = ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
     env_vars = ["COUNTINGHOUSE_GITHUB_TOKEN", "GITHUB_TOKEN"]
 
 `env_vars` lists the variables Codex passes from its own environment to the

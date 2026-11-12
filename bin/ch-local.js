@@ -8,6 +8,9 @@
 //   ch-local uninstall [--keep-data]              takes back what install and add wrote
 //   ch-local upgrade [--auto on|off]              installed and available versions; asks once
 //   ch-local start --stdio [options]              what a client runs: the runtime with the installed packs
+//   ch-local add-pack <name> --from <dir>         another pack beside the installed ones
+//   ch-local remove-pack <name>                   a pack, and the parts no other pack calls
+//   ch-local status                               the installed packs, their tools and missing credentials
 //
 // The Node floor is checked before anything else is loaded, with plain
 // require names, so a Node far below it still gets a plain answer.
@@ -17,6 +20,9 @@ const {check, offerNode} = require('../lib/node-check');
 const CLIENT_LIST = 'claude-code|cursor|vscode|codex|claude-desktop';
 const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local install --pack <name> --from <directory of tarballs>
+       ch-local add-pack <name> --from <directory of tarballs>
+       ch-local remove-pack <name>
+       ch-local status
        ch-local add <cursor|vscode|codex>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
@@ -69,9 +75,22 @@ async function main(argv, io) {
       return snippetCommand(rest[0], io);
     }
     if (command === 'install') {
-      const a = parse(rest, {values: ['--pack', '--from']});
+      const a = parse(rest, {values: ['--pack', '--from', '--unreleased-pins']});
       if (a == null || a.positional.length > 0 || a.values['--pack'] === undefined) return usage();
-      return await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from']}, io);
+      return await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+    }
+    if (command === 'add-pack') {
+      const a = parse(rest, {values: ['--from', '--unreleased-pins']});
+      if (a == null || a.positional.length !== 1) return usage();
+      return await require('../lib/packs-command').addPack({pack: a.positional[0], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+    }
+    if (command === 'remove-pack') {
+      if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
+      return await require('../lib/packs-command').removePack({pack: rest[0]}, io);
+    }
+    if (command === 'status') {
+      if (rest.length !== 0) return usage();
+      return await require('../lib/packs-command').status({}, io);
     }
     if (command === 'add') {
       if (rest.length !== 1) return usage();

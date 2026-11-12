@@ -14,7 +14,7 @@ not installed yet, the tool fails with one line naming the install command.
 Or add the server by hand. `ch-local snippet claude-code` prints the command
 for this machine, for example:
 
-    claude mcp add --scope user ci-failure-triage -- /usr/local/bin/node /home/you/.countinghouse/bin/ch-local.js start --pack ci-failure-triage --stdio
+    claude mcp add --scope user ci-failure-triage -- /usr/local/bin/node /home/you/.countinghouse/bin/ch-local.js start --stdio
 
 A path with a space is double-quoted. The line is for a POSIX shell (bash,
 zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`

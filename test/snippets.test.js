@@ -22,7 +22,7 @@ test('snippets match the fixtures per client', () => {
 test('JSON snippets parse and name the pinned node and the launcher', () => {
   const cursor = JSON.parse(snippet('cursor', POSIX).text).mcpServers['ci-failure-triage'];
   assert.deepStrictEqual(cursor.command, POSIX.node);
-  assert.deepStrictEqual(cursor.args, [POSIX.launcher, 'start', '--pack', 'ci-failure-triage', '--stdio']);
+  assert.deepStrictEqual(cursor.args, [POSIX.launcher, 'start', '--stdio']);
   assert.ok(!('type' in cursor), 'Cursor\'s entry has no type');
   const vscode = JSON.parse(snippet('vscode', POSIX).text).mcpServers['ci-failure-triage'];
   assert.strictEqual(vscode.type, 'stdio');

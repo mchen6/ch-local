@@ -5,8 +5,6 @@
       "args": [
         "${CLAUDE_PLUGIN_ROOT}/bin/launch.js",
         "start",
-        "--pack",
-        "ci-failure-triage",
         "--stdio"
       ]
     }

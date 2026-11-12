@@ -1,0 +1,9 @@
+{
+  "name": "@countinghouse/ch-step-smoke",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Test fixture for ch-local's smoke test: a step that puts its text in capitals.",
+  "license": "Apache-2.0",
+  "files": ["api.json", "schema.json", "handlers/"],
+  "countinghouse": {"role": "part"}
+}
