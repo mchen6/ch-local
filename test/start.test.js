@@ -16,17 +16,18 @@ const GITHUB = {name: 'github', transport: 'streamable-http', url: 'https://api.
   credential: {env: 'COUNTINGHOUSE_GITHUB_TOKEN', fallbackEnv: 'GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}};
 const SCENARIO = '@countinghouse/ch-pack-ci-failure-triage';
 
-// A home with ci-failure-triage installed: installed.json and the app's packages.
-function installedHome({remotes = [GITHUB]} = {}) {
+// A home with ci-failure-triage installed: packs.json and the app's packages.
+function installedHome({remotes = [GITHUB], unreleased = false, other = false} = {}) {
   const home = tmp('ch-local-start-');
-  const pkgs = {[SCENARIO]: {role: 'scenario'}, '@countinghouse/ch-access-github': {role: 'part', remotes}, countinghouse: null};
+  const pkgs = {[SCENARIO]: {role: 'scenario'}, '@countinghouse/ch-access-github': {role: 'part', remotes}, countinghouse: null, ...(other ? {'@countinghouse/ch-pack-other': {role: 'scenario'}} : {})};
   for (const [name, countinghouse] of Object.entries(pkgs)) {
     const at = path.join(home, 'app', 'node_modules', ...name.split('/'));
     fs.mkdirSync(at, {recursive: true});
     fs.writeFileSync(path.join(at, 'package.json'), JSON.stringify({name, version: '1.0.0', ...(countinghouse ? {countinghouse} : {})}));
   }
-  fs.writeFileSync(path.join(home, 'installed.json'), JSON.stringify({pack: 'ci-failure-triage',
-    versions: Object.fromEntries(Object.keys(pkgs).map((n) => [n, '1.0.0'])), credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}));
+  fs.writeFileSync(path.join(home, 'packs.json'), JSON.stringify({runtime: {versions: {countinghouse: '1.0.0'}}, unreleased, packs: {
+    'ci-failure-triage': {packages: {[SCENARIO]: '1.0.0', '@countinghouse/ch-access-github': '1.0.0'}, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
+    ...(other ? {other: {packages: {'@countinghouse/ch-pack-other': '1.0.0'}, credentials: ['OTHER_TOKEN']}} : {})}}));
   return home;
 }
 
@@ -325,4 +326,40 @@ test('after the runtime starts, SIGINT, SIGTERM and SIGHUP are forwarded to it o
   assert.deepStrictEqual(f.killed, ['SIGINT', 'SIGTERM', 'SIGHUP']);
   assert.deepStrictEqual(f.exits, []);
   assert.strictEqual(f.signal, null, 'the handlers are removed when start returns');
+});
+
+test('start loads every installed pack whose credential is set, one --loadModule each', async () => {
+  const home = installedHome({other: true});
+  const both = io(home, {env: {GITHUB_TOKEN: 'a', OTHER_TOKEN: 'b'}});
+  assert.strictEqual(await start({passThrough: []}, both), 0, both.err);
+  const args = both.spawned[0].args;
+  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--loadModule').map((d) => path.relative(path.join(home, 'app', 'node_modules'), d)),
+    [path.join('@countinghouse', 'ch-pack-ci-failure-triage'), path.join('@countinghouse', 'ch-pack-other')]);
+  const one = io(home, {env: {GITHUB_TOKEN: 'a'}});
+  await start({passThrough: []}, one);
+  assert.strictEqual(one.spawned[0].args.filter((a) => a === '--loadModule').length, 1);
+  assert.match(one.err, /not loading other: set OTHER_TOKEN/);
+});
+
+test('every start of an unreleased install says so in one stderr line', async () => {
+  const f = io(installedHome({unreleased: true}));
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(f.err.split('\n').filter((l) => /unreleased/.test(l)).length, 1);
+  const g = io(installedHome());
+  await start({passThrough: []}, g);
+  assert.ok(!/unreleased/.test(g.err));
+});
+
+test('the CLI takes add-pack, remove-pack, status and install --unreleased-pins', async () => {
+  const home = tmp('ch-local-cli-');
+  const run = async (argv) => { const f = io(home); return {code: await main(argv, f), f}; };
+  let r = await run(['add-pack', 'nope', '--from', '/x']);
+  assert.strictEqual(r.code, 2); assert.match(r.f.err, /"nope" is not in this ch-local release's allowlist/);
+  r = await run(['remove-pack', 'nope']);
+  assert.strictEqual(r.code, 1); assert.match(r.f.err, /"nope" is not installed/);
+  r = await run(['status']);
+  assert.strictEqual(r.code, 1); assert.match(r.f.out, /nothing is installed/);
+  r = await run(['install', '--pack', 'ci-failure-triage', '--from', '/x', '--unreleased-pins', path.join(home, 'missing.json')]);
+  assert.strictEqual(r.code, 2); assert.match(r.f.err, /--unreleased-pins .*missing\.json: not a readable JSON file/);
+  for (const bad of [['add-pack'], ['remove-pack'], ['status', 'x'], ['add-pack', 'a', 'b']]) assert.strictEqual((await run(bad)).code, 2, bad.join(' '));
 });

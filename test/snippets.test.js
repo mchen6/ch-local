@@ -20,18 +20,18 @@ test('snippets match the fixtures per client', () => {
 });
 
 test('JSON snippets parse and name the pinned node and the launcher', () => {
-  const cursor = JSON.parse(snippet('cursor', POSIX).text).mcpServers['ci-failure-triage'];
+  const cursor = JSON.parse(snippet('cursor', POSIX).text).mcpServers['countinghouse'];
   assert.deepStrictEqual(cursor.command, POSIX.node);
-  assert.deepStrictEqual(cursor.args, [POSIX.launcher, 'start', '--pack', 'ci-failure-triage', '--stdio']);
+  assert.deepStrictEqual(cursor.args, [POSIX.launcher, 'start', '--stdio']);
   assert.ok(!('type' in cursor), 'Cursor\'s entry has no type');
-  const vscode = JSON.parse(snippet('vscode', POSIX).text).mcpServers['ci-failure-triage'];
+  const vscode = JSON.parse(snippet('vscode', POSIX).text).mcpServers['countinghouse'];
   assert.strictEqual(vscode.type, 'stdio');
   assert.ok(!('env' in vscode), 'VS Code inherits the environment: no env block');
 });
 
 test('Windows paths are escaped for JSON and TOML', () => {
   const win = {node: 'C:\\Program Files\\nodejs\\node.exe', launcher: 'C:\\Users\\dev\\.countinghouse\\bin\\ch-local.js'};
-  assert.strictEqual(JSON.parse(snippet('cursor', win).text).mcpServers['ci-failure-triage'].command, win.node);
+  assert.strictEqual(JSON.parse(snippet('cursor', win).text).mcpServers['countinghouse'].command, win.node);
   const toml = snippet('codex', win).text;
   assert.ok(toml.includes('command = "C:\\\\Program Files\\\\nodejs\\\\node.exe"'), toml);
   assert.ok(toml.includes('"C:\\\\Users\\\\dev\\\\.countinghouse\\\\bin\\\\ch-local.js"'), toml);

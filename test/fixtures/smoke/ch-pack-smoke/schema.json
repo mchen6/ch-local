@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "#/",
+  "type": "object",
+  "echoService": {
+    "smoke_echo": {
+      "input": {"type": "object", "properties": {"text": {"type": "string", "maxLength": 100}}, "required": ["text"], "additionalProperties": false},
+      "output": {"type": "object", "properties": {"shout": {"type": "string"}, "defaultRepo": {"type": ["string", "null"]}}, "required": ["shout", "defaultRepo"], "additionalProperties": false}
+    }
+  }
+}

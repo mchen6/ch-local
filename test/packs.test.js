@@ -31,13 +31,18 @@ test('ALLOWED_ORIGINS pins each token destination and the variables it may recei
   assert.ok(Object.isFrozen(ALLOWED_ORIGINS) && Object.values(ALLOWED_ORIGINS).every(Object.isFrozen));
 });
 
-test('installedPacks reads the home\'s record: the pack, its scenario, packages and credentials', () => {
+test('installedPacks reads packs.json: every pack, its scenario (its first package), packages and credentials', () => {
   const home = tmp('ch-local-home-');
-  const where = {installed: path.join(home, 'installed.json')};
+  const where = {packs: path.join(home, 'packs.json')};
   assert.deepStrictEqual(installedPacks(where), []);
-  fs.writeFileSync(where.installed, JSON.stringify({pack: 'ci-failure-triage', versions: {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0'}, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}));
-  assert.deepStrictEqual(installedPacks(where), [{name: 'ci-failure-triage', scenario: '@countinghouse/ch-pack-ci-failure-triage',
-    packages: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}]);
+  fs.writeFileSync(where.packs, JSON.stringify({runtime: {versions: {}}, packs: {
+    'ci-failure-triage': {packages: {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0'}, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
+    other: {packages: {'@countinghouse/ch-pack-other': '0.3.0'}, credentials: []}}}));
+  assert.deepStrictEqual(installedPacks(where), [
+    {name: 'ci-failure-triage', scenario: '@countinghouse/ch-pack-ci-failure-triage', packages: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
+    {name: 'other', scenario: '@countinghouse/ch-pack-other', packages: ['@countinghouse/ch-pack-other'], credentials: []}]);
+  fs.writeFileSync(where.packs, '{"not": "a record"}');
+  assert.throws(() => installedPacks(where), /not a ch-local record/);
 });
 
 test('declaredRemotes reads the installed packages\' countinghouse.remotes: origin, variables and the package', () => {

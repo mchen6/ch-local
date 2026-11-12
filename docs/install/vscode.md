@@ -7,10 +7,10 @@ format of `~/.copilot/mcp-config.json`. Merge it under `mcpServers`:
 
     {
       "mcpServers": {
-        "ci-failure-triage": {
+        "countinghouse": {
           "type": "stdio",
           "command": "/usr/local/bin/node",
-          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--pack", "ci-failure-triage", "--stdio"]
+          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
         }
       }
     }
@@ -35,4 +35,4 @@ changes that path: run `ch-local snippet vscode` again and replace the entry.
 
 ## Remove
 
-Delete the `ci-failure-triage` entry from `~/.copilot/mcp-config.json`.
+Delete the `countinghouse` entry from `~/.copilot/mcp-config.json`.

@@ -1,0 +1,12 @@
+{
+  "name": "@countinghouse/ch-pack-smoke",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Test fixture for ch-local's smoke test: one scenario that calls one step, with no remotes.",
+  "license": "Apache-2.0",
+  "files": ["api.json", "schema.json", "handlers/"],
+  "countinghouse": {
+    "role": "scenario",
+    "calls": ["ch-step-smoke/shoutService.shout"]
+  }
+}

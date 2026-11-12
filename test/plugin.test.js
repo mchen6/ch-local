@@ -27,10 +27,10 @@ test('the marketplace lists ch-packs from a relative source that exists', () => 
 });
 
 test('the plugin\'s .mcp.json runs launch.js with node and sets no environment', () => {
-  const entry = json(path.join(PLUGIN, '.mcp.json')).mcpServers['ci-failure-triage'];
+  const entry = json(path.join(PLUGIN, '.mcp.json')).mcpServers['countinghouse'];
   assert.deepStrictEqual(entry, {
     command: 'node',
-    args: ['${CLAUDE_PLUGIN_ROOT}/bin/launch.js', 'start', '--pack', 'ci-failure-triage', '--stdio']
+    args: ['${CLAUDE_PLUGIN_ROOT}/bin/launch.js', 'start', '--stdio']
   });
 });
 
@@ -43,7 +43,7 @@ test('the skill carries the plan\'s sentence verbatim', () => {
 test('launch.js without an installed launcher exits non-zero with one line naming the install command', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-'));
   try {
-    const r = spawnSync(process.execPath, [LAUNCH, 'start', '--pack', 'ci-failure-triage', '--stdio'], {encoding: 'utf8', env: {...process.env, COUNTINGHOUSE_HOME: home}});
+    const r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 1);
     assert.strictEqual(r.stdout, '', 'stdout is the MCP channel: nothing on it');
     assert.strictEqual(r.stderr.trim().split('\n').length, 1);
@@ -58,9 +58,9 @@ test('launch.js hands its arguments, stdio and exit code to the installed launch
   try {
     fs.mkdirSync(path.join(home, 'bin'));
     fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), "process.stdin.once('data', (d) => { process.stdout.write(JSON.stringify(process.argv.slice(2)) + ' ' + d); process.exit(7); });\n");
-    const r = spawnSync(process.execPath, [LAUNCH, 'start', '--pack', 'ci-failure-triage', '--stdio'], {encoding: 'utf8', input: 'ping', env: {...process.env, COUNTINGHOUSE_HOME: home}});
+    const r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', input: 'ping', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 7, r.stderr);
-    assert.strictEqual(r.stdout, '["start","--pack","ci-failure-triage","--stdio"] ping');
+    assert.strictEqual(r.stdout, '["start","--stdio"] ping');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }

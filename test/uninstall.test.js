@@ -11,7 +11,7 @@ function setup() {
   const user = tmp('ch-user-');
   const home = path.join(user, '.countinghouse');
   const files = {
-    'installed.json': JSON.stringify({pack: 'ci-failure-triage', credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}),
+    'packs.json': JSON.stringify({runtime: {versions: {}}, packs: {'ci-failure-triage': {packages: {}, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}, other: {packages: {}, credentials: ['OTHER_TOKEN', 'GITHUB_TOKEN']}}}),
     'settings.json': '{"autoUpgrade": false}',
     'auth.json': '{"keys": ["k"]}',
     'run/4242/remote-credentials.json': '{}',
@@ -53,7 +53,7 @@ test('on yes everything under the home goes, and the credentials to revoke are n
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 0, u.err);
     assert.ok(!fs.existsSync(s.home));
-    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, GITHUB_TOKEN/i);
+    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, GITHUB_TOKEN, OTHER_TOKEN/i, 'every installed pack\'s, once each');
     assert.ok(!(u.out + u.err).includes('secret-value-123'));
   } finally {
     s.done();
@@ -68,7 +68,7 @@ test('--keep-data keeps the data and removes the program, the identity secret an
     const has = (f) => fs.existsSync(path.join(s.home, f));
     for (const kept of ['store/kv.json', 'module_data/ch-access-github/x', 'usage/1.jsonl', 'data/pack-ci-failure-triage/r/fingerprints.json']) assert.ok(has(kept), kept);
     // run/ holds each start's own files: program, not data.
-    for (const gone of ['app', 'bin', 'node', 'store/.identity-secret', 'auth.json', 'installed.json', 'settings.json', 'run', 'modules']) assert.ok(!has(gone), gone);
+    for (const gone of ['app', 'bin', 'node', 'store/.identity-secret', 'auth.json', 'packs.json', 'settings.json', 'run', 'modules']) assert.ok(!has(gone), gone);
   } finally {
     s.done();
   }
@@ -100,5 +100,17 @@ test('nothing installed: uninstall says so and asks nothing', async () => {
     assert.deepStrictEqual(u.asked, []);
   } finally {
     fs.rmSync(user, {recursive: true, force: true});
+  }
+});
+
+test('a home whose packs were all removed still names the release\'s credentials to revoke', async () => {
+  const s = setup();
+  try {
+    fs.writeFileSync(path.join(s.home, 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {}}));
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, GITHUB_TOKEN/i);
+  } finally {
+    s.done();
   }
 });

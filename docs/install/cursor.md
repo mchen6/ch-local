@@ -8,9 +8,9 @@ under `mcpServers`:
 
     {
       "mcpServers": {
-        "ci-failure-triage": {
+        "countinghouse": {
           "command": "/usr/local/bin/node",
-          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--pack", "ci-failure-triage", "--stdio"]
+          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
         }
       }
     }
@@ -34,5 +34,5 @@ changes that path: run `ch-local snippet cursor` again and replace the entry.
 
 ## Remove
 
-Delete the `ci-failure-triage` entry from the `mcpServers` of the file you
+Delete the `countinghouse` entry from the `mcpServers` of the file you
 added it to.

@@ -33,9 +33,9 @@ test('add records what it wrote and uninstall removes exactly that', async () =>
     assert.strictEqual(await add('cursor', a), 0, a.err);
     const written = readJson(file).mcpServers;
     assert.deepStrictEqual(written.other, {command: 'other-server'});
-    assert.deepStrictEqual(written['ci-failure-triage'], JSON.parse(entryFor(s, 'cursor')).mcpServers['ci-failure-triage']);
+    assert.deepStrictEqual(written['countinghouse'], JSON.parse(entryFor(s, 'cursor')).mcpServers['countinghouse']);
     const record = readJson(path.join(s.home, 'installed-clients.json'));
-    assert.deepStrictEqual(record.entries.map((e) => [e.client, e.file, e.key]), [['cursor', file, 'ci-failure-triage']]);
+    assert.deepStrictEqual(record.entries.map((e) => [e.client, e.file, e.key]), [['cursor', file, 'countinghouse']]);
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 0, u.err);
     assert.deepStrictEqual(readJson(file).mcpServers, {other: {command: 'other-server'}});
@@ -54,7 +54,7 @@ test('add writes the VS Code portable file and a Codex table, and uninstall take
     assert.strictEqual(await add('vscode', io(s)), 0);
     assert.strictEqual(await add('codex', io(s)), 0);
     const vs = path.join(s.user, '.copilot', 'mcp-config.json');
-    assert.deepStrictEqual(readJson(vs).mcpServers['ci-failure-triage'], JSON.parse(entryFor(s, 'vscode')).mcpServers['ci-failure-triage']);
+    assert.deepStrictEqual(readJson(vs).mcpServers['countinghouse'], JSON.parse(entryFor(s, 'vscode')).mcpServers['countinghouse']);
     assert.ok(fs.readFileSync(toml, 'utf8').startsWith(before));
     assert.ok(fs.readFileSync(toml, 'utf8').includes(entryFor(s, 'codex')));
     assert.strictEqual(await uninstall({}, io(s, ['yes'])), 0);
@@ -74,7 +74,7 @@ test('add refreshes an entry it wrote itself, after a Node upgrade moved the pat
     later.node = '/opt/node-26/bin/node';
     assert.strictEqual(await add('cursor', later), 0, later.err);
     const file = path.join(s.user, '.cursor', 'mcp.json');
-    assert.strictEqual(readJson(file).mcpServers['ci-failure-triage'].command, '/opt/node-26/bin/node');
+    assert.strictEqual(readJson(file).mcpServers['countinghouse'].command, '/opt/node-26/bin/node');
     const record = readJson(path.join(s.home, 'installed-clients.json'));
     assert.strictEqual(record.entries.length, 1);
     assert.strictEqual(record.entries[0].entry.command, '/opt/node-26/bin/node');
@@ -83,7 +83,7 @@ test('add refreshes an entry it wrote itself, after a Node upgrade moved the pat
     toml.node = '/opt/node-26/bin/node';
     assert.strictEqual(await add('codex', toml), 0, toml.err);
     const text = fs.readFileSync(path.join(s.user, '.codex', 'config.toml'), 'utf8');
-    assert.strictEqual(text.split('[mcp_servers.ci-failure-triage]').length, 2, 'one table');
+    assert.strictEqual(text.split('[mcp_servers.countinghouse]').length, 2, 'one table');
     assert.ok(text.includes('command = "/opt/node-26/bin/node"'));
   } finally {
     s.done();
@@ -101,7 +101,7 @@ test('an entry the user pasted is never adopted, so uninstall cannot take it', a
     assert.match(a.out, /already there in .*mcp\.json; written by hand, so ch-local does not record it/);
     assert.ok(!fs.existsSync(path.join(s.home, 'installed-clients.json')) || readJson(path.join(s.home, 'installed-clients.json')).entries.length === 0);
     assert.strictEqual(await uninstall({}, io(s, ['yes'])), 0);
-    assert.ok(readJson(file).mcpServers['ci-failure-triage'], 'the pasted entry stays');
+    assert.ok(readJson(file).mcpServers['countinghouse'], 'the pasted entry stays');
   } finally {
     s.done();
   }
@@ -112,11 +112,11 @@ test('an equivalent TOML table header is recognised, never duplicated', async ()
   try {
     const toml = path.join(s.user, '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(toml), {recursive: true});
-    for (const header of ['[mcp_servers."ci-failure-triage"]', '[ mcp_servers.ci-failure-triage ]', "[mcp_servers.'ci-failure-triage']"]) {
+    for (const header of ['[mcp_servers."countinghouse"]', '[ mcp_servers.countinghouse ]', "[mcp_servers.'countinghouse']"]) {
       fs.writeFileSync(toml, `${header}\ncommand = "mine"\n`);
       const a = io(s);
       assert.strictEqual(await add('codex', a), 1, header);
-      assert.match(a.err, /already has a \[mcp_servers\.ci-failure-triage\] table/);
+      assert.match(a.err, /already has a \[mcp_servers\.countinghouse\] table/);
       assert.strictEqual(fs.readFileSync(toml, 'utf8'), `${header}\ncommand = "mine"\n`);
     }
   } finally {
@@ -152,7 +152,7 @@ test('a rewritten config keeps its permissions and its symlink', {skip: process.
     fs.symlinkSync(real, path.join(s.user, '.codex', 'config.toml'));
     assert.strictEqual(await add('codex', io(s)), 0);
     assert.ok(fs.lstatSync(path.join(s.user, '.codex', 'config.toml')).isSymbolicLink(), 'still a link');
-    assert.ok(fs.readFileSync(real, 'utf8').includes('[mcp_servers.ci-failure-triage]'), 'the target was written');
+    assert.ok(fs.readFileSync(real, 'utf8').includes('[mcp_servers.countinghouse]'), 'the target was written');
     assert.strictEqual(fs.statSync(real).mode & 0o777, 0o600);
   } finally {
     s.done();
@@ -164,11 +164,11 @@ test('add never replaces an entry it did not write', async () => {
   try {
     const file = path.join(s.user, '.cursor', 'mcp.json');
     fs.mkdirSync(path.dirname(file), {recursive: true});
-    fs.writeFileSync(file, JSON.stringify({mcpServers: {'ci-failure-triage': {command: 'mine'}}}));
+    fs.writeFileSync(file, JSON.stringify({mcpServers: {'countinghouse': {command: 'mine'}}}));
     const a = io(s);
     assert.strictEqual(await add('cursor', a), 1);
-    assert.match(a.err, /already has a "ci-failure-triage" entry; ch-local leaves it alone/);
-    assert.deepStrictEqual(readJson(file).mcpServers['ci-failure-triage'], {command: 'mine'});
+    assert.match(a.err, /already has a "countinghouse" entry; ch-local leaves it alone/);
+    assert.deepStrictEqual(readJson(file).mcpServers['countinghouse'], {command: 'mine'});
   } finally {
     s.done();
   }
@@ -180,12 +180,12 @@ test('uninstall leaves an entry the user has changed since, and says so', async 
     assert.strictEqual(await add('cursor', io(s)), 0);
     const file = path.join(s.user, '.cursor', 'mcp.json');
     const changed = readJson(file);
-    changed.mcpServers['ci-failure-triage'].args.push('--extra');
+    changed.mcpServers['countinghouse'].args.push('--extra');
     fs.writeFileSync(file, JSON.stringify(changed));
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 0);
     assert.match(u.out + u.err, /changed since ch-local wrote it; left in place/);
-    assert.ok(readJson(file).mcpServers['ci-failure-triage']);
+    assert.ok(readJson(file).mcpServers['countinghouse']);
   } finally {
     s.done();
   }

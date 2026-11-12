@@ -29,23 +29,24 @@ test('a real install of this launcher runs from <home>/bin/ch-local.js', {timeou
     assert.strictEqual(packed.status, 0, packed.stderr);
     const file = JSON.parse(packed.stdout)[0].filename;
     const integrity = 'sha512-' + crypto.createHash('sha512').update(fs.readFileSync(path.join(from, file))).digest('base64');
-    const allow = {packs: {solo: {packages: [pkg.name], credentials: ['GITHUB_TOKEN']}}, pins: {[pkg.name]: {version: pkg.version, integrity}}};
-    // What a release does: the pack's lockfile, from the manifest install writes.
+    // The runtime is this launcher alone; the pack holds no package.
+    const allow = {runtime: {packages: [pkg.name], lockfile: null}, packs: {solo: {packages: [], credentials: ['GITHUB_TOKEN']}}, pins: {[pkg.name]: {version: pkg.version, integrity}}};
+    // What a release does: the runtime's lockfile, from the manifest install writes.
     const release = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-real-release-'));
     try {
       fs.mkdirSync(path.join(release, 'tarballs'));
       fs.copyFileSync(path.join(from, file), path.join(release, 'tarballs', file));
-      fs.writeFileSync(path.join(release, 'package.json'), JSON.stringify(appManifest('solo', allow.packs.solo, allow.pins)));
+      fs.writeFileSync(path.join(release, 'package.json'), JSON.stringify(appManifest(allow.runtime, allow.pins)));
       const locked = await npm(io, ['install', '--package-lock-only', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], release);
       assert.strictEqual(locked.status, 0, locked.stderr);
-      allow.packs.solo.lockfile = JSON.parse(fs.readFileSync(path.join(release, 'package-lock.json'), 'utf8'));
+      allow.runtime.lockfile = JSON.parse(fs.readFileSync(path.join(release, 'package-lock.json'), 'utf8'));
     } finally {
       fs.rmSync(release, {recursive: true, force: true});
     }
     assert.strictEqual(await install({pack: 'solo', from}, io, allow), 0, io.err);
     const r = spawnSync(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'snippet', 'codex'], {encoding: 'utf8', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 0, r.stderr);
-    assert.match(r.stdout, /^\[mcp_servers\.ci-failure-triage\]$/m);
+    assert.match(r.stdout, /^\[mcp_servers\.countinghouse\]$/m);
     assert.ok(r.stdout.includes(JSON.stringify(path.join(home, 'bin', 'ch-local.js'))));
     assert.ok(fs.existsSync(path.join(home, 'app', 'package-lock.json')));
   } finally {

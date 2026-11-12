@@ -1,12 +1,10 @@
 {
   "mcpServers": {
-    "ci-failure-triage": {
+    "countinghouse": {
       "command": "/usr/local/bin/node",
       "args": [
         "/home/dev/.countinghouse/bin/ch-local.js",
         "start",
-        "--pack",
-        "ci-failure-triage",
         "--stdio"
       ]
     }

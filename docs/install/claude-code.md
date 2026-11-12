@@ -14,7 +14,7 @@ not installed yet, the tool fails with one line naming the install command.
 Or add the server by hand. `ch-local snippet claude-code` prints the command
 for this machine, for example:
 
-    claude mcp add --scope user ci-failure-triage -- /usr/local/bin/node /home/you/.countinghouse/bin/ch-local.js start --pack ci-failure-triage --stdio
+    claude mcp add --scope user countinghouse -- /usr/local/bin/node /home/you/.countinghouse/bin/ch-local.js start --stdio
 
 A path with a space is double-quoted. The line is for a POSIX shell (bash,
 zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`
@@ -37,7 +37,7 @@ session.
 
 The hand-added entry names the absolute path of your Node. An nvm or system
 Node upgrade changes that path: run `ch-local snippet claude-code` again,
-then `claude mcp remove --scope user ci-failure-triage` and add the new line.
+then `claude mcp remove --scope user countinghouse` and add the new line.
 The plugin runs `node` from the `PATH` Claude Code sees, which must be Node
 22.16 or later; below that it stops with one line saying so.
 
@@ -47,4 +47,4 @@ The plugin runs `node` from the `PATH` Claude Code sees, which must be Node
 
 or, for the hand-added server:
 
-    claude mcp remove --scope user ci-failure-triage
+    claude mcp remove --scope user countinghouse

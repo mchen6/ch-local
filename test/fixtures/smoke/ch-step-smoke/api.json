@@ -1,0 +1,19 @@
+{
+  "device": {
+    "friendlyName": "ch-step-smoke",
+    "manufacturer": "ch-local-test",
+    "modelDescription": "ch-local's smoke-test step: a pure function, the text in capitals.",
+    "serviceList": {
+      "urn:ch-local-test:serviceID:shoutService": {
+        "actionList": [
+          {
+            "name": "shout",
+            "description": "Returns the text in capitals.",
+            "input": {"schema": "/shoutService/shout/input"},
+            "output": {"schema": "/shoutService/shout/output"}
+          }
+        ]
+      }
+    }
+  }
+}

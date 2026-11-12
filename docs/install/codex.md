@@ -5,9 +5,9 @@
 `ch-local snippet codex` prints the entry for this machine. Append it to
 `~/.codex/config.toml`:
 
-    [mcp_servers.ci-failure-triage]
+    [mcp_servers.countinghouse]
     command = "/usr/local/bin/node"
-    args = ["/home/you/.countinghouse/bin/ch-local.js", "start", "--pack", "ci-failure-triage", "--stdio"]
+    args = ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
     env_vars = ["COUNTINGHOUSE_GITHUB_TOKEN", "GITHUB_TOKEN"]
 
 `env_vars` lists the variables Codex passes from its own environment to the
@@ -32,7 +32,7 @@ changes that path: run `ch-local snippet codex` again and replace the entry.
 
 ## Remove
 
-    codex mcp remove ci-failure-triage
+    codex mcp remove countinghouse
 
-or delete the `[mcp_servers.ci-failure-triage]` table from
+or delete the `[mcp_servers.countinghouse]` table from
 `~/.codex/config.toml`.

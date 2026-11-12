@@ -32,3 +32,40 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Test
         run: npm test
+
+  # The profile end to end (reviewer, 2026-11-12): test/smoke.test.js installs
+  # a no-remote fixture pack with --unreleased-pins and speaks MCP to it
+  # through `ch-local start --stdio`, on countinghouse master. Windows joins
+  # after countinghouse issue #40 (a module load there stops after the file
+  # broker's spawn walk).
+  smoke:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: mchen6/countinghouse
+          ref: master
+          path: countinghouse-src
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Pack countinghouse master
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/runtime"
+          (cd countinghouse-src && npm pack --pack-destination "$RUNNER_TEMP/runtime")
+          echo "CH_SMOKE_RUNTIME_TGZ=$(ls "$RUNNER_TEMP"/runtime/countinghouse-*.tgz)" >> "$GITHUB_ENV"
+          rm -rf countinghouse-src
+      - name: Smoke test
+        shell: bash
+        run: |
+          # Never green by skipping: the test skips without the tarball.
+          test -f "$CH_SMOKE_RUNTIME_TGZ" || { echo "CH_SMOKE_RUNTIME_TGZ is not a file: '$CH_SMOKE_RUNTIME_TGZ'"; exit 1; }
+          node --test --test-reporter=spec test/smoke.test.js 2>&1 | tee smoke.log
+          grep -q '^ℹ pass 1$' smoke.log || { echo 'the smoke test did not pass (skipped or failed)'; exit 1; }
