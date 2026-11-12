@@ -46,6 +46,8 @@ test('declaredRemotes reads the installed packages\' countinghouse.remotes: orig
     [{origin: 'https://api.githubcopilot.com', variables: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], from: '@countinghouse/ch-access-github'}]);
   const bad = app({'@x/y': {remotes: [{name: 'r', url: 'not a url'}]}});
   assert.deepStrictEqual(declaredRemotes(bad, ['@x/y']), [{origin: null, variables: [], from: '@x/y'}], 'an unreadable URL is kept, to be refused');
+  const odd = app({'@x/z': {remotes: [null, 'text', {name: 'r', url: 'https://api.githubcopilot.com/mcp/', credential: 'GITHUB_TOKEN'}]}});
+  assert.deepStrictEqual(declaredRemotes(odd, ['@x/z']).map((r) => r.origin), [null, null, null], 'a remote or credential that is not an object is kept, to be refused');
   assert.throws(() => declaredRemotes(dir, ['@countinghouse/not-installed']), /@countinghouse\/not-installed is not installed/, 'a listed package missing from the app is a broken install');
   fs.writeFileSync(path.join(dir, 'node_modules', '@countinghouse', 'ch-step-redact', 'package.json'), '{"name": ');
   assert.throws(() => declaredRemotes(dir, ['@countinghouse/ch-step-redact']), /ch-step-redact.*not readable/, 'a corrupt manifest is not "no remotes"');

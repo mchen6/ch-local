@@ -15,6 +15,7 @@ function setup() {
     'settings.json': '{"autoUpgrade": false}',
     'auth.json': '{"keys": ["k"]}',
     'run/4242/remote-credentials.json': '{}',
+    'modules/x': 'x',
     'app/package.json': '{}',
     'bin/ch-local.js': '',
     'node/bin/node': '',
@@ -67,7 +68,7 @@ test('--keep-data keeps the data and removes the program, the identity secret an
     const has = (f) => fs.existsSync(path.join(s.home, f));
     for (const kept of ['store/kv.json', 'module_data/ch-access-github/x', 'usage/1.jsonl', 'data/pack-ci-failure-triage/r/fingerprints.json']) assert.ok(has(kept), kept);
     // run/ holds each start's own files: program, not data.
-    for (const gone of ['app', 'bin', 'node', 'store/.identity-secret', 'auth.json', 'installed.json', 'settings.json', 'run']) assert.ok(!has(gone), gone);
+    for (const gone of ['app', 'bin', 'node', 'store/.identity-secret', 'auth.json', 'installed.json', 'settings.json', 'run', 'modules']) assert.ok(!has(gone), gone);
   } finally {
     s.done();
   }

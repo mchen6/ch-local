@@ -128,18 +128,25 @@ function realIo() {
     // throw, and only start needs it (null: git runs wherever it is).
     get cwd() { try { return process.cwd(); } catch (err) { return null; } },
     alive: (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
+    hostname: os.hostname(),
+    exit: (code) => process.exit(code),
+    // SIGINT, SIGTERM and SIGHUP go to handler(name) until the returned
+    // function is called; start decides what each means.
+    trapSignals: (handler) => {
+      const on = Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((s) => [s, () => handler(s)]));
+      for (const [s, fn] of Object.entries(on)) process.on(s, fn);
+      return () => { for (const [s, fn] of Object.entries(on)) process.removeListener(s, fn); };
+    },
     // The runtime, on this process's own stdin, stdout and stderr: the client's
-    // MCP channel goes straight through. -> its exit code. A terminal's Ctrl-C
-    // reaches the runtime itself (one process group), so SIGINT only keeps
-    // this process waiting; SIGTERM and SIGHUP, which a client sends to this
-    // process alone, are passed on, and the finally in start still runs.
-    spawn: (cmd, args, {env} = {}) => new Promise((resolve) => {
+    // MCP channel goes straight through. -> {kill(signal), exited: Promise<exit code>}.
+    spawn: (cmd, args, {env} = {}) => {
       const child = require('child_process').spawn(cmd, args, {stdio: 'inherit', env});
-      process.on('SIGINT', () => {});
-      for (const signal of ['SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
-      child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
-      child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
-    })
+      const exited = new Promise((resolve) => {
+        child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
+        child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
+      });
+      return {kill: (signal) => { try { child.kill(signal); } catch (err) { /* already gone */ } }, exited};
+    }
   };
 }
 
