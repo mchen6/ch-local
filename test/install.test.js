@@ -209,6 +209,9 @@ test('an unknown pack, or no --from, is refused before anything is read', async 
 test('this launcher pins no release yet, and says so', async () => {
   assert.deepStrictEqual(Object.keys(ALLOWLIST.packs), ['ci-failure-triage']);
   assert.ok(ALLOWLIST.packs['ci-failure-triage'].packages.includes('@countinghouse/ch-local'));
+  // The usage report is the runtime's built-in countinghouse_usage_report: nothing installs ch-report (reviewer, 2026-11-11).
+  assert.ok(!ALLOWLIST.packs['ci-failure-triage'].packages.includes('@countinghouse/ch-report'));
+  assert.ok(ALLOWLIST.packs['ci-failure-triage'].packages.includes('countinghouse'), 'the runtime\'s own tarball');
   const s = setup();
   try {
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
