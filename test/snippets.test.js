@@ -36,7 +36,9 @@ test('Windows paths are escaped for JSON and TOML', () => {
   assert.ok(toml.includes('command = "C:\\\\Program Files\\\\nodejs\\\\node.exe"'), toml);
   assert.ok(toml.includes('"C:\\\\Users\\\\dev\\\\.countinghouse\\\\bin\\\\ch-local.js"'), toml);
   const line = snippet('claude-code', win).text;
-  assert.ok(line.includes("'C:\\Program Files\\nodejs\\node.exe'"), 'a path with a space is quoted');
+  // Double quotes: cmd.exe and PowerShell read them, and the line has no $ to expand.
+  assert.ok(line.includes('"C:\\Program Files\\nodejs\\node.exe"'), line);
+  assert.ok(line.includes('"C:\\Users\\dev\\.countinghouse\\bin\\ch-local.js"'), line);
 });
 
 // Reviewer, PR #36: a stdio child inherits the client's environment, so an
@@ -50,14 +52,20 @@ test('only Codex names the credential variables; no entry sets one', () => {
   assert.match(snippet('codex', POSIX).text, /^env_vars = \["COUNTINGHOUSE_GITHUB_TOKEN", "GITHUB_TOKEN"\]$/m);
 });
 
-test('credentials are named, never given a value', () => {
+test('no snippet carries a token', () => {
   for (const client of CLIENTS) {
-    const {text} = snippet(client, POSIX);
-    assert.ok(!/ghp_|github_pat_/.test(text), client);
-    for (const m of text.matchAll(/(COUNTINGHOUSE_GITHUB_TOKEN|GITHUB_TOKEN)["']?\s*[:=]\s*["']?([^"',\n]*)/g)) {
-      assert.match(m[2], /^(\$\{env:\w+\}|\$\{\w+:-\})?$/, `${client}: ${m[0]}`);
-    }
+    const {text, note} = snippet(client, POSIX);
+    assert.ok(!/ghp_|github_pat_/.test(text + (note || '')), client);
   }
+});
+
+// From /code-review medium on ch-local#1.
+test('the add line quotes what a shell would split or read as syntax', () => {
+  const line = (node) => snippet('claude-code', {node, launcher: '/h/.countinghouse/bin/ch-local.js'}).text;
+  assert.ok(line('/opt/a,b/node').includes('"/opt/a,b/node"'), 'a comma is an array in PowerShell');
+  assert.ok(line('/opt/@x/node').includes('"/opt/@x/node"'));
+  assert.ok(line("/home/o'brien/node").includes('"/home/o\'brien/node"'), 'an apostrophe goes inside double quotes');
+  assert.ok(line('/home/a$b/node').includes("'/home/a$b/node'"), 'a $ needs single quotes on POSIX');
 });
 
 test('Claude Desktop gets a note, not an entry', () => {

@@ -87,7 +87,7 @@ test('launch.js refuses a relative COUNTINGHOUSE_HOME in one line', () => {
   assert.match(r.stderr, /COUNTINGHOUSE_HOME must be an absolute path/);
 });
 
-test('launch.js names a launcher that could not be started', () => {
+test('a launcher that fails at once makes launch.js fail, with something said', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-'));
   try {
     fs.mkdirSync(path.join(home, 'bin', 'ch-local.js'), {recursive: true}); // a directory: node cannot run it
@@ -114,6 +114,38 @@ test('launch.js passes a stop on to the launcher, so no server is left running',
     assert.strictEqual(code, 0, 'launch.js exits with the launcher\'s code');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('a launcher stopped by a signal stops launch.js by the same signal, not exit 1', {skip: process.platform === 'win32' ? 'no POSIX signals on Windows' : false}, async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-'));
+  try {
+    fs.mkdirSync(path.join(home, 'bin'));
+    fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);\n");
+    const {spawn} = require('node:child_process');
+    const child = spawn(process.execPath, [LAUNCH, 'start'], {env: {...process.env, COUNTINGHOUSE_HOME: home}, stdio: ['pipe', 'pipe', 'inherit']});
+    await new Promise((resolve) => child.stdout.once('data', resolve));
+    child.kill('SIGTERM');
+    const [code, signal] = await new Promise((resolve) => child.on('exit', (c, s) => resolve([c, s])));
+    assert.deepStrictEqual([code, signal], [null, 'SIGTERM']);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('launch.js forwards a signal the platform cannot send as a plain stop, never a crash', () => {
+  const src = fs.readFileSync(LAUNCH, 'utf8');
+  assert.match(src, /try \{\s*child\.kill\(signal\);\s*\} catch \{\s*child\.kill\(\);\s*\}/);
+});
+
+test('launch.js loads on old Nodes far enough to say it is too old: no node: requires', () => {
+  assert.ok(!/require\('node:/.test(fs.readFileSync(LAUNCH, 'utf8')));
+});
+
+test('launch.js and lib/home.js agree on what a full path is', () => {
+  const {isFullPath} = require('../lib/home');
+  for (const [p, platform] of [['/a', 'linux'], ['a', 'linux'], ['C:\\a', 'win32'], ['\\a', 'win32'], ['\\\\s\\h', 'win32'], ['C:a', 'win32']]) {
+    assert.strictEqual(launch.isFullPath(p, platform), isFullPath(p, platform), `${platform} ${p}`);
   }
 });
 

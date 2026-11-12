@@ -42,6 +42,16 @@ test('claude-desktop prints its note on stderr, nothing on stdout, and exits 0',
 });
 
 // From /code-review medium on PR #34.
+test('a full path is one with a root and, on Windows, a drive or a share', () => {
+  const {isFullPath} = require('../lib/home');
+  assert.strictEqual(isFullPath('/home/dev/.countinghouse', 'linux'), true);
+  assert.strictEqual(isFullPath('.countinghouse', 'linux'), false);
+  assert.strictEqual(isFullPath('C:\\Users\\dev\\.countinghouse', 'win32'), true);
+  assert.strictEqual(isFullPath('\\\\server\\share\\ch', 'win32'), true);
+  assert.strictEqual(isFullPath('\\countinghouse', 'win32'), false, 'rooted on whatever drive is current');
+  assert.strictEqual(isFullPath('C:countinghouse', 'win32'), false);
+});
+
 test('a relative COUNTINGHOUSE_HOME is refused, never resolved against the current directory', () => {
   const r = run(['snippet', 'cursor'], {COUNTINGHOUSE_HOME: '.countinghouse'});
   assert.strictEqual(r.status, 2);

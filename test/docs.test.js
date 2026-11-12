@@ -32,8 +32,8 @@ test('the Claude Code page adds the marketplace from this repository', () => {
 
 test('the Claude Code page says which shells the add line is for', () => {
   const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
-  assert.match(page, /PowerShell/);
   assert.match(page, /cmd\.exe/);
+  assert.match(page, /PowerShell[\s\S]{0,80}drops the `--`/, 'says why not PowerShell');
 });
 
 test('every package name the docs, skill and launcher print uses the scope', () => {

@@ -16,9 +16,10 @@ for this machine, for example:
 
     claude mcp add --scope user ci-failure-triage -- /usr/local/bin/node /home/you/.countinghouse/bin/ch-local.js start --pack ci-failure-triage --stdio
 
-A path with a space is single-quoted. The line is for a POSIX shell (bash,
-zsh) or PowerShell, which both read single quotes literally; Windows
-`cmd.exe` does not, so on Windows run it in PowerShell, or use the plugin
+A path with a space is double-quoted. The line is for a POSIX shell (bash,
+zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`
+(`claude.ps1`) drops the `--` before the command, so on Windows run it in
+`cmd.exe`, or use the plugin
 ([`claude mcp add`](https://code.claude.com/docs/en/mcp)).
 
 ## Token

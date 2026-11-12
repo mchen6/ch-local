@@ -1,7 +1,7 @@
 'use strict';
 // The credential a launcher uses: the first named variable with a real value.
-// Client entries name both variables, so an unset one can arrive as '' (Claude
-// Code's ${VAR:-}) or, if a client leaves it unresolved, as its placeholder.
+// No client entry sets one; the guard against '' and an unresolved ${...}
+// placeholder is a defence against a hand-written entry.
 const test = require('node:test');
 const assert = require('node:assert');
 const {pickCredential} = require('../lib/credential');
