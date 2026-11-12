@@ -12,6 +12,19 @@ const {snippet} = require('../lib/snippets');
 const BIN = path.join(__dirname, '..', 'bin', 'ch-local.js');
 const run = (args, env) => spawnSync(process.execPath, [BIN, ...args], {encoding: 'utf8', env: {...process.env, ...env}});
 
+test('a command run from a directory that no longer exists still answers as ch-local, not with a stack', {skip: process.platform === 'win32' && 'Windows cannot remove a working directory'}, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-'));
+  const gone = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-gone-'));
+  try {
+    const r = spawnSync('sh', ['-c', 'cd "$1" && rmdir "$1" && exec "$2" "$3" snippet cursor', 'sh', gone, process.execPath, BIN], {encoding: 'utf8', env: {...process.env, COUNTINGHOUSE_HOME: home}});
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.ok(!/at .*\(/.test(r.stderr), r.stderr);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+    fs.rmSync(gone, {recursive: true, force: true});
+  }
+});
+
 test('snippet prints the entry for this machine: the running node and the home\'s launcher', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-'));
   try {

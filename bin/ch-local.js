@@ -7,6 +7,7 @@
 //   ch-local add <client>                         writes that entry, and records it
 //   ch-local uninstall [--keep-data]              takes back what install and add wrote
 //   ch-local upgrade [--auto on|off]              installed and available versions; asks once
+//   ch-local start --stdio [options]              what a client runs: the runtime with the installed packs
 //
 // The Node floor is checked before anything else is loaded, with plain
 // require names, so a Node far below it still gets a plain answer.
@@ -19,6 +20,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local add <cursor|vscode|codex>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
+       ch-local start --stdio [countinghouse options]
 `;
 
 // argv -> {flags, values, positional} | null when something is not understood.
@@ -80,6 +82,10 @@ async function main(argv, io) {
       if (a == null || a.positional.length > 0) return usage();
       return await require('../lib/uninstall').uninstall({keepData: a.flags['--keep-data'] === true}, io);
     }
+    if (command === 'start') {
+      if (rest[0] !== '--stdio') return usage();
+      return await require('../lib/start').start({passThrough: rest.slice(1)}, io);
+    }
     if (command === 'upgrade') {
       const a = parse(rest, {values: ['--auto']});
       if (a == null || a.positional.length > 0) return usage();
@@ -116,7 +122,24 @@ function realIo() {
       child.on('error', (err) => resolve({status: null, stdout, stderr: stderr + String(err.message)}));
       child.on('close', (status) => resolve({status, stdout, stderr}));
     }),
-    fetch: (url, options) => globalThis.fetch(url, options)
+    fetch: (url, options) => globalThis.fetch(url, options),
+    pid: process.pid,
+    // Read when used: a directory removed under a shell makes process.cwd()
+    // throw, and only start needs it (null: git runs wherever it is).
+    get cwd() { try { return process.cwd(); } catch (err) { return null; } },
+    alive: (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
+    // The runtime, on this process's own stdin, stdout and stderr: the client's
+    // MCP channel goes straight through. -> its exit code. A terminal's Ctrl-C
+    // reaches the runtime itself (one process group), so SIGINT only keeps
+    // this process waiting; SIGTERM and SIGHUP, which a client sends to this
+    // process alone, are passed on, and the finally in start still runs.
+    spawn: (cmd, args, {env} = {}) => new Promise((resolve) => {
+      const child = require('child_process').spawn(cmd, args, {stdio: 'inherit', env});
+      process.on('SIGINT', () => {});
+      for (const signal of ['SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
+      child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
+      child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
+    })
   };
 }
 
