@@ -48,9 +48,9 @@ command first checks Node: below 22.16 it says so and offers two ways on, to
 install Node 24 yourself or to let ch-local fetch its own; that fetch is not
 built yet, so a yes is refused and nothing is downloaded.
 
-Part of the countinghouse client packs. The design, the plan and the
-acceptance tests live in [ch-packs](https://github.com/mchen6/ch-packs);
-each package has its own repository (maintainer's decision, 2026-11-11).
+Part of the countinghouse client packs. Each package has its own repository; the family's design, plan and
+acceptance tests are in a repository that stays private until the first
+release.
 
 ## Development
 
