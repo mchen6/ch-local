@@ -71,6 +71,23 @@ test('--keep-data keeps the data and removes the program, the identity secret an
   }
 });
 
+// From /code-review medium on #2.
+test('uninstall removes only what is ch-local\'s: a home set to a shared directory keeps everything else', async () => {
+  const s = setup();
+  try {
+    fs.writeFileSync(path.join(s.home, 'thesis.tex'), 'mine');
+    fs.mkdirSync(path.join(s.home, 'photos'));
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    assert.strictEqual(fs.readFileSync(path.join(s.home, 'thesis.tex'), 'utf8'), 'mine');
+    assert.ok(fs.existsSync(path.join(s.home, 'photos')));
+    assert.ok(!fs.existsSync(path.join(s.home, 'app')));
+    assert.match(u.out, /thesis\.tex  \(not ch-local's: left\)/);
+  } finally {
+    s.done();
+  }
+});
+
 test('nothing installed: uninstall says so and asks nothing', async () => {
   const user = tmp('ch-user-');
   try {

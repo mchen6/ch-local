@@ -37,10 +37,10 @@ One install page per client is in [docs/install](docs/install/README.md).
 
 | Command | What it does |
 |---|---|
-| `ch-local install --pack ci-failure-triage --from <dir>` | checks each tarball in `<dir>` against the version and sha512 integrity this launcher pins (a tarball not on the list, a wrong hash or a missing one stops it before anything runs), builds `<home>/app` as an npm project with a lockfile by `npm ci --omit=optional --ignore-scripts`, swaps it in only when complete, and writes `<home>/bin/ch-local.js` |
+| `ch-local install --pack ci-failure-triage --from <dir>` | checks each tarball in `<dir>` against the version and sha512 integrity this launcher pins (a tarball not on the list, a wrong hash or a missing one stops it before anything runs), builds `<home>/app` as an npm project with the pack's lockfile, pinned at release so every dependency's version and integrity is fixed too, by `npm ci --omit=optional --ignore-scripts`, swaps it in only when complete (the old app goes back if it cannot), and writes `<home>/bin/ch-local.js` |
 | `ch-local snippet <client>` | the client's config entry, on stdout alone |
-| `ch-local add <cursor\|vscode\|codex>` | writes that entry into the client's file (never over an entry it did not write) and records it in `<home>/installed-clients.json` |
-| `ch-local uninstall [--keep-data]` | takes back exactly the recorded entries, lists `<home>` and asks once; `--keep-data` keeps the store, module data, usage and caches but removes the program, the identity secret and `auth.json`; ends by naming the credentials to revoke |
+| `ch-local add <cursor\|vscode\|codex>` | writes that entry into the client's file and records it in `<home>/installed-clients.json`; run again after a Node upgrade, it rewrites its own entry. It never writes over, or claims, an entry it did not write, and keeps a file's permissions and symlink |
+| `ch-local uninstall [--keep-data]` | takes back exactly the recorded entries, lists `<home>` and asks once, and removes only the names ch-local owns there; `--keep-data` keeps the store, module data, usage and caches but removes the program, the identity secret and `auth.json`; ends by naming the credentials to revoke |
 | `ch-local upgrade [--auto on\|off]` | shows installed and available versions from the npm registry, the only network call besides install, and asks once; `--auto` stores the opt-in automatic-upgrade setting, off by default |
 
 `<home>` is `$COUNTINGHOUSE_HOME` (an absolute path) or `~/.countinghouse`. Every

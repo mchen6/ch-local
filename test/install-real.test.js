@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {spawnSync} = require('node:child_process');
-const {install} = require('../lib/install');
+const {install, appManifest} = require('../lib/install');
 const {npm} = require('../lib/npm');
 
 const ROOT = path.join(__dirname, '..');
@@ -30,6 +30,18 @@ test('a real install of this launcher runs from <home>/bin/ch-local.js', {timeou
     const file = JSON.parse(packed.stdout)[0].filename;
     const integrity = 'sha512-' + crypto.createHash('sha512').update(fs.readFileSync(path.join(from, file))).digest('base64');
     const allow = {packs: {solo: {packages: [pkg.name], credentials: ['GITHUB_TOKEN']}}, pins: {[pkg.name]: {version: pkg.version, integrity}}};
+    // What a release does: the pack's lockfile, from the manifest install writes.
+    const release = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-real-release-'));
+    try {
+      fs.mkdirSync(path.join(release, 'tarballs'));
+      fs.copyFileSync(path.join(from, file), path.join(release, 'tarballs', file));
+      fs.writeFileSync(path.join(release, 'package.json'), JSON.stringify(appManifest('solo', allow.packs.solo, allow.pins)));
+      const locked = await npm(io, ['install', '--package-lock-only', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], release);
+      assert.strictEqual(locked.status, 0, locked.stderr);
+      allow.packs.solo.lockfile = JSON.parse(fs.readFileSync(path.join(release, 'package-lock.json'), 'utf8'));
+    } finally {
+      fs.rmSync(release, {recursive: true, force: true});
+    }
     assert.strictEqual(await install({pack: 'solo', from}, io, allow), 0, io.err);
     const r = spawnSync(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'snippet', 'codex'], {encoding: 'utf8', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 0, r.stderr);

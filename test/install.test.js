@@ -24,13 +24,13 @@ function setup() {
     fs.writeFileSync(path.join(from, file), bytes);
     pins[name] = {version, integrity: integrityOf(bytes)};
   }
-  const allow = {packs: {'ci-failure-triage': {packages: PACKAGES.map(([n]) => n), credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}}, pins};
+  const lockfile = {name: 'countinghouse-home-app', lockfileVersion: 3, requires: true, packages: {'': {}, 'node_modules/left-pad': {version: '1.3.0', integrity: 'sha512-pinned'}}};
+  const allow = {packs: {'ci-failure-triage': {packages: PACKAGES.map(([n]) => n), credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], lockfile}}, pins};
   return {from, home, allow, done: () => { fs.rmSync(from, {recursive: true, force: true}); fs.rmSync(home, {recursive: true, force: true}); }};
 }
 
 // npm as the stub sees it: the lock step writes a lockfile, ci installs the launcher.
 const npm = (version = '0.2.0') => (cmd, args, {cwd}) => {
-  if (args.includes('--package-lock-only')) fs.writeFileSync(path.join(cwd, 'package-lock.json'), '{"lockfileVersion": 3}\n');
   if (args.includes('ci')) {
     const dir = path.join(cwd, 'node_modules', '@countinghouse', 'ch-local');
     fs.mkdirSync(path.join(dir, 'bin'), {recursive: true});
@@ -53,11 +53,9 @@ test('install writes app/package.json with exact versions and runs npm ci', asyn
     assert.deepStrictEqual(pkg.dependencies, Object.fromEntries(PACKAGES.map(([n, , f]) => [n, `file:tarballs/${f}`])));
     assert.deepStrictEqual(pkg.chLocal, {pack: 'ci-failure-triage', versions: Object.fromEntries(PACKAGES.map(([n, v]) => [n, v]))});
     for (const [, , f] of PACKAGES) assert.ok(fs.existsSync(path.join(app, 'tarballs', f)), f);
-    assert.ok(fs.existsSync(path.join(app, 'package-lock.json')), 'the lockfile');
-    assert.deepStrictEqual(io.execs.map((e) => e.args.slice(1)), [
-      ['install', '--package-lock-only', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'],
-      ['ci', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund']
-    ]);
+    // The pack's pinned lockfile, as released: npm ci checks every package against it, dependencies included.
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(app, 'package-lock.json'), 'utf8')), s.allow.packs['ci-failure-triage'].lockfile);
+    assert.deepStrictEqual(io.execs.map((e) => e.args.slice(1)), [['ci', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund']], 'no lockfile is generated at install');
     assert.ok(io.execs.every((e) => e.cmd === io.node && /npm-cli\.js$/.test(e.args[0])), 'npm runs as node npm-cli.js, no shell');
     assert.ok(!fs.existsSync(path.join(s.home, 'app.new')), 'no build directory left');
   } finally {
@@ -131,6 +129,39 @@ test('a failing npm leaves the previous install in place', async () => {
     assert.strictEqual(fs.readFileSync(path.join(s.home, 'app', 'marker'), 'utf8'), 'previous');
     assert.ok(!fs.existsSync(path.join(s.home, 'app.new')));
   } finally {
+    s.done();
+  }
+});
+
+// From /code-review medium on #2.
+test('a pack without a pinned lockfile is refused: its dependencies would be unpinned', async () => {
+  const s = setup();
+  try {
+    delete s.allow.packs['ci-failure-triage'].lockfile;
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
+    assert.strictEqual(await run(s, io), 1);
+    assert.match(io.err, /no lockfile is pinned for the pack "ci-failure-triage"/);
+    assert.deepStrictEqual(io.execs, []);
+  } finally {
+    s.done();
+  }
+});
+
+test('a swap that cannot move the new app in puts the old one back', async () => {
+  const s = setup();
+  const real = fs.renameSync;
+  try {
+    fs.mkdirSync(path.join(s.home, 'app'), {recursive: true});
+    fs.writeFileSync(path.join(s.home, 'app', 'marker'), 'previous');
+    fs.renameSync = (a, b) => { if (String(a).endsWith('app.new')) { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } return real(a, b); };
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
+    assert.strictEqual(await run(s, io), 1);
+    assert.match(io.err, /could not replace .*app \(EBUSY\); is a client running it\? the previous install is unchanged/);
+    fs.renameSync = real;
+    assert.strictEqual(fs.readFileSync(path.join(s.home, 'app', 'marker'), 'utf8'), 'previous');
+    assert.ok(!fs.existsSync(path.join(s.home, 'app.old')));
+  } finally {
+    fs.renameSync = real;
     s.done();
   }
 });
