@@ -2,9 +2,10 @@
 
 The countinghouse client-pack launcher: installs pinned packs into ~/.countinghouse, starts the runtime over stdio for Claude Code, Cursor, VS Code and Codex, prints each client's config entry, upgrades on request and never silently.
 
-**Status: preview.** `ch-local snippet <client>` and the Claude Code plugin
-are here. `install`, `start`, `uninstall` and `upgrade` land next (Tasks 11
-and 12 of the pack family's plan in [ch-packs](https://github.com/mchen6/ch-packs)).
+**Status: preview.** `ch-local snippet`, `install` (from local tarballs), `add`,
+`uninstall` and `upgrade` are here, with the Claude Code plugin. `start`, which
+runs the runtime in local mode, lands with countinghouse's local mode (LM1),
+and installing straight from npm with the first release.
 
 ## What it does
 
@@ -31,6 +32,21 @@ starts the installed launcher, passes it a stop, and fetches nothing. Its skill
 tells Claude to call `ci_failure_triage` first when a CI run failed.
 
 One install page per client is in [docs/install](docs/install/README.md).
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `ch-local install --pack ci-failure-triage --from <dir>` | checks each tarball in `<dir>` against the version and sha512 integrity this launcher pins (a tarball not on the list, a wrong hash or a missing one stops it before anything runs), builds `<home>/app` as an npm project with a lockfile by `npm ci --omit=optional --ignore-scripts`, swaps it in only when complete, and writes `<home>/bin/ch-local.js` |
+| `ch-local snippet <client>` | the client's config entry, on stdout alone |
+| `ch-local add <cursor\|vscode\|codex>` | writes that entry into the client's file (never over an entry it did not write) and records it in `<home>/installed-clients.json` |
+| `ch-local uninstall [--keep-data]` | takes back exactly the recorded entries, lists `<home>` and asks once; `--keep-data` keeps the store, module data, usage and caches but removes the program, the identity secret and `auth.json`; ends by naming the credentials to revoke |
+| `ch-local upgrade [--auto on\|off]` | shows installed and available versions from the npm registry, the only network call besides install, and asks once; `--auto` stores the opt-in automatic-upgrade setting, off by default |
+
+`<home>` is `$COUNTINGHOUSE_HOME` (an absolute path) or `~/.countinghouse`. Every
+command first checks Node: below 22.16 it says so and offers two ways on, to
+install Node 24 yourself or to let ch-local fetch its own; that fetch is not
+built yet, so a yes is refused and nothing is downloaded.
 
 Part of the countinghouse client packs. The design, the plan and the
 acceptance tests live in [ch-packs](https://github.com/mchen6/ch-packs);
