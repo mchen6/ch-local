@@ -360,6 +360,6 @@ test('the CLI takes add-pack, remove-pack, status and install --unreleased-pins'
   r = await run(['status']);
   assert.strictEqual(r.code, 1); assert.match(r.f.out, /nothing is installed/);
   r = await run(['install', '--pack', 'ci-failure-triage', '--from', '/x', '--unreleased-pins', path.join(home, 'missing.json')]);
-  assert.strictEqual(r.code, 2); assert.match(r.f.err, /--unreleased-pins .*missing\.json: not a readable JSON file/);
+  assert.strictEqual(r.code, 2); assert.match(r.f.err, /--unreleased-pins is for development: set CH_LOCAL_DEV=1/);
   for (const bad of [['add-pack'], ['remove-pack'], ['status', 'x'], ['add-pack', 'a', 'b']]) assert.strictEqual((await run(bad)).code, 2, bad.join(' '));
 });

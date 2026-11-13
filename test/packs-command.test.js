@@ -119,7 +119,7 @@ test('status, add-pack and every start of an unreleased home say so in one stder
   const home = tmp('ch-home-');
   const pins = path.join(tmp('ch-pins-'), 'pins.json');
   fs.writeFileSync(pins, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile}));
-  const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pins}, io, {...r.allow, pins: {}}), 0, io.err);
   const add = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, add, r.allow), 0, add.err);
@@ -158,8 +158,11 @@ test('add-pack refuses pins whose runtime is not the installed one', async () =>
   const other = release();
   const pins = path.join(tmp('ch-pins-'), 'pins.json');
   const runtimePins = {...other.pins, countinghouse: {...other.pins.countinghouse, version: '9.0.0'}};
-  fs.writeFileSync(pins, JSON.stringify({pins: runtimePins, runtimeLockfile: other.lockfile}));
-  const io = s.io();
+  // A consistent pins file for a newer runtime: its lockfile resolves countinghouse 9.0.0 too.
+  const lockfile = JSON.parse(JSON.stringify(other.lockfile));
+  lockfile.packages['node_modules/countinghouse'] = {version: '9.0.0', resolved: 'file:tarballs/countinghouse-9.0.0.tgz'};
+  fs.writeFileSync(pins, JSON.stringify({pins: runtimePins, runtimeLockfile: lockfile}));
+  const io = s.io({CH_LOCAL_DEV: '1'});
   assert.strictEqual(await addPack({pack: 'other', from: other.from, unreleasedPins: pins}, io, other.allow), 1);
   assert.match(io.err, /pins countinghouse 9\.0\.0, but the installed runtime is 8\.0\.0/);
   assert.ok(!fs.existsSync(pkgDir(s.home, '@countinghouse/ch-pack-other')));
@@ -195,4 +198,83 @@ test('a home made by an earlier development launcher (installed.json only) is to
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
   assert.strictEqual(await status({}, io), 1);
   assert.match(io.out + io.err, /made by an earlier development ch-local; run `ch-local install --pack ci-failure-triage --from <dir>` again/);
+});
+
+// The reviewer's high review of #5.
+test('install, add-pack and remove-pack hold the home\'s lock: a live holder stops them, a dead one is cleared', async () => {
+  const s = await installed();
+  const lock = path.join(s.home, 'packs.lock');
+  fs.writeFileSync(lock, JSON.stringify({pid: process.pid, host: require('../lib/lock').lockHost(), at: new Date().toISOString()}));
+  const io = s.io();
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, io, s.r.allow), 1);
+  assert.match(io.err, new RegExp(`another ch-local \\(pid ${process.pid}\\) is changing this home`));
+  const io2 = s.io();
+  assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, io2), 1);
+  assert.match(io2.err, /is changing this home/);
+  const io3 = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: s.r.from}, io3, s.r.allow), 1);
+  assert.match(io3.err, /is changing this home/);
+  fs.writeFileSync(lock, JSON.stringify({pid: 2147483646, host: require('../lib/lock').lockHost(), at: new Date().toISOString()}));
+  const io4 = s.io();
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, io4, s.r.allow), 0, io4.err);
+  assert.ok(!fs.existsSync(lock), 'released after');
+});
+
+test('a record whose pack entries are malformed is refused once, by readRecord, and status answers rather than throws', async () => {
+  for (const body of ['{}', JSON.stringify({runtime: {versions: {}}, packs: {x: {}}}), JSON.stringify({runtime: {versions: {}}, packs: {x: {packages: {a: 1}, credentials: []}}}),
+    JSON.stringify({runtime: {versions: {}}, packs: {x: {packages: {}, credentials: 'GITHUB_TOKEN'}}})]) {
+    const home = tmp('ch-home-');
+    fs.writeFileSync(path.join(home, 'packs.json'), body);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
+    assert.strictEqual(await status({}, io), 1, body);
+    assert.match(io.err, /is not a ch-local record/, body);
+  }
+});
+
+// /code-review medium on the #5 high-review round.
+test('a stale lock is cleared by one ch-local only: a second one that saw the same dead holder does not remove the first one\'s new lock', async () => {
+  const {withLock} = require('../lib/lock');
+  const home = tmp('ch-home-');
+  const where = {home};
+  const lock = path.join(home, 'packs.lock');
+  const {lockHost} = require('../lib/lock');
+  fs.writeFileSync(lock, JSON.stringify({pid: 2147483646, host: lockHost(), at: new Date().toISOString()}));
+  const io = fakeIo({env: {}});
+  let inner = null;
+  // While the first holds the lock it took over, a second arrives that read the dead holder earlier.
+  const stale = fs.readFileSync(lock, 'utf8');
+  const first = await withLock(where, io, async () => {
+    const io2 = fakeIo({env: {}});
+    // The second one's first read of the lock is from before the first took it over.
+    const real = fs.readFileSync;
+    let once = true;
+    fs.readFileSync = (p, ...rest) => { if (once && String(p) === lock) { once = false; return stale; } return real(p, ...rest); };
+    try {
+      inner = await withLock(where, io2, async () => 0);
+    } finally {
+      fs.readFileSync = real;
+    }
+    assert.match(io2.err, /is changing this home/);
+    assert.ok(fs.existsSync(lock), 'the first one\'s lock is still there');
+    return 0;
+  });
+  assert.strictEqual(first, 0);
+  assert.strictEqual(inner, 1);
+  assert.ok(!fs.existsSync(lock));
+});
+
+test('the lock never creates the home: add-pack and remove-pack on a home that does not exist leave it absent', async () => {
+  const home = path.join(tmp('ch-parent-'), 'missing');
+  const r = release();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
+  assert.strictEqual(await removePack({pack: 'x'}, io), 1);
+  assert.strictEqual(await addPack({pack: 'other', from: r.from}, io, r.allow), 1);
+  assert.ok(!fs.existsSync(home));
+});
+
+test('a holder in another PID namespace on the same host name is not taken for dead', () => {
+  const {lockHost} = require('../lib/lock');
+  const tag = lockHost();
+  assert.ok(tag.startsWith(require('node:os').hostname()));
+  if (process.platform === 'linux') assert.match(tag, /#pid:\[\d+\]$/, 'the PID namespace is part of the host on Linux');
 });

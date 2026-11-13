@@ -38,7 +38,10 @@ function release({versions = {}, extra = {}} = {}) {
     fs.writeFileSync(path.join(from, tarballName(name, version)), bytes);
     pins[name] = {version, integrity: integrityOf(bytes)};
   }
-  const lockfile = {name: 'countinghouse-home-app', lockfileVersion: 3, requires: true, packages: {'': {}, 'node_modules/left-pad': {version: '1.3.0', integrity: 'sha512-pinned'}}};
+  // The shape npm writes: the runtime from its tarballs, a dependency from the registry.
+  const lockfile = {name: 'countinghouse-home-app', lockfileVersion: 3, requires: true, packages: {'': {},
+    ...Object.fromEntries(RUNTIME.map(([n, v]) => [`node_modules/${n}`, {version: v, resolved: `file:tarballs/${tarballName(n, v)}`}])),
+    'node_modules/left-pad': {version: '1.3.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz', integrity: pins.countinghouse.integrity}}};
   const allow = {
     runtime: {packages: RUNTIME.map(([n]) => n), lockfile},
     packs: {

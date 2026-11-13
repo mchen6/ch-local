@@ -215,7 +215,7 @@ const pinsFile = (r, body) => { const f = path.join(tmp('ch-pins-'), 'pins.json'
 test('--unreleased-pins installs with its pins and lockfile, records the home as unreleased and says so', async () => {
   const r = release(); const h = home();
   const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
-  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
   const f = pinsFile(r, {pins: r.pins, runtimeLockfile: r.lockfile});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
   assert.strictEqual(record(h).unreleased, true);
@@ -227,9 +227,103 @@ test('--unreleased-pins refuses a file that is not {pins, runtimeLockfile} with 
   const r = release();
   for (const body of ['not json', {pins: r.pins}, {pins: {x: {version: '1.0.0', integrity: 'md5-abc'}}, runtimeLockfile: r.lockfile}, {pins: [], runtimeLockfile: r.lockfile}, {pins: r.pins, runtimeLockfile: {}}]) {
     const h = home();
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pinsFile(r, body)}, io, r.allow), 2, JSON.stringify(body).slice(0, 60));
     assert.match(io.err, /--unreleased-pins/);
     assert.deepStrictEqual(io.execs, []);
   }
+});
+
+// The reviewer's high review of #5.
+test('each tarball is read once: the bytes checked are the bytes installed', async () => {
+  const r = release(); const h = home();
+  const real = fs.readFileSync;
+  const reads = {};
+  fs.readFileSync = (p, ...rest) => { if (String(p).endsWith('.tgz')) reads[path.basename(String(p))] = (reads[path.basename(String(p))] || 0) + 1; return real(p, ...rest); };
+  const copies = [];
+  const realCopy = fs.copyFileSync;
+  fs.copyFileSync = (a, b, ...rest) => { if (String(a).endsWith('.tgz')) copies.push(String(a)); return realCopy(a, b, ...rest); };
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await run(r, io), 0, io.err);
+  } finally {
+    fs.readFileSync = real;
+    fs.copyFileSync = realCopy;
+  }
+  assert.deepStrictEqual(copies, [], 'the runtime tarballs are written from the checked bytes, not copied from the directory again');
+  for (const [file, n] of Object.entries(reads)) assert.strictEqual(n, 1, `${file} read ${n} times`);
+  assert.strictEqual(Object.keys(reads).length, 5, 'the runtime\'s two and the pack\'s three');
+});
+
+test('--unreleased-pins needs CH_LOCAL_DEV=1', async () => {
+  const r = release(); const h = home();
+  const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  const f = pinsFile(r, {pins: r.pins, runtimeLockfile: r.lockfile});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 2);
+  assert.match(io.err, /--unreleased-pins is for development: set CH_LOCAL_DEV=1/);
+  assert.deepStrictEqual(io.execs, []);
+});
+
+test('--unreleased-pins refuses a lockfile whose runtime packages do not resolve to their tarballs, or whose dependencies are not integrity-pinned registry tarballs', async () => {
+  const r = release();
+  const lock = (entries) => ({name: 'countinghouse-home-app', lockfileVersion: 3, requires: true, packages: {'': {}, ...entries}});
+  const good = {'node_modules/@countinghouse/ch-local': {version: '0.2.0', resolved: 'file:tarballs/countinghouse-ch-local-0.2.0.tgz'},
+    'node_modules/countinghouse': {version: '8.0.0', resolved: 'file:tarballs/countinghouse-8.0.0.tgz'},
+    'node_modules/left-pad': {version: '1.3.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz', integrity: r.pins.countinghouse.integrity}};
+  for (const [why, entries] of [
+    ['a runtime package from a URL', {...good, 'node_modules/countinghouse': {version: '8.0.0', resolved: 'https://evil.example/countinghouse-8.0.0.tgz', integrity: r.pins.countinghouse.integrity}}],
+    ['a runtime package from another file', {...good, 'node_modules/countinghouse': {version: '8.0.0', resolved: 'file:../../elsewhere/countinghouse-8.0.0.tgz'}}],
+    ['a dependency from a git URL', {...good, 'node_modules/left-pad': {version: '1.3.0', resolved: 'git+https://github.com/x/left-pad.git#abc'}}],
+    ['a dependency from a file outside', {...good, 'node_modules/left-pad': {version: '1.3.0', resolved: 'file:/tmp/left-pad.tgz', integrity: r.pins.countinghouse.integrity}}],
+    ['a dependency without integrity', {...good, 'node_modules/left-pad': {version: '1.3.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz'}}]
+  ]) {
+    const h = home();
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+    const f = pinsFile(r, {pins: r.pins, runtimeLockfile: lock(entries)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, {...r.allow, pins: {}}), 2, why);
+    assert.match(io.err, /--unreleased-pins .*runtimeLockfile/, why);
+    assert.deepStrictEqual(io.execs, [], why);
+  }
+  const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pinsFile(r, {pins: r.pins, runtimeLockfile: lock(good)})}, io, {...r.allow, pins: {}}), 0, io.err);
+});
+
+// /code-review medium on the #5 high-review round.
+test('--unreleased-pins takes only a v3 lockfile: no legacy dependencies tree to get around the check', async () => {
+  const r = release();
+  for (const lockfile of [{...r.lockfile, lockfileVersion: 1}, {...r.lockfile, lockfileVersion: 2}, {...r.lockfile, dependencies: {evil: {version: '1.0.0', resolved: 'git+https://attacker.example/x.git#abc'}}}]) {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: home(), CH_LOCAL_DEV: '1'}, exec: npm()});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pinsFile(r, {pins: r.pins, runtimeLockfile: lockfile})}, io, {...r.allow, pins: {}}), 2);
+    assert.match(io.err, /runtimeLockfile must be an npm v3 lockfile/);
+  }
+});
+
+test('--unreleased-pins: a runtime package\'s lockfile version and integrity must be its pin\'s; a bundled dependency needs no URL; a link is refused', async () => {
+  const r = release();
+  const ch = 'node_modules/countinghouse';
+  const cases = [
+    [{[ch]: {...r.lockfile.packages[ch], version: '9.9.9'}}, 2, /version 9\.9\.9/],
+    [{[ch]: {...r.lockfile.packages[ch], integrity: r.pins['@countinghouse/ch-local'].integrity}}, 2, /integrity/],
+    [{'node_modules/left-pad/node_modules/inner': {version: '1.0.0', inBundle: true}}, 0, null],
+    [{'node_modules/linked': {resolved: '../elsewhere', link: true}}, 2, /linked/]
+  ];
+  for (const [entries, code, why] of cases) {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: home(), CH_LOCAL_DEV: '1'}, exec: npm()});
+    const lockfile = {...r.lockfile, packages: {...r.lockfile.packages, ...entries}};
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pinsFile(r, {pins: r.pins, runtimeLockfile: lockfile})}, io, {...r.allow, pins: {}}), code, JSON.stringify(entries));
+    if (why) assert.match(io.err, why);
+  }
+});
+
+test('a tarball that cannot be read is a problem named like the others, not a crash', async () => {
+  const r = release(); const h = home();
+  const file = path.join(r.from, 'countinghouse-ch-step-redact-0.1.0.tgz');
+  fs.rmSync(file);
+  fs.mkdirSync(file);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 1);
+  assert.match(io.err, /@countinghouse\/ch-step-redact@0\.1\.0: cannot read countinghouse-ch-step-redact-0\.1\.0\.tgz \(EISDIR\)/);
+  assert.match(io.err, /nothing was installed/);
 });

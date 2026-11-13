@@ -131,3 +131,43 @@ test('directories that differ only by case or Unicode form are refused, as files
 test('every character Windows refuses in a name is refused', () => {
   for (const c of ['<', '>', '"', '|', '?', '*', '\u0001', '\u001f']) refuses(tgz(member(`package/a${c}b.js`, {data: 'x'})), /./);
 });
+
+// The reviewer's high review of #5.
+test('duplicates fold fully: long s and dotless i collide with s and i', () => {
+  refuses(tgz(member('package/s.js', {data: 'a'}), member('package/ſ.js', {data: 'b'})), /twice/);
+  refuses(tgz(member('package/i.js', {data: 'a'}), member('package/ı.js', {data: 'b'})), /twice/);
+});
+
+test('every name Windows reserves is refused, superscript digits and console names included', () => {
+  for (const n of ['COM¹', 'com².js', 'LPT³', 'lpt¹.txt', 'CONIN$', 'conout$.log', 'nul', 'Aux.js']) refuses(tgz(member(`package/${n}`, {data: 'x'})), /Windows/);
+});
+
+test('a legitimate pax tarball inside the caps is accepted: the gunzip cap budgets each entry\'s pax header', () => {
+  const members = [];
+  for (let i = 0; i < 40; i++) members.push(pax({path: `package/lib/${'d'.repeat(180)}/${i}.js`}), member(`package/x${i}`, {data: 'y'}));
+  const dest = path.join(tmp('ch-tar-'), 'pkg');
+  extractPackage(tgz(...members), dest, {maxBytes: 4096, maxEntries: 40});
+  assert.strictEqual(fs.readdirSync(path.join(dest, 'lib', 'd'.repeat(180))).length, 40);
+});
+
+test('a pax header over 4 KiB is refused', () => {
+  refuses(tgz(pax({path: `package/${'p'.repeat(5000)}`}), member('package/a', {data: 'a'})), /pax header over/);
+});
+
+test('bundled dependencies are refused: no node_modules segment anywhere', () => {
+  refuses(tgz(member('package/node_modules/left-pad/index.js', {data: 'x'})), /node_modules/);
+  refuses(tgz(member('package/lib/Node_Modules/x.js', {data: 'x'})), /node_modules/);
+});
+
+test('only POSIX ustar headers: GNU magic or another version is refused', () => {
+  const gnu = member('package/a', {data: 'a'});
+  gnu.write('ustar  \0', 257);
+  let sum = 0; for (let i = 0; i < 512; i++) sum += (i >= 148 && i < 156) ? 0x20 : gnu[i];
+  gnu.write(sum.toString(8).padStart(6, '0') + '\0 ', 148);
+  refuses(zlib.gzipSync(Buffer.concat([gnu, Buffer.alloc(1024)])), /ustar/);
+});
+
+test('a pax header that repeats a key is refused', () => {
+  const twice = member('PaxHeader/x', {type: 'x', data: '21 path=package/a.js\n21 path=package/b.js\n'});
+  refuses(tgz(twice, member('package/x', {data: 'x'})), /repeats/);
+});

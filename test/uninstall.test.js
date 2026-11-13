@@ -114,3 +114,25 @@ test('a home whose packs were all removed still names the release\'s credentials
     s.done();
   }
 });
+
+test('uninstall removes a leftover packs.lock with the program, and waits for no one: a live holder stops it', async () => {
+  const s = setup();
+  try {
+    fs.writeFileSync(path.join(s.home, 'packs.lock'), JSON.stringify({pid: 2147483646, host: require('../lib/lock').lockHost(), at: 'x'}));
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    assert.ok(!fs.existsSync(s.home), 'nothing left, the stale lock included');
+  } finally {
+    s.done();
+  }
+  const t = setup();
+  try {
+    fs.writeFileSync(path.join(t.home, 'packs.lock'), JSON.stringify({pid: process.pid, host: require('../lib/lock').lockHost(), at: 'x'}));
+    const u = io(t, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, /is changing this home/);
+    assert.ok(fs.existsSync(path.join(t.home, 'app')));
+  } finally {
+    t.done();
+  }
+});

@@ -72,7 +72,7 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
     const from = path.join(work, 'release');
     const home = path.join(work, 'home');
     fs.mkdirSync(from);
-    const io = realIo({...process.env, COUNTINGHOUSE_HOME: home});
+    const io = realIo({...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'});
     let child = null;
     try {
       // The release directory: this launcher, the runtime, and the fixture pack.
