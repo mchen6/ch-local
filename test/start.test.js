@@ -363,3 +363,35 @@ test('the CLI takes add-pack, remove-pack, status and install --unreleased-pins'
   assert.strictEqual(r.code, 2); assert.match(r.f.err, /--unreleased-pins is for development: set CH_LOCAL_DEV=1/);
   for (const bad of [['add-pack'], ['remove-pack'], ['status', 'x'], ['add-pack', 'a', 'b']]) assert.strictEqual((await run(bad)).code, 2, bad.join(' '));
 });
+
+// Acceptance (reviewer, 2026-11-12): start passes --remoteOriginMap only under
+// CH_LOCAL_DEV=1, from CH_LOCAL_REMOTE_MAP, never from a client's options. The
+// runtime's own gate, COUNTINGHOUSE_ACCEPTANCE=1, is the caller's to set:
+// start passes the environment through and never sets it.
+test('CH_LOCAL_REMOTE_MAP under CH_LOCAL_DEV=1 becomes --remoteOriginMap: an allowed origin to a loopback http target', async () => {
+  const f = io(installedHome(), {env: {GITHUB_TOKEN: 'a', CH_LOCAL_DEV: '1', CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://127.0.0.1:9745'}});
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const args = f.spawned[0].args;
+  assert.strictEqual(valueOf(args, '--remoteOriginMap'), 'https://api.githubcopilot.com=http://127.0.0.1:9745');
+  assert.match(f.err, /acceptance: https:\/\/api\.githubcopilot\.com is sent to http:\/\/127\.0\.0\.1:9745/);
+  assert.strictEqual(f.spawned[0].env.COUNTINGHOUSE_ACCEPTANCE, undefined, 'start never sets the runtime\'s own gate');
+  const g = io(installedHome(), {env: {GITHUB_TOKEN: 'a'}});
+  await start({passThrough: []}, g);
+  assert.ok(!g.spawned[0].args.includes('--remoteOriginMap'), 'nothing without it');
+});
+
+test('CH_LOCAL_REMOTE_MAP is refused without CH_LOCAL_DEV=1, for an origin the launcher does not allow, or a target that is not loopback http', async () => {
+  for (const [env, why] of [
+    [{CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://127.0.0.1:9'}, /CH_LOCAL_REMOTE_MAP needs CH_LOCAL_DEV=1/],
+    [{CH_LOCAL_DEV: '1', CH_LOCAL_REMOTE_MAP: 'https://collector.example=http://127.0.0.1:9'}, /not an origin this launcher allows/],
+    [{CH_LOCAL_DEV: '1', CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://10.0.0.1:9'}, /http:\/\/127\.0\.0\.1:<port> or http:\/\/\[::1\]:<port>/],
+    [{CH_LOCAL_DEV: '1', CH_LOCAL_REMOTE_MAP: 'nonsense'}, /CH_LOCAL_REMOTE_MAP/]
+  ]) {
+    const f = io(installedHome(), {env: {GITHUB_TOKEN: 'a', ...env}});
+    assert.strictEqual(await start({passThrough: []}, f), 2, JSON.stringify(env));
+    assert.match(f.err, why);
+    assert.strictEqual(f.spawned.length, 0);
+  }
+  const p = io(installedHome(), {env: {GITHUB_TOKEN: 'a', CH_LOCAL_DEV: '1'}});
+  assert.strictEqual(await start({passThrough: ['--remoteOriginMap', 'https://api.githubcopilot.com=http://127.0.0.1:9']}, p), 2, 'never from a client\'s options');
+});

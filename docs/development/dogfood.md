@@ -24,7 +24,8 @@ configuration: you run the printed commands yourself.
 
 ## Run it
 
-From a ch-local checkout, with Node 24:
+From a ch-local checkout, with Node 24, in bash (on Windows, Git Bash or WSL:
+the printed commands are bash's, and PowerShell has no `read -rs`):
 
     node scripts/dogfood.js
 

@@ -129,7 +129,9 @@ function realIo() {
     homedir: os.homedir,
     ask: (question) => new Promise((resolve) => {
       const rl = require('readline').createInterface({input: process.stdin, output: process.stderr});
-      rl.question(question, (answer) => { rl.close(); resolve(answer); });
+      // Resolved before close(): close() fires the 'close' listener at once,
+      // which would answer '' first (test/cli.test.js).
+      rl.question(question, (answer) => { resolve(answer); rl.close(); });
       rl.on('close', () => resolve(''));
     }),
     exec: (cmd, args, {cwd}) => new Promise((resolve) => {

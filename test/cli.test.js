@@ -80,3 +80,19 @@ test('an unknown client or command exits 2 with usage', () => {
     assert.match(r.stderr, /usage: ch-local snippet <claude-code\|cursor\|vscode\|codex\|claude-desktop>/);
   }
 });
+
+// The real io's question (bin/ch-local.js realIo.ask): the answer is resolved
+// before readline closes, since close() fires the 'close' listener at once.
+// Every yes/no answer was read as empty, on a terminal and over a pipe alike.
+test('a yes answered on stdin reaches the command: uninstall over a pipe removes the home', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-ask-'));
+  fs.mkdirSync(path.join(home, 'bin'));
+  fs.writeFileSync(path.join(home, 'settings.json'), '{}');
+  const r = spawnSync(process.execPath, [BIN, 'uninstall'], {encoding: 'utf8', input: 'yes\n', env: {...process.env, COUNTINGHOUSE_HOME: home}});
+  try {
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    assert.ok(!fs.existsSync(home), 'removed on yes');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
