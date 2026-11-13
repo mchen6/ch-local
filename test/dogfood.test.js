@@ -17,7 +17,11 @@ test('requiring the script runs nothing', () => {
   assert.strictEqual(typeof dogfood.instructions, 'function');
 });
 
-test('the instructions: read the token without echo, the claude mcp add line, claude --resume; never a token value', () => {
+// The printed commands are for bash (dogfood is a developer path; reviewer,
+// 2026-11-12): PowerShell has no `read -rs`, and Windows paths are another form.
+const BASH_ONLY = process.platform === 'win32' && 'the printed commands are for bash (Git Bash or WSL on Windows)';
+
+test('the instructions: read the token without echo, the claude mcp add line, claude --resume; never a token value', {skip: BASH_ONLY}, () => {
   const before = process.env.COUNTINGHOUSE_GITHUB_TOKEN;
   process.env.COUNTINGHOUSE_GITHUB_TOKEN = 'ghp_secret_value_123';
   try {
@@ -33,7 +37,7 @@ test('the instructions: read the token without echo, the claude mcp add line, cl
   }
 });
 
-test('another home is carried into the line, status and uninstall, quoted when it has spaces', () => {
+test('another home is carried into the line, status and uninstall, quoted when it has spaces', {skip: BASH_ONLY}, () => {
   const text = dogfood.instructions({node: '/opt/my node/bin/node', home: '/home/me/my home', defaultHome: '/home/me/.countinghouse'});
   assert.ok(text.includes(`-e "COUNTINGHOUSE_HOME=/home/me/my home" -- '/opt/my node/bin/node' '/home/me/my home/bin/ch-local.js' start --stdio`), text);
   assert.ok(text.includes(`COUNTINGHOUSE_HOME='/home/me/my home' '/opt/my node/bin/node' '/home/me/my home/bin/ch-local.js' status`), text);
@@ -41,8 +45,8 @@ test('another home is carried into the line, status and uninstall, quoted when i
 });
 
 test('the home: --home, else COUNTINGHOUSE_HOME as every ch-local command reads it, else ~/.countinghouse', () => {
-  assert.strictEqual(dogfood.homeFor({home: '/h'}, {COUNTINGHOUSE_HOME: '/e'}), '/h');
-  assert.strictEqual(dogfood.homeFor({home: null}, {COUNTINGHOUSE_HOME: '/e'}), '/e');
+  assert.strictEqual(dogfood.homeFor({home: '/h'}, {COUNTINGHOUSE_HOME: '/e'}), path.resolve('/h'));
+  assert.strictEqual(dogfood.homeFor({home: null}, {COUNTINGHOUSE_HOME: '/e'}), path.resolve('/e'));
   assert.strictEqual(dogfood.homeFor({home: null}, {}), path.join(os.homedir(), '.countinghouse'));
 });
 
@@ -85,7 +89,7 @@ test('a missing explicit clone is named before anything is built or installed', 
 });
 
 const SRC = process.env.CH_DOGFOOD_SRC;
-test('the whole path into a temporary home', {timeout: 900000, skip: SRC == null && 'CH_DOGFOOD_SRC is not set (a directory of clones; CH_DOGFOOD_CLONES and CH_DOGFOOD_REFS may add repo=path and repo=ref pairs)'}, async () => {
+test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY || (SRC == null && 'CH_DOGFOOD_SRC is not set (a directory of clones; CH_DOGFOOD_CLONES and CH_DOGFOOD_REFS may add repo=path and repo=ref pairs)')}, async () => {
   const parent = tmp('ch-dogfood-');
   const home = path.join(parent, 'home');
   const works = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('ch-dogfood-work-')).length;

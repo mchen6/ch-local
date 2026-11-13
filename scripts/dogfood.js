@@ -74,6 +74,7 @@ function instructions({node, home, defaultHome = DEFAULT_HOME()}) {
   const homeFlag = other ? ` -e "COUNTINGHOUSE_HOME=${home}"` : '';
   const homeEnv = other ? `COUNTINGHOUSE_HOME=${word(home)} ` : '';
   return [
+    ...(process.platform === 'win32' ? ['These commands are for bash: run them in Git Bash or WSL (PowerShell has no `read -rs`).', ''] : []),
     'Paste your token when asked (it is not shown, and not kept in your shell history). Use a',
     'fine-grained token that can only read the repositories you want triaged:',
     '',
