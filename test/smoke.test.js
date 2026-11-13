@@ -20,8 +20,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
-const {install, appManifest, tarballName} = require('../lib/install');
-const {npm} = require('../lib/npm');
+const {install, tarballName} = require('../lib/install');
+const {packInto, runtimeLockfile} = require('../lib/release');
 
 const ROOT = path.join(__dirname, '..');
 const FIXTURES = path.join(__dirname, 'fixtures', 'smoke');
@@ -78,10 +78,8 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       // The release directory: this launcher, the runtime, and the fixture pack.
       const pins = {};
       for (const dir of [ROOT, path.join(FIXTURES, 'ch-pack-smoke'), path.join(FIXTURES, 'ch-step-smoke')]) {
-        const packed = await npm(io, ['pack', '--json', '--pack-destination', from], dir);
-        assert.strictEqual(packed.status, 0, packed.stderr);
-        const {name, version, filename} = JSON.parse(packed.stdout)[0];
-        pins[name] = {version, integrity: integrityOf(path.join(from, filename))};
+        const {name, version, integrity} = await packInto(io, dir, from);
+        pins[name] = {version, integrity};
       }
       const m = /^countinghouse-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.tgz$/.exec(path.basename(RUNTIME));
       assert.ok(m != null, `CH_SMOKE_RUNTIME_TGZ must be npm pack's countinghouse-<version>.tgz, not ${path.basename(RUNTIME)}`);
@@ -90,14 +88,8 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
 
       // What a release does: the runtime's lockfile, from the manifest install writes.
       const runtime = {packages: ['@countinghouse/ch-local', 'countinghouse'], lockfile: null};
-      const lockDir = path.join(work, 'lock');
-      fs.mkdirSync(path.join(lockDir, 'tarballs'), {recursive: true});
-      for (const name of runtime.packages) fs.copyFileSync(path.join(from, tarballName(name, pins[name].version)), path.join(lockDir, 'tarballs', tarballName(name, pins[name].version)));
-      fs.writeFileSync(path.join(lockDir, 'package.json'), JSON.stringify(appManifest(runtime, pins)));
-      const locked = await npm(io, ['install', '--package-lock-only', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], lockDir);
-      assert.strictEqual(locked.status, 0, locked.stderr);
       const pinsFile = path.join(work, 'pins.json');
-      fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: JSON.parse(fs.readFileSync(path.join(lockDir, 'package-lock.json'), 'utf8'))}));
+      fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: await runtimeLockfile(io, from, runtime, pins, path.join(work, 'lock'))}));
 
       const allow = {runtime, packs: {smoke: {packages: [SCENARIO, STEP], credentials: []}}, pins: {}};
       assert.strictEqual(await install({pack: 'smoke', from, unreleasedPins: pinsFile}, io, allow), 0, io.err);

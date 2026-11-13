@@ -73,6 +73,10 @@ written from the tarballs you built. The home is recorded as unreleased:
 `status` and every `start` say so on one line, and `upgrade` refuses until a
 clean install from a release. It is for development only.
 
+**Dogfood.** `node scripts/dogfood.js` builds pack 1 from the current mains
+and installs it that way, then prints the line to add it to Claude Code; see
+[docs/development/dogfood.md](docs/development/dogfood.md).
+
 **The smoke test.** `test/smoke.test.js` installs a fixture pack with no
 remotes (`test/fixtures/smoke`) that way and speaks MCP to it through
 `ch-local start --stdio`. It needs a countinghouse tarball
