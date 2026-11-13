@@ -119,6 +119,59 @@ function planSources(args) {
 
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, {encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...opts});
 
+// Packs ch-local (this checkout) and every source in `plan` into
+// <work>/release, writes the pins and the runtime lockfile as a release would
+// -> {release, pinsFile, pins} or {problem}. Shared with scripts/acceptance.js.
+async function buildRelease(plan, work, say) {
+  const {packInto, runtimeLockfile} = require('../lib/release');
+  const {ALLOWLIST} = require('../lib/allowlist');
+  const npmIo = {node: process.execPath, exec: async (cmd, a, {cwd}) => run(cmd, a, {cwd})};
+  const release = path.join(work, 'release');
+  fs.mkdirSync(release);
+  const pins = {};
+  const pack = async (dir) => {
+    const {name, version, integrity} = await packInto(npmIo, dir, release);
+    pins[name] = {version, integrity};
+    return `${name}@${version}`;
+  };
+  say(`ch-local: this checkout (${ROOT}) -> ${await pack(ROOT)}`);
+  for (const p of plan) {
+    const tree = path.join(work, 'src', p.repo);
+    fs.mkdirSync(tree, {recursive: true});
+    if (p.dir != null) {
+      const archive = run('git', ['-C', p.dir, 'archive', '--format=tar', p.ref], {encoding: 'buffer'});
+      if (archive.status !== 0) return {problem: `git archive of ${p.repo} at ${p.ref} failed`};
+      const x = run('tar', ['-x', '-f', '-', '-C', tree], {input: archive.stdout, encoding: 'buffer'});
+      if (x.status !== 0) return {problem: `could not unpack ${p.repo}: ${String(x.stderr)}`};
+    } else {
+      const branch = p.ref.replace(/^origin\//, '');
+      const c = run('git', ['clone', '--quiet', '--depth', '1', '--branch', branch, `https://github.com/${OWNER}/${p.repo}.git`, tree]);
+      if (c.status !== 0) return {problem: `git clone of ${OWNER}/${p.repo} at ${branch} failed: ${c.stderr.trim()}`};
+      p.commit = run('git', ['-C', tree, 'rev-parse', 'HEAD']).stdout.trim();
+      fs.rmSync(path.join(tree, '.git'), {recursive: true, force: true});
+    }
+    say(`${p.repo}: ${p.dir != null ? `${p.dir} ` : 'GitHub '}${p.ref} ${String(p.commit).slice(0, 7)} -> ${await pack(tree)}`);
+  }
+  const missing = [...ALLOWLIST.runtime.packages, ...ALLOWLIST.packs[PACK].packages].filter((n) => pins[n] == null);
+  if (missing.length > 0) return {problem: `the build has no ${missing.join(', ')}`};
+  say('generating the runtime lockfile (npm registry)');
+  const lockfile = await runtimeLockfile(npmIo, release, ALLOWLIST.runtime, pins, path.join(work, 'lock'));
+  const pinsFile = path.join(work, 'pins.json');
+  fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: lockfile}, null, 2));
+  return {release, pinsFile, pins};
+}
+
+// Each local clone's ref, resolved to its commit -> null or a problem.
+function resolveRefs(plan) {
+  for (const p of plan) {
+    if (p.dir == null) continue;
+    const r = run('git', ['-C', p.dir, 'rev-parse', '--verify', `${p.ref}^{commit}`]);
+    if (r.status !== 0) return `no ${p.ref} in ${p.dir}`;
+    p.commit = r.stdout.trim();
+  }
+  return null;
+}
+
 async function main(argv, io = {stdout: process.stdout, stderr: process.stderr}) {
   const say = (s) => io.stdout.write(s + '\n');
   const fail = (s, code = 1) => { io.stderr.write(`dogfood: ${s}\n`); return code; };
@@ -130,52 +183,16 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   const plan = planned.sources;
 
   // Every local clone's ref is checked before anything is built.
-  for (const p of plan) {
-    if (p.dir == null) continue;
-    const r = run('git', ['-C', p.dir, 'rev-parse', '--verify', `${p.ref}^{commit}`]);
-    if (r.status !== 0) return fail(`no ${p.ref} in ${p.dir}`);
-    p.commit = r.stdout.trim();
-  }
+  const refProblem = resolveRefs(plan);
+  if (refProblem != null) return fail(refProblem);
 
   const {install} = require('../lib/install');
-  const {packInto, runtimeLockfile} = require('../lib/release');
   const {ALLOWLIST} = require('../lib/allowlist');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
-  const npmIo = {node: process.execPath, exec: async (cmd, a, {cwd}) => run(cmd, a, {cwd})};
   try {
-    const release = path.join(work, 'release');
-    fs.mkdirSync(release);
-    const pins = {};
-    const pack = async (dir) => {
-      const {name, version, integrity} = await packInto(npmIo, dir, release);
-      pins[name] = {version, integrity};
-      return `${name}@${version}`;
-    };
-    say(`ch-local: this checkout (${ROOT}) -> ${await pack(ROOT)}`);
-    for (const p of plan) {
-      const tree = path.join(work, 'src', p.repo);
-      fs.mkdirSync(tree, {recursive: true});
-      if (p.dir != null) {
-        const archive = run('git', ['-C', p.dir, 'archive', '--format=tar', p.ref], {encoding: 'buffer'});
-        if (archive.status !== 0) return fail(`git archive of ${p.repo} at ${p.ref} failed`);
-        const x = run('tar', ['-x', '-f', '-', '-C', tree], {input: archive.stdout, encoding: 'buffer'});
-        if (x.status !== 0) return fail(`could not unpack ${p.repo}: ${String(x.stderr)}`);
-      } else {
-        const branch = p.ref.replace(/^origin\//, '');
-        const c = run('git', ['clone', '--quiet', '--depth', '1', '--branch', branch, `https://github.com/${OWNER}/${p.repo}.git`, tree]);
-        if (c.status !== 0) return fail(`git clone of ${OWNER}/${p.repo} at ${branch} failed: ${c.stderr.trim()}`);
-        p.commit = run('git', ['-C', tree, 'rev-parse', 'HEAD']).stdout.trim();
-        fs.rmSync(path.join(tree, '.git'), {recursive: true, force: true});
-      }
-      say(`${p.repo}: ${p.dir != null ? `${p.dir} ` : 'GitHub '}${p.ref} ${String(p.commit).slice(0, 7)} -> ${await pack(tree)}`);
-    }
-    const missing = [...ALLOWLIST.runtime.packages, ...ALLOWLIST.packs[PACK].packages].filter((n) => pins[n] == null);
-    if (missing.length > 0) return fail(`the build has no ${missing.join(', ')}`);
-
-    say('generating the runtime lockfile (npm registry)');
-    const lockfile = await runtimeLockfile(npmIo, release, ALLOWLIST.runtime, pins, path.join(work, 'lock'));
-    const pinsFile = path.join(work, 'pins.json');
-    fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: lockfile}, null, 2));
+    const built = await buildRelease(plan, work, say);
+    if (built.problem != null) return fail(built.problem);
+    const {release, pinsFile} = built;
 
     // Without this shell's token variables: the client gets its token from the
     // line printed below, and install is not to look at this one's.
@@ -205,4 +222,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, parseArgs, sources, planSources, homeFor};
+module.exports = {main, instructions, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};

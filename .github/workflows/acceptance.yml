@@ -1,0 +1,60 @@
+name: acceptance
+
+# Pack 1 end to end, as a user gets it (plan Task 13; reviewer, 2026-11-12):
+# scripts/acceptance.js builds countinghouse master and every pack package
+# from their mains (cloned here from GitHub), installs into a clean home,
+# starts it with the sandbox enforced, and calls ci_failure_triage against a
+# recorded GitHub stand-in: no token of anyone's, and no call to GitHub's API.
+# It needs countinghouse's --remoteOriginMap (acceptance only, gated by
+# COUNTINGHOUSE_ACCEPTANCE=1); before that is on countinghouse master the run
+# stops at its preflight, starting nothing.
+# Windows legs report without gating, until countinghouse issue #40 closes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: acceptance-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      # The job holds no token (none is put in its environment): the stand-in
+      # takes only the run's own, generated per run.
+      - name: Acceptance run
+        shell: bash
+        run: |
+          src="$RUNNER_TEMP/acceptance-src"
+          mkdir -p "$src"
+          export CH_ACCEPTANCE_SRC="$src" CH_ACCEPTANCE_REPORT="$RUNNER_TEMP/acceptance-report.json"
+          node --test --test-reporter=spec test/acceptance.test.js 2>&1 | tee acceptance.log
+          # Never green by skipping: every case, the whole run included, passed.
+          grep -q '^ℹ skipped 0$' acceptance.log && grep -q '^ℹ fail 0$' acceptance.log || { echo 'the acceptance run did not pass (skipped or failed)'; exit 1; }
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-report-${{ matrix.os }}
+          path: ${{ runner.temp }}/acceptance-report.json
+          if-no-files-found: ignore
