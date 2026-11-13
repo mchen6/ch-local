@@ -11,6 +11,7 @@
 //   ch-local add-pack <name> --from <dir>         another pack beside the installed ones
 //   ch-local remove-pack <name>                   a pack, and the parts no other pack calls
 //   ch-local status                               the installed packs, their tools and missing credentials
+//   ch-local rollback [--yes]                     back to the release the last install replaced
 //
 // The Node floor is checked before anything else is loaded, with plain
 // require names, so a Node far below it still gets a plain answer.
@@ -23,6 +24,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local add-pack <name> --from <directory of tarballs>
        ch-local remove-pack <name>
        ch-local status
+       ch-local rollback [--yes]
        ch-local add <cursor|vscode|codex>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
@@ -88,6 +90,11 @@ async function main(argv, io) {
       if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
       return await require('../lib/packs-command').removePack({pack: rest[0]}, io);
     }
+    if (command === 'rollback') {
+      const a = parse(rest, {flags: ['--yes']});
+      if (a == null || a.positional.length > 0) return usage();
+      return await require('../lib/rollback').rollback({yes: a.flags['--yes'] === true}, io);
+    }
     if (command === 'status') {
       if (rest.length !== 0) return usage();
       return await require('../lib/packs-command').status({}, io);
@@ -129,7 +136,9 @@ function realIo() {
     homedir: os.homedir,
     ask: (question) => new Promise((resolve) => {
       const rl = require('readline').createInterface({input: process.stdin, output: process.stderr});
-      rl.question(question, (answer) => { rl.close(); resolve(answer); });
+      // Resolved before close(): close() fires the 'close' listener at once,
+      // which would answer '' first (test/cli.test.js).
+      rl.question(question, (answer) => { resolve(answer); rl.close(); });
       rl.on('close', () => resolve(''));
     }),
     exec: (cmd, args, {cwd}) => new Promise((resolve) => {
@@ -143,6 +152,8 @@ function realIo() {
     }),
     fetch: (url, options) => globalThis.fetch(url, options),
     pid: process.pid,
+    // A terminal to ask on: rollback over a security fix asks, or needs --yes.
+    interactive: Boolean(process.stdin.isTTY),
     // Read when used: a directory removed under a shell makes process.cwd()
     // throw, and only start needs it (null: git runs wherever it is).
     get cwd() { try { return process.cwd(); } catch (err) { return null; } },
