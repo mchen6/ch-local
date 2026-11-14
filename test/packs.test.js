@@ -31,16 +31,25 @@ test('ALLOWED_ORIGINS pins each token destination and the variables it may recei
   assert.ok(Object.isFrozen(ALLOWED_ORIGINS) && Object.values(ALLOWED_ORIGINS).every(Object.isFrozen));
 });
 
-test('installedPacks reads packs.json: every pack, its scenario (its first package), packages and credentials', () => {
+test('installedPacks reads packs.json: every pack, its scenario (its first package), version, where its packages are, packages and credentials', () => {
   const home = tmp('ch-local-home-');
-  const where = {packs: path.join(home, 'packs.json')};
+  const where = {packs: path.join(home, 'packs.json'), app: path.join(home, 'app'), packsDir: path.join(home, 'packs')};
+  // ci-failure-triage in its own tree (packs in place); other in the flat app of an earlier home
+  const {packKey} = require('../lib/pack-dir');
+  const key = packKey({'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0'});
+  fs.mkdirSync(path.join(home, 'packs', 'ci-failure-triage', key, 'node_modules'), {recursive: true});
   assert.deepStrictEqual(installedPacks(where), []);
   fs.writeFileSync(where.packs, JSON.stringify({runtime: {versions: {}}, packs: {
     'ci-failure-triage': {packages: {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0'}, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
     other: {packages: {'@countinghouse/ch-pack-other': '0.3.0'}, credentials: []}}}));
+  const tree = path.join(home, 'packs', 'ci-failure-triage', key);
   assert.deepStrictEqual(installedPacks(where), [
-    {name: 'ci-failure-triage', scenario: '@countinghouse/ch-pack-ci-failure-triage', packages: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
-    {name: 'other', scenario: '@countinghouse/ch-pack-other', packages: ['@countinghouse/ch-pack-other'], credentials: []}]);
+    {name: 'ci-failure-triage', scenario: '@countinghouse/ch-pack-ci-failure-triage', version: '0.1.0', base: tree,
+      dir: path.join(tree, 'node_modules', '@countinghouse', 'ch-pack-ci-failure-triage'),
+      packages: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
+    {name: 'other', scenario: '@countinghouse/ch-pack-other', version: '0.3.0', base: where.app,
+      dir: path.join(where.app, 'node_modules', '@countinghouse', 'ch-pack-other'),
+      packages: ['@countinghouse/ch-pack-other'], credentials: []}]);
   fs.writeFileSync(where.packs, '{"not": "a record"}');
   assert.throws(() => installedPacks(where), /not a ch-local record/);
 });

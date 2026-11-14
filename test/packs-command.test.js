@@ -88,14 +88,30 @@ test('add-pack before any install says to install first; an installed pack is le
   assert.match(again.out, /already installed/);
 });
 
-test('remove-pack keeps a part another pack calls and removes one no pack calls', async () => {
+// A home an earlier ch-local made: every pack's packages in the flat app
+// (packs in place keeps reading it, and removes from it as before).
+const flatDir = (home, name) => path.join(home, 'app', 'node_modules', ...name.split('/'));
+function flatten(home) {
+  const rec = record(home);
+  for (const [pack, p] of Object.entries(rec.packs)) {
+    for (const name of Object.keys(p.packages)) {
+      if (fs.existsSync(flatDir(home, name))) continue;
+      fs.mkdirSync(path.dirname(flatDir(home, name)), {recursive: true});
+      fs.renameSync(pkgDir(home, name, pack), flatDir(home, name));
+    }
+  }
+  fs.rmSync(path.join(home, 'packs'), {recursive: true, force: true});
+}
+
+test('remove-pack in a flat home keeps a part another pack calls and removes one no pack calls', async () => {
   const s = await installed();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
+  flatten(s.home);
   const io = s.io();
   assert.strictEqual(await removePack({pack: 'other'}, io), 0, io.err);
-  assert.ok(!fs.existsSync(pkgDir(s.home, '@countinghouse/ch-pack-other')));
-  assert.ok(!fs.existsSync(pkgDir(s.home, '@countinghouse/ch-step-other')));
-  assert.ok(fs.existsSync(pkgDir(s.home, '@countinghouse/ch-step-redact')), 'ci-failure-triage still calls it');
+  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-pack-other')));
+  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-other')));
+  assert.ok(fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-redact')), 'ci-failure-triage still calls it');
   assert.match(io.out, /kept @countinghouse\/ch-step-redact/);
   assert.deepStrictEqual(Object.keys(record(s.home).packs), ['ci-failure-triage']);
   const io2 = s.io();
@@ -176,9 +192,10 @@ test('a part at another version names a way forward that exists: a clean install
   assert.match(io.err, /install the newer release with `ch-local install --pack ci-failure-triage --from <its directory>`, then add-pack other/);
 });
 
-test('remove-pack records the removal first, so a package that cannot be deleted leaves start working, and says what is left', async () => {
+test('remove-pack in a flat home records the removal first, so a package that cannot be deleted leaves start working, and says what is left', async () => {
   const s = await installed();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
+  flatten(s.home);
   const real = fs.rmSync;
   try {
     fs.rmSync = (p, o) => { if (String(p).endsWith('ch-pack-other')) { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } return real(p, o); };
@@ -189,7 +206,7 @@ test('remove-pack records the removal first, so a package that cannot be deleted
     fs.rmSync = real;
   }
   assert.deepStrictEqual(Object.keys(record(s.home).packs), ['ci-failure-triage'], 'the record no longer lists it');
-  assert.ok(!fs.existsSync(pkgDir(s.home, '@countinghouse/ch-step-other')), 'the rest went');
+  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-other')), 'the rest went');
 });
 
 test('a home made by an earlier development launcher (installed.json only) is told to reinstall', async () => {
