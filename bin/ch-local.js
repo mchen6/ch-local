@@ -171,13 +171,15 @@ function realIo() {
     },
     // The runtime, on this process's own stdin, stdout and stderr: the client's
     // MCP channel goes straight through. -> {kill(signal), exited: Promise<exit code>}.
-    spawn: (cmd, args, {env} = {}) => {
-      const child = require('child_process').spawn(cmd, args, {stdio: 'inherit', env});
+    // control: an IPC fd for the runtime's control channel (packs in place)
+    spawn: (cmd, args, {env, control = false} = {}) => {
+      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env});
       const exited = new Promise((resolve) => {
         child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
         child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
       });
-      return {kill: (signal) => { try { child.kill(signal); } catch (err) { /* already gone */ } }, exited};
+      return {kill: (signal) => { try { child.kill(signal); } catch (err) { /* already gone */ } }, exited,
+        ...(control ? {send: (m) => child.send(m), onMessage: (fn) => child.on('message', fn)} : {})};
     }
   };
 }
