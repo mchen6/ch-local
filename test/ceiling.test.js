@@ -11,7 +11,10 @@ const path = require('node:path');
 const {main} = require('../bin/ch-local');
 const {setSetting, readSettings} = require('../lib/settings');
 const {layout} = require('../lib/home');
-const {ceilingFor, ceilingRefusal, startUnderCeiling} = require('../lib/ceiling');
+const ceilingModule = require('../lib/ceiling');
+const {ceilingFor, ceilingRefusal, startUnderCeiling, fallbackFiles} = ceilingModule;
+const {withSettingsLock} = require('../lib/settings');
+const {uninstall} = require('../lib/uninstall');
 const {outsideEdits, reportOutsideEdits} = require('../lib/outside-edits');
 const {install} = require('../lib/install');
 const {start} = require('../lib/start');
@@ -30,6 +33,7 @@ const run = async (home, argv, {interactive = true, answers = []} = {}) => {
 };
 // The installed runtime's ceiling reader, as a test gives it.
 const reader = (home, ceiling) => {
+  ceilingModule.resetForTests();
   const dir = path.join(layout({COUNTINGHOUSE_HOME: home}).app, 'node_modules', 'countinghouse', 'lib');
   fs.mkdirSync(dir, {recursive: true});
   fs.writeFileSync(path.join(dir, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)})};\n`);
@@ -41,7 +45,7 @@ test('a loosening is asked at a terminal, recorded as confirmed there; no is no;
   const home = tmp('ch-home-');
   const no = await run(home, ['settings', 'set', 'maxOutputBytes', '16MiB'], {answers: ['n']});
   assert.strictEqual(no.code, 1);
-  assert.match(no.io.asked[0], /^Loosen maxOutputBytes from 8388608 to 16777216\? This is kept until you change it back\. \[y\/N\] $/);
+  assert.match(no.io.asked[0], /^Loosen maxOutputBytes from 8MiB to 16MiB\? This is kept until you change it back\. \[y\/N\] $/);
   assert.match(no.io.err, /maxOutputBytes was not changed/);
   assert.strictEqual(readSettings(layout({COUNTINGHOUSE_HOME: home})).values.maxOutputBytes, undefined);
   const yes = await run(home, ['settings', 'set', 'maxOutputBytes', '16MiB'], {answers: ['y']});
@@ -72,7 +76,7 @@ test('a value changed while the user was asked is not overwritten', async () => 
   const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {interactive: true});
   io.ask = async () => { setSetting(where, 'maxOutputBytes', '2MiB', {by: 'settings tool'}); return 'y'; };
   assert.strictEqual(await main(['settings', 'set', 'maxOutputBytes', '16MiB'], io), 1);
-  assert.match(io.err, /maxOutputBytes changed while you were asked; nothing was changed; run it again/);
+  assert.match(io.err, /maxOutputBytes was changed by another writer meanwhile; nothing was changed; run it again/);
   assert.strictEqual(readSettings(where).values.maxOutputBytes, 2 * MiB);
 });
 
@@ -153,7 +157,7 @@ test('outside edits: a setting changed outside the tools is reported once, and r
   const said = [];
   const edits = reportOutsideEdits(where, readSettings(where), {say: (s) => said.push(s), host: 'box', pid: 1});
   assert.deepStrictEqual(edits.map((e) => [e.setting, e.old, e.new, e.loosened]), [['maxOutputBytes', 16 * MiB, 32 * MiB, true], ['pack.other', true, false, false]]);
-  assert.deepStrictEqual(said, ['maxOutputBytes was changed outside ch-local: 16777216 -> 33554432 (this loosens a guarding setting)', 'pack.other was changed outside ch-local: on -> off']);
+  assert.deepStrictEqual(said, ['maxOutputBytes was changed outside ch-local: 16MiB -> 32MiB (this loosens a guarding setting)', 'pack.other was changed outside ch-local: on -> off']);
   const last = history(home).slice(-2);
   assert.deepStrictEqual(last.map((h) => [h.by, h.setting, h.change, h.loosened]), [['start', 'maxOutputBytes', 'changed outside ch-local', true], ['start', 'pack.other', 'changed outside ch-local', undefined]]);
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'reported once');
@@ -187,7 +191,7 @@ test('start: says an outside edit and the ceiling\'s clamps, passes the clamped 
   };
   reader(home, trusted({maxOutputBytes: 4 * MiB}));
   const clamped = await go();
-  assert.match(clamped.err, /maxOutputBytes was changed outside ch-local: 8388608 -> 16777216 \(this loosens a guarding setting\)/);
+  assert.match(clamped.err, /maxOutputBytes was changed outside ch-local: 8MiB -> 16MiB \(this loosens a guarding setting\)/);
   assert.match(clamped.err, /maxOutputBytes 16MiB is above the operator's ceiling: the runtime gets 4MiB/);
   assert.deepStrictEqual(clamped.args.slice(clamped.args.indexOf('--maxOutputBytes'), clamped.args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(4 * MiB)]);
   assert.strictEqual(readSettings(where).values.maxOutputBytes, 16 * MiB, 'the file is the user\'s: clamped, not rewritten');
@@ -196,4 +200,74 @@ test('start: says an outside edit and the ceiling\'s clamps, passes the clamped 
   assert.strictEqual(refused.code, 1, refused.err);
   assert.strictEqual(refused.args, null, 'nothing spawned');
   assert.match(refused.err, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting; fix the file, or `ch-local settings reset`/);
+});
+
+test('the review of P4: no reader on Windows looks where ProgramData really is too; the reader is asked once while nothing changes', () => {
+  assert.deepStrictEqual(fallbackFiles('win32', {ProgramData: 'D:\\mine', SystemDrive: 'C:'}),
+    ['D:\\mine\\countinghouse\\ceiling.json', 'C:\\ProgramData\\countinghouse\\ceiling.json']);
+  assert.deepStrictEqual(fallbackFiles('win32', {}), ['C:\\ProgramData\\countinghouse\\ceiling.json']);
+  assert.deepStrictEqual(fallbackFiles('linux', {}), ['/etc/countinghouse/ceiling.json']);
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  reader(home, null);
+  const file = path.join(where.app, 'node_modules', 'countinghouse', 'lib', 'settings-ceiling.js');
+  const counter = path.join(tmp('ch-count-'), 'asked.txt');
+  const write = (state) => fs.writeFileSync(file, `const fs = require('fs');
+module.exports = {ceilingFile: () => ${JSON.stringify(path.join(home, 'ceiling.json'))},
+  readCeiling: () => { fs.appendFileSync(${JSON.stringify(counter)}, 'x'); return {state: ${JSON.stringify(state)}}; }};\n`);
+  write('none');
+  const asked = () => (fs.existsSync(counter) ? fs.readFileSync(counter, 'utf8').length : 0);
+  assert.strictEqual(ceilingFor(where).state, 'none');
+  assert.strictEqual(ceilingFor(where).state, 'none');
+  assert.strictEqual(asked(), 1, 'asked once');
+  fs.writeFileSync(path.join(home, 'ceiling.json'), '{}');
+  ceilingFor(where);
+  assert.strictEqual(asked(), 2, 'the ceiling file changed: asked again');
+});
+
+test('the review of P4: an outside loosening the ceiling forbids is not applied at start, and is said at every start', async () => {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  setSetting(where, 'pack.ci-failure-triage', 'off', {by: 'cli'});
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': true}}));
+  reader(home, trusted({forbid: ['packs']}));
+  for (let i = 0; i < 2; i++) {
+    const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret'}, homedir: '/nowhere'});
+    Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
+    let spawned = false;
+    f.spawn = () => { spawned = true; return {kill: () => {}, exited: Promise.resolve(0), send: () => {}, onMessage: () => {}}; };
+    await start({passThrough: []}, f);
+    assert.match(f.err, /pack\.ci-failure-triage was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: pack\.ci-failure-triage cannot be changed to on on this machine: its operator's ceiling forbids it/);
+    assert.match(f.err, /not loading ci-failure-triage: it is turned off/);
+    assert.strictEqual(spawned, false);
+  }
+  assert.deepStrictEqual(history(home).filter((h) => h.by === 'start').map((h) => h.change), ['changed outside ch-local, refused by the ceiling', 'changed outside ch-local, refused by the ceiling']);
+});
+
+test('the review of P4: a settings file that cannot be read is no outside edit; start\'s event loop never waits on the lock', () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+  assert.deepStrictEqual(reportOutsideEdits(where, {values: {}, error: 'x'}, {say: () => assert.fail('nothing said')}), []);
+  assert.strictEqual(history(home).length, 1);
+  fs.writeFileSync(path.join(home, 'settings.lock'), JSON.stringify({pid: process.pid, at: Date.now()}));
+  const t = Date.now();
+  assert.throws(() => withSettingsLock(where, () => 0, {waitMs: 0}), {code: 'SETTINGS_BUSY'});
+  assert.ok(Date.now() - t < 1000);
+});
+
+test('the review of P4: uninstall --keep-data records the settings file it removes as a reset', async () => {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, answers: ['yes'], homedir: '/nowhere'});
+  assert.strictEqual(await uninstall({keepData: true}, io), 0, io.err);
+  assert.deepStrictEqual(history(home).slice(-1).map((h) => [h.by, h.setting, h.change]), [['uninstall', '*', 'reset']]);
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'no edits after a reinstall');
 });

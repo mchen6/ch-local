@@ -197,6 +197,7 @@ const ceilingReader = (home, ceiling) => {
 test('while running: an outside edit is said and recorded once; a raise is sent clamped to the ceiling; a pack it forbids is not turned on', async () => {
   const {layout} = require('../lib/home');
   const s = await running();
+  try {
   const where = layout({COUNTINGHOUSE_HOME: s.home});
   assert.strictEqual(where.app, path.join(s.home, 'app'), 'the reader where the runtime is installed');
   ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 6 * 1024 * 1024, forbid: ['packs'], conversation: true}});
@@ -204,26 +205,33 @@ test('while running: an outside edit is said and recorded once; a raise is sent 
   await until(() => s.requests.some((m) => m.type === 'unload'));
   await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'maxOutputBytes'));
   assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 6 * 1024 * 1024]]);
-  assert.match(s.f.err, /maxOutputBytes was changed outside ch-local: 8388608 -> 16777216 \(this loosens a guarding setting\)/);
+  assert.match(s.f.err, /maxOutputBytes was changed outside ch-local: 8MiB -> 16MiB \(this loosens a guarding setting\)/);
   assert.match(s.f.err, /maxOutputBytes 16MiB is above the operator's ceiling: the runtime gets 6MiB/);
   const outside = s.history().filter((h) => h.change === 'changed outside ch-local').map((h) => h.setting).sort();
   assert.deepStrictEqual(outside, ['maxOutputBytes', 'pack.ci-failure-triage']);
   // turned back on by hand: the ceiling forbids turning a pack on, so it stays off
   fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 16 * 1024 * 1024, 'pack.ci-failure-triage': true}}));
-  await until(() => /ci-failure-triage not loaded: pack\.ci-failure-triage cannot be changed to on on this machine: its operator's ceiling forbids it/.test(s.f.err));
+  await until(() => /pack\.ci-failure-triage was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: pack\.ci-failure-triage cannot be changed to on on this machine: its operator's ceiling forbids it/.test(s.f.err));
   assert.ok(!s.requests.some((m) => m.type === 'load'), 'not loaded');
-  s.end();
-  await s.done;
+  } finally {
+    s.end();
+    await s.done;
+  }
 });
 
 test('while running, under a ceiling that cannot be trusted: a change that loosens keeps the settings in effect, and says so', async () => {
   const {layout} = require('../lib/home');
   const s = await running();
   const where = layout({COUNTINGHOUSE_HOME: s.home});
-  ceilingReader(s.home, {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'it is a symbolic link'});
-  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {requestTimeout: 120000}}));
-  await until(() => /cannot be trusted \(it is a symbolic link\) and the settings now loosen a guard: the settings in effect are kept/.test(s.f.err));
-  assert.ok(!s.requests.some((m) => m.type === 'set'), 'nothing sent');
-  s.end();
-  await s.done;
+  try {
+    ceilingReader(s.home, {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'it is a symbolic link'});
+    // a raise and a tightening together: the raise is kept back, the tightening applies (the review of P4)
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {requestTimeout: 120000, maxOutputBytes: 2 * 1024 * 1024}}));
+    await until(() => /cannot be trusted \(it is a symbolic link\): requestTimeout not loosened; the values in effect are kept/.test(s.f.err));
+    await until(() => s.requests.some((m) => m.type === 'set'));
+    assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 2 * 1024 * 1024]]);
+  } finally {
+    s.end();
+    await s.done;
+  }
 });
