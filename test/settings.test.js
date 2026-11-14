@@ -19,6 +19,11 @@ const {release, npm} = require('./install-helpers');
 const cli = async (home, ...argv) => { const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}}); const code = await main(argv, io); return {code, io}; };
 const history = (home) => fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
+// On Windows the sandbox setting has only audit (countinghouse#195), so
+// these use another guarding setting as the loosening there.
+const WIN = process.platform === 'win32';
+const LOOSEN = WIN ? ['autoUpgrade', 'on'] : ['moduleSandbox', 'audit'];
+
 test('settings get lists every setting with its default and bounds; set stays within them, and is recorded', async () => {
   const home = tmp('ch-home-');
   const got = await cli(home, 'settings', 'get');
@@ -42,17 +47,17 @@ test('settings get lists every setting with its default and bounds; set stays wi
 test('the CLI may loosen a guarding setting (the user at a terminal), and says so; anything else may not', async () => {
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
-  const r = await cli(home, 'settings', 'set', 'moduleSandbox', 'audit');
+  const r = await cli(home, 'settings', 'set', ...LOOSEN);
   assert.strictEqual(r.code, 0);
   assert.match(r.io.out, /this loosens a guarding setting/);
-  assert.throws(() => setSetting(where, 'autoUpgrade', 'on', {by: 'settings tool'}), {code: 'SETTING_LOOSENS_A_GUARD'});
-  assert.strictEqual(setSetting(where, 'moduleSandbox', 'enforce', {by: 'settings tool'}).loosened, false, 'tightening is anyone\'s');
+  assert.throws(() => setSetting(where, 'maxOutputBytes', '16MiB', {by: 'settings tool'}), {code: 'SETTING_LOOSENS_A_GUARD'});
+  assert.strictEqual(setSetting(where, LOOSEN[0], WIN ? 'off' : 'enforce', {by: 'settings tool'}).loosened, false, 'tightening is anyone\'s');
 });
 
 test('loosens: raising a cap or a timeout, audit, automatic upgrades on and a pack on loosen; the reverse never does', () => {
-  const cases = [['maxOutputBytes', 8, 16, true], ['maxOutputBytes', 16, 8, false], ['requestTimeout', 30000, 60000, true], ['moduleSandbox', 'enforce', 'audit', true],
-    ['moduleSandbox', 'audit', 'enforce', false], ['autoUpgrade', false, true, true], ['autoUpgrade', true, false, false], ['pack.other', false, true, true], ['pack.other', true, false, false],
-    ['locale', 'en', 'zh', false], ['upgradeCheck', 'never', 'daily', false]];
+  const cases = [['maxOutputBytes', 8, 16, true], ['maxOutputBytes', 16, 8, false], ['requestTimeout', 30000, 60000, true]].concat(WIN
+    ? [['moduleSandbox', 'audit', 'audit', false]] : [['moduleSandbox', 'enforce', 'audit', true], ['moduleSandbox', 'audit', 'enforce', false]], [['autoUpgrade', false, true, true], ['autoUpgrade', true, false, false], ['pack.other', false, true, true], ['pack.other', true, false, false],
+    ['locale', 'en', 'zh', false], ['upgradeCheck', 'never', 'daily', false]]);
   for (const [name, o, n, want] of cases) assert.strictEqual(loosens(name, o, n), want, `${name} ${o} -> ${n}`);
 });
 
@@ -135,8 +140,8 @@ test('a change is recorded before it is made: an unwritable history refuses it; 
   assert.throws(() => setSetting(where, 'locale', 'zh', {by: 'cli'}), {code: 'SETTING_NOT_RECORDED'});
   assert.ok(!fs.existsSync(path.join(home, 'settings.json')));
   fs.rmdirSync(path.join(home, 'history.jsonl'));
-  setSetting(where, 'moduleSandbox', 'audit', {by: 'cli', mayLoosen: true});
-  assert.deepStrictEqual((({setting, loosened, by}) => ({setting, loosened, by}))(history(home)[0]), {setting: 'moduleSandbox', loosened: true, by: 'cli'});
+  setSetting(where, LOOSEN[0], LOOSEN[1], {by: 'cli', mayLoosen: true});
+  assert.deepStrictEqual((({setting, loosened, by}) => ({setting, loosened, by}))(history(home)[0]), {setting: LOOSEN[0], loosened: true, by: 'cli'});
 });
 
 test('settings get prints a bad file\'s problem, never defaults as current; reset removes it, recorded', async () => {
@@ -188,4 +193,11 @@ test('runtimeValue: requestTimeout in whole seconds rounded down, at least 1; lo
   const {runtimeValue} = require('../lib/settings');
   assert.deepStrictEqual([20999, 20000, 5000, 400].map((ms) => runtimeValue('requestTimeout', ms)), [20, 20, 5, 1]);
   assert.deepStrictEqual(['en', 'zh'].map((l) => runtimeValue('locale', l)), ['en-US', 'zh-CN']);
+});
+
+test('on Windows the sandbox setting has only audit, its default; elsewhere enforce and audit, enforce the default (countinghouse#195)', () => {
+  const {sandboxEntry} = require('../lib/settings');
+  assert.deepStrictEqual([sandboxEntry('win32').values, sandboxEntry('win32').default], [['audit'], 'audit']);
+  assert.strictEqual(sandboxEntry('win32').tighter('audit', 'audit'), true);
+  for (const p of ['linux', 'darwin']) assert.deepStrictEqual([sandboxEntry(p).values, sandboxEntry(p).default], [['enforce', 'audit'], 'enforce']);
 });
