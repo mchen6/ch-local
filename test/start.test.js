@@ -40,8 +40,9 @@ function repo(origin) {
   return path.join(top, 'src', 'deep');
 }
 
-// platform: Linux unless a test asks for another (the sandbox option differs on win32).
-function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/octo/widgets.git', exit = 0, cwd, platform = 'linux'} = {}) {
+// platform: this host's unless a test asks for another (the sandbox option
+// differs on win32, as the settings' default does: countinghouse#195).
+function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/octo/widgets.git', exit = 0, cwd, platform = process.platform} = {}) {
   const f = fakeIo({env: {...env, COUNTINGHOUSE_HOME: home}, homedir: '/nowhere'});
   f.platform = platform;
   f.pid = 4242;
@@ -83,7 +84,8 @@ test('start runs the profile: local store, enforce, the one store, no auth file,
   assert.ok(args.includes('--workerThread'));
   assert.strictEqual(valueOf(args, '--store'), 'local');
   assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'));
-  assert.strictEqual(valueOf(args, '--moduleSandbox'), 'enforce');
+  assert.strictEqual(valueOf(args, '--moduleSandbox'), process.platform === 'win32' ? 'audit' : 'enforce');
+  assert.strictEqual(args.filter((a) => a.startsWith('--moduleSandbox')).length, 1, 'one sandbox option');
   assert.strictEqual(valueOf(args, '--moduleDataPath'), path.join(home, 'module_data'));
   // Each start's own files, so concurrent starts never see each other's: <host>-<pid>-<random>.
   const runDir = path.dirname(valueOf(args, '--remoteCredentials'));
@@ -534,7 +536,24 @@ test('on Windows start passes --moduleSandbox audit, and refuses an explicit enf
     assert.strictEqual(g.spawned.length, 0, 'nothing started');
     assert.match(g.err, /--moduleSandbox enforce is not available on Windows yet: .*countinghouse\/issues\/195\)\. Use --moduleSandbox audit, the Windows mode for now\./);
   }
+  const off = io(home, {platform: 'win32'});
+  assert.notStrictEqual(await start({passThrough: ['--moduleSandbox', 'off']}, off), 0);
+  assert.match(off.err, /on Windows a pack runs under audit/);
   const h = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: ['--moduleSandbox', 'audit']}, h), 0, h.err);
   assert.strictEqual(valueOf(h.spawned[0].args, '--moduleSandbox'), 'audit');
+});
+
+test('a stored moduleSandbox audit reaches the runtime once; on Windows a stored enforce is read, and start runs audit', async () => {
+  const home = installedHome();
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+  const f = io(home, {platform: 'linux'});
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.deepStrictEqual(f.spawned[0].args.filter((a, i, all) => a === '--moduleSandbox' || all[i - 1] === '--moduleSandbox'), ['--moduleSandbox', 'audit']);
+  const {sandboxEntry} = require('../lib/settings');
+  assert.deepStrictEqual(sandboxEntry('win32').stored, ['enforce', 'audit'], 'a stored enforce stays readable on Windows');
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'enforce'}}));
+  const w = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: []}, w), 0, w.err);
+  assert.deepStrictEqual(w.spawned[0].args.filter((a, i, all) => a === '--moduleSandbox' || all[i - 1] === '--moduleSandbox'), ['--moduleSandbox', 'audit']);
 });
