@@ -43,7 +43,8 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
         const reply = answer(msg);
         if (reply != null) setImmediate(() => listener({id: msg.id, ...reply}));
       },
-      onMessage: (fn) => { listener = fn; }
+      // as the runtime does once it listens (countinghouse #210)
+      onMessage: (fn) => { listener = fn; setImmediate(() => fn({type: 'ready'})); }
     };
   };
   const done = start({passThrough}, f);
@@ -288,7 +289,7 @@ test('while running, under a ceiling that cannot be trusted: a change that loose
     ceilingReader(s.home, {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'it is a symbolic link'});
     // a raise and a tightening together: the raise is kept back, the tightening applies (the review of P4)
     fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {requestTimeout: 120000, maxOutputBytes: 2 * 1024 * 1024}}));
-    await until(() => /cannot be trusted \(it is a symbolic link\): requestTimeout not loosened; the values in effect are kept/.test(s.f.err));
+    await until(() => /requestTimeout not loosened, the values in effect kept: the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(it is a symbolic link\)/.test(s.f.err));
     await until(() => s.requests.some((m) => m.type === 'set'));
     assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 2 * 1024 * 1024]]);
   } finally {
@@ -337,6 +338,23 @@ test('never silent: a loosening applied while running is told to the client; a t
     fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 16 * 1024 * 1024, requestTimeout: 10000, autoUpgrade: true, locale: 'zh'}}));
     await until(() => notices(s).some(([, t]) => /locale/.test(t)));
     assert.deepStrictEqual(notices(s).filter(([, t]) => /locale/.test(t)), [[null, 'locale was changed outside ch-local: en -> zh']]);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('never silent, told once: a clamp start found is not told again by the applier\'s first look', async () => {
+  const {layout} = require('../lib/home');
+  const s = await running({beforeStart: (home) => {
+    const where = layout({COUNTINGHOUSE_HOME: home});
+    ceilingReader(home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 6 * 1024 * 1024, forbid: [], packs: null, conversation: true}});
+    require('../lib/settings').setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+  }});
+  try {
+    await until(() => notices(s).length > 0);
+    await new Promise((r) => setTimeout(r, 300));   // the applier's first look has run
+    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes 16MiB is above the operator\'s ceiling: the runtime gets 6MiB']]);
   } finally {
     s.end();
     await s.done;
