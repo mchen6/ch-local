@@ -121,3 +121,9 @@ Each `start` replays the history to the last value recorded for each
 setting and compares `settings.json` with it, under the lock. Each
 difference is said on stderr and recorded as `changed outside ch-local`, once.
 The file is the user's: the edit still applies.
+
+A running start does the same on each change it applies in place: an edit
+made outside the tools is said and recorded, and the change is bound by the
+ceiling as start's values are (a cap or timeout clamped, a pack turned on
+that the ceiling forbids left off). Under a ceiling that cannot be trusted, a
+change that loosens is not applied: the settings in effect are kept.
