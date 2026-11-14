@@ -295,3 +295,31 @@ test('a holder in another PID namespace on the same host name is not taken for d
   assert.ok(tag.startsWith(require('node:os').hostname()));
   if (process.platform === 'linux') assert.match(tag, /#pid:\[\d+\]$/, 'the PID namespace is part of the host on Linux');
 });
+
+test('a lock is never empty to another ch-local, and an empty one is never taken for stale', async () => {
+  const {withLock} = require('../lib/lock');
+  const home = tmp('ch-home-');
+  const lock = path.join(home, 'packs.lock');
+  fs.writeFileSync(lock, '');
+  const f = fakeIo({env: {}});
+  assert.strictEqual(await withLock({home}, f, async () => 0), 1);
+  assert.ok(fs.existsSync(lock), 'kept');
+  fs.rmSync(lock);
+  let seen = null;
+  assert.strictEqual(await withLock({home}, f, async () => { seen = JSON.parse(fs.readFileSync(lock, 'utf8')); return 0; }), 0);
+  assert.strictEqual(seen.pid, process.pid, 'whole when first seen');
+  assert.ok(!fs.readdirSync(home).some((n) => n.endsWith('.tmp')), 'no temporary file left');
+});
+
+test('another host\'s lock counts while its heartbeat is fresh, and is cleared once it is stale', async () => {
+  const {withLock, STALE_MS} = require('../lib/lock');
+  const home = tmp('ch-home-');
+  const lock = path.join(home, 'packs.lock');
+  fs.writeFileSync(lock, JSON.stringify({pid: 1, host: 'elsewhere', at: 'x'}));
+  const f = fakeIo({env: {}});
+  assert.strictEqual(await withLock({home}, f, async () => 0), 1, 'fresh: held');
+  const old = new Date(Date.now() - STALE_MS - 1000);
+  fs.utimesSync(lock, old, old);
+  assert.strictEqual(await withLock({home}, f, async () => 0), 0, 'stale: cleared');
+  assert.ok(!fs.existsSync(lock));
+});

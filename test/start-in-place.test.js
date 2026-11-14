@@ -164,3 +164,14 @@ test('after a runtime update, packs are not loaded or reloaded into the old runt
   s.end();
   await s.done;
 });
+
+test('a live requestTimeout change is sent in the runtime\'s unit, seconds', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running();
+  setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'requestTimeout', '20s', {by: 'cli'});
+  await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
+  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['requestTimeout', 20]]);
+  s.end();
+  await s.done;
+});

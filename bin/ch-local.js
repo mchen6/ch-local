@@ -28,7 +28,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local add <cursor|vscode|codex>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
-       ch-local settings [get | set <name> <value>]
+       ch-local settings [get | set <name> <value> | reset]
        ch-local start --stdio [countinghouse options]
 `;
 
@@ -116,6 +116,7 @@ async function main(argv, io) {
     if (command === 'settings') {
       if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return await require('../lib/settings-command').settings({action: 'get'}, io);
       if (rest.length === 3 && rest[0] === 'set') return await require('../lib/settings-command').settings({action: 'set', name: rest[1], value: rest[2]}, io);
+      if (rest.length === 1 && rest[0] === 'reset') return await require('../lib/settings-command').settings({action: 'reset'}, io);
       return usage();
     }
     if (command === 'upgrade') {
