@@ -183,3 +183,9 @@ test('the machine id: stable, and a hash (it names no host or id)', () => {
   assert.strictEqual(machineId(), machineId());
   assert.ok(!machineId().includes(require('node:os').hostname()));
 });
+
+test('runtimeValue: requestTimeout in whole seconds rounded down, at least 1; locale as the runtime\'s', () => {
+  const {runtimeValue} = require('../lib/settings');
+  assert.deepStrictEqual([20999, 20000, 5000, 400].map((ms) => runtimeValue('requestTimeout', ms)), [20, 20, 5, 1]);
+  assert.deepStrictEqual(['en', 'zh'].map((l) => runtimeValue('locale', l)), ['en-US', 'zh-CN']);
+});
