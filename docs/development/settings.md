@@ -60,3 +60,99 @@ carries:
 - `loosened: true` when the change loosens a guarding setting.
 
 A reset is recorded as `{"setting": "*", "change": "reset"}`.
+
+More lines, from countinghouse part 3 (guarding settings by conversation):
+
+- `confirmed: "cli"` on a loosening made at a terminal, after the user
+  answered yes. (Conversation's own confirmation is recorded by the runtime.)
+- `{"setting", "change": "not made", "problem"}` when the file could not be
+  written after the change's line was appended: the change before it, for
+  that setting, did not happen.
+- `{"setting", "asked", "change"}` (and later `count`): a request the
+  runtime did not make, such as `not confirmed` or `refused by the ceiling`.
+- `{"by": "start", "setting", "old", "new", "change": "changed outside
+  ch-local"}`: see below.
+
+A line with `new` and a `change` label other than `changed outside ch-local`
+(such as a change for this start only) does not change what the file is
+expected to hold.
+
+## Loosening from the terminal
+
+`ch-local settings set` and `ch-local upgrade --auto on` make a tightening
+at once. A loosening is:
+
+1. checked against the operator's ceiling (below), and refused, before
+   anything is asked, if it is above it, forbidden by it, or the ceiling
+   cannot be trusted;
+2. asked at the terminal: `Loosen <name> from <old> to <new>? ... [y/N]`.
+   Only `y` or `yes` makes it. There is no `--yes`. Without a terminal (stdin
+   is not a TTY) it is refused. This stops accidents; an agent with a shell
+   answers through its client's own command approval, which is the user's;
+3. made under the lock, only if the setting still holds the value it had
+   when the user was asked.
+
+`ch-local settings reset` is the loosenings it implies: a pack that was off
+comes back on, a tightened cap goes back up. Each is checked against the
+ceiling, then one question at the terminal lists them all. A reset that only
+tightens is made at once. A settings file that is not valid is reset only at
+a terminal: what it held cannot be known.
+
+## The operator's ceiling
+
+ch-local reads the ceiling with the installed runtime's own reader,
+`node_modules/countinghouse/lib/settings-ceiling.js`, so there is one
+implementation. If the installed runtime has none and a ceiling file exists
+(`/etc/countinghouse/ceiling.json`, or `%ProgramData%\countinghouse\ceiling.json`),
+every loosening is refused until `ch-local upgrade`. A reader that throws, or
+answers anything but a ceiling, fails closed.
+
+`ch-local start` applies it to what it passes the runtime:
+
+- a cap or timeout above the ceiling is passed as the ceiling's value, and
+  said; `settings.json` is not rewritten;
+- a forbidden `moduleSandbox audit` runs under `enforce`, and forbidden
+  automatic upgrades stay off, each said; `--moduleSandbox audit` passed by
+  the client refuses the start;
+- `"packs": [names]`, the operator's allowlist: only those packs ever load,
+  at start, in place and on install, whatever `settings.json` or the history
+  say; `install` and `packs add` refuse another. A ceiling that cannot be
+  trusted loads no pack at all, and says why: an operator's mistake (a typo,
+  a PowerShell that timed out, an older reader) is visible, never a lifted
+  list. A first install, with no runtime yet to read the ceiling, goes on,
+  and `start` then applies it;
+- a ceiling that cannot be trusted refuses a start whose settings or flags
+  are looser than the defaults.
+
+On Windows the sandbox is left out until ch-local installs a runtime with
+countinghouse#195: start runs it under audit there, which no setting or flag
+chose.
+
+## Edits made outside the tools
+
+Each `start` replays the history to the last value recorded for each
+setting and compares `settings.json` with it, under the lock. Each
+difference is said on stderr and recorded as `changed outside ch-local`, once.
+The file is the user's: the edit still applies, unless it is a loosening the
+ceiling forbids, which is said and recorded at every start and not applied.
+A settings lock held by another writer, or kept fresh on purpose, never
+turns the checks off: a loosening the history has not recorded is not
+applied while the lock is held.
+
+A running start does the same on each change it applies in place: an edit
+made outside the tools is said and recorded, and the change is bound by the
+ceiling as start's values are (a cap or timeout clamped, a pack turned on
+that the ceiling forbids left off). Under a ceiling that cannot be trusted, a
+change that loosens is not applied: the settings in effect are kept.
+
+## Limits
+
+- `history.jsonl` is a record for the user, not a security boundary: the user
+  can write it. Nothing the ceiling enforces rests on it (the pack allowlist
+  is the ceiling's own list); outside-edit reports do, and are a notice.
+- ch-local reads the ceiling with the runtime under `<home>/app/node_modules/
+  countinghouse`. Whoever can replace that code is beyond any ceiling, as
+  they are beyond the runtime itself.
+
+`ch-local uninstall --keep-data` keeps `settings.json` with the history, so a
+reinstall keeps the user's own tightenings.

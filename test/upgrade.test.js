@@ -81,8 +81,10 @@ test('the registry is asked for abbreviated metadata, one package per request', 
 test('the automatic-upgrade setting is off by default, stored on request, and asks the network nothing', async () => {
   const s = setup();
   try {
-    const on = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
+    // turning it on loosens a guarding setting: asked at a terminal
+    const on = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['y']}), {interactive: true});
     assert.strictEqual(await upgrade({auto: 'on'}, on), 0);
+    assert.match(on.asked[0], /Loosen autoUpgrade from off to on\?/);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: true}});
     assert.match(on.out, /announces them; installing them automatically arrives with the first release, and will run new code with your keys/);
     assert.strictEqual(await upgrade({auto: 'off'}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}})), 0);

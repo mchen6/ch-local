@@ -67,8 +67,9 @@ test('--keep-data keeps the data and removes the program, the identity secret an
     assert.strictEqual(await uninstall({keepData: true}, u), 0, u.err);
     const has = (f) => fs.existsSync(path.join(s.home, f));
     for (const kept of ['store/kv.json', 'module_data/ch-access-github/x', 'usage/1.jsonl', 'data/pack-ci-failure-triage/r/fingerprints.json']) assert.ok(has(kept), kept);
-    // run/ holds each start's own files: program, not data.
-    for (const gone of ['app', 'bin', 'node', 'store/.identity-secret', 'auth.json', 'packs.json', 'settings.json', 'run', 'modules']) assert.ok(!has(gone), gone);
+    // run/ holds each start's own files: program, not data. settings.json is
+    // the user's (with its history): kept, so a reinstall keeps their tightenings.
+    for (const gone of ['app', 'bin', 'node', 'store/.identity-secret', 'auth.json', 'packs.json', 'run', 'modules']) assert.ok(!has(gone), gone);
   } finally {
     s.done();
   }

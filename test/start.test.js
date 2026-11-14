@@ -469,7 +469,7 @@ test('a settings file that is not valid stops start, saying why and how to fix i
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh', maxOutputBytes: 1}}));
   const f = io(home);
   assert.notStrictEqual(await start({passThrough: []}, f), 0);
-  assert.match(f.err, /maxOutputBytes = 1, which is not allowed: not starting; fix it, or run `ch-local settings reset`/);
+  assert.match(f.err, /maxOutputBytes = 1, which is not allowed: not starting; fix it \(`ch-local settings reset` replaces every setting with its default, asking first if that loosens one\)/);
   assert.deepStrictEqual(f.spawned, []);
 });
 

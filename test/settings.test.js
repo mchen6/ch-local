@@ -16,7 +16,14 @@ const {start} = require('../lib/start');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm} = require('./install-helpers');
 
-const cli = async (home, ...argv) => { const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}}); const code = await main(argv, io); return {code, io}; };
+// the user at a terminal, who answers yes to a loosening (part 3: asked there;
+// test/ceiling.test.js has the rest)
+const cli = async (home, ...argv) => {
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {interactive: true});
+  io.ask = async (q) => { io.asked.push(q); return 'y'; };
+  const code = await main(argv, io);
+  return {code, io};
+};
 const history = (home) => fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
 // On Windows the sandbox setting has only audit (countinghouse#195), so
@@ -149,7 +156,7 @@ test('settings get prints a bad file\'s problem, never defaults as current; rese
   fs.writeFileSync(path.join(home, 'settings.json'), '{not json');
   const got = await cli(home, 'settings', 'get');
   assert.strictEqual(got.code, 1);
-  assert.match(got.io.err, /is not JSON; ch-local start refuses to start until it is fixed, or `ch-local settings reset`/);
+  assert.match(got.io.err, /is not JSON; ch-local start refuses to start until it is fixed\n/);
   assert.doesNotMatch(got.io.out, /locale/);
   const reset = await cli(home, 'settings', 'reset');
   assert.strictEqual(reset.code, 0, reset.io.err);
