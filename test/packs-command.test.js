@@ -88,14 +88,30 @@ test('add-pack before any install says to install first; an installed pack is le
   assert.match(again.out, /already installed/);
 });
 
-test('remove-pack keeps a part another pack calls and removes one no pack calls', async () => {
+// A home an earlier ch-local made: every pack's packages in the flat app
+// (packs in place keeps reading it, and removes from it as before).
+const flatDir = (home, name) => path.join(home, 'app', 'node_modules', ...name.split('/'));
+function flatten(home) {
+  const rec = record(home);
+  for (const [pack, p] of Object.entries(rec.packs)) {
+    for (const name of Object.keys(p.packages)) {
+      if (fs.existsSync(flatDir(home, name))) continue;
+      fs.mkdirSync(path.dirname(flatDir(home, name)), {recursive: true});
+      fs.renameSync(pkgDir(home, name, pack), flatDir(home, name));
+    }
+  }
+  fs.rmSync(path.join(home, 'packs'), {recursive: true, force: true});
+}
+
+test('remove-pack in a flat home keeps a part another pack calls and removes one no pack calls', async () => {
   const s = await installed();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
+  flatten(s.home);
   const io = s.io();
   assert.strictEqual(await removePack({pack: 'other'}, io), 0, io.err);
-  assert.ok(!fs.existsSync(pkgDir(s.home, '@countinghouse/ch-pack-other')));
-  assert.ok(!fs.existsSync(pkgDir(s.home, '@countinghouse/ch-step-other')));
-  assert.ok(fs.existsSync(pkgDir(s.home, '@countinghouse/ch-step-redact')), 'ci-failure-triage still calls it');
+  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-pack-other')));
+  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-other')));
+  assert.ok(fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-redact')), 'ci-failure-triage still calls it');
   assert.match(io.out, /kept @countinghouse\/ch-step-redact/);
   assert.deepStrictEqual(Object.keys(record(s.home).packs), ['ci-failure-triage']);
   const io2 = s.io();
@@ -176,9 +192,10 @@ test('a part at another version names a way forward that exists: a clean install
   assert.match(io.err, /install the newer release with `ch-local install --pack ci-failure-triage --from <its directory>`, then add-pack other/);
 });
 
-test('remove-pack records the removal first, so a package that cannot be deleted leaves start working, and says what is left', async () => {
+test('remove-pack in a flat home records the removal first, so a package that cannot be deleted leaves start working, and says what is left', async () => {
   const s = await installed();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
+  flatten(s.home);
   const real = fs.rmSync;
   try {
     fs.rmSync = (p, o) => { if (String(p).endsWith('ch-pack-other')) { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } return real(p, o); };
@@ -189,7 +206,7 @@ test('remove-pack records the removal first, so a package that cannot be deleted
     fs.rmSync = real;
   }
   assert.deepStrictEqual(Object.keys(record(s.home).packs), ['ci-failure-triage'], 'the record no longer lists it');
-  assert.ok(!fs.existsSync(pkgDir(s.home, '@countinghouse/ch-step-other')), 'the rest went');
+  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-other')), 'the rest went');
 });
 
 test('a home made by an earlier development launcher (installed.json only) is told to reinstall', async () => {
@@ -277,4 +294,32 @@ test('a holder in another PID namespace on the same host name is not taken for d
   const tag = lockHost();
   assert.ok(tag.startsWith(require('node:os').hostname()));
   if (process.platform === 'linux') assert.match(tag, /#pid:\[\d+\]$/, 'the PID namespace is part of the host on Linux');
+});
+
+test('a lock is never empty to another ch-local, and an empty one is never taken for stale', async () => {
+  const {withLock} = require('../lib/lock');
+  const home = tmp('ch-home-');
+  const lock = path.join(home, 'packs.lock');
+  fs.writeFileSync(lock, '');
+  const f = fakeIo({env: {}});
+  assert.strictEqual(await withLock({home}, f, async () => 0), 1);
+  assert.ok(fs.existsSync(lock), 'kept');
+  fs.rmSync(lock);
+  let seen = null;
+  assert.strictEqual(await withLock({home}, f, async () => { seen = JSON.parse(fs.readFileSync(lock, 'utf8')); return 0; }), 0);
+  assert.strictEqual(seen.pid, process.pid, 'whole when first seen');
+  assert.ok(!fs.readdirSync(home).some((n) => n.endsWith('.tmp')), 'no temporary file left');
+});
+
+test('another host\'s lock counts while its heartbeat is fresh, and is cleared once it is stale', async () => {
+  const {withLock, STALE_MS} = require('../lib/lock');
+  const home = tmp('ch-home-');
+  const lock = path.join(home, 'packs.lock');
+  fs.writeFileSync(lock, JSON.stringify({pid: 1, host: 'elsewhere', at: 'x'}));
+  const f = fakeIo({env: {}});
+  assert.strictEqual(await withLock({home}, f, async () => 0), 1, 'fresh: held');
+  const old = new Date(Date.now() - STALE_MS - 1000);
+  fs.utimesSync(lock, old, old);
+  assert.strictEqual(await withLock({home}, f, async () => 0), 0, 'stale: cleared');
+  assert.ok(!fs.existsSync(lock));
 });

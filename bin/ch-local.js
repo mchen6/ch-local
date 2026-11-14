@@ -28,6 +28,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local add <cursor|vscode|codex>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
+       ch-local settings [get | set <name> <value> | reset]
        ch-local start --stdio [countinghouse options]
 `;
 
@@ -112,6 +113,12 @@ async function main(argv, io) {
       if (rest[0] !== '--stdio') return usage();
       return await require('../lib/start').start({passThrough: rest.slice(1)}, io);
     }
+    if (command === 'settings') {
+      if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return await require('../lib/settings-command').settings({action: 'get'}, io);
+      if (rest.length === 3 && rest[0] === 'set') return await require('../lib/settings-command').settings({action: 'set', name: rest[1], value: rest[2]}, io);
+      if (rest.length === 1 && rest[0] === 'reset') return await require('../lib/settings-command').settings({action: 'reset'}, io);
+      return usage();
+    }
     if (command === 'upgrade') {
       const a = parse(rest, {values: ['--auto']});
       if (a == null || a.positional.length > 0) return usage();
@@ -171,13 +178,15 @@ function realIo() {
     },
     // The runtime, on this process's own stdin, stdout and stderr: the client's
     // MCP channel goes straight through. -> {kill(signal), exited: Promise<exit code>}.
-    spawn: (cmd, args, {env} = {}) => {
-      const child = require('child_process').spawn(cmd, args, {stdio: 'inherit', env});
+    // control: an IPC fd for the runtime's control channel (packs in place)
+    spawn: (cmd, args, {env, control = false} = {}) => {
+      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env});
       const exited = new Promise((resolve) => {
         child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
         child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
       });
-      return {kill: (signal) => { try { child.kill(signal); } catch (err) { /* already gone */ } }, exited};
+      return {kill: (signal) => { try { child.kill(signal); } catch (err) { /* already gone */ } }, exited, pid: child.pid,
+        ...(control ? {send: (m) => child.send(m), onMessage: (fn) => child.on('message', fn)} : {})};
     }
   };
 }

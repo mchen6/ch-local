@@ -458,3 +458,44 @@ test('a pack that takes only GITHUB_TOKEN gets gh\'s token too, and with none it
   assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token \(above\)/);
   assert.doesNotMatch(g.err, /set GITHUB_TOKEN in the environment your client starts from/);
 });
+
+// The review of ch-local #13's re-check.
+test('a settings file that is not valid stops start, saying why and how to fix it; nothing is spawned', async () => {
+  const home = installedHome();
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh', maxOutputBytes: 1}}));
+  const f = io(home);
+  assert.notStrictEqual(await start({passThrough: []}, f), 0);
+  assert.match(f.err, /maxOutputBytes = 1, which is not allowed: not starting; fix it, or run `ch-local settings reset`/);
+  assert.deepStrictEqual(f.spawned, []);
+});
+
+test('a setting this ch-local does not know is ignored with a warning, and start runs', async () => {
+  const home = installedHome();
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {fromTheFuture: 3, locale: 'zh'}}));
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.match(f.err, /does not know, ignored: fromTheFuture/);
+  assert.strictEqual(valueOf(f.spawned[0].args, '--locale'), 'zh');
+});
+
+test('start waits for an install for as long as it takes, saying so, and never says to remove the lock', async () => {
+  const {lockHost} = require('../lib/lock');
+  const home = installedHome();
+  const lock = path.join(home, 'packs.lock');
+  fs.writeFileSync(lock, JSON.stringify({pid: process.pid, host: lockHost(), at: new Date().toISOString()}));
+  const f = io(home);
+  f.lockProgressMs = 100;
+  setTimeout(() => fs.rmSync(lock), 450);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.match(f.err, /waiting for another ch-local \(pid \d+\) to finish changing this home/);
+  assert.doesNotMatch(f.err, /remove/);
+  assert.strictEqual(f.spawned.length, 1);
+});
+
+test('the requestTimeout setting, in milliseconds, reaches the runtime in seconds', async () => {
+  const home = installedHome();
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 12500}}));
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(valueOf(f.spawned[0].args, '--requestTimeout'), '13');
+});
