@@ -145,6 +145,17 @@ ceiling as start's values are (a cap or timeout clamped, a pack turned on
 that the ceiling forbids left off). Under a ceiling that cannot be trusted, a
 change that loosens is not applied: the settings in effect are kept.
 
+## Never silent
+
+What `start` says about the settings and the ceiling (an outside edit, a
+value clamped, a loosening refused or kept back, a pack not loaded), and
+each loosening a running start applies, goes three ways: on stderr, in the
+history, and to the client as a notice over the control channel, which the
+runtime puts on the next result of any tool and sends as an MCP
+`notifications/message`. Notices found before the runtime is up are sent as
+soon as it is. The notices reach the user through the model; stderr and the
+history are the record it cannot edit.
+
 ## Limits
 
 - `history.jsonl` is a record for the user, not a security boundary: the user

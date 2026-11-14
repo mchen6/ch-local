@@ -20,11 +20,12 @@ const until = async (cond, ms = 10000) => {
 
 // A running start over an installed home, with a runtime that answers each
 // control request with `answer(msg)` (default ok) and runs until end().
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null} = {}) {
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null} = {}) {
   const home = tmp('ch-home-');
   const r = release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs});
   const requests = [];
@@ -290,6 +291,52 @@ test('while running, under a ceiling that cannot be trusted: a change that loose
     await until(() => /cannot be trusted \(it is a symbolic link\): requestTimeout not loosened; the values in effect are kept/.test(s.f.err));
     await until(() => s.requests.some((m) => m.type === 'set'));
     assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 2 * 1024 * 1024]]);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// countinghouse part 3, section 5 (P5): never silent. What start and the
+// in-place applier say about the settings reaches the client as notices.
+const notices = (s) => s.requests.filter((m) => m.type === 'notice').map((m) => [m.module, m.text]);
+
+test('never silent: an outside edit found at start reaches the client once the runtime is up', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({beforeStart: (home) => {
+    const where = layout({COUNTINGHOUSE_HOME: home});
+    setSetting(where, 'maxOutputBytes', '4MiB', {by: 'cli'});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024}}));
+  }});
+  try {
+    await until(() => notices(s).length > 0);
+    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes was changed outside ch-local: 4MiB -> 32MiB (this loosens a guarding setting)']]);
+    assert.match(s.f.err, /maxOutputBytes was changed outside ch-local: 4MiB -> 32MiB/, 'and on stderr');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('never silent: a loosening applied while running is told to the client; a tightening is not', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running();
+  try {
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+    await until(() => notices(s).length > 0);
+    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes loosened from 8MiB to 16MiB']]);
+    setSetting(where, 'requestTimeout', '10s', {by: 'cli'});
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
+    setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+    await until(() => notices(s).length > 1);
+    assert.deepStrictEqual(notices(s).slice(1), [[null, 'autoUpgrade loosened from off to on, at the next start']]);
+    // an outside edit while running, of any setting: told too (spec section 5)
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 16 * 1024 * 1024, requestTimeout: 10000, autoUpgrade: true, locale: 'zh'}}));
+    await until(() => notices(s).some(([, t]) => /locale/.test(t)));
+    assert.deepStrictEqual(notices(s).filter(([, t]) => /locale/.test(t)), [[null, 'locale was changed outside ch-local: en -> zh']]);
   } finally {
     s.end();
     await s.done;
