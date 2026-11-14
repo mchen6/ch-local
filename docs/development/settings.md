@@ -116,7 +116,11 @@ answers anything but a ceiling, fails closed.
   the client refuses the start;
 - `"packs": [names]`, the operator's allowlist: only those packs ever load,
   at start, in place and on install, whatever `settings.json` or the history
-  say; `install` and `packs add` refuse another;
+  say; `install` and `packs add` refuse another. A ceiling that cannot be
+  trusted loads no pack at all, and says why: an operator's mistake (a typo,
+  a PowerShell that timed out, an older reader) is visible, never a lifted
+  list. A first install, with no runtime yet to read the ceiling, goes on,
+  and `start` then applies it;
 - a ceiling that cannot be trusted refuses a start whose settings or flags
   are looser than the defaults.
 
@@ -149,3 +153,6 @@ change that loosens is not applied: the settings in effect are kept.
 - ch-local reads the ceiling with the runtime under `<home>/app/node_modules/
   countinghouse`. Whoever can replace that code is beyond any ceiling, as
   they are beyond the runtime itself.
+
+`ch-local uninstall --keep-data` keeps `settings.json` with the history, so a
+reinstall keeps the user's own tightenings.

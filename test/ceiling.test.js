@@ -17,6 +17,7 @@ const {withSettingsLock} = require('../lib/settings');
 const {uninstall} = require('../lib/uninstall');
 const {outsideEdits, reportOutsideEdits} = require('../lib/outside-edits');
 const {install} = require('../lib/install');
+const {addPack} = require('../lib/packs-command');
 const {start} = require('../lib/start');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm} = require('./install-helpers');
@@ -251,7 +252,7 @@ test('the review of #18: the operator\'s allowlist of packs: an unlisted pack ne
   reader(fresh, trusted({packs: []}));
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: fresh}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 2);
-  assert.match(io.err, /the pack "ci-failure-triage" is not allowed on this machine: its operator's ceiling allows only no pack; nothing was installed/);
+  assert.match(io.err, /the pack "ci-failure-triage" is not allowed on this machine: this machine's operator ceiling allows only no pack; nothing was installed/);
   assert.deepStrictEqual(io.execs, []);
 });
 
@@ -336,15 +337,33 @@ test('the review of P4: a settings file that cannot be read is no outside edit; 
   assert.ok(Date.now() - t < 1000);
 });
 
-test('the review of P4: uninstall --keep-data records the settings file it removes as a reset', async () => {
+test('the review of #18: uninstall --keep-data keeps settings.json with the history, so a reinstall keeps the user\'s own tightenings', async () => {
   const home = tmp('ch-home-');
   const r = release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   const where = layout({COUNTINGHOUSE_HOME: home});
-  setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+  setSetting(where, 'maxOutputBytes', '2MiB', {by: 'cli'});
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, answers: ['yes'], homedir: '/nowhere'});
   assert.strictEqual(await uninstall({keepData: true}, io), 0, io.err);
-  assert.deepStrictEqual(history(home).slice(-1).map((h) => [h.by, h.setting, h.change]), [['uninstall', '*', 'reset']]);
-  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'no edits after a reinstall');
+  assert.strictEqual(readSettings(where).values.maxOutputBytes, 2 * MiB);
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'the history and the file still agree');
+});
+
+test('the review of #18: a ceiling that cannot be trusted loads NO pack, and install refuses, naming the problem', async () => {
+  const UNT = {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'packs is not a list of pack names'};
+  assert.strictEqual(ceilingModule.packAllowed(UNT, 'ci-failure-triage'), false);
+  assert.match(ceilingModule.packRefusal(UNT, 'x'), /the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(packs is not a list of pack names\), so no pack loads/);
+  assert.strictEqual(ceilingModule.packAllowed({state: 'none'}, 'x'), true);
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  reader(home, UNT);
+  const s = await startOnce(home);
+  assert.match(s.err, /not loading ci-failure-triage: the operator's ceiling file .* cannot be trusted \(packs is not a list of pack names\), so no pack loads/);
+  assert.strictEqual(s.args, null);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 2);
+  assert.match(io.err, /the pack "ci-failure-triage" is not allowed on this machine: the operator's ceiling file .* cannot be trusted/);
 });
