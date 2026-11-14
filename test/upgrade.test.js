@@ -83,10 +83,10 @@ test('the automatic-upgrade setting is off by default, stored on request, and as
   try {
     const on = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
     assert.strictEqual(await upgrade({auto: 'on'}, on), 0);
-    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {autoUpgrade: true});
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: true}});
     assert.match(on.out, /runs new code with your keys/);
     assert.strictEqual(await upgrade({auto: 'off'}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}})), 0);
-    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {autoUpgrade: false});
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: false}});
     assert.deepStrictEqual(on.fetches, []);
   } finally {
     s.done();
