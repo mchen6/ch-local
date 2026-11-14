@@ -13,4 +13,4 @@ If the `ci_failure_triage` tool is not available, the launcher is not installed.
 
     npx @countinghouse/ch-local install --pack ci-failure-triage
 
-The tool reads GitHub through a read-only token in `COUNTINGHOUSE_GITHUB_TOKEN` (or `GITHUB_TOKEN`). Never ask the user to paste a token into the conversation; they set it in the environment Claude Code starts from.
+The tool reads GitHub through a token the launcher gets at start: `COUNTINGHOUSE_GITHUB_TOKEN` if the user set one, else the GitHub CLI's (`gh auth token`). Never ask the user to paste a token into the conversation; if the token is missing, ask them to run `gh auth login`.

@@ -19,9 +19,20 @@ The entry has no `type` and no `env` ([Cursor's MCP docs](https://cursor.com/doc
 
 ## Token
 
-The pack reads `COUNTINGHOUSE_GITHUB_TOKEN` (or, failing that,
-`GITHUB_TOKEN`) from the environment Cursor is started from: the server
-inherits it, and no config entry sets it. 
+The launcher asks the GitHub CLI for the token each time it starts
+(`gh auth token`) and holds it in memory: log `gh` in once with
+`gh auth login`. No config entry sets a token, and none is written to a file.
+A token from `gh auth login` carries gh's scopes, which can write to your
+repositories. For a narrower one, set a fine-grained, read-only token
+(Actions read, Contents read) in `COUNTINGHOUSE_GITHUB_TOKEN`: when it is set,
+the launcher uses it and does not ask `gh`.
+
+For headless or CI use, where `gh` is not logged in, the launcher falls back
+to `GITHUB_TOKEN` from the environment Cursor is started from. A token set
+in the environment is plaintext in that client's config, or wherever you set
+it. A client started from the dock or the Start menu may not find `gh` on the
+`PATH` your shell sets.
+
 
 Started from the dock, the Start menu or a desktop icon, Cursor does not
 see what your shell's profile sets: start it from a terminal (`cursor .`), or set

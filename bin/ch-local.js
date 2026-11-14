@@ -141,8 +141,10 @@ function realIo() {
       rl.question(question, (answer) => { resolve(answer); rl.close(); });
       rl.on('close', () => resolve(''));
     }),
-    exec: (cmd, args, {cwd}) => new Promise((resolve) => {
-      const child = require('child_process').spawn(cmd, args, {cwd, stdio: ['ignore', 'pipe', 'pipe']});
+    // env: the child's whole environment (default: this process's); timeout:
+    // ms after which the child is killed (it then answers status null).
+    exec: (cmd, args, {cwd, env, timeout} = {}) => new Promise((resolve) => {
+      const child = require('child_process').spawn(cmd, args, {cwd, env, timeout, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe']});
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (d) => { stdout += d; });
