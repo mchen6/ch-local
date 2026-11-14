@@ -65,7 +65,8 @@ test('add-pack while running: one load request with the pack\'s own tree, creden
   await until(() => s.requests.length === 1);
   const [load] = s.requests;
   assert.strictEqual(load.type, 'load');
-  assert.strictEqual(load.name, 'other');
+  // the runtime knows a pack by its scenario's package name (countinghouse #205)
+  assert.strictEqual(load.name, '@countinghouse/ch-pack-other');
   assert.strictEqual(load.notice, 'other added 0.3.0');
   assert.ok(load.scenario.startsWith(path.join(s.home, 'packs', 'other')), load.scenario);
   assert.ok(fs.existsSync(load.remoteCredentials));
@@ -85,17 +86,17 @@ test('remove-pack while running: one unload request; reinstalling a changed rele
   await until(() => s.requests.length === 1);
   assert.strictEqual(await removePack({pack: 'other'}, s.cmd()), 0);
   await until(() => s.requests.length === 2);
-  assert.deepStrictEqual([s.requests[1].type, s.requests[1].name, s.requests[1].notice], ['unload', 'other', 'other removed']);
+  assert.deepStrictEqual([s.requests[1].type, s.requests[1].name, s.requests[1].notice], ['unload', '@countinghouse/ch-pack-other', 'other removed']);
   const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
   await until(() => s.requests.length === 3);
-  assert.deepStrictEqual([s.requests[2].type, s.requests[2].name, s.requests[2].notice], ['reload', 'ci-failure-triage', 'ci-failure-triage updated 0.1.0 → 0.1.0']);
+  assert.deepStrictEqual([s.requests[2].type, s.requests[2].name, s.requests[2].notice], ['reload', '@countinghouse/ch-pack-ci-failure-triage', 'ci-failure-triage updated 0.1.0 → 0.1.0']);
   s.end();
   await s.done;
 });
 
 test('a refused request is recorded and said, and nothing is marked loaded; a runtime that never answers is a restart', async () => {
-  const s = await running({answer: (m) => (m.name === 'other' ? {ok: false, code: 'PART_VERSION_CONFLICT', message: 'two versions'} : {ok: true})});
+  const s = await running({answer: (m) => (m.name === '@countinghouse/ch-pack-other' ? {ok: false, code: 'PART_VERSION_CONFLICT', message: 'two versions'} : {ok: true})});
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
   await until(() => s.history().length === 1);
   assert.match(s.history()[0].problem, /^PART_VERSION_CONFLICT/);
@@ -120,9 +121,45 @@ test('two changes in quick succession are applied one at a time, in order; the l
   await new Promise((r) => setTimeout(r, 2500));   // past the poll, whatever the watch saw
   const kinds = s.requests.map((m) => `${m.type} ${m.name}`);
   // either both seen (load then unload) or only the final state (nothing to do)
-  assert.ok(JSON.stringify(kinds) === JSON.stringify(['load other', 'unload other']) || kinds.length === 0, JSON.stringify(kinds));
+  assert.ok(JSON.stringify(kinds) === JSON.stringify(['load @countinghouse/ch-pack-other', 'unload @countinghouse/ch-pack-other']) || kinds.length === 0, JSON.stringify(kinds));
   const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
   assert.deepStrictEqual(Object.keys(run.loaded), ['ci-failure-triage']);
+  s.end();
+  await s.done;
+});
+
+// countinghouse #205: the runtime keys the packs it holds by their scenario's
+// package name, those given at start (--loadModule) and those loaded in place
+// alike, and refuses a name it does not hold. A stub runtime that does the
+// same: every change is applied, and a removed pack (gone from packs.json)
+// is still unloaded by its scenario's name.
+test('the runtime is sent each pack\'s scenario package name: loaded at start, added, removed, reloaded', async () => {
+  const held = new Set();
+  let refusals = 0;
+  const s = await running({answer: (m) => {
+    if (!['load', 'unload', 'reload'].includes(m.type)) return {ok: true};
+    if (m.type === 'load') { if (held.has(m.name)) { refusals++; return {ok: false, code: 'CONTROL_FAILED'}; } held.add(m.name); return {ok: true}; }
+    if (!held.has(m.name)) { refusals++; return {ok: false, code: 'CONTROL_FAILED', message: `${m.name} is not loaded`}; }
+    if (m.type === 'unload') held.delete(m.name);
+    return {ok: true};
+  }});
+  // what start loaded, as the runtime names it: each --loadModule's package name
+  const args = s.args();
+  args.forEach((a, i) => { if (args[i - 1] === '--loadModule') held.add(JSON.parse(fs.readFileSync(path.join(a, 'package.json'), 'utf8')).name); });
+  assert.ok(held.has('@countinghouse/ch-pack-ci-failure-triage'), JSON.stringify([...held]));
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+  await until(() => s.requests.filter((m) => m.type !== 'set').length === 1);
+  assert.strictEqual(await removePack({pack: 'other'}, s.cmd()), 0);
+  await until(() => s.requests.filter((m) => m.type !== 'set').length === 2);
+  const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+  await until(() => s.requests.filter((m) => m.type !== 'set').length === 3);
+  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set').map((m) => `${m.type} ${m.name}`),
+    ['load @countinghouse/ch-pack-other', 'unload @countinghouse/ch-pack-other', 'reload @countinghouse/ch-pack-ci-failure-triage']);
+  assert.strictEqual(refusals, 0);
+  await until(() => s.history().length === 3);
+  assert.deepStrictEqual(s.history().map((h) => [h.pack, h.problem]), [['other', undefined], ['other', undefined], ['ci-failure-triage', undefined]],
+    'the history and notices still name the pack');
   s.end();
   await s.done;
 });

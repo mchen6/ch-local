@@ -105,13 +105,13 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   assert.ok(!args.includes('--requestTimeout'), 'none set');
   assert.strictEqual((await cli(home, 'settings', 'set', 'pack.other', 'on')).code, 0);
   for (let i = 0; requests.length < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
-  assert.deepStrictEqual([requests[0].type, requests[0].name], ['load', 'other']);
+  assert.deepStrictEqual([requests[0].type, requests[0].name], ['load', '@countinghouse/ch-pack-other']);
   assert.strictEqual((await cli(home, 'settings', 'set', 'requestTimeout', '15s')).code, 0);
   for (let i = 0; requests.length < 2 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual(requests[1], {type: 'set', name: 'requestTimeout', value: 15, id: requests[1].id});
   assert.strictEqual((await cli(home, 'settings', 'set', 'pack.ci-failure-triage', 'off')).code, 0);
   for (let i = 0; requests.length < 3 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
-  assert.deepStrictEqual([requests[2].type, requests[2].name, requests[2].notice], ['unload', 'ci-failure-triage', 'ci-failure-triage turned off']);
+  assert.deepStrictEqual([requests[2].type, requests[2].name, requests[2].notice], ['unload', '@countinghouse/ch-pack-ci-failure-triage', 'ci-failure-triage turned off']);
   end(0);
   await done;
 });
