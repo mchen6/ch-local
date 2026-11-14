@@ -175,3 +175,14 @@ test('a live requestTimeout change is sent in the runtime\'s unit, seconds', asy
   s.end();
   await s.done;
 });
+
+test('a live locale change is sent as the runtime\'s locale', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running();
+  setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'locale', 'zh', {by: 'cli'});
+  await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['locale', 'zh-CN']]);
+  s.end();
+  await s.done;
+});
