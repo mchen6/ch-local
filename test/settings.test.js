@@ -16,7 +16,14 @@ const {start} = require('../lib/start');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm} = require('./install-helpers');
 
-const cli = async (home, ...argv) => { const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}}); const code = await main(argv, io); return {code, io}; };
+// the user at a terminal, who answers yes to a loosening (part 3: asked there;
+// test/ceiling.test.js has the rest)
+const cli = async (home, ...argv) => {
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {interactive: true});
+  io.ask = async (q) => { io.asked.push(q); return 'y'; };
+  const code = await main(argv, io);
+  return {code, io};
+};
 const history = (home) => fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
 // On Windows the sandbox setting has only audit (countinghouse#195), so
