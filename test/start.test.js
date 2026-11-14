@@ -428,7 +428,7 @@ test('an explicit COUNTINGHOUSE_GITHUB_TOKEN is the user\'s choice (often narrow
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(f.spawned[0].env.COUNTINGHOUSE_GITHUB_TOKEN, plain);
   assert.deepStrictEqual(f.execs.filter((e) => e.cmd === 'gh'), []);
-  assert.match(f.err, /COUNTINGHOUSE_GITHUB_TOKEN from the environment \(plaintext in that client's config\)/);
+  assert.match(f.err, /using COUNTINGHOUSE_GITHUB_TOKEN from the environment; if a client's config sets it, it is stored there in plaintext/);
   assert.ok(!f.err.includes(plain));
 });
 
@@ -438,7 +438,7 @@ test('the environment fallback: with gh unavailable, GITHUB_TOKEN from the clien
     const f = withExec(io(installedHome(), {env: {GITHUB_TOKEN: plain}}), ghAnswers(answer));
     assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
     assert.strictEqual(f.spawned[0].env.GITHUB_TOKEN, plain);
-    assert.match(f.err, /using GITHUB_TOKEN from the environment \(plaintext in that client's config\)/);
+    assert.match(f.err, /using GITHUB_TOKEN from the environment; if a client's config sets it, it is stored there in plaintext/);
     assert.ok(!f.err.includes(plain));
   }
 });
