@@ -55,6 +55,10 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
 test('start spawns its runtime with the control channel', async () => {
   const s = await running();
   assert.deepStrictEqual(s.args().slice(s.args().indexOf('--controlChannel'), s.args().indexOf('--controlChannel') + 2), ['--controlChannel', 'ipc']);
+  // where a pack loaded in place may be (countinghouse #205): the pack trees,
+  // and the flat app an earlier ch-local made
+  const roots = s.args().flatMap((a, i) => (s.args()[i - 1] === '--packsRoot' ? [a] : []));
+  assert.deepStrictEqual(roots, [path.join(s.home, 'packs'), path.join(s.home, 'app')]);
   s.end();
   assert.strictEqual(await s.done, 0);
 });
@@ -70,6 +74,7 @@ test('add-pack while running: one load request with the pack\'s own tree, creden
   assert.strictEqual(load.notice, 'other added 0.3.0');
   assert.ok(load.scenario.startsWith(path.join(s.home, 'packs', 'other')), load.scenario);
   assert.ok(fs.existsSync(load.remoteCredentials));
+  assert.ok(!('deviceConfigDir' in load), 'the runtime uses its own --deviceConfigPath');
   await until(() => s.history().length === 1);
   assert.deepStrictEqual((({pack, change, notice, by}) => ({pack, change, notice, by}))(s.history()[0]), {pack: 'other', change: 'added', notice: 'other added 0.3.0', by: 'start'});
   assert.ok(!JSON.stringify(s.history()).includes('secret'), 'never a value');
