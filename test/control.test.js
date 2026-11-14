@@ -60,3 +60,24 @@ test('the teller: said at once, told once the channel is attached, and a notice 
   await tick();
   assert.ok(said.includes('the client was not told: lost? (CONTROL_UNKNOWN)'), said.join('\n'));
 });
+
+test('the teller: a control whose request rejects, or throws, is said on stderr; nothing is left unhandled', async () => {
+  const said = [];
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const rejecting = teller((s) => said.push(s));
+    rejecting.attach({request: () => Promise.reject(Object.assign(new Error('gone'), {code: 'ERR_IPC_CHANNEL_CLOSED'}))});
+    rejecting.tell('one');
+    const throwing = teller((s) => said.push(s));
+    throwing.attach({request: () => { throw Object.assign(new Error('no'), {code: 'EPIPE'}); }});
+    throwing.tell('two');
+    await tick(50);
+    assert.ok(said.includes('the client was not told: one (ERR_IPC_CHANNEL_CLOSED)'), said.join('\n'));
+    assert.ok(said.includes('the client was not told: two (EPIPE)'), said.join('\n'));
+    assert.deepStrictEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});

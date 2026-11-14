@@ -360,3 +360,20 @@ test('never silent, told once: a clamp start found is not told again by the appl
     await s.done;
   }
 });
+
+test('never silent: a runtime whose control request fails does not end start; what was not told is said', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  // the runtime's reply to a notice: a failure
+  const s = await running({answer: (m) => (m.type === 'notice' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  try {
+    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+    await until(() => /the client was not told: maxOutputBytes loosened from 8MiB to 16MiB \(CONTROL_FAILED\)/.test(s.f.err));
+    // start runs on: a later change is still applied
+    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'locale', 'zh', {by: 'cli'});
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
