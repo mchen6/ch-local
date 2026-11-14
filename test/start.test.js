@@ -40,8 +40,10 @@ function repo(origin) {
   return path.join(top, 'src', 'deep');
 }
 
-function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/octo/widgets.git', exit = 0, cwd} = {}) {
+// platform: Linux unless a test asks for another (the sandbox option differs on win32).
+function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/octo/widgets.git', exit = 0, cwd, platform = 'linux'} = {}) {
   const f = fakeIo({env: {...env, COUNTINGHOUSE_HOME: home}, homedir: '/nowhere'});
+  f.platform = platform;
   f.pid = 4242;
   f.hostname = 'box-1';
   f.cwd = cwd !== undefined ? cwd : repo(origin);
@@ -515,4 +517,24 @@ test('the locale setting reaches the runtime as its own locale: en-US or zh-CN',
     assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
     assert.strictEqual(valueOf(f.spawned[0].args, '--locale'), passed);
   }
+});
+
+// countinghouse refuses --moduleSandbox enforce on Windows until a module's
+// identity is designed for Windows file URLs (countinghouse#195): start
+// passes audit there, and refuses an explicit enforce before starting anything.
+test('on Windows start passes --moduleSandbox audit, and refuses an explicit enforce with the runtime\'s words, starting nothing', async () => {
+  const home = installedHome();
+  const f = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(valueOf(f.spawned[0].args, '--moduleSandbox'), 'audit');
+  assert.strictEqual(f.spawned[0].args.filter((a) => a.startsWith('--moduleSandbox')).length, 1);
+  for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
+    const g = io(home, {platform: 'win32'});
+    assert.notStrictEqual(await start({passThrough}, g), 0);
+    assert.strictEqual(g.spawned.length, 0, 'nothing started');
+    assert.match(g.err, /--moduleSandbox enforce is not available on Windows yet: .*countinghouse\/issues\/195\)\. Use --moduleSandbox audit, the Windows mode for now\./);
+  }
+  const h = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: ['--moduleSandbox', 'audit']}, h), 0, h.err);
+  assert.strictEqual(valueOf(h.spawned[0].args, '--moduleSandbox'), 'audit');
 });
