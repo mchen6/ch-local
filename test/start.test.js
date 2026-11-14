@@ -475,7 +475,7 @@ test('a setting this ch-local does not know is ignored with a warning, and start
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.match(f.err, /does not know, ignored: fromTheFuture/);
-  assert.strictEqual(valueOf(f.spawned[0].args, '--locale'), 'zh');
+  assert.strictEqual(valueOf(f.spawned[0].args, '--locale'), 'zh-CN', 'the runtime\'s locale');
 });
 
 test('start waits for an install for as long as it takes, saying so, and never says to remove the lock', async () => {
@@ -498,4 +498,21 @@ test('the requestTimeout setting, in milliseconds, reaches the runtime in second
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(valueOf(f.spawned[0].args, '--requestTimeout'), '13');
+});
+
+test('start gives the runtime the settings file countinghouse_settings changes', async () => {
+  const home = installedHome();
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(valueOf(f.spawned[0].args, '--settingsFile'), path.join(home, 'settings.json'));
+});
+
+test('the locale setting reaches the runtime as its own locale: en-US or zh-CN', async () => {
+  for (const [stored, passed] of [['zh', 'zh-CN'], ['en', 'en-US']]) {
+    const home = installedHome();
+    fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: stored}}));
+    const f = io(home);
+    assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+    assert.strictEqual(valueOf(f.spawned[0].args, '--locale'), passed);
+  }
 });

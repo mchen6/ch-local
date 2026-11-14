@@ -22,9 +22,14 @@ When it is read:
   - `set` refuses until the file is fixed or `ch-local settings reset` removes
     it.
 
-`requestTimeout` is stored in milliseconds. countinghouse's `--requestTimeout`
-option and a live `set` over the control channel take seconds,
-`Math.ceil(ms / 1000)`.
+ch-local start passes the file to countinghouse as `--settingsFile`.
+
+Two settings are stored in a different unit from the one countinghouse's
+option and a live `set` over the control channel take:
+
+- `requestTimeout` is stored in milliseconds, and passed in seconds,
+  `Math.ceil(ms / 1000)`;
+- `locale` is stored as `en` or `zh`, and passed as `en-US` or `zh-CN`.
 
 ## The lock
 
