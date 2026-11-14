@@ -55,10 +55,10 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
 test('start spawns its runtime with the control channel', async () => {
   const s = await running();
   assert.deepStrictEqual(s.args().slice(s.args().indexOf('--controlChannel'), s.args().indexOf('--controlChannel') + 2), ['--controlChannel', 'ipc']);
-  // where a pack loaded in place may be (countinghouse #205): the pack trees,
-  // and the flat app an earlier ch-local made
+  // where a pack loaded in place may be (countinghouse #205): the pack trees
+  // only, never the app, which holds the runtime and its dependencies
   const roots = s.args().flatMap((a, i) => (s.args()[i - 1] === '--packsRoot' ? [a] : []));
-  assert.deepStrictEqual(roots, [path.join(s.home, 'packs'), path.join(s.home, 'app')]);
+  assert.deepStrictEqual(roots, [path.join(s.home, 'packs')]);
   s.end();
   assert.strictEqual(await s.done, 0);
 });
@@ -165,6 +165,24 @@ test('the runtime is sent each pack\'s scenario package name: loaded at start, a
   await until(() => s.history().length === 3);
   assert.deepStrictEqual(s.history().map((h) => [h.pack, h.problem]), [['other', undefined], ['other', undefined], ['ci-failure-triage', undefined]],
     'the history and notices still name the pack');
+  s.end();
+  await s.done;
+});
+
+// A pack found only in the flat layout an earlier ch-local made (its tree
+// gone) is outside --packsRoot: it is not loaded in place, and the user is
+// told to run ch-local install, which places its tree.
+test('a pack only in the flat layout is not loaded in place: said and recorded, "run ch-local install"', async () => {
+  const s = await running();
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+  await until(() => s.requests.filter((m) => m.type !== 'set').length === 1);
+  fs.rmSync(path.join(s.home, 'packs', 'other'), {recursive: true, force: true});
+  const record = path.join(s.home, 'packs.json');
+  fs.writeFileSync(record, fs.readFileSync(record));   // the same record, written again: start looks
+  await until(() => s.history().some((h) => h.pack === 'other' && h.problem != null));
+  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set').map((m) => m.type), ['load'], 'nothing sent for the flat one');
+  assert.match(s.history().find((h) => h.problem != null).problem, /ch-local install/);
+  assert.match(s.f.err, /other not loaded in place: .*run `ch-local install`/);
   s.end();
   await s.done;
 });
