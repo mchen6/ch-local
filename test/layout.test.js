@@ -58,14 +58,14 @@ test('add-pack puts the second pack in its own tree, with its own copy of a part
   assert.deepStrictEqual(installedPacks(s.where).map((p) => [p.name, p.version]), [['ci-failure-triage', '0.1.0'], ['other', '0.3.0']]);
 });
 
-test('remove-pack drops the pack from the record and leaves its tree for collection (a running start may use it)', async () => {
+test('remove-pack drops the pack from the record; with no running start using its tree, the tree is collected (task B2; gc.test.js keeps one a start uses)', async () => {
   const s = await installed();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
   const otherTree = tree(s.home, 'other');
   const io = s.io();
   assert.strictEqual(await removePack({pack: 'other'}, io), 0, io.err);
   assert.deepStrictEqual(Object.keys(record(s.home).packs), ['ci-failure-triage']);
-  assert.ok(fs.existsSync(path.join(otherTree, '@countinghouse', 'ch-pack-other', 'package.json')));
+  assert.ok(!fs.existsSync(otherTree));
 });
 
 test('a home made before (its packs in the flat app) still names each pack\'s directory there', async () => {
