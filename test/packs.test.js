@@ -94,3 +94,14 @@ test('loadablePacks leaves out a pack missing a credential and names its variabl
   assert.deepStrictEqual(r.missing, [{name: 'other', variables: ['OTHER_TOKEN']}]);
   assert.ok(!JSON.stringify(r).includes('secret'));
 });
+
+test('a record whose pack names or versions are not a release\'s is refused: they become directory names', () => {
+  const home = tmp('ch-local-home-');
+  const where = {packs: path.join(home, 'packs.json'), app: path.join(home, 'app'), packsDir: path.join(home, 'packs')};
+  for (const packs of [{'../escape': {packages: {'@countinghouse/ch-pack-x': '0.1.0'}, credentials: []}},
+    {x: {packages: {'@countinghouse/ch-pack-x': '../../0.1.0'}, credentials: []}},
+    {x: {packages: {'../../evil': '0.1.0'}, credentials: []}}]) {
+    fs.writeFileSync(where.packs, JSON.stringify({runtime: {versions: {}}, packs}));
+    assert.throws(() => installedPacks(where), /not a ch-local record/, JSON.stringify(packs));
+  }
+});

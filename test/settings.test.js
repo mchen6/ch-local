@@ -90,6 +90,7 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   assert.match(f.err, /not loading other: it is turned off/);
   assert.deepStrictEqual(args.slice(args.indexOf('--maxOutputBytes'), args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(16 * 1024 * 1024)]);
   assert.strictEqual(args.filter((a) => a === '--locale').length, 1, 'the client\'s own --locale only');
+  assert.ok(!args.includes('--requestTimeout'), 'none set');
   assert.strictEqual((await cli(home, 'settings', 'set', 'pack.other', 'on')).code, 0);
   for (let i = 0; requests.length < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual([requests[0].type, requests[0].name], ['load', 'other']);
@@ -101,4 +102,39 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   assert.deepStrictEqual([requests[2].type, requests[2].name, requests[2].notice], ['unload', 'ci-failure-triage', 'ci-failure-triage turned off']);
   end(0);
   await done;
+});
+
+test('settings set takes the settings lock: a change under way makes it wait, then say so; nothing is written', async () => {
+  const home = tmp('ch-home-');
+  fs.writeFileSync(path.join(home, 'settings.lock'), JSON.stringify({pid: process.pid, at: Date.now()}));
+  const r = await cli(home, 'settings', 'set', 'locale', 'zh');
+  assert.strictEqual(r.code, 1);
+  assert.match(r.io.err, /another change to the settings is under way/);
+  assert.ok(!fs.existsSync(path.join(home, 'settings.json')));
+});
+
+test('settings fail closed: a file that cannot be read, or holds a value not allowed, is refused, never part-applied', async () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  for (const [text, why] of [['{not json', /is not JSON/], [JSON.stringify({version: 1, values: {'pack.x': 'off'}}), /has pack\.x = "off", which is not allowed/],
+    [JSON.stringify({version: 1, values: {maxOutputBytes: 1}}), /maxOutputBytes = 1, which is not allowed/], [JSON.stringify({version: 2, values: {}}), /not a version 1 settings file/]]) {
+    fs.writeFileSync(path.join(home, 'settings.json'), text);
+    const read = readSettings(where);
+    assert.deepStrictEqual(read.values, {});
+    assert.match(read.error, why);
+    const r = await cli(home, 'settings', 'set', 'locale', 'zh');
+    assert.strictEqual(r.code, 1);
+    assert.match(r.io.err, /fix or remove it first/);
+  }
+});
+
+test('a change is recorded before it is made: an unwritable history refuses it; a loosening is flagged in the history', async () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  fs.mkdirSync(path.join(home, 'history.jsonl'));   // cannot be appended to
+  assert.throws(() => setSetting(where, 'locale', 'zh', {by: 'cli'}), {code: 'SETTING_NOT_RECORDED'});
+  assert.ok(!fs.existsSync(path.join(home, 'settings.json')));
+  fs.rmdirSync(path.join(home, 'history.jsonl'));
+  setSetting(where, 'moduleSandbox', 'audit', {by: 'cli', mayLoosen: true});
+  assert.deepStrictEqual((({setting, loosened, by}) => ({setting, loosened, by}))(history(home)[0]), {setting: 'moduleSandbox', loosened: true, by: 'cli'});
 });

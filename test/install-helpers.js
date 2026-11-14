@@ -26,7 +26,10 @@ const api = (tool) => JSON.stringify({device: {friendlyName: tool, serviceList: 
 function release({versions = {}, extra = {}} = {}) {
   const from = tmp('ch-release-');
   const pins = {};
-  for (const [name, version] of RUNTIME) {
+  for (const [name, pinned] of RUNTIME) {
+    // versions may move a runtime package too (but ch-local's own, which the
+    // npm stub installs at its fixed version)
+    const version = (name !== '@countinghouse/ch-local' && versions[name]) || pinned;
     const bytes = Buffer.from(`fake tarball of ${name}@${version}`);
     fs.writeFileSync(path.join(from, tarballName(name, version)), bytes);
     pins[name] = {version, integrity: integrityOf(bytes)};

@@ -67,3 +67,18 @@ test('weekly waits a week; never never checks; a failed check is said, recorded,
   assert.ok(failed.r.failed);
   assert.match(failed.said[0], /^automatic upgrade check failed \(the npm registry answered 503/);
 });
+
+test('a registry that never answers is abandoned at the timeout and tried again an hour later; one start checks at a time', async () => {
+  const {where} = await home();
+  setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+  const hang = (url, opts) => new Promise((resolve, reject) => { opts.signal.addEventListener('abort', () => reject(new Error('aborted'))); });
+  const now = Date.now();
+  const io = Object.assign(fakeIo({fetch: hang}), {pid: 1});
+  const said = [];
+  const r = await autoCheck({where, io, say: (x) => said.push(x), host: 'box', now, timeoutMs: 100});
+  assert.match(r.failed, /no answer within 0\.1 s/);
+  assert.strictEqual((await run(where, {}, now + 30 * 60 * 1000)).r.why, 'not due', 'not within the hour');
+  assert.strictEqual((await run(where, {}, now + 61 * 60 * 1000)).r.checked, true, 'an hour later');
+  fs.writeFileSync(path.join(where.home, 'upgrade-check.lock'), String(now + 2 * 24 * 60 * 60 * 1000));
+  assert.strictEqual((await run(where, {}, now + 2 * 24 * 60 * 60 * 1000 + 1000)).r.why, 'another start is checking');
+});

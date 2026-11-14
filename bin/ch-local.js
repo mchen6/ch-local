@@ -184,7 +184,7 @@ function realIo() {
         child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
         child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
       });
-      return {kill: (signal) => { try { child.kill(signal); } catch (err) { /* already gone */ } }, exited,
+      return {kill: (signal) => { try { child.kill(signal); } catch (err) { /* already gone */ } }, exited, pid: child.pid,
         ...(control ? {send: (m) => child.send(m), onMessage: (fn) => child.on('message', fn)} : {})};
     }
   };

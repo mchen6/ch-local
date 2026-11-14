@@ -20,7 +20,7 @@ const until = async (cond, ms = 10000) => {
 
 // A running start over an installed home, with a runtime that answers each
 // control request with `answer(msg)` (default ok) and runs until end().
-async function running({answer = () => ({ok: true}), timeoutMs} = {}) {
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null} = {}) {
   const home = tmp('ch-home-');
   const r = release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
@@ -33,6 +33,7 @@ async function running({answer = () => ({ok: true}), timeoutMs} = {}) {
   let spawnedArgs = null;
   f.spawn = (c, args) => {
     spawnedArgs = args;
+    if (duringSpawn != null) duringSpawn(home);
     return {
       kill: () => {},
       exited: new Promise((resolve) => { end = resolve; }),
@@ -44,7 +45,7 @@ async function running({answer = () => ({ok: true}), timeoutMs} = {}) {
       onMessage: (fn) => { listener = fn; }
     };
   };
-  const done = start({passThrough: []}, f);
+  const done = start({passThrough}, f);
   await until(() => end != null);
   const runDir = () => path.join(home, 'run', fs.readdirSync(path.join(home, 'run'))[0]);
   return {home, r, f, requests, cmd, done, args: () => spawnedArgs, end: () => end(0), runDir,
@@ -122,6 +123,44 @@ test('two changes in quick succession are applied one at a time, in order; the l
   assert.ok(JSON.stringify(kinds) === JSON.stringify(['load other', 'unload other']) || kinds.length === 0, JSON.stringify(kinds));
   const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
   assert.deepStrictEqual(Object.keys(run.loaded), ['ci-failure-triage']);
+  s.end();
+  await s.done;
+});
+
+test('a change that cannot be applied in place is said, never fatal: start runs on', async () => {
+  const s = await running();
+  // its run directory replaced by a file: nothing can be written in it now
+  const dir = s.runDir();
+  fs.rmSync(dir, {recursive: true, force: true});
+  fs.writeFileSync(dir, 'not a directory');
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+  await until(() => /could not be applied in place|not applied in place/.test(s.f.err));
+  s.end();
+  assert.strictEqual(await s.done, 0);
+});
+
+test('a setting changed between start reading the home and watching it is still applied; one the client passes itself stands', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({passThrough: ['--locale', 'en'],
+    duringSpawn: (home) => setSetting(layout({COUNTINGHOUSE_HOME: home}), 'maxOutputBytes', '4MiB', {by: 'cli'})});
+  await until(() => s.requests.some((m) => m.type === 'set'));
+  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 4 * 1024 * 1024]]);
+  setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'locale', 'zh', {by: 'cli'});
+  await until(() => /locale set to zh: your client passes --locale itself/.test(s.f.err));
+  assert.ok(!s.requests.some((m) => m.type === 'set' && m.name === 'locale'), 'never sent');
+  s.end();
+  await s.done;
+});
+
+test('after a runtime update, packs are not loaded or reloaded into the old runtime: said once, and recorded', async () => {
+  const s = await running();
+  const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0', countinghouse: '8.0.1'}});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+  await until(() => /a runtime update applies at the next start/.test(s.f.err));
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'reload' || m.type === 'load'), []);
+  assert.strictEqual(s.history().filter((e) => e.change === 'runtime update').length, 1);
   s.end();
   await s.done;
 });
