@@ -497,7 +497,7 @@ test('the requestTimeout setting, in milliseconds, reaches the runtime in second
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 12500}}));
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.strictEqual(valueOf(f.spawned[0].args, '--requestTimeout'), '13');
+  assert.strictEqual(valueOf(f.spawned[0].args, '--requestTimeout'), '12', 'rounded down: never looser than asked');
 });
 
 test('start gives the runtime the settings file countinghouse_settings changes', async () => {
