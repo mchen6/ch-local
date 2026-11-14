@@ -222,7 +222,7 @@ test('start gives the runtime the defaultRepo device config from the origin remo
     await start({passThrough: []}, f);
     // The runtime keys a device config by the package name (module-manager getModuleInfoFromPath).
     assert.deepStrictEqual(f.spawned[0].config, {'@countinghouse/ch-pack-ci-failure-triage.json': {defaultRepo: 'octo/widgets'}}, origin);
-    assert.deepStrictEqual(f.execs, [], 'no git process: the config is read');
+    assert.deepStrictEqual(f.execs.filter((e) => e.cmd === 'git'), [], 'no git process: the config is read');
   }
   const f = io(installedHome(), {origin: null});
   assert.strictEqual(await start({passThrough: []}, f), 0, 'no origin: the pack asks for repo instead');
@@ -287,7 +287,9 @@ test('start names the credential variable and never prints a value; with none pr
   const none = io(home, {env: {}});
   assert.strictEqual(await start({passThrough: []}, none), 1);
   assert.strictEqual(none.spawned.length, 0);
-  assert.match(none.err, /COUNTINGHOUSE_GITHUB_TOKEN or GITHUB_TOKEN/);
+  // why: gh gave no token and the environment has none (gh auth login, or the plaintext fallback)
+  assert.match(none.err, /run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
+  assert.match(none.err, /not loading ci-failure-triage: it needs the GitHub token/);
 });
 
 test('start with nothing installed says to install, and starts nothing', async () => {
@@ -362,4 +364,97 @@ test('the CLI takes add-pack, remove-pack, status and install --unreleased-pins'
   r = await run(['install', '--pack', 'ci-failure-triage', '--from', '/x', '--unreleased-pins', path.join(home, 'missing.json')]);
   assert.strictEqual(r.code, 2); assert.match(r.f.err, /--unreleased-pins is for development: set CH_LOCAL_DEV=1/);
   for (const bad of [['add-pack'], ['remove-pack'], ['status', 'x'], ['add-pack', 'a', 'b']]) assert.strictEqual((await run(bad)).code, 2, bad.join(' '));
+});
+
+// The GitHub token from `gh auth token` (Matt, 2026-11-13): read at start,
+// held in memory, given to the runtime in its environment only; a plaintext
+// environment value is the fallback for headless and CI use. No token value
+// is ever written to a file or said. Values are made here, never literals.
+const crypto = require('node:crypto');
+const madeToken = () => `t${crypto.randomBytes(12).toString('hex')}`;
+const ghAnswers = (answer) => async (cmd, args) => (cmd === 'gh' ? answer : {status: 0, stdout: '', stderr: ''});
+// Every file under dir, as text.
+const filesUnder = (dir) => {
+  const out = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, {withFileTypes: true})) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else out.push(fs.readFileSync(p, 'utf8')); } };
+  if (fs.existsSync(dir)) walk(dir);
+  return out;
+};
+const withExec = (f, exec) => { f.exec = async (cmd, args, opts) => { f.execs.push({cmd, args, opts}); return exec(cmd, args, opts); }; return f; };
+
+test('start asks gh for the GitHub token and gives it to the runtime in its environment only, never in a file or a line', async () => {
+  const home = installedHome();
+  const token = madeToken();
+  const plain = madeToken();
+  const f = withExec(io(home, {env: {GITHUB_TOKEN: plain, GH_TOKEN: plain}}), ghAnswers({status: 0, stdout: `${token}\n`, stderr: ''}));
+  let during = [];
+  f.duringRun = () => { during = filesUnder(home); };
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const gh = f.execs.filter((e) => e.cmd === 'gh');
+  assert.deepStrictEqual(gh.map((e) => e.args), [['auth', 'token', '--hostname', 'github.com']]);
+  // gh would answer these before its own login: it runs without them, and is killed past its timeout
+  for (const v of ['GH_TOKEN', 'GITHUB_TOKEN']) assert.strictEqual(gh[0].opts.env[v], undefined, v);
+  assert.ok(gh[0].opts.timeout > 0);
+  const {env, remoteCredentials, config} = f.spawned[0];
+  assert.strictEqual(env.COUNTINGHOUSE_GITHUB_TOKEN, token);
+  assert.strictEqual(env.GITHUB_TOKEN, undefined, 'the plaintext fallback is not passed when gh gave a token');
+  assert.deepStrictEqual(Object.values(remoteCredentials), [['COUNTINGHOUSE_GITHUB_TOKEN']]);
+  assert.match(f.err, /GitHub token from `gh auth token`, held in memory/);
+  for (const text of [f.err, f.out, JSON.stringify(config), JSON.stringify(remoteCredentials), ...during, ...filesUnder(home)]) {
+    assert.ok(!text.includes(token) && !text.includes(plain), 'no token value is written or said');
+  }
+});
+
+test('gh not installed and no token in the environment: nothing starts, and the message names gh auth login and the plaintext fallback', async () => {
+  const f = withExec(io(installedHome(), {env: {}}), ghAnswers({status: null, stdout: '', stderr: 'spawn gh ENOENT'}));
+  assert.strictEqual(await start({passThrough: []}, f), 1);
+  assert.strictEqual(f.spawned.length, 0);
+  assert.match(f.err, /gh, the GitHub CLI, was not found or did not answer/);
+  assert.match(f.err, /`gh auth login`/);
+  assert.match(f.err, /plaintext in that client's config/);
+});
+
+test('gh not logged in: a plain message naming gh auth login, and gh\'s own output is never repeated', async () => {
+  const leaked = madeToken();
+  const f = withExec(io(installedHome(), {env: {}}), ghAnswers({status: 1, stdout: '', stderr: `no oauth token found for github.com ${leaked}`}));
+  assert.strictEqual(await start({passThrough: []}, f), 1);
+  assert.match(f.err, /gh is not logged in to github\.com: run `gh auth login`/);
+  assert.ok(!f.err.includes(leaked) && !f.err.includes('no oauth token'), f.err);
+});
+
+test('an explicit COUNTINGHOUSE_GITHUB_TOKEN is the user\'s choice (often narrower than gh\'s): used as is, gh not asked, named as plaintext', async () => {
+  const plain = madeToken();
+  const f = withExec(io(installedHome(), {env: {COUNTINGHOUSE_GITHUB_TOKEN: plain}}), ghAnswers({status: 0, stdout: `${madeToken()}\n`, stderr: ''}));
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(f.spawned[0].env.COUNTINGHOUSE_GITHUB_TOKEN, plain);
+  assert.deepStrictEqual(f.execs.filter((e) => e.cmd === 'gh'), []);
+  assert.match(f.err, /using COUNTINGHOUSE_GITHUB_TOKEN from the environment; if a client's config sets it, it is stored there in plaintext/);
+  assert.ok(!f.err.includes(plain));
+});
+
+test('the environment fallback: with gh unavailable, GITHUB_TOKEN from the client\'s environment is used and named as plaintext', async () => {
+  const plain = madeToken();
+  for (const answer of [{status: null, stdout: '', stderr: ''}, {status: 1, stdout: '', stderr: ''}, {status: 0, stdout: 'not a token value\n', stderr: ''}]) {
+    const f = withExec(io(installedHome(), {env: {GITHUB_TOKEN: plain}}), ghAnswers(answer));
+    assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+    assert.strictEqual(f.spawned[0].env.GITHUB_TOKEN, plain);
+    assert.match(f.err, /using GITHUB_TOKEN from the environment; if a client's config sets it, it is stored there in plaintext/);
+    assert.ok(!f.err.includes(plain));
+  }
+});
+
+test('a pack that takes only GITHUB_TOKEN gets gh\'s token too, and with none it says it needs the GitHub token, once', async () => {
+  const home = installedHome();
+  const packsJson = path.join(home, 'packs.json');
+  const record = JSON.parse(fs.readFileSync(packsJson, 'utf8'));
+  record.packs['ci-failure-triage'].credentials = ['GITHUB_TOKEN'];
+  fs.writeFileSync(packsJson, JSON.stringify(record));
+  const token = madeToken();
+  const f = withExec(io(home, {env: {}}), ghAnswers({status: 0, stdout: `${token}\n`, stderr: ''}));
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.ok(Object.values(f.spawned[0].env).includes(token));
+  const g = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
+  assert.strictEqual(await start({passThrough: []}, g), 1);
+  assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token \(above\)/);
+  assert.doesNotMatch(g.err, /set GITHUB_TOKEN in the environment your client starts from/);
 });

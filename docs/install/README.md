@@ -25,7 +25,17 @@ client started from the dock or the Start menu often has no `PATH` set up by
 nvm. An nvm or system Node upgrade changes that path: run `ch-local snippet
 <client>` again and replace the entry.
 
-The pack reads GitHub with a read-only token in `COUNTINGHOUSE_GITHUB_TOKEN`
-(or, failing that, `GITHUB_TOKEN`), from the environment the client is started
-from. No entry sets it; only Codex's lists the two names, because Codex does
-not pass its environment on by default.
+The launcher asks the GitHub CLI for the token each time it starts
+(`gh auth token`) and holds it in memory: log `gh` in once with
+`gh auth login`. No config entry sets a token, and none is written to a file.
+A token from `gh auth login` carries gh's scopes, which can write to your
+repositories. For a narrower one, set a fine-grained, read-only token
+(Actions read, Contents read) in `COUNTINGHOUSE_GITHUB_TOKEN`: when it is set,
+the launcher uses it and does not ask `gh`.
+
+For headless or CI use, where `gh` is not logged in, the launcher falls back
+to `GITHUB_TOKEN` from the environment the client is started from. A token set
+in the environment is plaintext in that client's config, or wherever you set
+it. A client started from the dock or the Start menu may not find `gh` on the
+`PATH` your shell sets. Only Codex's entry lists the two
+variable names, because Codex does not pass its environment on by default.
