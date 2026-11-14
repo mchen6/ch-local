@@ -82,7 +82,7 @@ test('a value changed while the user was asked is not overwritten', async () => 
 
 test('the operator\'s ceiling, from the installed runtime\'s reader: above it, forbidden, or untrusted, refused before anything is asked', async () => {
   const home = tmp('ch-home-');
-  reader(home, trusted({maxOutputBytes: 4 * MiB, forbid: ['autoUpgrade', 'packs']}));
+  reader(home, trusted({maxOutputBytes: 4 * MiB, forbid: ['autoUpgrade'], packs: ['ci-failure-triage']}));
   const above = await run(home, ['settings', 'set', 'maxOutputBytes', '16MiB']);
   assert.strictEqual(above.code, 2);
   assert.match(above.io.err, /maxOutputBytes 16MiB is above the ceiling this machine's operator set \(at most 4MiB\); nothing was changed/);
@@ -199,7 +199,7 @@ test('start: says an outside edit and the ceiling\'s clamps, passes the clamped 
   const refused = await go();
   assert.strictEqual(refused.code, 1, refused.err);
   assert.strictEqual(refused.args, null, 'nothing spawned');
-  assert.match(refused.err, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting; fix the file, or `ch-local settings reset`/);
+  assert.match(refused.err, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting; the operator fixes the file, or the settings are tightened back/);
 });
 
 test('the review of P4: no reader on Windows looks where ProgramData really is too; the reader is asked once while nothing changes', () => {
@@ -225,24 +225,101 @@ module.exports = {ceilingFile: () => ${JSON.stringify(path.join(home, 'ceiling.j
   assert.strictEqual(asked(), 2, 'the ceiling file changed: asked again');
 });
 
+const startOnce = async (home) => {
+  const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret'}, homedir: '/nowhere'});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
+  let args = null;
+  f.spawn = (c, a) => { args = a; return {kill: () => {}, exited: Promise.resolve(0), send: () => {}, onMessage: () => {}}; };
+  const code = await start({passThrough: []}, f);
+  return {code, args, err: f.err};
+};
+
+test('the review of #18: the operator\'s allowlist of packs: an unlisted pack never loads, whatever settings.json or the history say; install refuses it', async () => {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  reader(home, trusted({packs: ['other']}));
+  const s = await startOnce(home);
+  assert.match(s.err, /not loading ci-failure-triage: this machine's operator ceiling allows only other/);
+  assert.strictEqual(s.args, null, 'nothing to load: not spawned');
+  // a history that says it was turned on changes nothing
+  fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: false, new: true}) + '\n');
+  assert.strictEqual((await startOnce(home)).args, null);
+  // installing a pack the list does not name is refused, before anything is written
+  const fresh = tmp('ch-home-');
+  reader(fresh, trusted({packs: []}));
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: fresh}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 2);
+  assert.match(io.err, /the pack "ci-failure-triage" is not allowed on this machine: its operator's ceiling allows only no pack; nothing was installed/);
+  assert.deepStrictEqual(io.execs, []);
+});
+
+test('the review of #18: settings reset is the loosenings it implies: bound by the ceiling, asked once at a terminal; one that only tightens is made at once', async () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  setSetting(where, 'maxOutputBytes', '4MiB', {by: 'cli'});
+  setSetting(where, 'pack.other', 'off', {by: 'cli'});
+  const headless = await run(home, ['settings', 'reset'], {interactive: false});
+  assert.strictEqual(headless.code, 2);
+  assert.match(headless.io.err, /a reset that loosens a guarding setting is confirmed at a terminal/);
+  assert.strictEqual(readSettings(where).values.maxOutputBytes, 4 * MiB, 'nothing changed');
+  const no = await run(home, ['settings', 'reset'], {answers: ['n']});
+  assert.strictEqual(no.code, 1);
+  assert.deepStrictEqual(no.io.asked, ['Reset every setting to its default? This loosens: maxOutputBytes 4MiB -> 8MiB, pack.other off -> on. [y/N] ']);
+  // the ceiling first: a loosening it refuses refuses the reset, unasked
+  reader(home, trusted({maxOutputBytes: 6 * MiB}));
+  const above = await run(home, ['settings', 'reset']);
+  assert.strictEqual(above.code, 2);
+  assert.match(above.io.err, /the reset is not made: maxOutputBytes 8MiB is above the ceiling this machine's operator set \(at most 6MiB\)/);
+  assert.deepStrictEqual(above.io.asked, []);
+  reader(home, {state: 'none'});
+  const yes = await run(home, ['settings', 'reset'], {answers: ['y']});
+  assert.strictEqual(yes.code, 0, yes.io.err);
+  assert.ok(!fs.existsSync(where.settings));
+  assert.deepStrictEqual(history(home).slice(-1).map((h) => [h.setting, h.change, h.confirmed]), [['*', 'reset', 'cli']]);
+  // only tightenings (a raised cap back down): unasked, even without a terminal
+  setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+  const down = await run(home, ['settings', 'reset'], {interactive: false});
+  assert.strictEqual(down.code, 0, down.io.err);
+  assert.deepStrictEqual(down.io.asked, []);
+});
+
+test('the review of #18: a held settings lock never turns the checks off: at start a loosening the history has not recorded is not applied', async () => {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  setSetting(where, 'maxOutputBytes', '4MiB', {by: 'cli'});
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 64 * MiB}}));
+  // kept fresh, so never stale
+  fs.writeFileSync(path.join(home, 'settings.lock'), JSON.stringify({pid: process.pid, at: Date.now()}));
+  const s = await startOnce(home);
+  assert.match(s.err, /could not compare the settings with their history \(SETTINGS_BUSY\): maxOutputBytes not loosened this start/);
+  assert.deepStrictEqual(s.args.slice(s.args.indexOf('--maxOutputBytes'), s.args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(4 * MiB)]);
+});
+
 test('the review of P4: an outside loosening the ceiling forbids is not applied at start, and is said at every start', async () => {
   const home = tmp('ch-home-');
   const r = release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   const where = layout({COUNTINGHOUSE_HOME: home});
-  setSetting(where, 'pack.ci-failure-triage', 'off', {by: 'cli'});
-  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': true}}));
-  reader(home, trusted({forbid: ['packs']}));
+  setSetting(where, 'autoUpgrade', 'off', {by: 'cli'});
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {autoUpgrade: true}}));
+  reader(home, trusted({forbid: ['autoUpgrade']}));
   for (let i = 0; i < 2; i++) {
+    require('../lib/outside-edits').resetForTests();   // each start a process of its own
     const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret'}, homedir: '/nowhere'});
     Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
     let spawned = false;
     f.spawn = () => { spawned = true; return {kill: () => {}, exited: Promise.resolve(0), send: () => {}, onMessage: () => {}}; };
-    await start({passThrough: []}, f);
-    assert.match(f.err, /pack\.ci-failure-triage was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: pack\.ci-failure-triage cannot be changed to on on this machine: its operator's ceiling forbids it/);
-    assert.match(f.err, /not loading ci-failure-triage: it is turned off/);
-    assert.strictEqual(spawned, false);
+    const done = start({passThrough: []}, f);
+    for (let k = 0; !spawned && k < 300; k++) await new Promise((res) => setTimeout(res, 10));
+    await done;
+    assert.match(f.err, /autoUpgrade was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: autoUpgrade cannot be changed to on on this machine: its operator's ceiling forbids it/);
+    assert.ok(spawned);
   }
   assert.deepStrictEqual(history(home).filter((h) => h.by === 'start').map((h) => h.change), ['changed outside ch-local, refused by the ceiling', 'changed outside ch-local, refused by the ceiling']);
 });

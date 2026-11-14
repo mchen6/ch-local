@@ -156,7 +156,7 @@ test('settings get prints a bad file\'s problem, never defaults as current; rese
   fs.writeFileSync(path.join(home, 'settings.json'), '{not json');
   const got = await cli(home, 'settings', 'get');
   assert.strictEqual(got.code, 1);
-  assert.match(got.io.err, /is not JSON; ch-local start refuses to start until it is fixed, or `ch-local settings reset`/);
+  assert.match(got.io.err, /is not JSON; ch-local start refuses to start until it is fixed\n/);
   assert.doesNotMatch(got.io.out, /locale/);
   const reset = await cli(home, 'settings', 'reset');
   assert.strictEqual(reset.code, 0, reset.io.err);

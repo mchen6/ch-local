@@ -200,7 +200,7 @@ test('while running: an outside edit is said and recorded once; a raise is sent 
   try {
   const where = layout({COUNTINGHOUSE_HOME: s.home});
   assert.strictEqual(where.app, path.join(s.home, 'app'), 'the reader where the runtime is installed');
-  ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 6 * 1024 * 1024, forbid: ['packs'], conversation: true}});
+  ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 6 * 1024 * 1024, forbid: [], packs: [], conversation: true}});
   fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 16 * 1024 * 1024, 'pack.ci-failure-triage': false}}));
   await until(() => s.requests.some((m) => m.type === 'unload'));
   await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'maxOutputBytes'));

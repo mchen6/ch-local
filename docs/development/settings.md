@@ -92,6 +92,12 @@ at once. A loosening is:
 3. made under the lock, only if the setting still holds the value it had
    when the user was asked.
 
+`ch-local settings reset` is the loosenings it implies: a pack that was off
+comes back on, a tightened cap goes back up. Each is checked against the
+ceiling, then one question at the terminal lists them all. A reset that only
+tightens is made at once. A settings file that is not valid is reset only at
+a terminal: what it held cannot be known.
+
 ## The operator's ceiling
 
 ch-local reads the ceiling with the installed runtime's own reader,
@@ -108,6 +114,9 @@ answers anything but a ceiling, fails closed.
 - a forbidden `moduleSandbox audit` runs under `enforce`, and forbidden
   automatic upgrades stay off, each said; `--moduleSandbox audit` passed by
   the client refuses the start;
+- `"packs": [names]`, the operator's allowlist: only those packs ever load,
+  at start, in place and on install, whatever `settings.json` or the history
+  say; `install` and `packs add` refuse another;
 - a ceiling that cannot be trusted refuses a start whose settings or flags
   are looser than the defaults.
 
@@ -120,10 +129,23 @@ chose.
 Each `start` replays the history to the last value recorded for each
 setting and compares `settings.json` with it, under the lock. Each
 difference is said on stderr and recorded as `changed outside ch-local`, once.
-The file is the user's: the edit still applies.
+The file is the user's: the edit still applies, unless it is a loosening the
+ceiling forbids, which is said and recorded at every start and not applied.
+A settings lock held by another writer, or kept fresh on purpose, never
+turns the checks off: a loosening the history has not recorded is not
+applied while the lock is held.
 
 A running start does the same on each change it applies in place: an edit
 made outside the tools is said and recorded, and the change is bound by the
 ceiling as start's values are (a cap or timeout clamped, a pack turned on
 that the ceiling forbids left off). Under a ceiling that cannot be trusted, a
 change that loosens is not applied: the settings in effect are kept.
+
+## Limits
+
+- `history.jsonl` is a record for the user, not a security boundary: the user
+  can write it. Nothing the ceiling enforces rests on it (the pack allowlist
+  is the ceiling's own list); outside-edit reports do, and are a notice.
+- ch-local reads the ceiling with the runtime under `<home>/app/node_modules/
+  countinghouse`. Whoever can replace that code is beyond any ceiling, as
+  they are beyond the runtime itself.
