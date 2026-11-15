@@ -53,7 +53,10 @@ function snippetCommand(client, io) {
     io.stderr.write(USAGE);
     return 2;
   }
-  const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir)});
+  const {home} = require('../lib/home');
+  const found = require('../lib/shim-binary').shimFor(io.locateShim != null ? {locate: io.locateShim} : {});
+  if (found.shim == null) io.stderr.write(found.note);
+  const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir), shim: found.shim, home: home(io.env, io.homedir)});
   io.stdout.write(text);
   if (note != null) {
     io.stderr.write(note);
@@ -109,9 +112,46 @@ async function main(argv, io) {
       if (a == null || a.positional.length > 0) return usage();
       return await require('../lib/uninstall').uninstall({keepData: a.flags['--keep-data'] === true}, io);
     }
+    if (command === 'conditions') {
+      const a = parse(rest, {values: ['--for', '--home']});
+      if (a == null || a.positional.length > 0 || a.values['--for'] === undefined || a.values['--home'] === undefined) return usage();
+      const {isFullPath} = require('../lib/home');
+      if (!isFullPath(a.values['--home'])) { io.stderr.write('ch-local conditions: --home must be an absolute path\n'); return 2; }
+      return await require('../lib/conditions-command').conditions({pid: a.values['--for'], home: a.values['--home']}, io);
+    }
+    if (command === 'daemon') {
+      const a = parse(rest, {values: ['--home']});
+      if (a == null || a.positional.length > 0 || a.values['--home'] === undefined) return usage();
+      const {isFullPath} = require('../lib/home');
+      if (!isFullPath(a.values['--home'])) { io.stderr.write('ch-local daemon: --home must be an absolute path\n'); return 2; }
+      return await require('../lib/daemon').daemon({home: a.values['--home']}, io);
+    }
     if (command === 'start') {
       if (rest[0] !== '--stdio') return usage();
-      return await require('../lib/start').start({passThrough: rest.slice(1)}, io);
+      // ch-local's own options, before any pass-through runtime flag: the
+      // native shim's hand-over is `start --stdio --own-runtime --home <abs>`
+      // (#236 section 5), so a client's COUNTINGHOUSE_HOME can't pick the home
+      let i = 1;
+      let home = null;
+      for (;;) {
+        if (rest[i] === '--own-runtime') { i += 1; continue; }
+        if (rest[i] === '--home') {
+          const v = rest[i + 1];
+          const {isFullPath} = require('../lib/home');
+          if (typeof v !== 'string' || !isFullPath(v)) { io.stderr.write('ch-local start: --home must be an absolute path\n'); return 2; }
+          let st = null;
+          const fs = require('node:fs');
+          try { st = fs.statSync(v); } catch (err) { st = null; }
+          if (st == null || !st.isDirectory()) { io.stderr.write(`ch-local start: --home ${v} is not a directory\n`); return 2; }
+          home = fs.realpathSync(v);
+          const owned = require('../lib/home').homeOwnershipProblem(home);
+          if (owned != null) { io.stderr.write(`ch-local start: --home ${v}: ${owned}\n`); return 2; }
+          i += 2;
+          continue;
+        }
+        break;
+      }
+      return await require('../lib/start').start({passThrough: rest.slice(i), home}, io);
     }
     if (command === 'settings') {
       if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return await require('../lib/settings-command').settings({action: 'get'}, io);
@@ -169,18 +209,23 @@ function realIo() {
     alive: (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
     hostname: os.hostname(),
     exit: (code) => process.exit(code),
-    // SIGINT, SIGTERM and SIGHUP go to handler(name) until the returned
-    // function is called; start decides what each means.
-    trapSignals: (handler) => {
-      const on = Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((s) => [s, () => handler(s)]));
+    // a signal this process takes and does nothing with (ch-local daemon:
+    // SIGHUP, so it outlives the shim's parent ending)
+    ignoreSignal: (name) => process.on(name, () => {}),
+    // SIGINT, SIGTERM and SIGHUP (or the signals named) go to handler(name)
+    // until the returned function is called; start decides what each means.
+    trapSignals: (handler, signals = ['SIGINT', 'SIGTERM', 'SIGHUP']) => {
+      const on = Object.fromEntries(signals.map((s) => [s, () => handler(s)]));
       for (const [s, fn] of Object.entries(on)) process.on(s, fn);
       return () => { for (const [s, fn] of Object.entries(on)) process.removeListener(s, fn); };
     },
     // The runtime, on this process's own stdin, stdout and stderr: the client's
     // MCP channel goes straight through. -> {kill(signal), exited: Promise<exit code>}.
     // control: an IPC fd for the runtime's control channel (packs in place)
-    spawn: (cmd, args, {env, control = false} = {}) => {
-      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env});
+    // detached: in its own process group (a session runtime: a terminal's
+    // hang-up never reaches it)
+    spawn: (cmd, args, {env, control = false, detached = false} = {}) => {
+      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env, detached});
       const exited = new Promise((resolve) => {
         child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
         child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
