@@ -51,8 +51,7 @@ async function world({selfVersion = '0.4.0', lie = {}} = {}) {
     '': {name: 'countinghouse-home-app'},
     [`node_modules/${SELF}`]: {version: selfVersion, resolved: `file:tarballs/${tarballName(SELF, selfVersion)}`},
     'node_modules/countinghouse': {version: '1.2.3', resolved: 'file:tarballs/countinghouse-1.2.3.tgz', integrity: shipped.pins.countinghouse.integrity},
-    'node_modules/ajv': {version: '8.17.1', resolved: 'https://registry.npmjs.org/ajv/-/ajv-8.17.1.tgz', integrity: `sha512-${'B'.repeat(86)}==`},
-    [`node_modules/${SELF}/node_modules/@sigstore/verify`]: {version: '3.1.1', inBundle: true}
+    'node_modules/ajv': {version: '8.17.1', resolved: 'https://registry.npmjs.org/ajv/-/ajv-8.17.1.tgz', integrity: `sha512-${'B'.repeat(86)}==`}
   }};
   const data = parseReleasePins(shipped);
   assert.strictEqual(data.problem, undefined, data.problem);
@@ -114,6 +113,18 @@ test('a lockfile entry without integrity fails the release before anything is wr
   }
 });
 
+test('ch-local\'s version must be strict MAJOR.MINOR.PATCH, before anything is fetched', async() => {
+  const w = await world();
+  try {
+    for (const v of ['0.4.0-rc.1', '0.4', 'v0.4.0', '00.4.0']) {
+      assert.strictEqual(await codeOf(fetchRelease({data: w.data, version: v, names, dir: w.dir, io, registry: w.reg.url, trust})), 'NOT_STRICT', v);
+    }
+    assert.deepStrictEqual(w.reg.requests, []);
+  } finally {
+    await w.close();
+  }
+});
+
 test('a package no pin names (other than ch-local) is refused before anything is fetched', async() => {
   const w = await world();
   try {
@@ -124,51 +135,56 @@ test('a package no pin names (other than ch-local) is refused before anything is
   }
 });
 
-test('the lockfile: every entry but the root, ch-local\'s own and bundled ones must carry a sha512 integrity', () => {
+test('the lockfile: ch-local\'s entry filled from its verified digest, then held to the shared rules (lib/lockfile-rules.js)', () => {
   const SHA = `sha512-${'C'.repeat(86)}==`;
-  const lock = {lockfileVersion: 3, packages: {'': {}, [`node_modules/${SELF}`]: {version: '0.4.0'}, 'node_modules/a': {version: '1.0.0', integrity: SHA},
-    [`node_modules/${SELF}/node_modules/@sigstore/core`]: {version: '3.2.1', inBundle: true}}};
-  const filled = fillLockfile(lock, SHA);
+  const pins = {[SELF]: {version: '0.4.0', integrity: SHA}, countinghouse: {version: '1.2.3', integrity: `sha512-${'D'.repeat(86)}==`}};
+  const lock = {lockfileVersion: 3, packages: {'': {}, [`node_modules/${SELF}`]: {version: '0.4.0', resolved: `file:tarballs/${tarballName(SELF, '0.4.0')}`},
+    'node_modules/countinghouse': {version: '1.2.3', resolved: 'file:tarballs/countinghouse-1.2.3.tgz', integrity: pins.countinghouse.integrity},
+    'node_modules/a': {version: '1.0.0', resolved: 'https://registry.npmjs.org/a/-/a-1.0.0.tgz', integrity: SHA}}};
+  const filled = fillLockfile(lock, SHA, {pins});
   assert.strictEqual(filled.packages[`node_modules/${SELF}`].integrity, SHA);
   assert.strictEqual(lock.packages[`node_modules/${SELF}`].integrity, undefined, 'a copy');
   const missing = JSON.parse(JSON.stringify(lock));
   delete missing.packages['node_modules/a'].integrity;
-  assert.throws(() => fillLockfile(missing, SHA), (e) => e.code === 'LOCKFILE_INTEGRITY' && /node_modules\/a/.test(e.message));
-  const sha1 = JSON.parse(JSON.stringify(lock));
-  sha1.packages['node_modules/a'].integrity = 'sha1-2jmj7l5rSw0yVb/vlWAYkK/YBwk=';
-  assert.throws(() => fillLockfile(sha1, SHA), (e) => e.code === 'LOCKFILE_INTEGRITY');
+  assert.throws(() => fillLockfile(missing, SHA, {pins}), (e) => e.code === 'LOCKFILE_INTEGRITY' && /node_modules\/a/.test(e.message));
   const noSelf = JSON.parse(JSON.stringify(lock));
   delete noSelf.packages[`node_modules/${SELF}`];
-  assert.throws(() => fillLockfile(noSelf, SHA), (e) => e.code === 'LOCKFILE_INTEGRITY' && /ch-local/.test(e.message));
-  assert.strictEqual(fillLockfile(null, SHA), null, 'no lockfile yet (before the first release)');
+  assert.throws(() => fillLockfile(noSelf, SHA, {pins}), (e) => e.code === 'LOCKFILE_INTEGRITY' && /ch-local/.test(e.message));
+  assert.strictEqual(fillLockfile(null, SHA, {pins}), null, 'no lockfile yet (before the first release)');
 });
 
 // the review of #41, for the callers ----------------------------------------
 
-test('no lib/ code passes `trust` or `registry`: only a test\'s own code does', () => {
+test('no lib/ code names `trust` or `registry` but the three that take them; install passes on only its test-only fromNpm, exactly so', () => {
   const lib = path.join(__dirname, '..', 'lib');
-  const files = fs.readdirSync(lib).filter((f) => f.endsWith('.js'));
   // code only: comments and strings set nothing
-  const code = (f) => fs.readFileSync(path.join(lib, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '').replace(/'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, "''");
-  const found = [];
-  for (const f of files) {
-    const src = code(f);
-    // a call or an object literal naming either as a property, or a spread
-    // of a variable into one (fromNpm is install's test-only argument)
-    for (const m of src.matchAll(/[{,]\s*(trust|registry)\s*:/g)) {
-      const line = src.slice(0, m.index).split('\n').length;
-      found.push(`${f}:${line}`);
-    }
-  }
-  // the only places: the defaults in the signatures that take them
+  // code only: comments, strings and template text set nothing (test/code-only.js)
+  const code = (f) => require('./code-only').codeOnly(fs.readFileSync(path.join(lib, f), 'utf8'));
   const allowed = new Set(['npm-fetch.js', 'npm-release.js', 'provenance.js']);
-  const bad = found.filter((at) => !allowed.has(at.split(':')[0]));
-  assert.deepStrictEqual(bad, [], `trust or registry passed from: ${bad.join(', ')}`);
+  const found = [];
+  for (const f of fs.readdirSync(lib).filter((x) => x.endsWith('.js') && !allowed.has(x))) {
+    // any identifier, shorthand and destructuring included (the review of #42)
+    for (const m of code(f).matchAll(/\b(trust|registry)\b/g)) found.push(`${f}: ${m[1]}`);
+  }
+  assert.deepStrictEqual(found, [], `named outside the three: ${found.join(', ')}`);
+  // the three set them only as signature defaults, or pass on what they took
+  for (const f of allowed) {
+    assert.doesNotMatch(code(f), /[{,]\s*(trust|registry)\s*:(?!\s*(?:null|REGISTRY|npmFetch\.REGISTRY|trust|registry)\b)/, `${f} sets trust or registry to something of its own`);
+  }
+  // and inside the three: no environment read, and trust and registry
+  // assigned only their defaults (a signature's `registry = REGISTRY`)
   for (const f of allowed) {
     const src = code(f);
-    assert.doesNotMatch(src, /[{,]\s*(trust|registry)\s*:\s*(?!null\b|REGISTRY\b|npmFetch\.REGISTRY\b|trust\b|registry\b)/, `${f} sets trust or registry to something of its own`);
+    assert.doesNotMatch(src, /\b(io|process)\.env\b/, `${f} reads the environment`);
+    assert.doesNotMatch(src, /\b(trust|registry)\s*=(?!=)(?!\s*(?:null|REGISTRY|npmFetch\.REGISTRY)\b)/, `${f} assigns trust or registry`);
   }
-  assert.match(fs.readFileSync(path.join(lib, 'install.js'), 'utf8'), /\.\.\.fromNpm/, 'install passes only its test-only argument on');
+  // install: fromNpm in its signature and its one pass-on, verbatim, and nowhere else
+  const install = fs.readFileSync(path.join(lib, 'install.js'), 'utf8');
+  const lines = install.split('\n').filter((l) => /fromNpm/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim());
+  assert.deepStrictEqual(lines, [
+    'async function install({pack, from, unreleasedPins}, io, release = ALLOWLIST, fromNpm = {}) {',
+    'version: allow.release.version, names, dir: path.join(fetched, \'release\'), io, ...fromNpm});'
+  ]);
 });
 
 test('install and upgrade reach provenance only through verifyRelease (refs/tags/v<version>): no lib/ code but provenance.js names verifyAttestations', () => {
@@ -179,17 +195,11 @@ test('install and upgrade reach provenance only through verifyRelease (refs/tags
   assert.match(fs.readFileSync(path.join(lib, 'npm-release.js'), 'utf8'), /provenance\.verifyRelease\(/);
 });
 
-test('a bundled lockfile entry is exempt only beneath a runtime package\'s own node_modules', () => {
+test('a bundled lockfile entry its parent does not bundle fails the release (the review of #42; the rules: test/lockfile-rules.test.js)', () => {
   const SHA = `sha512-${'C'.repeat(86)}==`;
-  const base = () => ({lockfileVersion: 3, packages: {'': {}, [`node_modules/${SELF}`]: {version: '0.4.0'}, 'node_modules/countinghouse': {version: '1.2.3', integrity: SHA}}});
-  const under = base();
-  under.packages[`node_modules/${SELF}/node_modules/@sigstore/core`] = {version: '3.2.1', inBundle: true};
-  under.packages['node_modules/countinghouse/node_modules/x'] = {version: '1.0.0', inBundle: true};
-  assert.ok(fillLockfile(under, SHA));
-  const loose = base();
-  loose.packages['node_modules/evil'] = {version: '6.6.6', inBundle: true};
-  assert.throws(() => fillLockfile(loose, SHA), (e) => e.code === 'LOCKFILE_INTEGRITY' && /node_modules\/evil/.test(e.message));
-  const underOther = base();
-  underOther.packages['node_modules/left-pad/node_modules/y'] = {version: '1.0.0', inBundle: true};
-  assert.throws(() => fillLockfile(underOther, SHA), (e) => e.code === 'LOCKFILE_INTEGRITY');
+  const pins = {[SELF]: {version: '0.4.0', integrity: SHA}, countinghouse: {version: '1.2.3', integrity: SHA}};
+  const lock = {lockfileVersion: 3, packages: {'': {}, [`node_modules/${SELF}`]: {version: '0.4.0', resolved: `file:tarballs/${tarballName(SELF, '0.4.0')}`},
+    'node_modules/countinghouse': {version: '1.2.3', resolved: 'file:tarballs/countinghouse-1.2.3.tgz', integrity: SHA},
+    'node_modules/countinghouse/node_modules/evil': {version: '6.6.6', inBundle: true}}};
+  assert.throws(() => fillLockfile(lock, SHA, {pins}), (e) => e.code === 'LOCKFILE_INTEGRITY' && /evil/.test(e.message));
 });

@@ -114,3 +114,33 @@ test('what a new release adds that needs the user\'s yes: a package in an instal
   fewer.packs['ci-failure-triage'].packages.pop();
   assert.deepStrictEqual(additions(now, parseReleasePins(fewer).pins, ['ci-failure-triage']), []);
 });
+
+// A's shim pins and the Reviewer's ruling: a tag is exactly prefix+version,
+// the prefix fixed by the pin's workflow (v for publish.yml, shim-v for
+// shim.yml), and a package's kind fixes its workflow
+test('the shim section: the six platforms, each package @countinghouse/ch-shim-<platform>, pinned from shim.yml at shim-v<version>', () => {
+  const r = parseReleasePins(shipped());
+  assert.deepStrictEqual(Object.keys(r.pins.shim.packages).sort(), ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64']);
+  for (const [k, name] of Object.entries(r.pins.shim.packages)) assert.strictEqual(name, `@countinghouse/ch-shim-${k}`);
+  const shimPin = (extra = {}) => Object.assign({version: '0.5.0', integrity: SHA, repository: 'mchen6/ch-local', repositoryId: 1454656051, ownerId: 1168741,
+    workflow: '.github/workflows/shim.yml', tag: 'shim-v0.5.0'}, extra);
+  const ok = shipped();
+  ok.pins = {'@countinghouse/ch-shim-linux-x64': shimPin()};
+  assert.strictEqual(problemOf(ok), undefined);
+  for (const [extra, why] of [[{tag: 'v0.5.0'}, /tag must be shim-v0\.5\.0/], [{workflow: '.github/workflows/publish.yml', tag: 'v0.5.0'}, /from \.github\/workflows\/shim\.yml/],
+    [{workflow: '.github/workflows/other.yml'}, /workflow/]]) {
+    const d = shipped();
+    d.pins = {'@countinghouse/ch-shim-linux-x64': shimPin(extra)};
+    assert.match(String(problemOf(d)), why, JSON.stringify(extra));
+  }
+  // a pack's package is built by publish.yml at v<version>, never shim.yml
+  const pack = shipped();
+  pack.pins = {'@countinghouse/ch-pack-ci-failure-triage': Object.assign(pin(), {workflow: '.github/workflows/shim.yml', tag: 'shim-v1.2.3'})};
+  assert.match(String(problemOf(pack)), /from \.github\/workflows\/publish\.yml/);
+  for (const mutate of [(d) => { delete d.shim; }, (d) => { d.shim.packages['freebsd-x64'] = '@countinghouse/ch-shim-freebsd-x64'; },
+    (d) => { d.shim.packages['linux-x64'] = '@countinghouse/ch-shim-linux-arm64'; }, (d) => { d.shim.extra = 1; }]) {
+    const d = shipped();
+    mutate(d);
+    assert.ok(problemOf(d) != null, String(mutate));
+  }
+});

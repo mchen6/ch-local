@@ -26,7 +26,7 @@ test('install runs npm ci for the runtime alone, from its pinned lockfile', asyn
   assert.strictEqual(pkg.private, true);
   assert.deepStrictEqual(Object.keys(pkg.dependencies), RUNTIME.map(([n]) => n), 'the packs are not npm dependencies');
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(app, 'package-lock.json'), 'utf8')), r.lockfile);
-  assert.deepStrictEqual(io.execs.map((e) => e.args.slice(1)), [['ci', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund']]);
+  assert.deepStrictEqual(io.execs.map((e) => e.args.slice(1)), [['ci', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/', '--replace-registry-host=never']]);
   assert.ok(io.execs.every((e) => e.cmd === io.node && /npm-cli\.js$/.test(e.args[0])), 'npm runs as node npm-cli.js, no shell');
   assert.ok(!fs.existsSync(path.join(h, 'app.new')), 'no build directory left');
 });
@@ -250,6 +250,20 @@ test('no --from: every package from the registry, checked by its pin and its pro
   }
 });
 
+test('no --from: a release lower than the installed ch-local is refused, nothing fetched (no downgrade but rollback)', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r);
+  try {
+    fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: {'@countinghouse/ch-local': '0.9.0', countinghouse: '8.0.0'}}, packs: {}}));
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 1);
+    assert.match(io.err, /0\.2\.0 is lower than the installed 0\.9\.0: ch-local rollback is the way back/);
+    assert.deepStrictEqual(io.fetches, []);
+  } finally {
+    await n.reg.close();
+  }
+});
+
 test('no --from: one package whose provenance fails stops the install, naming it, with nothing installed', async () => {
   const r = release(); const h = home();
   const n = await npmRelease(r, {lie: '@countinghouse/ch-step-redact'});
@@ -353,7 +367,7 @@ test('--unreleased-pins refuses a lockfile whose runtime packages do not resolve
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
     const f = pinsFile(r, {pins: r.pins, runtimeLockfile: lock(entries)});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, {...r.allow, pins: {}}), 2, why);
-    assert.match(io.err, /--unreleased-pins .*runtimeLockfile/, why);
+    assert.match(io.err, /--unreleased-pins .*the runtime lockfile/, why);
     assert.deepStrictEqual(io.execs, [], why);
   }
   const h = home();
@@ -367,7 +381,7 @@ test('--unreleased-pins takes only a v3 lockfile: no legacy dependencies tree to
   for (const lockfile of [{...r.lockfile, lockfileVersion: 1}, {...r.lockfile, lockfileVersion: 2}, {...r.lockfile, dependencies: {evil: {version: '1.0.0', resolved: 'git+https://attacker.example/x.git#abc'}}}]) {
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: home(), CH_LOCAL_DEV: '1'}, exec: npm()});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pinsFile(r, {pins: r.pins, runtimeLockfile: lockfile})}, io, {...r.allow, pins: {}}), 2);
-    assert.match(io.err, /runtimeLockfile must be an npm v3 lockfile/);
+    assert.match(io.err, /the runtime lockfile must be an npm v3 lockfile/);
   }
 });
 
@@ -377,7 +391,12 @@ test('--unreleased-pins: a runtime package\'s lockfile version and integrity mus
   const cases = [
     [{[ch]: {...r.lockfile.packages[ch], version: '9.9.9'}}, 2, /version 9\.9\.9/],
     [{[ch]: {...r.lockfile.packages[ch], integrity: r.pins['@countinghouse/ch-local'].integrity}}, 2, /integrity/],
-    [{'node_modules/left-pad/node_modules/inner': {version: '1.0.0', inBundle: true}}, 0, null],
+    // bundled only beneath a runtime package that bundles it (the review of #42):
+    // under a registry dependency, or with no parent bundling it, refused
+    [{'node_modules/left-pad/node_modules/inner': {version: '1.0.0', inBundle: true}}, 2, /bundles it/],
+    [{'node_modules/countinghouse/node_modules/inner': {version: '1.0.0', inBundle: true}}, 2, /bundles it/],
+    // its parent bundles it, but its tarball does not hold it: refused once read
+    [{[ch]: {...r.lockfile.packages[ch], bundleDependencies: ['inner']}, 'node_modules/countinghouse/node_modules/inner': {version: '1.0.0', inBundle: true}}, 1, /not in the tarball/],
     [{'node_modules/linked': {resolved: '../elsewhere', link: true}}, 2, /linked/]
   ];
   for (const [entries, code, why] of cases) {
