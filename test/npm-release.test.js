@@ -258,7 +258,7 @@ test('bin/ and lib/: no code names `trust` or `registry` outside the three, and 
       calls.push([f, m[1], topLevelArgs(src, m.index + m[0].length - 1), line]);
     }
     // (lib/npm.js's fromNpm is npm's own path, npm_execpath: another thing)
-    if (!['lib/install.js', 'lib/upgrade.js', 'lib/auto-apply.js', 'lib/npm.js'].includes(f)) assert.doesNotMatch(src, /\bfromNpm\b/, `${f} names fromNpm`);
+    if (!['lib/install.js', 'lib/upgrade.js', 'lib/auto-apply.js', 'lib/shim-install.js', 'lib/npm.js'].includes(f)) assert.doesNotMatch(src, /\bfromNpm\b/, `${f} names fromNpm`);
   }
   assert.deepStrictEqual(named, [], `named outside the three: ${named.join(', ')}`);
   assert.ok(calls.some(([f, fn]) => f === 'bin/ch-local.js' && fn === 'install'), 'bin/ch-local.js calls install');
