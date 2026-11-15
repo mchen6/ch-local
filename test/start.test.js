@@ -578,7 +578,7 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
 });
 
-// Matt's decision (DECISIONS.md): under audit, countinghouse refuses a pack's
+// The maintainer's decision: under audit, countinghouse refuses a pack's
 // writes outside its own area; reads are allowed and logged. Start says so,
 // once, whenever the runtime runs under audit.
 const AUDIT_TEXT = /audit watches what a pack reads and never lets it change files outside its own area/g;
