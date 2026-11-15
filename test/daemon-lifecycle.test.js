@@ -308,3 +308,30 @@ test('(5) a SIGTERM during the first start, or during a backoff, is a stop: no f
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+test('(6) a refusal reported for a runtime that is no longer current never clears the table', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    one.tell({type: 'session-resume', session: ID(1), hash: HASH});
+    await one.exit(1);
+    const two = await s.nth(1);
+    one.opts.onRestoreRefused();   // late, from the crashed one
+    await two.exit(1);
+    const three = await s.nth(2);
+    assert.deepStrictEqual(three.restore.sessions.map((r) => r.session), [ID(1)], 'the table kept');
+    two.opts.onRestoreRefused();   // and the current one's own refusal still clears it... once it is current
+    three.opts.onRestoreRefused();
+    await three.exit(1);
+    const four = await s.nth(3);
+    assert.deepStrictEqual(four.restore.sessions, [], 'cleared by the current runtime\'s refusal');
+    four.tell({type: 'idle'});
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

@@ -99,3 +99,19 @@ test('the runtime asks start (may-elicit): answered by its r-id, with no type; u
     {id: 'r3', ok: false, code: 'CONDITIONS_FAILED'}
   ]);
 });
+
+test('close() settles every pending request at once, CONTROL_GONE, and refuses later ones (the review of #34)', async () => {
+  const {controlClient} = require('../lib/control');
+  let deliver = null;
+  const c = controlClient({send: () => {}, onMessage: (fn) => { deliver = fn; }}, {timeoutMs: 30000, readyMs: 0});
+  deliver({type: 'ready'});
+  const pending = c.request({type: 'restore'});
+  await new Promise((r) => setTimeout(r, 20));
+  const t0 = Date.now();
+  c.close();
+  const answer = await pending;
+  assert.strictEqual(answer.ok, false);
+  assert.strictEqual(answer.code, 'CONTROL_GONE');
+  assert.ok(Date.now() - t0 < 1000, 'at once, not at the 30 s timeout');
+  assert.strictEqual((await c.request({type: 'x'})).code, 'CONTROL_GONE');
+});

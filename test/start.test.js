@@ -773,3 +773,30 @@ test('start in session mode sends the daemon\'s restore first, passes the table\
   const answer = await request({type: 'idle-stop'});
   assert.strictEqual(answer.ok, true);
 });
+
+test('start in session mode: a runtime that ends during its restore never reports a refusal; only an explicit one does (the review of #34)', {skip: POSIX_ONLY}, async () => {
+  const runWith = async(answer) => {
+    const home = installedHome();
+    const f = ghLoggedIn(io(home));
+    let deliver = null;
+    let end = null;
+    f.spawn = (cmd, args) => {
+      f.spawned.push({cmd, args});
+      return {kill: () => {}, exited: new Promise((r) => { end = r; }), onMessage: (fn) => { deliver = fn; },
+        send: (m) => { if (m.type === 'restore') setTimeout(() => answer(m, deliver, end), 10); }};
+    };
+    let refused = 0;
+    const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, restore: () => ({type: 'restore', sessions: [], declines: []}), onRestoreRefused: () => { refused += 1; }}}, f);
+    for (let i = 0; i < 100 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
+    deliver({type: 'ready'});
+    await new Promise((r) => setTimeout(r, 200));
+    if (end != null) end(0);
+    await done;
+    await new Promise((r) => setTimeout(r, 50));
+    return refused;
+  };
+  assert.strictEqual(await runWith((m, deliver, end) => end(1)), 0, 'a crash mid-restore is no refusal');
+  assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_NO_ANSWER'})), 0, 'nor is no answer');
+  assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_BAD_RESTORE'})), 1, 'an explicit refusal is');
+  assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_RESTORE_DONE'})), 1);
+});
