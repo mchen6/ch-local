@@ -76,3 +76,39 @@ test('without the tarballs (the early check), a bundled entry is held to everyth
   const sneaky = lock({'node_modules/countinghouse/node_modules/evil': {version: '6.6.6', inBundle: true}});
   assert.ok(check(sneaky, null) != null);
 });
+
+// the re-check of #42 ---------------------------------------------------------
+
+test('a runtime package with no integrity is refused: npm ci would install whatever tarball is there', () => {
+  for (const name of runtime) {
+    const bare = lock();
+    delete bare.packages[`node_modules/${name}`].integrity;
+    assert.match(String(check(bare)), new RegExp(`integrity for ${name.replace('/', '\\/')}`), name);
+  }
+});
+
+test('any link key is refused, whatever its value; so is any key not node_modules/<name>(/node_modules/<name>)*', () => {
+  for (const link of [true, 1, 'yes', false, 0, null]) {
+    assert.match(String(check(lock({'node_modules/x': {version: '1.0.0', link, resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz', integrity: SHA('D')}}))), /link/, `link: ${JSON.stringify(link)}`);
+    const runtimeLinked = lock({}, {countinghouse: {link}});
+    assert.match(String(check(runtimeLinked)), /link/, `a runtime package, link: ${JSON.stringify(link)}`);
+  }
+  // the review's plant: a registry-looking resolved with .. in it, beside a ../outside key
+  assert.ok(check(lock({'node_modules/dep': {link: 1, resolved: 'https://registry.npmjs.org/../../../outside', integrity: SHA('D')},
+    '../outside': {version: '1.0.0', resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz', integrity: SHA('D')}})) != null);
+  for (const key of ['../outside', 'node_modules/../outside', 'node_modules/x/../../y', 'node_modules/.x', 'node_modules/_x', 'node_modules/@scope', 'node_modules/@scope/x/y',
+    'node_modules/x/node_modules', 'node_modules/x/', 'lib/x', 'node_modules//x', '/abs/node_modules/x', 'node_modules/x\\..\\y', 'node_modules/@/x']) {
+    assert.match(String(check(lock({[key]: {version: '1.0.0', resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz', integrity: SHA('D')}}))), /not a node_modules path|link/, key);
+  }
+  for (const key of ['node_modules/x', 'node_modules/@scope/x', 'node_modules/x/node_modules/@scope/y', 'node_modules/@a/b/node_modules/c/node_modules/d', 'node_modules/JSONStream', 'node_modules/lodash.get']) {
+    assert.strictEqual(check(lock({[key]: {version: '1.0.0', resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz', integrity: SHA('D')}})), null, key);
+  }
+});
+
+test('a registry resolved is a plain https URL on registry.npmjs.org: no .. and nothing that normalizes elsewhere', () => {
+  for (const resolved of ['https://registry.npmjs.org/../../../outside', 'https://registry.npmjs.org/x/../y/-/y-1.0.0.tgz', 'https://registry.npmjs.org/%2e%2e/x.tgz',
+    'https://registry.npmjs.org@elsewhere.invalid/x.tgz', 'https://registry.npmjs.org.elsewhere.invalid/x.tgz', 'https://registry.npmjs.org:444/x/-/x-1.0.0.tgz']) {
+    assert.ok(check(lock({'node_modules/x': {version: '1.0.0', resolved, integrity: SHA('D')}})) != null, resolved);
+  }
+});
+
