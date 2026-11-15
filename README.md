@@ -121,9 +121,13 @@ spec, which is still under review, and is not yet wired to a runtime.
   holding its binary, and `@countinghouse/ch-shim`, which has an exact
   optionalDependency on each, so npm installs only the matching one. The
   wrapper has no `bin`: a JS launcher would put Node back in every session's
-  process tree. Its `binaryPath()` gives the binary's path, and ch-local
-  writes that path into each client's config. A platform with no package
-  runs the per-session mode.
+  process tree. Its `locate()` gives the binary's path, and ch-local
+  writes that path into each client's config. It also says when a
+  supported platform's package is missing (an install with
+  `--omit=optional`, or a lockfile made on another platform), so that is
+  reported, never silently run in the per-session mode. A platform with no
+  ch-shim at all runs the per-session mode. The Linux builds are static
+  (musl), so they need no particular glibc.
 
 ### Publishing the shim
 

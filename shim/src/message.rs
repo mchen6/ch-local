@@ -6,6 +6,7 @@
 //! the connection is lost.
 
 use std::collections::BTreeMap;
+use std::io::{self, Read};
 
 use serde_json::value::RawValue;
 
@@ -33,8 +34,15 @@ impl Seq {
 /// What a client line is, as far as the shim needs to know.
 #[derive(Debug, PartialEq)]
 pub enum Line {
-    /// An object with an `id`: its id's original bytes, and its method.
-    Request { id: Vec<u8>, method: Option<String> },
+    /// An object with an `id` and a `method`: its id's original bytes, and
+    /// its method.
+    Request { id: Vec<u8>, method: String },
+    /// An object with an `id` and no `method`: the client's answer to a
+    /// request of the runtime's (a dialog's elicitation, say). The runtime
+    /// never answers it, so the shim keeps nothing for it and it gets no
+    /// header. PENDING the spec, whose contract 2 says "an object with an
+    /// id" is a request: raised with its author.
+    Response,
     /// An array: the original bytes of each member's id, for members that
     /// have one.
     Batch { ids: Vec<Vec<u8>> },
@@ -48,21 +56,21 @@ fn id_of(fields: &Fields<'_>) -> Option<Vec<u8>> {
     fields.get("id").map(|raw| raw.get().as_bytes().to_vec())
 }
 
+/// Only a line's top level is parsed into fields; each value is skipped as
+/// raw bytes, so a value's depth or content never refuses a line. (A
+/// top-level key that is not valid Unicode, a lone surrogate escape, makes
+/// the line Plain.)
 pub fn classify(line: &[u8]) -> Line {
-    let first = line
-        .iter()
-        .copied()
-        .find(|b| !matches!(b, b' ' | b'\t' | b'\r'));
+    let first = line.iter().copied().find(|b| !matches!(b, b' ' | b'\t' | b'\r'));
     match first {
         Some(b'{') => match serde_json::from_slice::<Fields<'_>>(line) {
-            Ok(fields) => match id_of(&fields) {
-                Some(id) => Line::Request {
-                    id,
-                    method: fields
-                        .get("method")
-                        .and_then(|m| serde_json::from_str::<String>(m.get()).ok()),
+            Ok(fields) => match (id_of(&fields), fields.get("method")) {
+                (Some(id), Some(method)) => match serde_json::from_str::<String>(method.get()) {
+                    Ok(method) => Line::Request { id, method },
+                    Err(_) => Line::Plain,
                 },
-                None => Line::Plain,
+                (Some(_), None) => Line::Response,
+                (None, _) => Line::Plain,
             },
             Err(_) => Line::Plain,
         },
@@ -70,11 +78,7 @@ pub fn classify(line: &[u8]) -> Line {
             Ok(members) => Line::Batch {
                 ids: members
                     .iter()
-                    .filter_map(|m| {
-                        serde_json::from_str::<Fields<'_>>(m.get())
-                            .ok()
-                            .and_then(|f| id_of(&f))
-                    })
+                    .filter_map(|m| serde_json::from_str::<Fields<'_>>(m.get()).ok().and_then(|f| id_of(&f)))
                     .collect(),
             },
             Err(_) => Line::Plain,
@@ -103,34 +107,87 @@ pub enum Malformed {
     SeqNotAnInteger,
 }
 
-/// An M payload from the runtime: its `seq` (None for a notification or a
-/// message of the runtime's own), and the bytes to write to the client.
-pub fn from_runtime(payload: &[u8]) -> Result<(Option<u64>, &[u8]), Malformed> {
-    if payload.len() < 2 {
-        return Err(Malformed::Under2Bytes);
-    }
-    let n = u16::from_be_bytes([payload[0], payload[1]]) as usize;
-    if payload.len() - 2 < n {
-        return Err(Malformed::HeaderPastEnd);
-    }
-    let body = &payload[2 + n..];
-    if n == 0 {
-        return Ok((None, body));
-    }
-    let fields = serde_json::from_slice::<Fields<'_>>(&payload[2..2 + n])
-        .map_err(|_| Malformed::HeaderNotAnObject)?;
+#[derive(Debug)]
+pub enum HeaderError {
+    Io(io::Error),
+    Malformed(Malformed),
+}
+
+fn seq_of(header: &[u8]) -> Result<Option<u64>, Malformed> {
+    let fields = serde_json::from_slice::<Fields<'_>>(header).map_err(|_| Malformed::HeaderNotAnObject)?;
     match fields.get("seq") {
-        None => Ok((None, body)),
+        None => Ok(None),
         Some(raw) => match serde_json::from_str::<u64>(raw.get()) {
-            Ok(seq) if (1..=MAX_SEQ).contains(&seq) => Ok((Some(seq), body)),
+            Ok(seq) if (1..=MAX_SEQ).contains(&seq) => Ok(Some(seq)),
             _ => Err(Malformed::SeqNotAnInteger),
         },
+    }
+}
+
+/// Reads an M payload's header from the connection, `length` being the
+/// payload's length from frame::read_head: its `seq` (None for a
+/// notification or a message of the runtime's own), and how many bytes of
+/// the line follow, for the caller to copy to the client as they arrive.
+/// The header is at most 65535 bytes; the line is never read here.
+pub fn read_header<R: Read>(r: &mut R, length: u32) -> Result<(Option<u64>, u32), HeaderError> {
+    if length < 2 {
+        return Err(HeaderError::Malformed(Malformed::Under2Bytes));
+    }
+    let mut n = [0u8; 2];
+    r.read_exact(&mut n).map_err(HeaderError::Io)?;
+    let n = u16::from_be_bytes(n) as u32;
+    if length - 2 < n {
+        return Err(HeaderError::Malformed(Malformed::HeaderPastEnd));
+    }
+    let rest = length - 2 - n;
+    if n == 0 {
+        return Ok((None, rest));
+    }
+    let mut header = vec![0u8; n as usize];
+    r.read_exact(&mut header).map_err(HeaderError::Io)?;
+    seq_of(&header).map(|seq| (seq, rest)).map_err(HeaderError::Malformed)
+}
+
+/// A whole M payload already in memory: its `seq` and its line's bytes (for
+/// tests, and for small payloads).
+pub fn from_runtime(payload: &[u8]) -> Result<(Option<u64>, &[u8]), Malformed> {
+    let mut r = payload;
+    match read_header(&mut r, payload.len() as u32) {
+        Ok((seq, _)) => Ok((seq, r)),
+        Err(HeaderError::Malformed(m)) => Err(m),
+        Err(HeaderError::Io(_)) => Err(Malformed::HeaderPastEnd),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_requests_params_never_make_it_plain_whatever_their_depth_or_escapes() {
+        let deep = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{}{}}}",
+            "[".repeat(100_000),
+            "]".repeat(100_000)
+        );
+        assert!(matches!(classify(deep.as_bytes()), Line::Request { .. }), "100 000 levels deep");
+        let surrogate = br#"{"jsonrpc":"2.0","id":1,"method":"x","params":{"t":"\ud800","\udc00":1}}"#;
+        assert!(matches!(classify(surrogate), Line::Request { .. }), "lone surrogates inside params");
+    }
+
+    #[test]
+    fn a_clients_response_is_not_a_request() {
+        assert_eq!(classify(br#"{"jsonrpc":"2.0","id":3,"result":{}}"#), Line::Response);
+        assert_eq!(classify(br#"{"jsonrpc":"2.0","id":3,"error":{"code":-1,"message":"no"}}"#), Line::Response);
+    }
+
+    #[test]
+    fn read_header_leaves_the_line_unread() {
+        let payload = to_runtime(Some(5), b"0123456789");
+        let mut r = &payload[..];
+        assert_eq!(read_header(&mut r, payload.len() as u32).ok(), Some((Some(5), 10)));
+        assert_eq!(r, b"0123456789");
+    }
 
     #[test]
     fn seq_counts_from_1_and_never_passes_max() {

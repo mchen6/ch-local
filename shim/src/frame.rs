@@ -48,7 +48,9 @@ impl Kind {
 }
 
 /// The caps a connection enforces. `message` is WELCOME's limit for the
-/// direction being read; before WELCOME it is 0, so an M frame is refused.
+/// direction being read. Which kinds may arrive at all (no M or C before
+/// WELCOME, no second HELLO or AUTH) is the connection's state, checked by
+/// its caller, never a cap: a zero-length frame passes any cap.
 #[derive(Clone, Copy, Debug)]
 pub struct Caps {
     pub message: u32,
@@ -83,11 +85,7 @@ impl std::fmt::Display for FrameError {
             FrameError::Io(e) => write!(f, "{e}"),
             FrameError::UnknownKind(b) => write!(f, "a frame of unknown kind 0x{b:02x}"),
             FrameError::OverCap { kind, length, cap } => {
-                write!(
-                    f,
-                    "a {:?} frame of {length} bytes, over its cap of {cap}",
-                    kind
-                )
+                write!(f, "a {:?} frame of {length} bytes, over its cap of {cap}", kind)
             }
         }
     }
@@ -110,9 +108,11 @@ pub fn write_frame<W: Write>(w: &mut W, kind: Kind, payload: &[u8]) -> io::Resul
     w.flush()
 }
 
-/// Reads one frame. The payload is read only once its length is within the
-/// kind's cap, so an over-cap frame costs its 5-byte head and no more.
-pub fn read_frame<R: Read>(r: &mut R, caps: Caps) -> Result<(Kind, Vec<u8>), FrameError> {
+/// Reads a frame's 5-byte head and checks its kind and its length against
+/// the kind's cap, reading nothing of the payload. An M payload (up to
+/// maxToShim) is then streamed by its reader (message::read_header, then
+/// the rest copied out), never held whole.
+pub fn read_head<R: Read>(r: &mut R, caps: Caps) -> Result<(Kind, u32), FrameError> {
     let mut head = [0u8; 5];
     r.read_exact(&mut head)?;
     let kind = Kind::from_byte(head[0]).ok_or(FrameError::UnknownKind(head[0]))?;
@@ -121,6 +121,13 @@ pub fn read_frame<R: Read>(r: &mut R, caps: Caps) -> Result<(Kind, Vec<u8>), Fra
     if length > cap {
         return Err(FrameError::OverCap { kind, length, cap });
     }
+    Ok((kind, length))
+}
+
+/// Reads one whole frame: for the handshake and control kinds, whose caps
+/// are small. The payload is read only once its length is within the cap.
+pub fn read_frame<R: Read>(r: &mut R, caps: Caps) -> Result<(Kind, Vec<u8>), FrameError> {
+    let (kind, length) = read_head(r, caps)?;
     let mut payload = vec![0u8; length as usize];
     r.read_exact(&mut payload)?;
     Ok((kind, payload))

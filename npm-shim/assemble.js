@@ -41,15 +41,15 @@ function assemble({version, artifacts, out}) {
     const pkg = Object.assign({name: `@countinghouse/ch-shim-${t.key}`,
       description: `ch-shim for ${t.key} (built from ${t.rust}); installed by @countinghouse/ch-shim`},
     common(version), {os: [t.os], cpu: [t.cpu], files: ['bin/']});
-    if (t.libc != null) pkg.libc = [t.libc];
     fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
   }
   const dir = path.join(out, 'ch-shim');
   fs.mkdirSync(dir, {recursive: true});
   fs.copyFileSync(path.join(__dirname, 'ch-shim', 'index.js'), path.join(dir, 'index.js'));
+  fs.copyFileSync(path.join(__dirname, 'targets.js'), path.join(dir, 'targets.js'));
   const pkg = Object.assign({name: '@countinghouse/ch-shim',
-    description: "countinghouse's native per-session shim: binaryPath() gives this platform's binary"},
-  common(version), {main: 'index.js', files: ['index.js'],
+    description: "countinghouse's native per-session shim: locate() finds this platform's binary"},
+  common(version), {main: 'index.js', files: ['index.js', 'targets.js'],
     optionalDependencies: Object.fromEntries(targets.map((t) => [`@countinghouse/ch-shim-${t.key}`, version]))});
   fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
   return out;

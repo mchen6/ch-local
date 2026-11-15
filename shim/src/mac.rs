@@ -17,37 +17,20 @@ fn mac(secret: &[u8; 32], parts: &[&[u8]]) -> HmacSha256 {
 
 /// ms = HMAC-SHA256(secret, "ch-server" || p || nc || ns)
 pub fn server_proof(secret: &[u8; 32], protocol: u8, nc: &[u8; 32], ns: &[u8; 32]) -> [u8; 32] {
-    mac(secret, &[b"ch-server", &[protocol], nc, ns])
-        .finalize()
-        .into_bytes()
-        .into()
+    mac(secret, &[b"ch-server", &[protocol], nc, ns]).finalize().into_bytes().into()
 }
 
 /// Checks a PROVE's `ms` in constant time.
-pub fn server_proof_ok(
-    secret: &[u8; 32],
-    protocol: u8,
-    nc: &[u8; 32],
-    ns: &[u8; 32],
-    ms: &[u8],
-) -> bool {
-    mac(secret, &[b"ch-server", &[protocol], nc, ns])
-        .verify_slice(ms)
-        .is_ok()
+pub fn server_proof_ok(secret: &[u8; 32], protocol: u8, nc: &[u8; 32], ns: &[u8; 32], ms: &[u8]) -> bool {
+    mac(secret, &[b"ch-server", &[protocol], nc, ns]).verify_slice(ms).is_ok()
 }
 
 /// mc = HMAC-SHA256(secret, "ch-client" || p || ns || nc)
 pub fn client_proof(secret: &[u8; 32], protocol: u8, nc: &[u8; 32], ns: &[u8; 32]) -> [u8; 32] {
-    mac(secret, &[b"ch-client", &[protocol], ns, nc])
-        .finalize()
-        .into_bytes()
-        .into()
+    mac(secret, &[b"ch-client", &[protocol], ns, nc]).finalize().into_bytes().into()
 }
 
 /// HMAC-SHA256(secret, "ch-token" || the token's UTF-8 bytes)
 pub fn token_mac(secret: &[u8; 32], token: &str) -> [u8; 32] {
-    mac(secret, &[b"ch-token", token.as_bytes()])
-        .finalize()
-        .into_bytes()
-        .into()
+    mac(secret, &[b"ch-token", token.as_bytes()]).finalize().into_bytes().into()
 }

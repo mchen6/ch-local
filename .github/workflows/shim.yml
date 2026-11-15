@@ -24,6 +24,10 @@ concurrency:
 permissions:
   contents: read
 
+# Every action is pinned to a full commit SHA (its tag in the comment), so a
+# moved tag can't run in a job, least of all in publish, which can mint the
+# npm OIDC token; checkout keeps no credentials.
+
 env:
   CARGO_TERM_COLOR: never
   # the tools' versions, pinned; cargo-audit 0.23.0 (2026-11-10) waits
@@ -39,7 +43,9 @@ jobs:
       run:
         working-directory: shim
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - name: Formatting and lints
@@ -61,8 +67,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {target: x86_64-unknown-linux-gnu,  os: ubuntu-24.04,     npm: linux-x64}
-          - {target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, npm: linux-arm64}
+          # Linux builds are static (musl): no glibc floor, so they run on
+          # any Linux, old or new, glibc or musl
+          - {target: x86_64-unknown-linux-musl,  os: ubuntu-24.04,     npm: linux-x64}
+          - {target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, npm: linux-arm64}
           - {target: x86_64-apple-darwin,       os: macos-15-intel,   npm: darwin-x64}
           - {target: aarch64-apple-darwin,      os: macos-15,         npm: darwin-arm64}
           - {target: x86_64-pc-windows-msvc,    os: windows-2025,     npm: win32-x64}
@@ -72,9 +80,13 @@ jobs:
         shell: bash
         working-directory: shim
     steps:
-      - uses: actions/checkout@v4
-      - name: Toolchain (rust-toolchain.toml)
-        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Toolchain (rust-toolchain.toml) and the target
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.target }}
       # every leg runs on its own architecture, so the tests run natively
       - name: Test
         run: cargo test --locked --target ${{ matrix.target }}
@@ -86,8 +98,17 @@ jobs:
           exe=ch-shim; [ "${{ runner.os }}" = Windows ] && exe=ch-shim.exe
           path="target/${{ matrix.target }}/release/$exe"
           ls -l "$path"
+          [ "${{ runner.os }}" = Linux ] && { file "$path"; file "$path" | grep -q 'statically linked' || { echo "::error::not a static binary"; exit 1; }; }
           echo "path=shim/$path" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      # the release binary itself runs (a bad link, a broken ad-hoc
+      # signature, a missing library): the scaffold says so and exits 2
+      - name: The release binary runs
+        run: |
+          set +e
+          "../${{ steps.bin.outputs.path }}"; code=$?
+          set -e
+          [ "$code" = 2 ] || { echo "::error::the release binary exited $code, not 2"; exit 1; }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ch-shim-${{ matrix.npm }}
           path: ${{ steps.bin.outputs.path }}
@@ -115,14 +136,15 @@ jobs:
       contents: read
       id-token: write   # the OIDC token npm trusts; the only credential involved
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: The commit is on main
         run: |
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_SHA is not on main"; exit 1; }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
       - name: npm supports trusted publishing (11.5.1 or later)
@@ -132,7 +154,7 @@ jobs:
             const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
             if (!ok) { console.error('npm ' + [a, b, c].join('.') + ' is older than 11.5.1'); process.exit(1); }
           "
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: ch-shim-*
           path: artifacts
@@ -141,8 +163,18 @@ jobs:
       - name: What each tarball holds
         run: for d in dist/npm-shim/*/; do (cd "$d" && npm pack --dry-run); done
       # the platform packages first, so the wrapper never names a version
-      # that is not there yet
+      # that is not there yet; a package already at this version is skipped,
+      # so a run that failed part-way can be re-run to finish
       - name: Publish
         run: |
-          for d in dist/npm-shim/ch-shim-*/; do (cd "$d" && npm publish --access public); done
-          (cd dist/npm-shim/ch-shim && npm publish --access public)
+          publish() {
+            name="$(node -p "require('./$1/package.json').name")"
+            version="$(node -p "require('./$1/package.json').version")"
+            if [ "$(npm view "$name@$version" version 2>/dev/null)" = "$version" ]; then
+              echo "$name@$version is published already"
+            else
+              (cd "$1" && npm publish --access public)
+            fi
+          }
+          for d in dist/npm-shim/ch-shim-*; do publish "$d"; done
+          publish dist/npm-shim/ch-shim
