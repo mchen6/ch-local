@@ -580,6 +580,19 @@ net.createServer((s) => {
         if (JSON.parse(p).mc !== mac('ch-client', ns, nc).toString('base64')) { s.end(frame('R', Buffer.from('{"code":"BAD_PROOF","message":"m"}'))); return; }
         s.write(frame('W', Buffer.from(JSON.stringify({session: 's', resumeToken: 'rt_pipe', runtimeVersion: '8.0.0', maxToRuntime: 65536, maxToShim: 65536}))));
         stage = 2;
+      } else if (stage === 2 && kind === 'C') {
+        // the session side: settled after the first client frame
+        const op = JSON.parse(p);
+        if (op.op === 'client' && op.seq === undefined) s.write(frame('C', Buffer.from('{"op":"settled"}')));
+        if (op.op === 'bye') s.end();
+      } else if (stage === 2 && kind === 'M') {
+        // a request (a seq header) is answered with that seq
+        const hn = p.readUInt16BE(0), line = JSON.parse(p.subarray(2 + hn));
+        if (hn > 0) {
+          const header = p.subarray(0, 2 + hn);
+          const body = Buffer.from(JSON.stringify({jsonrpc: '2.0', id: line.id, result: {over: 'the pipe'}}));
+          s.write(frame('M', Buffer.concat([header, body])));
+        }
       }
     }
   });
@@ -639,6 +652,72 @@ net.createServer((s) => {
         let a = a.unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(a.welcome.resume_token, "rt_pipe");
         assert!(a.new_session);
+    }
+
+    /// The relay over a real named pipe (the native review: a synchronous
+    /// pipe handle shared by the reader and main deadlocks on Windows,
+    /// where I/O on one file object is serialized). A request must be
+    /// answered within 20 s; the test fails at that deadline rather than
+    /// hanging the job.
+    #[test]
+    fn the_relay_answers_a_request_over_a_named_pipe() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let Some((home, mut server)) = pipe_home() else { return };
+        // a shim.json whose conditions child answers at once
+        let me = crate::trust::sid_string(&crate::win_ffi::current_user_sid().unwrap());
+        let node = String::from_utf8(Command::new("node").args(["-p", "process.execPath"]).output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        let script = home.root().join("conditions.js");
+        std::fs::write(
+            &script,
+            "console.log(JSON.stringify({status: 'ok', conditions: 'no', repo: null, token: null}))",
+        )
+        .unwrap();
+        let shim = serde_json::json!({"node": node, "chLocal": script, "env": {"SystemRoot": std::env::var("SystemRoot").unwrap()}});
+        std::fs::write(home.shim_json(), shim.to_string()).unwrap();
+        icacls_private(&home.shim_json(), &me);
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let sink = Sink::default();
+        let relay = crate::relay::Relay::new(
+            crate::relay::Setup {
+                home,
+                rest: vec![],
+                client_env: vec![],
+                parent: std::process::id(),
+                timing: Default::default(),
+            },
+            crate::out::Out::new(Box::new(sink.clone())),
+        );
+        std::thread::spawn(move || relay.run(reader));
+        writer.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n").unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        let answered = loop {
+            let got = String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned();
+            if got.contains("the pipe") || Instant::now() > until {
+                break got;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let _ = server.kill();
+        assert!(
+            answered.contains(r#""id":1"#) && answered.contains("the pipe"),
+            "no answer over the pipe within 20 s: {answered:?}"
+        );
     }
 
     #[test]
