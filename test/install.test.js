@@ -188,10 +188,81 @@ test('an unknown pack, or no --from, is refused before anything is read', async 
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
   assert.strictEqual(await install({pack: 'nope', from: r.from}, io, r.allow), 2);
   assert.match(io.err, /unknown pack "nope"; one of: ci-failure-triage, other/);
-  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
-  assert.strictEqual(await install({pack: 'ci-failure-triage'}, io2, r.allow), 2);
-  assert.match(io2.err, /installing from npm arrives with the first release; pass --from <directory of tarballs>/);
+  assert.deepStrictEqual([...io.execs, ...io.fetches], []);
+});
+
+test('no --from: a release with no identity to install from npm with says so; --unreleased-pins needs --from', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
+  assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, r.allow), 1);
+  assert.match(io.err, /no release identity to install from npm with/);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', unreleasedPins: path.join(h, 'pins.json')}, io2, r.allow), 2);
+  assert.match(io2.err, /--unreleased-pins is for tarballs on disk/);
   assert.deepStrictEqual([...io.execs, ...io2.execs, ...io.fetches, ...io2.fetches], []);
+  assert.ok(!fs.existsSync(path.join(h, 'app')));
+});
+
+// docs/development/auto-upgrade.md: no --from installs from npm, every
+// package checked against its pin and its provenance (a fake registry and the
+// test root, passed only as install's test-only argument)
+async function npmRelease(r, {lie = null} = {}) {
+  const {fakeRegistry} = require('./fake-registry');
+  const {testRoot} = require('./sigstore-fixture');
+  const provenance = require('../lib/provenance');
+  const crypto = require('node:crypto');
+  const reg = await fakeRegistry();
+  const root = testRoot();
+  const at = new Date(Date.now() - 100 * 3600e3);
+  const self = {repository: 'mchen6/ch-local', repositoryId: 1454656051, ownerId: 1168741, workflow: '.github/workflows/publish.yml'};
+  const pins = {};
+  for (const [name, pin] of Object.entries(r.pins)) {
+    const file = require('../lib/install').tarballName(name, pin.version);
+    const bytes = fs.readFileSync(path.join(r.from, file));
+    reg.publish(name, pin.version, bytes);
+    const own = name === '@countinghouse/ch-local';
+    const identity = own ? Object.assign({}, self, {tag: `v${pin.version}`}) : {repository: `mchen6/${name.split('/').pop()}`, repositoryId: 4000000 + Object.keys(pins).length, ownerId: 1168741, workflow: '.github/workflows/publish.yml', tag: `v${pin.version}`};
+    const digest = crypto.createHash('sha512').update(lie === name ? Buffer.from('other') : bytes).digest('hex');
+    reg.attest(name, pin.version, {attestations: [{predicateType: provenance.PROVENANCE, bundle: root.provenance(name, pin.version, digest, identity, at)},
+      {predicateType: provenance.PUBLISH, bundle: root.publish(name, pin.version, crypto.createHash('sha512').update(bytes).digest('hex'), at)}]});
+    if (!own) pins[name] = Object.assign({}, pin, identity);
+  }
+  const lockfile = JSON.parse(JSON.stringify(r.lockfile));
+  lockfile.packages['node_modules/countinghouse'].integrity = r.pins.countinghouse.integrity;
+  const allow = Object.assign({}, r.allow, {pins, self, release: {version: r.pins['@countinghouse/ch-local'].version, security: null},
+    runtime: Object.assign({}, r.allow.runtime, {lockfile})});
+  return {reg, allow, fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}};
+}
+
+test('no --from: every package from the registry, checked by its pin and its provenance, then installed as from a directory', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r);
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.match(io.out, /fetching 5 package\(s\) from the npm registry, each checked against its pin and its provenance/);
+    const lock = JSON.parse(fs.readFileSync(path.join(h, 'app', 'package-lock.json'), 'utf8'));
+    assert.strictEqual(lock.packages['node_modules/@countinghouse/ch-local'].integrity, r.pins['@countinghouse/ch-local'].integrity, 'ch-local\'s entry filled from its verified digest');
+    for (const name of TRIAGE) assert.ok(fs.existsSync(path.join(pkgDir(h, name), 'package.json')), name);
+    assert.ok(io.fetches.every((u) => u.startsWith(n.reg.url)), 'the fake registry only');
+  } finally {
+    await n.reg.close();
+  }
+});
+
+test('no --from: one package whose provenance fails stops the install, naming it, with nothing installed', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {lie: '@countinghouse/ch-step-redact'});
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 1);
+    assert.match(io.err, /@countinghouse\/ch-step-redact: .*\(PROVENANCE_IDENTITY\)/);
+    assert.match(io.err, /nothing was installed/);
+    assert.deepStrictEqual(io.execs, []);
+    assert.ok(!fs.existsSync(path.join(h, 'app')));
+  } finally {
+    await n.reg.close();
+  }
 });
 
 test('this launcher pins no release yet, and says so; its runtime is ch-local and countinghouse', async () => {
