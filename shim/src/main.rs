@@ -44,6 +44,12 @@ fn main() -> ExitCode {
         eprintln!("ch-shim: runtime flags given ({}): this session runs its own runtime", shown.join(" "));
         return exit_of(relay::own_runtime_inherited(&home, &rest));
     }
+    // a daemon gave up (#236 section 6, failed.json): before anything is read
+    // from stdin, the session runs its own runtime with the shim's stdin
+    if let Some(r) = ch_shim::attach::startup_fallback(&home) {
+        eprintln!("{}", ch_shim::failed::startup_line(r));
+        return exit_of(relay::own_runtime_inherited(&home, &[]));
+    }
     let client_env = std::env::vars_os().collect();
     let relay = Relay::new(
         Setup { home: home.clone(), rest: Vec::new(), client_env, parent, timing: Default::default() },
@@ -51,10 +57,11 @@ fn main() -> ExitCode {
     );
     match relay.run(io::stdin()) {
         Exit::Done => ExitCode::SUCCESS,
-        Exit::OwnRuntime { reason, held, rest: lines } => {
-            eprintln!("ch-shim: this session can't share the runtime ({reason}); it runs its own");
-            own(&home, &[], held, lines)
+        Exit::OwnRuntime { reason, held, rest: lines, replay } => {
+            eprintln!("{reason}");
+            own(&home, &[], held, lines, replay)
         }
+        Exit::Refused => ExitCode::from(1),
     }
 }
 
@@ -63,8 +70,9 @@ fn own(
     args: &[std::ffi::OsString],
     held: Vec<Vec<u8>>,
     lines: impl Iterator<Item = relay::Piece> + Send + 'static,
+    replay: Option<Vec<u8>>,
 ) -> ExitCode {
-    exit_of(relay::own_runtime(home, args, held, lines))
+    exit_of(relay::own_runtime(home, args, held, lines, replay))
 }
 
 /// The per-session runtime's exit code as the shim's.

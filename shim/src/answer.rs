@@ -23,6 +23,16 @@ fn one(id: &[u8], may_have_run: bool) -> Vec<u8> {
     out
 }
 
+/// A mid-session fallback refused because this shim holds records (the
+/// vectors' sessionCantFallBackAnswer, exact apart from the id).
+pub fn cant_fall_back(id: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(320);
+    out.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":");
+    out.extend_from_slice(id);
+    out.extend_from_slice(b",\"error\":{\"code\":-32603,\"message\":\"countinghouse's shared runtime failed, and this session's tightened settings can't move to a runtime of its own: restart the session\",\"data\":{\"countinghouse/code\":\"SESSION_CANT_FALL_BACK\",\"retryable\":false}}}");
+    out
+}
+
 /// The crash answer for a request with these id bytes.
 pub fn crash(id: &[u8], may_have_run: bool) -> Vec<u8> {
     one(id, may_have_run)

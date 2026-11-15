@@ -56,6 +56,9 @@ pub struct Attached {
 pub enum AttachError {
     /// Not to be retried: the reason, for stderr and the -32603 answers.
     Stop(String),
+    /// A daemon gave up (a fresh, valid failed.json): the session runs its
+    /// own runtime, or refuses to if it holds records (#236 section 6).
+    SharedFailed(crate::failed::Reason),
     /// The budget ran out; the last reason.
     GaveUp(String),
 }
@@ -64,6 +67,7 @@ impl fmt::Display for AttachError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AttachError::Stop(why) => write!(f, "{why}"),
+            AttachError::SharedFailed(r) => write!(f, "the shared runtime failed ({r})"),
             AttachError::GaveUp(why) => write!(f, "no answer within {} s ({why})", BUDGET.as_secs()),
         }
     }
@@ -79,6 +83,8 @@ enum Next {
     /// Wait 100 ms to 2 s, then try again.
     Later(String),
     Stop(String),
+    /// A fresh, valid failed.json.
+    Failed(crate::failed::Reason),
 }
 
 fn nonce() -> [u8; 32] {
@@ -99,6 +105,10 @@ fn config_next(e: ConfigError) -> Next {
         // stops or restarts: again; half-written JSON: again; a file that is
         // there and fails its trust check: stop
         ConfigError::Trust(t) if t.kind != TrustKind::Refused => Next::Later(t.to_string()),
+        // daemon.json's `socket` null is Malformed too, on purpose: the daemon
+        // clears it when a runtime ends and writes the successor's once that
+        // one listens (C4c; a new pipe name each start on Windows), so it is
+        // "not yet", never a stop (a_null_socket_in_daemon_json_is_waited_for_not_a_stop)
         ConfigError::Malformed { .. } => Next::Later(e.to_string()),
         other => Next::Stop(other.to_string()),
     }
@@ -119,6 +129,18 @@ pub fn attach(home: &Home, resume: Option<&str>) -> Result<Attached, AttachError
     attach_within(home, resume, Instant::now() + BUDGET)
 }
 
+/// The startup fallback's check (#236 section 6): with no live daemon,
+/// a fresh, valid failed.json's reason. A live daemon wins: it is attached to
+/// as always.
+pub fn startup_fallback(home: &Home) -> Option<crate::failed::Reason> {
+    if let Ok(Some(info)) = config::read_daemon(home) {
+        if daemon::live(&info) {
+            return None;
+        }
+    }
+    crate::failed::read(home)
+}
+
 pub fn attach_within(home: &Home, resume: Option<&str>, deadline: Instant) -> Result<Attached, AttachError> {
     let mut resume = resume.map(String::from);
     let mut spawned = false;
@@ -133,6 +155,7 @@ pub fn attach_within(home: &Home, resume: Option<&str>, deadline: Instant) -> Re
                 pause(jitter());
             }
             Err(Next::Stop(why)) => return Err(AttachError::Stop(why)),
+            Err(Next::Failed(r)) => return Err(AttachError::SharedFailed(r)),
             Err(Next::Reread(why)) => {
                 last = why;
                 pause(REREAD_PAUSE);
@@ -155,6 +178,11 @@ fn start(home: &Home, deadline: Instant, spawned: &mut bool) -> Next {
     if *spawned {
         return Next::Poll("waiting for the daemon this shim started".into());
     }
+    // the daemon.json check failed: a daemon that gave up says so here
+    // (#236 section 6), read first now, and again under the start lock
+    if let Some(r) = crate::failed::read(home) {
+        return Next::Failed(r);
+    }
     match daemon::ensure_started(home, deadline) {
         Ok(true) => {
             *spawned = true;
@@ -163,6 +191,7 @@ fn start(home: &Home, deadline: Instant, spawned: &mut bool) -> Next {
         // another started one, under the lock: try it at once
         Ok(false) => Next::Reread("a daemon is running".into()),
         Err(daemon::StartError::Config(c)) => config_next(c),
+        Err(daemon::StartError::Failed(r)) => Next::Failed(r),
         Err(other) => Next::Later(other.to_string()),
     }
 }

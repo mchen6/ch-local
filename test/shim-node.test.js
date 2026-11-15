@@ -87,6 +87,29 @@ test('a client\'s entry names the shim with --home where there is a binary', () 
   assert.deepStrictEqual(own, {command: '/n', args: ['/l', 'start', '--stdio']});
 });
 
+test('the shim install puts in <home>/shim wins over any other lookup; a link there is not trusted', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const {shimFor} = require('../lib/shim-binary');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-shimfor-'));
+  try {
+    const elsewhere = () => ({status: 'found', path: '/x/ch-shim'});
+    assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: '/x/ch-shim', note: null}, 'no <home>/shim yet: the lookup');
+    const bin = path.join(home, 'shim', process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim');
+    fs.mkdirSync(path.dirname(bin));
+    fs.writeFileSync(bin, 'binary', {mode: 0o755});
+    assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: bin, note: null}, '<home>/shim/ch-shim first');
+    if (process.platform !== 'win32') {
+      fs.rmSync(bin);
+      fs.symlinkSync('/x/ch-shim', bin);
+      assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: '/x/ch-shim', note: null}, 'a link in <home>/shim is passed over');
+    }
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('the shim\'s binary: found, missing (say reinstall), or unsupported (the per-session mode)', () => {
   const {shimFor} = require('../lib/shim-binary');
   assert.deepStrictEqual(shimFor({locate: () => ({status: 'found', path: '/x/ch-shim'})}), {shim: '/x/ch-shim', note: null});

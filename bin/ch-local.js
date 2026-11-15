@@ -54,7 +54,7 @@ function snippetCommand(client, io) {
     return 2;
   }
   const {home} = require('../lib/home');
-  const found = require('../lib/shim-binary').shimFor(io.locateShim != null ? {locate: io.locateShim} : {});
+  const found = require('../lib/shim-binary').shimFor(io.locateShim != null ? {home: home(io.env, io.homedir), locate: io.locateShim} : {home: home(io.env, io.homedir)});
   if (found.shim == null) io.stderr.write(found.note);
   const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir), shim: found.shim, home: home(io.env, io.homedir)});
   io.stdout.write(text);
