@@ -328,7 +328,7 @@ fn a_prove_whose_ms_is_wrong_ends_it_with_no_auth_sent() {
 }
 
 #[test]
-fn a_refused_auth_names_its_code() {
+fn a_refused_auth_after_proof_names_its_code() {
     use crate::handshake::{self, HandshakeError, Refusal};
     let (s, nc) = handshake_inputs();
     let mut conn = scripted(&[frame_hex("prove"), frame_hex("refused")]);
@@ -339,27 +339,56 @@ fn a_refused_auth_names_its_code() {
 }
 
 #[test]
-fn every_refused_code_maps_to_its_action() {
+fn every_refused_code_after_proof_maps_to_its_action_and_its_text_is_cleaned() {
     use crate::handshake::{self, HandshakeError, Refusal};
     let (s, nc) = handshake_inputs();
     for (code, want) in [
+        ("BAD_PROOF", Refusal::BadProof),
         ("PROTOCOL", Refusal::Protocol),
         ("RESUME_REFUSED", Refusal::ResumeRefused),
         ("BUSY", Refusal::Busy),
         ("SHUTTING_DOWN", Refusal::ShuttingDown),
         ("SOMETHING_NEW", Refusal::Unknown("SOMETHING_NEW".into())),
     ] {
+        let message = format!("a\\u001b[31mred\\u0007{}", "x".repeat(500));
+        let r = frame::encode(
+            frame::Kind::Refused,
+            format!("{{\"code\":\"{code}\",\"message\":\"{message}\"}}").as_bytes(),
+            CAPS,
+        )
+        .unwrap();
+        let mut conn = scripted(&[frame_hex("prove"), r]);
+        match handshake::attach(&mut conn, &s, nc, None) {
+            Err(HandshakeError::Refused { refusal, message }) => {
+                assert_eq!(refusal, want, "{code}");
+                assert!(!message.chars().any(char::is_control), "{code}: control characters kept");
+                assert!(message.chars().count() <= 200, "{code}: not capped");
+            }
+            other => panic!("{code}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn before_proof_only_protocol_counts_and_nothing_of_its_text_is_kept() {
+    use crate::handshake::{self, HandshakeError};
+    let (s, nc) = handshake_inputs();
+    let protocol =
+        frame::encode(frame::Kind::Refused, br#"{"code":"PROTOCOL","message":"\u001b]0;pwned\u0007"}"#, CAPS).unwrap();
+    let mut conn = scripted(&[protocol]);
+    let e = handshake::attach(&mut conn, &s, nc, None).unwrap_err();
+    assert!(matches!(e, HandshakeError::UnprovenProtocol));
+    assert!(!e.to_string().contains("pwned"));
+    // every other code from an unproven peer is just an unexpected frame
+    for code in ["BAD_PROOF", "RESUME_REFUSED", "BUSY", "SHUTTING_DOWN", "ANYTHING"] {
         let r =
             frame::encode(frame::Kind::Refused, format!("{{\"code\":\"{code}\",\"message\":\"m\"}}").as_bytes(), CAPS)
                 .unwrap();
-        // a REFUSED may come at once (PROTOCOL), or after AUTH
-        for frames in [vec![r.clone()], vec![frame_hex("prove"), r.clone()]] {
-            let mut conn = scripted(&frames);
-            match handshake::attach(&mut conn, &s, nc, None) {
-                Err(HandshakeError::Refused { refusal, .. }) => assert_eq!(refusal, want, "{code}"),
-                other => panic!("{code}: {other:?}"),
-            }
-        }
+        let mut conn = scripted(&[r]);
+        assert!(
+            matches!(handshake::attach(&mut conn, &s, nc, None), Err(HandshakeError::Unexpected(frame::Kind::Refused))),
+            "{code}"
+        );
     }
 }
 

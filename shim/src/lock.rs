@@ -32,7 +32,7 @@ pub const POLL: Duration = Duration::from_millis(200);
 /// the file (readHolder), its fields compared as JavaScript compares them.
 /// Ours is always {pid, host, at}; another's may lack a field, or carry a
 /// value of another type, and is judged as Node would judge it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Holder {
     pub pid: Option<Value>,
     pub host: Option<Value>,
@@ -190,8 +190,40 @@ fn create(lock: &Path, mine: &Holder) -> io::Result<bool> {
     result
 }
 
+/// The most of a lock file read: a holder is a few dozen bytes.
+const HOLDER_MAX: u64 = 4096;
+
+/// readHolder, opened without following a symlink and without blocking on a
+/// FIFO, at most HOLDER_MAX bytes read.
 fn read_holder(lock: &Path) -> Option<Holder> {
-    fs::read(lock).ok().and_then(|b| Holder::parse(&b))
+    use std::io::Read;
+    let file = open_nofollow(lock).ok()?;
+    let mut bytes = Vec::new();
+    file.take(HOLDER_MAX).read_to_end(&mut bytes).ok()?;
+    Holder::parse(&bytes)
+}
+
+#[cfg(unix)]
+fn open_nofollow(path: &Path) -> io::Result<fs::File> {
+    use rustix::fs::{Mode, OFlags};
+    let fd =
+        rustix::fs::open(path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty())?;
+    Ok(fs::File::from(fd))
+}
+
+#[cfg(windows)]
+fn open_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)
+}
+
+/// fs.rmSync(file, {force: true}): a file already gone is not an error.
+fn remove(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 fn age(path: &Path) -> Option<Duration> {
@@ -209,15 +241,15 @@ fn clear_stale(lock: &Path, dead: &Holder) -> io::Result<bool> {
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
             // a breaker left by a crash in the few lines below
             if age(&breaker).is_some_and(|a| a > BREAK_STALE) {
-                let _ = fs::remove_file(&breaker);
+                let _ = remove(&breaker);
             }
             return Ok(false);
         }
         Err(e) => return Err(e),
     }
-    let cleared =
-        if read_holder(lock).as_ref() == Some(dead) { fs::remove_file(lock).map(|_| true) } else { Ok(false) };
-    let _ = fs::remove_file(&breaker);
+    // sameHolder: still the dead holder's, by JavaScript's ===
+    let cleared = if read_holder(lock).is_some_and(|h| h.same(dead)) { remove(lock).map(|_| true) } else { Ok(false) };
+    let _ = remove(&breaker);
     cleared
 }
 
@@ -241,13 +273,18 @@ pub struct Held {
 
 impl Drop for Held {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        self.wake.1.notify_all();
+        {
+            // under the mutex, so the heartbeat can't miss the wakeup between
+            // its check of `stop` and its wait
+            let _guard = self.wake.0.lock().expect("the heartbeat's lock");
+            self.stop.store(true, Ordering::SeqCst);
+            self.wake.1.notify_all();
+        }
         if let Some(t) = self.beat.take() {
             let _ = t.join();
         }
         if read_holder(&self.lock).is_some_and(|h| h.same(&self.mine)) {
-            let _ = fs::remove_file(&self.lock);
+            let _ = remove(&self.lock);
         }
     }
 }
@@ -456,6 +493,38 @@ mod tests {
             t.join().unwrap();
         }
         assert_eq!(most.load(Ordering::SeqCst), 1);
+        fs::remove_dir_all(&d).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn a_lock_round_trip_and_a_dead_holder_on_this_host() {
+        let d = std::env::temp_dir().join(format!("ch-shim-lock-{}", random_hex()));
+        fs::create_dir(&d).unwrap();
+        let lock = d.join("start.lock");
+        let held = acquire(&lock, Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(matches!(acquire(&lock, Instant::now()), Err(LockError::Held(Some(_)))));
+        drop(held);
+        assert!(!lock.exists());
+        // a pid that no process has (Windows pids are multiples of 4)
+        let dead = Holder::ours(4_000_000_002, &this_host(), &iso_utc(SystemTime::now()));
+        fs::write(&lock, dead.content()).unwrap();
+        drop(acquire(&lock, Instant::now() + Duration::from_secs(1)).unwrap());
+        // the heartbeat sets the mtime through a writable handle
+        let held = acquire_as(&lock, Instant::now() + Duration::from_secs(1), Duration::from_millis(50)).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(600))
+            .unwrap();
+        thread::sleep(Duration::from_millis(300));
+        assert!(age(&lock).unwrap() < Duration::from_secs(5));
+        drop(held);
         fs::remove_dir_all(&d).unwrap();
     }
 }

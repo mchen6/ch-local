@@ -193,6 +193,17 @@ fn parse_shim(path: &Path, bytes: &[u8]) -> Result<ShimInfo, ConfigError> {
         }
     };
     let (node, ch_local) = (absolute("node")?, absolute("chLocal")?);
+    // a .cmd or .bat would be run through cmd.exe, with its parsing
+    let script = node
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    if script {
+        return Err(ConfigError::Malformed {
+            path: path.to_path_buf(),
+            why: "node is a .cmd or .bat script, not a program".into(),
+        });
+    }
     let env = field(path, &o, "env")?
         .as_object()
         .ok_or_else(|| ConfigError::Malformed { path: path.to_path_buf(), why: "env is not an object".into() })?;
@@ -259,6 +270,8 @@ mod tests {
             (r#"{"node":"/n","chLocal":"/c","env":{"NODE_OPTIONS":"--require /x"}}"#, "NODE_OPTIONS"),
             (r#"{"node":"/n","chLocal":"/c","env":{"PATH":1}}"#, "not a string"),
             (r#"{"node":"/n","chLocal":"/c"}"#, "no env"),
+            (r#"{"node":"/opt/node.CMD","chLocal":"/c","env":{}}"#, ".cmd or .bat"),
+            (r#"{"node":"/opt/node.bat","chLocal":"/c","env":{}}"#, ".cmd or .bat"),
             (r#"[]"#, "not a JSON object"),
         ] {
             match parse_shim(&p(), bad.as_bytes()) {

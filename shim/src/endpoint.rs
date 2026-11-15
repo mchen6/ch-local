@@ -1,5 +1,10 @@
 //! Where the runtime listens, as daemon.json names it, checked before the
 //! shim connects (contract 2, section 1, "Where it listens"):
+//! The connect itself is by path (std has no connect relative to a checked
+//! directory's descriptor), so a same-user process could swap the socket
+//! between the check and the connect. The handshake bounds that: a peer that
+//! can't prove the secret gets nothing, and is never relayed to.
+//!
 //! - POSIX: a Unix socket, an absolute path whose directory passes the run
 //!   directory's checks (the run directory itself, or the `$TMPDIR/ch-<uid>/`
 //!   fallback), the socket itself this user's and not a symlink, and the
@@ -136,13 +141,21 @@ pub fn exists(socket: &str) -> bool {
     std::fs::symlink_metadata(socket).is_ok()
 }
 
-/// Whether the runtime takes a connection there within `limit`: the
-/// endpoint checked, then a connect on a worker thread, closed at once.
-pub fn probe(socket: &str, limit: Duration) -> bool {
+/// Whether a runtime holding `secret` answers there within `limit`: the
+/// endpoint checked, then, on a worker thread, a connect and a handshake as
+/// far as a checked PROVE (nothing more sent). A peer that can't prove the
+/// secret (a squatter on a stale daemon.json's name) is not a running
+/// daemon, so it can't stop one being started.
+pub fn probe(socket: &str, secret: crate::secret::Secret, limit: Duration) -> bool {
     let Ok(end) = check(socket) else { return false };
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(connect(&end).is_ok());
+        let ok = connect(&end).is_ok_and(|mut c| {
+            let _ = c.set_read_timeout(Some(limit));
+            let mut nc = [0u8; 32];
+            getrandom::fill(&mut nc).is_ok() && crate::handshake::prove_only(&mut c, &secret, nc).is_ok()
+        });
+        let _ = tx.send(ok);
     });
     rx.recv_timeout(limit).unwrap_or(false)
 }

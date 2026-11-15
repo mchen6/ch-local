@@ -36,6 +36,7 @@ dependencies = [
  "base64",
  "getrandom",
  "hmac",
+ "libc",
  "rustix",
  "serde_json",
  "sha2",

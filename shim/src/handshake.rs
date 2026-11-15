@@ -58,7 +58,7 @@ impl Refusal {
             "RESUME_REFUSED" => Refusal::ResumeRefused,
             "BUSY" => Refusal::Busy,
             "SHUTTING_DOWN" => Refusal::ShuttingDown,
-            other => Refusal::Unknown(other.to_string()),
+            other => Refusal::Unknown(clean(other)),
         }
     }
 }
@@ -74,6 +74,9 @@ pub enum HandshakeError {
     /// The PROVE's `ms` didn't check: not our runtime, or one that
     /// restarted with a new secret. Nothing more was sent.
     WrongProof,
+    /// A REFUSED PROTOCOL before any proof: possibly a squatter, so neither
+    /// its code's consequences nor its text are taken; the caller retries.
+    UnprovenProtocol,
     Refused {
         refusal: Refusal,
         message: String,
@@ -93,6 +96,9 @@ impl std::fmt::Display for HandshakeError {
             HandshakeError::Unexpected(k) => write!(f, "the runtime sent a {k:?} frame during the handshake"),
             HandshakeError::Malformed(what) => write!(f, "the runtime's {what} is not what the contract says"),
             HandshakeError::WrongProof => write!(f, "the runtime could not prove it holds this home's secret"),
+            HandshakeError::UnprovenProtocol => {
+                write!(f, "a peer that has not proven this home's secret says it speaks another protocol")
+            }
             HandshakeError::Refused { refusal, message } => {
                 write!(f, "the runtime refused the session ({refusal:?}): {message}")
             }
@@ -150,6 +156,21 @@ fn welcome(payload: &[u8]) -> Result<Welcome, HandshakeError> {
     })
 }
 
+/// Only as far as a checked PROVE: HELLO sent, PROVE read and its `ms`
+/// checked, nothing more sent. Whether a daemon is ours and answering,
+/// without opening a session.
+pub fn prove_only<S: Read + Write>(conn: &mut S, secret: &Secret, nc: [u8; 32]) -> Result<(), HandshakeError> {
+    frame::write_frame(conn, Kind::Hello, &hello(&nc), PRE_WELCOME)?;
+    let (kind, payload) = frame::read_frame(conn, PRE_WELCOME)?;
+    if kind != Kind::Prove {
+        return Err(HandshakeError::Unexpected(kind));
+    }
+    let prove = object(&payload, "PROVE")?;
+    let ns = bytes32(&prove, "ns", "PROVE")?;
+    let ms = bytes32(&prove, "ms", "PROVE")?;
+    if mac::server_proof_ok(secret, PROTOCOL, &nc, &ns, &ms) { Ok(()) } else { Err(HandshakeError::WrongProof) }
+}
+
 /// Makes the handshake on `conn`. `nc` is 32 bytes from the OS (the caller
 /// draws them), `resume` the last WELCOME's token if the shim holds one.
 pub fn attach<S: Read + Write>(
@@ -161,9 +182,13 @@ pub fn attach<S: Read + Write>(
     frame::write_frame(conn, Kind::Hello, &hello(&nc), PRE_WELCOME)?;
     let (kind, payload) = frame::read_frame(conn, PRE_WELCOME)?;
     if kind != Kind::Prove {
-        return Err(match kind {
-            Kind::Refused => refused(&payload),
-            other => HandshakeError::Unexpected(other),
+        // Before PROVE checks, the peer has proven nothing: it may be a
+        // squatter. Only PROTOCOL is honoured, as a fixed fact with none of
+        // its text, and the caller retries it; any other REFUSED is just an
+        // unexpected frame.
+        return Err(match (kind, unproven_code(&payload).as_deref()) {
+            (Kind::Refused, Some("PROTOCOL")) => HandshakeError::UnprovenProtocol,
+            (other, _) => HandshakeError::Unexpected(other),
         });
     }
     let prove = object(&payload, "PROVE")?;
@@ -182,12 +207,26 @@ pub fn attach<S: Read + Write>(
     }
 }
 
+/// The longest REFUSED message carried on (to stderr, to -32603 answers).
+const MESSAGE_MAX: usize = 200;
+
+/// A proven runtime's REFUSED: its code mapped, its message capped and with
+/// every control character removed, since it reaches the user's terminal.
 fn refused(payload: &[u8]) -> HandshakeError {
     match object(payload, "REFUSED") {
         Ok(o) => HandshakeError::Refused {
             refusal: Refusal::of(o.get("code").and_then(Value::as_str).unwrap_or("")),
-            message: o.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+            message: clean(o.get("message").and_then(Value::as_str).unwrap_or("")),
         },
         Err(e) => e,
     }
+}
+
+fn clean(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(MESSAGE_MAX).collect()
+}
+
+/// An unproven peer's REFUSED code, only to tell PROTOCOL; never shown.
+fn unproven_code(payload: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Value>(payload).ok()?.get("code")?.as_str().map(String::from)
 }

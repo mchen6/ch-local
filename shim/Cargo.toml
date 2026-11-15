@@ -19,7 +19,9 @@ sha2 = "0.10"
 zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
-# safe wrappers: geteuid, kill(pid, 0), uname (no unsafe in this crate)
+# fcntl on a bare descriptor number, only in unix_ffi's sweep fallback
+libc = "0.2"
+# safe wrappers: geteuid, kill(pid, 0), uname, getrlimit
 rustix = { version = "1", default-features = false, features = ["std", "process", "fs", "system"] }
 
 [target.'cfg(windows)'.dependencies]

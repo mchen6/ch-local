@@ -104,6 +104,9 @@ pub fn current_user_sid() -> io::Result<Vec<u8>> {
         if size == 0 {
             return Err(io::Error::last_os_error());
         }
+        if (size as usize) < size_of::<TOKEN_USER>() {
+            return Err(io::Error::other("the token's user is smaller than a TOKEN_USER"));
+        }
         // u64s, so the buffer is aligned for TOKEN_USER
         let mut buf = vec![0u64; (size as usize).div_ceil(8)];
         // SAFETY: buf holds at least size bytes and outlives the call.
@@ -183,8 +186,9 @@ pub fn file_acl(file: &File) -> io::Result<Acl> {
                 acl.other_aces = true;
                 continue;
             }
-            // SAFETY: the header's 4 bytes are within the DACL (checked above).
-            let header = unsafe { *(ace as *const ACE_HEADER) };
+            // SAFETY: the header's 4 bytes are within the DACL (checked above);
+            // read unaligned, since an ACE's alignment isn't promised.
+            let header = unsafe { ptr::read_unaligned(ace as *const ACE_HEADER) };
             let size = usize::from(header.AceSize);
             if at + size > dacl_end || size < 8 {
                 acl.other_aces = true;
@@ -197,7 +201,7 @@ pub fn file_acl(file: &File) -> io::Result<Acl> {
             // SAFETY: an allow or deny ACE is a header (4 bytes), a mask (4
             // bytes) and the SID; size >= 8 and the ACE is within the DACL,
             // so the mask at offset 4 is readable.
-            let mask = unsafe { *((ace as *const u8).add(4) as *const u32) };
+            let mask = unsafe { ptr::read_unaligned((ace as *const u8).add(4) as *const u32) };
             // SAFETY: the SID starts at offset 8 and has size - 8 bytes of the
             // ACE for it, all within the DACL; sid_bytes_within reads no more.
             let sid = unsafe { sid_bytes_within((ace as *const u8).add(8), size - 8) };
@@ -223,6 +227,11 @@ pub fn file_acl(file: &File) -> io::Result<Acl> {
 /// the process can be opened and has not exited; a process that exists but
 /// can't be opened (access denied) counts as alive, as EPERM does on POSIX.
 pub fn process_alive(pid: u32) -> bool {
+    // libuv's uv_kill(0, 0) succeeds (a pseudo-pid for this process group's
+    // idea of "self" on Windows): counted alive, as Node does
+    if pid == 0 {
+        return true;
+    }
     // SAFETY: OpenProcess with a plain pid; the handle, if any, is closed
     // below.
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -256,16 +265,112 @@ pub fn dns_hostname() -> Option<String> {
 }
 
 /// The shim's own stdin, stdout and stderr handles made non-inheritable, so
-/// a process it spawns (the daemon) never holds the client's pipes.
-pub fn stdio_not_inherited() {
+/// a process it spawns (the daemon) never holds the client's pipes. A
+/// handle that exists and can't be changed is an error: the caller then
+/// refuses to spawn.
+pub fn stdio_not_inherited() -> io::Result<()> {
     for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-        // SAFETY: GetStdHandle returns this process's handle (or null or
-        // INVALID_HANDLE_VALUE, which SetHandleInformation refuses); clearing
-        // its inherit flag changes nothing else about it.
-        unsafe {
-            let h = GetStdHandle(which);
-            if !h.is_null() {
-                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+        // SAFETY: GetStdHandle returns this process's handle, null (none) or
+        // INVALID_HANDLE_VALUE; it reads no memory of ours.
+        let h = unsafe { GetStdHandle(which) };
+        if h.is_null() || h == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            continue;
+        }
+        // SAFETY: h is this process's own standard handle; clearing its
+        // inherit flag changes nothing else about it.
+        if unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Whether one of this process's standard handles is inheritable (tests).
+#[cfg(test)]
+pub fn stdio_inheritable(which: u32) -> Option<bool> {
+    let mut flags = 0u32;
+    // SAFETY: as stdio_not_inherited; flags is a local.
+    unsafe {
+        let h = GetStdHandle(which);
+        if h.is_null() || h == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            return None;
+        }
+        if windows_sys::Win32::Foundation::GetHandleInformation(h, &mut flags) == 0 {
+            return None;
+        }
+    }
+    Some(flags & HANDLE_FLAG_INHERIT != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+    use crate::trust::{self, sid_string};
+
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        let mut b = [0u8; 6];
+        getrandom::fill(&mut b).unwrap();
+        let p = std::env::temp_dir()
+            .join(format!("ch-shim-{name}-{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()));
+        std::fs::write(&p, b"x").unwrap();
+        p
+    }
+
+    fn icacls(path: &std::path::Path, args: &[&str]) {
+        let st = Command::new("icacls").arg(path).args(args).status().unwrap();
+        assert!(st.success(), "icacls {args:?}");
+    }
+
+    #[test]
+    fn the_current_user_sid_is_a_user_sid() {
+        let sid = current_user_sid().unwrap();
+        assert!(sid_string(&sid).starts_with("S-1-5-"), "{}", sid_string(&sid));
+    }
+
+    #[test]
+    fn a_private_file_passes_and_one_everyone_can_read_fails() {
+        let me = sid_string(&current_user_sid().unwrap());
+        let f = temp_file("acl");
+        icacls(&f, &["/inheritance:r", "/grant:r", &format!("*{me}:F"), "*S-1-5-18:F"]);
+        let acl = file_acl(&std::fs::File::open(&f).unwrap()).unwrap();
+        assert!(!acl.other_aces);
+        assert!(sid_string(&acl.owner).starts_with("S-1-5-"), "{}", sid_string(&acl.owner));
+        assert!(trust::read_private(&f, 64).is_ok(), "{:?}", trust::read_private(&f, 64).err());
+        icacls(&f, &["/grant", "*S-1-1-0:R"]);
+        let e = trust::read_private(&f, 64).unwrap_err();
+        assert!(e.why.contains("accessible by S-1-1-0"), "{}", e.why);
+        let _ = std::fs::remove_file(&f);
+    }
+
+    #[test]
+    fn process_alive_as_node_s_kill_0() {
+        assert!(process_alive(std::process::id()));
+        assert!(process_alive(0), "libuv counts 0 as alive");
+        let mut child = Command::new("cmd").args(["/C", "exit 0"]).spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        drop(child);
+        assert!(!process_alive(pid), "an exited child");
+    }
+
+    #[test]
+    fn the_host_name_is_node_s_os_hostname() {
+        let Ok(out) = Command::new("node").args(["-e", "process.stdout.write(require('os').hostname())"]).output()
+        else {
+            assert!(std::env::var("CI").is_err(), "node is needed for this test in CI");
+            return;
+        };
+        assert_eq!(dns_hostname().unwrap(), String::from_utf8_lossy(&out.stdout));
+    }
+
+    #[test]
+    fn the_standard_handles_end_up_not_inheritable() {
+        stdio_not_inherited().unwrap();
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            if let Some(inheritable) = stdio_inheritable(which) {
+                assert!(!inheritable, "standard handle {which} is still inheritable");
             }
         }
     }

@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 use crate::config::{self, ConfigError, Home};
 use crate::daemon;
 use crate::endpoint::{self, Conn};
+use crate::frame;
 use crate::handshake::{self, HandshakeError, Refusal, Welcome};
 use crate::trust::TrustKind;
 
@@ -210,6 +211,15 @@ fn try_once(
             Ok((conn, w))
         }
         Err(HandshakeError::WrongProof) => Err(Next::Reread("the runtime's proof did not check".into())),
+        // a REFUSED other than PROTOCOL before a checked PROVE counts as a
+        // wrong ms (#236 §1, b17f9ca): the files are read again
+        Err(HandshakeError::Unexpected(frame::Kind::Refused)) => {
+            Err(Next::Reread("the runtime's proof did not check".into()))
+        }
+        // fixed text only: the peer proved nothing
+        Err(HandshakeError::UnprovenProtocol) => {
+            Err(Next::Later("a peer that has not proven this home's secret refused the protocol".into()))
+        }
         Err(HandshakeError::Refused { refusal, message }) => Err(match refusal {
             Refusal::BadProof => Next::Reread(format!("the runtime refused the proof ({message})")),
             Refusal::ResumeRefused => Next::NewSession,
@@ -260,6 +270,8 @@ mod tests {
     }
 
     fn home() -> TestHome {
+        // the harness's threads mean these tests can't sweep for real
+        crate::unix_ffi::assume_swept();
         let mut b = [0u8; 6];
         getrandom::fill(&mut b).unwrap();
         let root = std::env::temp_dir().join(format!("ch-shim-attach-{}", hex(&b)));
@@ -518,14 +530,9 @@ mod tests {
     fn a_fifo_where_the_secret_should_be_is_refused_at_once() {
         let (t, _rx) = ready(vec![]);
         fs::remove_file(t.home.secret()).unwrap();
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            t.home.secret(),
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::from_raw_mode(0o600),
-            0,
-        )
-        .unwrap();
+        // mkfifo(1): rustix has no mknodat on every platform this runs on
+        let made = std::process::Command::new("mkfifo").arg("-m").arg("600").arg(t.home.secret()).status().unwrap();
+        assert!(made.success());
         let started = Instant::now();
         assert!(matches!(attach(&t.home, None), Err(AttachError::Stop(w)) if w.contains("not a regular file")));
         assert!(started.elapsed() < Duration::from_secs(1));
