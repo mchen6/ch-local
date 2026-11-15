@@ -522,10 +522,14 @@ impl Pipe {
         }
         // SAFETY: OVERLAPPED is plain data; zero is its documented start.
         let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
-        ov.hEvent = event.as_raw_handle() as HANDLE;
+        let ev = event.as_raw_handle() as HANDLE;
+        ov.hEvent = ev;
+        // from here ov is only reached through this pointer: the kernel may
+        // own it while the operation is pending
+        let ovp: *mut OVERLAPPED = &mut ov;
         // SAFETY: the event is valid; reset before the operation reuses it.
-        unsafe { ResetEvent(ov.hEvent) };
-        if start(&mut ov) == 0 {
+        unsafe { ResetEvent(ev) };
+        if start(ovp) == 0 {
             // SAFETY: reads the calling thread's last error.
             let err = unsafe { GetLastError() };
             if err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED {
@@ -535,18 +539,18 @@ impl Pipe {
                 return Err(context(what, io::Error::from_raw_os_error(err as i32)));
             }
             let ms = timeout.map_or(INFINITE, |t| u32::try_from(t.as_millis()).unwrap_or(INFINITE - 1).max(1));
-            let both = [ov.hEvent, cancel];
+            let both = [ev, cancel];
             // SAFETY: both events are valid for the wait; it reads nothing
             // of ours.
             let woke = unsafe { WaitForMultipleObjects(2, both.as_ptr(), 0, ms) };
             if woke != WAIT_OBJECT_0 {
                 // timed out, or shut down: cancel this one operation
                 // SAFETY: ov is still alive.
-                unsafe { CancelIoEx(self.raw(), &ov) };
+                unsafe { CancelIoEx(self.raw(), ovp) };
                 let mut n = 0u32;
                 // SAFETY: waits (bWait = 1) for the cancelled operation to
                 // complete, so the kernel is done with ov and the buffer.
-                if unsafe { GetOverlappedResult(self.raw(), &ov, &mut n, 1) } != 0 {
+                if unsafe { GetOverlappedResult(self.raw(), ovp, &mut n, 1) } != 0 {
                     // it completed before the cancel took: its bytes count
                     return Ok(n as usize);
                 }
@@ -560,7 +564,7 @@ impl Pipe {
         let mut n = 0u32;
         // SAFETY: the operation has completed (or completes now, bWait = 1);
         // ov and the buffer are alive until this returns.
-        if unsafe { GetOverlappedResult(self.raw(), &ov, &mut n, 1) } == 0 {
+        if unsafe { GetOverlappedResult(self.raw(), ovp, &mut n, 1) } == 0 {
             // SAFETY: reads the calling thread's last error.
             let err = unsafe { GetLastError() };
             if err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED {

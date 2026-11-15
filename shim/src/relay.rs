@@ -38,6 +38,9 @@ const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
 /// the next attach waits, doubling, so a runtime that closes at once is
 /// never hammered.
 const QUICK_LOSS: Duration = Duration::from_secs(10);
+/// Connections left at the settle deadline in a row before the runtime is
+/// counted unreachable.
+const MAX_SETTLE_LOSSES: u32 = 2;
 /// The most conditions? asks waiting for the child.
 const CHILD_QUEUE: usize = 8;
 /// How long finish() waits for an answer still streaming to stdout.
@@ -148,6 +151,11 @@ pub struct Relay {
     child_queue: std::collections::VecDeque<Option<u64>>,
     /// stdout failed: the client is gone, and the shim ends.
     stdout_gone: bool,
+    /// Connections in a row left at the settle deadline; at two, the
+    /// runtime is unreachable (its held requests answered) instead of
+    /// retried every deadline for ever.
+    settle_losses: u32,
+    give_up: Option<String>,
 }
 
 /// How the relay ended.
@@ -239,6 +247,8 @@ impl Relay {
             child_running: false,
             child_queue: std::collections::VecDeque::new(),
             stdout_gone: false,
+            settle_losses: 0,
+            give_up: None,
         }
     }
 
@@ -304,7 +314,14 @@ impl Relay {
             }
             Ev::SettleDeadline { generation } => {
                 if generation == self.generation && self.state == State::Unsettled {
-                    let _ = writeln!(io::stderr(), "ch-shim: the runtime never settled this session; attaching again");
+                    self.settle_losses += 1;
+                    if self.settle_losses >= MAX_SETTLE_LOSSES {
+                        self.give_up =
+                            Some(format!("the runtime never settled this session ({} tries)", self.settle_losses));
+                    } else {
+                        let _ =
+                            writeln!(io::stderr(), "ch-shim: the runtime never settled this session; attaching again");
+                    }
                     if let Some(w) = self.writer.as_ref() {
                         // the reader then ends, and its Lost reattaches
                         let _ = w.shutdown();
@@ -599,6 +616,7 @@ impl Relay {
         match op["op"].as_str().unwrap_or("") {
             "settled" if self.state == State::Unsettled => {
                 self.state = State::Live;
+                self.settle_losses = 0;
                 // the session is restored (section 6, step 4) before any of
                 // the client's held traffic reaches it
                 if self.reconnecting {
@@ -731,6 +749,13 @@ impl Relay {
         let answers = self.inflight.lock().expect("in-flight lock").crash_answers();
         for a in answers {
             self.say(&a);
+        }
+        if let Some(why) = self.give_up.take() {
+            // unreachable: the held requests are answered, and the retry
+            // schedule (not every deadline) decides when to try again
+            self.settle_losses = 0;
+            self.unreachable(why);
+            return None;
         }
         self.reconnecting = self.initialize.is_some();
         // a connection that died soon after its WELCOME (and not by a
@@ -1658,5 +1683,40 @@ mod tests {
         assert_eq!(refuse(br#"[{"jsonrpc":"2.0","method":"n"}]"#), Refusal::Nothing, "a batch of notifications");
         assert_eq!(refuse(br#"{"jsonrpc":"2.0","id":4,"method":"m"}"#), Refusal::Ids(vec![b"4".to_vec()], false));
         assert_eq!(refuse(b"{not json"), Refusal::Null, "unparseable: the null-id answer");
+    }
+
+    #[test]
+    fn a_runtime_that_never_settles_twice_is_unreachable_and_the_held_request_is_answered() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing =
+            Timing { settle: Duration::from_millis(300), retry_unit: Duration::from_millis(50), ..Timing::default() };
+        let (mut client_in, sink, done) = start_with(home, timing);
+        thread::spawn(move || {
+            for c in listener.incoming() {
+                let Ok(mut s) = c else { return };
+                thread::spawn(move || {
+                    welcome(&mut s, "rt");
+                    // never settled; held until the shim leaves
+                    let mut rest = Vec::new();
+                    let _ = s.read_to_end(&mut rest);
+                });
+            }
+        });
+        thread::sleep(Duration::from_millis(100));
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"a\"}\n").unwrap();
+        let mut answered = None;
+        for _ in 0..300 {
+            if let Some(l) = sink.lines().first() {
+                answered = Some(l.clone());
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let a: Value = serde_json::from_str(&answered.expect("the held request was never answered")).unwrap();
+        assert_eq!(a["id"].as_u64(), Some(7), "{a}");
+        assert!(a["error"].is_object(), "{a}");
+        drop(client_in);
+        let _ = done;
     }
 }

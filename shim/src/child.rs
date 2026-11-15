@@ -41,6 +41,46 @@ pub fn child_env(env: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(Os
 
 /// The `client` frame's payload for what the child printed (Ok) or why it
 /// failed (Err), answering `seq` if given.
+/// After the child exited: its first line (within 2 s), refused if any
+/// more than blank space follows it within LATER, or by EOF.
+fn read_answer(rx: &std::sync::mpsc::Receiver<Option<Vec<u8>>>) -> Result<Vec<u8>, String> {
+    const LATER: Duration = Duration::from_millis(200);
+    let never_ended = || "the conditions child's output never ended (a process it started holds it open)".to_string();
+    let mut out = Vec::new();
+    let first_by = Instant::now() + Duration::from_secs(2);
+    let mut eof = false;
+    while !out.contains(&b'\n') {
+        match rx.recv_timeout(first_by.saturating_duration_since(Instant::now())) {
+            Ok(Some(c)) => out.extend_from_slice(&c),
+            Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                eof = true;
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(never_ended()),
+        }
+        if out.len() as u64 > STDOUT_MAX {
+            return Err("the conditions child printed more than 4 KiB".into());
+        }
+    }
+    let later_by = Instant::now() + LATER;
+    while !eof {
+        match rx.recv_timeout(later_by.saturating_duration_since(Instant::now())) {
+            Ok(Some(c)) => out.extend_from_slice(&c),
+            Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => eof = true,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+        }
+        if out.len() as u64 > STDOUT_MAX {
+            return Err("the conditions child printed more than 4 KiB".into());
+        }
+    }
+    let end = out.iter().position(|b| *b == b'\n').map_or(out.len(), |i| i + 1);
+    if out[end..].iter().any(|b| !b.is_ascii_whitespace()) {
+        return Err("the conditions child printed more than one line".into());
+    }
+    out.truncate(end);
+    Ok(out)
+}
+
 pub fn client_frame(seq: Option<u64>, printed: Result<Vec<u8>, String>) -> Vec<u8> {
     let head = match seq {
         Some(n) => format!("{{\"op\":\"client\",\"seq\":{n}"),
@@ -110,27 +150,27 @@ pub fn run(
         .spawn()
         .map_err(|e| format!("the conditions child could not be started ({e})"))?;
     let mut stdout = child.stdout.take().expect("piped");
-    // read on a thread that sends what it read: joined with a deadline, so
-    // a grandchild that holds the pipe open can't hold the shim
-    let (rtx, rrx) = std::sync::mpsc::channel();
-    // read to the answer's newline, not to EOF: a grandchild holding the
-    // pipe then can't hold this thread either (only a child that never ends
-    // its line, and leaves such a grandchild, still can)
+    // read on a thread that sends each chunk as it comes, then None at EOF:
+    // the answer is its first line, and a second line refuses it (fail
+    // closed). A grandchild that holds the pipe open can't hold the shim:
+    // past the first line, only what comes within LATER is looked at (the
+    // thread itself then lives until that grandchild lets the pipe go)
+    let (rtx, rrx) = std::sync::mpsc::channel::<Option<Vec<u8>>>();
     std::thread::spawn(move || {
-        let mut out = Vec::new();
         let mut buf = [0u8; 512];
+        let mut total = 0u64;
         loop {
             match stdout.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    out.extend_from_slice(&buf[..n]);
-                    if out.contains(&b'\n') || out.len() as u64 > STDOUT_MAX {
-                        break;
+                    total += n as u64;
+                    if rtx.send(Some(buf[..n].to_vec())).is_err() || total > STDOUT_MAX {
+                        return;
                     }
                 }
             }
         }
-        let _ = rtx.send(out);
+        let _ = rtx.send(None);
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -145,10 +185,7 @@ pub fn run(
             Err(e) => return Err(format!("the conditions child could not be waited for ({e})")),
         }
     };
-    let out = match rrx.recv_timeout(Duration::from_secs(2)) {
-        Ok(out) => out,
-        Err(_) => return Err("the conditions child's output never ended (a process it started holds it open)".into()),
-    };
+    let out = read_answer(&rrx)?;
     if !status.success() {
         return Err(format!("the conditions child exited with {status}"));
     }
@@ -197,6 +234,17 @@ mod tests {
         let f = client_frame(Some(2), Ok(b"{}\n".to_vec()));
         assert_eq!(f, br#"{"op":"client","seq":2}"#);
         serde_json::from_slice::<Value>(&f).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_conditions_child_that_prints_a_second_line_is_refused() {
+        let p = std::env::temp_dir().join(format!("ch-shim-twolines-{}.sh", std::process::id()));
+        std::fs::write(&p, "echo '{\"status\":\"ok\"}'; echo '{\"status\":\"also\"}'\n").unwrap();
+        let shim = ShimInfo { node: "/bin/sh".into(), ch_local: p.clone(), env: vec![] };
+        let r = run(&shim, std::path::Path::new("/h"), 1, vec![], TIMEOUT);
+        let _ = std::fs::remove_file(&p);
+        assert!(r.as_ref().is_err_and(|w| w.contains("more than one line")), "{r:?}");
     }
 
     #[cfg(windows)]
