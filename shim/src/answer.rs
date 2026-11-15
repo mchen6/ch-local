@@ -3,9 +3,8 @@
 //! is the request's original bytes, unchanged.
 
 fn one(id: &[u8], may_have_run: bool) -> Vec<u8> {
-    // PENDING the spec: contract 2 gives the may-have-run text only, and says
-    // a request held past a drain's bound is "answered as above with
-    // mayHaveRun: false"; its own text is raised with the spec's author.
+    // mayHaveRun false: a request held past a drain's bound, which never
+    // reached the runtime (vectors.json drainOverflowAnswer)
     let message = if may_have_run {
         "countinghouse's runtime restarted before answering; the call may have run"
     } else {

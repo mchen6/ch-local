@@ -208,3 +208,49 @@ fn the_crash_answer() {
     assert_eq!(batch[1]["id"], "b");
     assert_eq!(answer::crash_batch(&[], true), None, "a batch of notifications only is answered with nothing");
 }
+
+// The line a vector gives: `line` as text, or `lineHex` for bytes that are
+// not UTF-8.
+fn line_of(v: &Value) -> Vec<u8> {
+    match v["lineHex"].as_str() {
+        Some(h) => hex(h),
+        None => v["line"].as_str().unwrap().as_bytes().to_vec(),
+    }
+}
+
+#[test]
+fn the_parser_edges_requests_by_any_method_and_unescaped_names_lines_refused_go_plain() {
+    let m = &vectors()["messages"];
+    let mut seq = 0;
+    for (name, want_seq) in [
+        ("nonStringMethod", Some(4)),
+        ("escapedIdKey", Some(5)),
+        ("loneSurrogateKey", None),
+        ("invalidUtf8", None),
+        ("clientResponseToRuntime", None),
+    ] {
+        let line = line_of(&m[name]);
+        let class = message::classify(&line);
+        match want_seq {
+            Some(_) => assert!(matches!(class, message::Line::Request { .. }), "{name}: {class:?}"),
+            None if name == "clientResponseToRuntime" => assert_eq!(class, message::Line::Response, "{name}"),
+            None => assert_eq!(class, message::Line::Plain, "{name}"),
+        }
+        assert_eq!(
+            m[name]["header"].as_object().and_then(|h| h["seq"].as_u64()),
+            want_seq,
+            "{name}: the vector's header"
+        );
+        if let Some(h) = m[name]["hex"].as_str() {
+            assert_eq!(message::to_runtime(want_seq, &line, CAPS.message).unwrap(), payload_of(h), "{name}");
+        }
+        seq += 1;
+    }
+    assert_eq!(seq, 5);
+}
+
+#[test]
+fn the_drain_overflow_answer() {
+    let d = &vectors()["drainOverflowAnswer"];
+    assert_eq!(answer::crash(b"7", false), d["json"].as_str().unwrap().as_bytes());
+}

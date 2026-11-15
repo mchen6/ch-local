@@ -39,11 +39,9 @@ pub enum Line {
     /// is still a request (it gets a seq): the runtime answers it as
     /// invalid, and the shim must be able to crash-answer it meanwhile.
     Request { id: Vec<u8>, method: Option<String> },
-    /// An object with an `id` and no `method`: the client's answer to a
-    /// request of the runtime's (a dialog's elicitation, say). The runtime
-    /// never answers it, so the shim keeps nothing for it and it gets no
-    /// header. PENDING the spec, whose contract 2 says "an object with an
-    /// id" is a request: raised with its author.
+    /// An object with an `id` and no `method`: a response of the client's.
+    /// The runtime never answers it, so the shim keeps nothing for it and
+    /// it gets no header (vectors.json clientResponseToRuntime).
     Response,
     /// An array: the original bytes of each member's id, for members that
     /// have one.
@@ -59,9 +57,11 @@ fn id_of(fields: &Fields<'_>) -> Option<Vec<u8>> {
 }
 
 /// Only a line's top level is parsed into fields; each value is skipped as
-/// raw bytes, so a value's depth or content never refuses a line. (A
-/// top-level key that is not valid Unicode, a lone surrogate escape, makes
-/// the line Plain.)
+/// raw bytes, so a value's depth or content never refuses a line. Member
+/// names are compared after unescaping ("i\u0064" is id). A line this parser
+/// refuses (a lone surrogate escape in a top-level name, bytes that are not
+/// UTF-8) is Plain: it goes with no header, and the runtime, which never
+/// runs an id-carrying line without a seq, answers it with an error.
 pub fn classify(line: &[u8]) -> Line {
     let first = line.iter().copied().find(|b| !matches!(b, b' ' | b'\t' | b'\r'));
     match first {
