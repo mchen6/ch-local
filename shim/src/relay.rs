@@ -8,7 +8,8 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{self, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,6 +31,9 @@ use crate::{answer, child};
 
 /// After the client's stdin ends: answers are relayed this long at most.
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
+/// The relay's event queue: bounded, so the stdin thread (and the reader)
+/// wait while main is busy (back-pressure), never queueing without limit.
+const QUEUE: usize = 64;
 /// The background retries after an attach gave up.
 const RETRIES: [u64; 4] = [5, 10, 30, 30];
 
@@ -63,7 +67,7 @@ enum State {
 
 pub struct Relay {
     setup: Setup,
-    tx: Sender<Ev>,
+    tx: SyncSender<Ev>,
     rx: Receiver<Ev>,
     out: Out,
     state: State,
@@ -74,6 +78,7 @@ pub struct Relay {
     seq: Seq,
     inflight: Arc<Mutex<InFlight>>,
     dropped: Arc<Mutex<HashSet<u64>>>,
+    closed: Arc<AtomicBool>,
     records: Records,
     held: Held,
     resume: Option<String>,
@@ -99,16 +104,25 @@ pub enum Exit {
 
 /// The rest of the client's lines, still arriving from the relay's stdin
 /// reader, after the relay has handed the session over.
-pub struct Rest(Receiver<Ev>);
+pub struct Rest {
+    rx: Receiver<Ev>,
+    out: Out,
+    limit: Limit,
+}
 
 impl Iterator for Rest {
     type Item = Vec<u8>;
     fn next(&mut self) -> Option<Vec<u8>> {
         loop {
-            match self.0.recv().ok()? {
+            match self.rx.recv().ok()? {
                 Ev::Stdin(lines::Read::Line(l)) => return Some(l),
                 Ev::Stdin(lines::Read::Eof) => return None,
-                // a line too long for the shared runtime goes nowhere; nor do
+                // still answered: the line was discarded unread, so nothing
+                // else can answer it (one small write; pipe writes that size
+                // are atomic beside the per-session runtime's own)
+                Ev::Stdin(lines::Read::TooLong(_)) => {
+                    let _ = self.out.message(&answer::too_long(self.limit.get()));
+                }
                 // the old connection's late events
                 _ => {}
             }
@@ -118,7 +132,7 @@ impl Iterator for Rest {
 
 impl Relay {
     pub fn new(setup: Setup, out: Out) -> Relay {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(QUEUE);
         Relay {
             setup,
             tx,
@@ -132,6 +146,7 @@ impl Relay {
             seq: Seq::default(),
             inflight: Arc::new(Mutex::new(InFlight::default())),
             dropped: Arc::new(Mutex::new(HashSet::new())),
+            closed: Arc::new(AtomicBool::new(false)),
             records: Records::default(),
             held: Held::default(),
             resume: None,
@@ -274,43 +289,72 @@ impl Relay {
         }
     }
 
+    /// The ids a request or batch line must be answered for, if any.
+    fn ids_of(class: &Line) -> Option<(Vec<Vec<u8>>, bool)> {
+        match class {
+            Line::Request { id, .. } => Some((vec![id.clone()], false)),
+            Line::Batch { ids } if !ids.is_empty() => Some((ids.clone(), true)),
+            _ => None,
+        }
+    }
+
+    /// One answer per id: the request's own, or a batch's array.
+    fn answer_each(&self, ids: &[Vec<u8>], batch: bool, one: impl Fn(&[u8]) -> Vec<u8>) {
+        if !batch {
+            return self.say(&one(&ids[0]));
+        }
+        let mut all = vec![b'['];
+        for (i, id) in ids.iter().enumerate() {
+            if i > 0 {
+                all.push(b',');
+            }
+            all.extend_from_slice(&one(id));
+        }
+        all.push(b']');
+        self.say(&all);
+    }
+
+    /// A line sent to the runtime. Its frame is built (and checked against
+    /// the connection's cap) BEFORE the request is tracked, so a line the
+    /// shim answers itself is never left in the in-flight table to be
+    /// answered a second time.
     fn forward(&mut self, line: Vec<u8>) {
         let class = message::classify(&line);
-        let seq = match &class {
-            Line::Request { id, method } => {
-                if method.as_deref() == Some("initialize") {
-                    self.initialize = Some(line.clone());
-                }
-                match self.seq.take() {
-                    Some(n) => {
-                        if self.inflight.lock().expect("in-flight lock").track(n, &class).is_err() {
-                            self.say(&answer::too_many(id));
-                            return;
-                        }
-                        Some(n)
-                    }
-                    None => {
-                        self.say(&answer::too_many(id));
-                        return;
-                    }
-                }
+        let numbered = matches!(class, Line::Request { .. } | Line::Batch { .. });
+        if let Line::Request { method: Some(m), .. } = &class {
+            if m == "initialize" {
+                self.initialize = Some(line.clone());
             }
-            Line::Batch { .. } => {
-                let Some(n) = self.seq.take() else { return };
-                if self.inflight.lock().expect("in-flight lock").track(n, &class).is_err() {
-                    if let Line::Batch { ids } = &class {
-                        self.overflow(Overflow { ids: ids.clone(), batch: true });
+        }
+        let seq = if numbered {
+            match self.seq.take() {
+                Some(n) => Some(n),
+                None => {
+                    if let Some((ids, batch)) = Self::ids_of(&class) {
+                        self.answer_each(&ids, batch, answer::too_many);
                     }
                     return;
                 }
-                Some(n)
             }
-            Line::Response | Line::Plain => None,
+        } else {
+            None
         };
         let Ok(payload) = message::to_runtime(seq, &line, self.to_runtime.message) else {
-            self.say(&answer::too_long(self.limit.get()));
+            let limit = (self.to_runtime.message as usize).saturating_sub(4096);
+            match Self::ids_of(&class) {
+                Some((ids, batch)) => self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit)),
+                None => self.say(&answer::too_long(limit)),
+            }
             return;
         };
+        if let Some(n) = seq {
+            if self.inflight.lock().expect("in-flight lock").track(n, &class).is_err() {
+                if let Some((ids, batch)) = Self::ids_of(&class) {
+                    self.answer_each(&ids, batch, answer::too_many);
+                }
+                return;
+            }
+        }
         if let Some(w) = self.writer.as_mut() {
             let _ = frame::write_frame(w, Kind::Message, &payload, self.to_runtime);
         }
@@ -327,9 +371,14 @@ impl Relay {
             Err(e) => return self.unreachable(format!("the connection could not be shared ({e})")),
         };
         let (tx, generation) = (self.tx.clone(), self.generation);
-        let shared = Shared { inflight: self.inflight.clone(), dropped: self.dropped.clone(), out: self.out.clone() };
+        let shared = Shared {
+            inflight: self.inflight.clone(),
+            dropped: self.dropped.clone(),
+            out: self.out.clone(),
+            closed: self.closed.clone(),
+        };
         let from_runtime = a.welcome.to_shim;
-        let (rtx, rrx) = mpsc::channel();
+        let (rtx, rrx) = mpsc::sync_channel(QUEUE);
         thread::spawn(move || reader::run(read_half, from_runtime, shared, rtx));
         thread::spawn(move || {
             for event in rrx {
@@ -366,13 +415,15 @@ impl Relay {
         match op["op"].as_str().unwrap_or("") {
             "settled" if self.state == State::Unsettled => {
                 self.state = State::Live;
-                for line in self.held.take() {
-                    self.forward(line);
-                }
+                // the session is restored (section 6, step 4) before any of
+                // the client's held traffic reaches it
                 if self.reconnecting {
                     self.replay_initialize();
                 }
                 self.reconnecting = false;
+                for line in self.held.take() {
+                    self.forward(line);
+                }
             }
             "conditions?" => {
                 if let Some(seq) = op.get("seq").and_then(Value::as_u64) {
@@ -397,10 +448,16 @@ impl Relay {
                     .filter(|c| !c.is_control())
                     .take(64)
                     .collect();
+                // whatever was in flight here won't be answered by this
+                // connection any more: crash-answered now, and the reader
+                // stops writing (closed), so the per-session runtime's
+                // output is the only thing on stdout from here
+                self.close_and_crash_answer();
                 self.writer = None;
-                let (_, dead) = mpsc::channel();
+                let (_, dead) = mpsc::sync_channel(1);
                 let rx = std::mem::replace(&mut self.rx, dead);
-                return Some(Exit::OwnRuntime { reason, held: self.held.take(), rest: Rest(rx) });
+                let rest = Rest { rx, out: self.out.clone(), limit: self.limit.clone() };
+                return Some(Exit::OwnRuntime { reason, held: self.held.take(), rest });
             }
             _ => {}
         }
@@ -431,18 +488,32 @@ impl Relay {
         self.say(br#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#);
     }
 
-    fn lost(&mut self, why: String) -> Option<Exit> {
+    /// Crash answers for everything still in flight, taken under the
+    /// in-flight mutex with `closed` set, so the reader (if still running)
+    /// discards any later answer for them instead of writing a second one.
+    fn close_and_crash_answer(&self) {
+        let answers = {
+            let mut t = self.inflight.lock().expect("in-flight lock");
+            self.closed.store(true, Ordering::SeqCst);
+            t.crash_answers()
+        };
+        for a in answers {
+            self.say(&a);
+        }
+    }
+
+    fn lost(&mut self, _why: String) -> Option<Exit> {
         self.writer = None;
         if let State::Closing(_) = self.state {
             return Some(self.finish());
         }
-        if self.state != State::Draining {
-            // under the in-flight mutex: whatever the reader settled is not here
-            for a in self.inflight.lock().expect("in-flight lock").crash_answers() {
-                self.say(&a);
-            }
+        // whatever is still in flight was never answered (after a drain the
+        // runtime should have answered all of it; if it crashed instead,
+        // these are its crash answers); the reader is gone, so nothing more
+        // can come for them
+        for a in self.inflight.lock().expect("in-flight lock").crash_answers() {
+            self.say(&a);
         }
-        let _ = why;
         self.reconnecting = self.initialize.is_some();
         self.attach();
         None
@@ -480,6 +551,13 @@ impl Relay {
             }
             return Some(Exit::Done);
         }
+        // held lines (before settled, during a drain) never reached the
+        // runtime, and now never will: each request says so
+        for line in self.held.take() {
+            if let Some((ids, batch)) = Self::ids_of(&message::classify(&line)) {
+                self.answer_each(&ids, batch, |id| answer::crash(id, false));
+            }
+        }
         self.control(br#"{"op":"bye"}"#);
         self.state = State::Closing(Instant::now() + CLOSING_GRACE);
         if self.inflight.lock().expect("in-flight lock").is_empty() {
@@ -489,9 +567,7 @@ impl Relay {
     }
 
     fn finish(&mut self) -> Exit {
-        for a in self.inflight.lock().expect("in-flight lock").crash_answers() {
-            self.say(&a);
-        }
+        self.close_and_crash_answer();
         Exit::Done
     }
 }

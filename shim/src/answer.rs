@@ -58,7 +58,14 @@ fn error(id: &[u8], code: i32, message: &str) -> Vec<u8> {
 /// A client line over the bound, discarded unread, so with no id
 /// (vectors.json tooLongLineAnswer).
 pub fn too_long(limit: usize) -> Vec<u8> {
-    error(b"null", -32600, &format!("the request is larger than countinghouse accepts ({limit} bytes)"))
+    too_long_for(b"null", limit)
+}
+
+/// A request read whole and then found too large for the connection (a
+/// line held under the default bound, then a WELCOME granting less): the
+/// same answer, with the request's own id.
+pub fn too_long_for(id: &[u8], limit: usize) -> Vec<u8> {
+    error(id, -32600, &format!("the request is larger than countinghouse accepts ({limit} bytes)"))
 }
 
 /// A request while the shim can't reach the runtime (contract 2, section 1,

@@ -11,7 +11,8 @@
 
 use std::collections::HashSet;
 use std::io::{self, Read};
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
@@ -37,10 +38,14 @@ pub struct Shared {
     /// Seqs whose answers the shim itself asked for and drops.
     pub dropped: Arc<Mutex<HashSet<u64>>>,
     pub out: Out,
+    /// Set (under the in-flight mutex) once the relay has crash-answered
+    /// what was in flight and handed the session on or ended it: from then
+    /// no runtime answer is written, so none can follow its crash answer.
+    pub closed: Arc<AtomicBool>,
 }
 
 /// Reads frames until the connection ends; the last event is always Lost.
-pub fn run<R: Read>(mut conn: R, from_runtime: Caps, shared: Shared, tx: Sender<Event>) {
+pub fn run<R: Read>(mut conn: R, from_runtime: Caps, shared: Shared, tx: SyncSender<Event>) {
     let why = loop {
         match one(&mut conn, from_runtime, &shared) {
             Ok(e) => {
@@ -62,13 +67,21 @@ fn one<R: Read>(conn: &mut R, caps: Caps, shared: &Shared) -> Result<Event, Stri
                 HeaderError::Io(e) => e.to_string(),
                 HeaderError::Malformed(m) => format!("a malformed message frame ({m:?})"),
             })?;
-            if let Some(seq) = seq {
-                // settled first: from here a crash answer can't be made for it
-                shared.inflight.lock().expect("the in-flight table's lock").settle(seq);
-                if shared.dropped.lock().expect("the dropped set's lock").remove(&seq) {
-                    io::copy(&mut conn.take(u64::from(rest)), &mut io::sink()).map_err(|e| e.to_string())?;
-                    return Ok(Event::Answered(Some(seq)));
+            // settled first, and the relay's closed flag read, under the
+            // in-flight mutex: either the relay's crash answers already ran
+            // (closed: this answer is discarded) or they will find this seq
+            // gone (it is written here). Never both.
+            let closed = {
+                let mut t = shared.inflight.lock().expect("the in-flight table's lock");
+                if let Some(seq) = seq {
+                    t.settle(seq);
                 }
+                shared.closed.load(Ordering::SeqCst)
+            };
+            let dropped = seq.is_some_and(|n| shared.dropped.lock().expect("the dropped set's lock").remove(&n));
+            if closed || dropped {
+                io::copy(&mut conn.take(u64::from(rest)), &mut io::sink()).map_err(|e| e.to_string())?;
+                return Ok(Event::Answered(seq));
             }
             shared.out.stream(conn, u64::from(rest)).map_err(|e| e.to_string())?;
             Ok(Event::Answered(seq))
@@ -119,8 +132,9 @@ mod tests {
             inflight: Arc::new(Mutex::new(inflight)),
             dropped: Arc::new(Mutex::new(dropped.iter().copied().collect())),
             out: Out::new(Box::new(sink.clone())),
+            closed: Arc::new(AtomicBool::new(false)),
         };
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(1024);
         run(&frames[..], Caps { message: 1 << 20 }, shared.clone(), tx);
         let events: Vec<Event> = rx.iter().collect();
         let written = sink.0.lock().unwrap().clone();
