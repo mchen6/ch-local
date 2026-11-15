@@ -98,6 +98,60 @@ then **Settings → Publishing access → Require two-factor authentication
 and disallow tokens**. A new trusted-publisher configuration must publish
 once within two days or it expires.
 
+## The shim (ch-shim)
+
+`shim/` is ch-shim, the native program each client session runs when
+countinghouse's shared runtime is in use. It relays the client's stdio to the
+runtime, makes the handshake, reconnects, and replays its session's
+tightenings (countinghouse's
+`docs/superpowers/specs/2026-11-15-shared-runtime-design.md`). It is Rust,
+with no async runtime and a few widely used crates. `cargo audit` and `cargo
+deny` check it in CI. **It is a scaffold**: it follows contract 2 of that
+spec, which is still under review, and is not yet wired to a runtime.
+
+- **Build and test:** `cd shim && cargo test`. The toolchain is pinned in
+  `shim/rust-toolchain.toml`; the conformance vectors are
+  `shim/tests/vectors/contract-2.json`, copied from countinghouse.
+- **CI:** `.github/workflows/shim.yml` tests and builds the six targets on
+  their own architectures: Linux, macOS and Windows, each on x64 and arm64.
+  Release 1 ships unsigned. The workflow's signing job is a disabled
+  placeholder for macOS notarization and Windows signing, due in a later
+  point release.
+- **Packages:** `@countinghouse/ch-shim-<os>-<arch>`, one per target, each
+  holding its binary, and `@countinghouse/ch-shim`, which has an exact
+  optionalDependency on each, so npm installs only the matching one. The
+  wrapper has no `bin`: a JS launcher would put Node back in every session's
+  process tree. Its `locate()` gives the binary's path, and ch-local
+  writes that path into each client's config. It also says when a
+  supported platform's package is missing (an install with
+  `--omit=optional`, or a lockfile made on another platform), so that is
+  reported, never silently run in the per-session mode. A platform with no
+  ch-shim at all runs the per-session mode. The Linux builds are static
+  (musl), so they need no particular glibc.
+
+### Publishing the shim
+
+A tag `shim-v<version>` on a `main` commit, where `<version>` is
+`shim/Cargo.toml`'s, makes shim.yml publish all seven packages under npm
+trusted publishing: the six platform packages first, then the wrapper. The
+repository holds no token.
+
+**One-time setup, by the maintainer, in one sitting.** npm configures a
+trusted publisher only on a package that already exists, so each of the
+seven names is first published by hand:
+
+1. From a `shim-v<version>` CI run, download the six `ch-shim-<os>-<arch>`
+   artifacts into `artifacts/`, keeping their directory names.
+2. `node npm-shim/assemble.js --version <version> --artifacts artifacts --out dist/npm-shim`
+3. `npm login`, with 2FA. Then, in each of `dist/npm-shim/ch-shim-*/`,
+   followed last by `dist/npm-shim/ch-shim/`, run `npm publish --access public`.
+4. On npmjs.com, for each of the seven packages: **Settings → Trusted
+   publishing → GitHub Actions**, with owner `mchen6`, repository
+   `ch-local` and workflow `shim.yml`. Then **Settings → Publishing access
+   → Require two-factor authentication and disallow tokens**.
+5. Tag the next version within two days, so each new trusted-publisher
+   configuration publishes once before it expires.
+
 ## License
 
 Apache-2.0.
