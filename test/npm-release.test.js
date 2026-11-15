@@ -142,3 +142,46 @@ test('the lockfile: every entry but the root, ch-local\'s own and bundled ones m
   assert.throws(() => fillLockfile(noSelf, SHA), (e) => e.code === 'LOCKFILE_INTEGRITY' && /ch-local/.test(e.message));
   assert.strictEqual(fillLockfile(null, SHA), null, 'no lockfile yet (before the first release)');
 });
+
+// the review of #41, for the callers ----------------------------------------
+
+test('no lib/ code passes `trust` or `registry`: only a test\'s own code does', () => {
+  const lib = path.join(__dirname, '..', 'lib');
+  const files = fs.readdirSync(lib).filter((f) => f.endsWith('.js'));
+  // code only: comments and strings set nothing
+  const code = (f) => fs.readFileSync(path.join(lib, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '').replace(/'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, "''");
+  const found = [];
+  for (const f of files) {
+    const src = code(f);
+    // a call or an object literal naming either as a property, or a spread
+    // of a variable into one (fromNpm is install's test-only argument)
+    for (const m of src.matchAll(/[{,]\s*(trust|registry)\s*:/g)) {
+      const line = src.slice(0, m.index).split('\n').length;
+      found.push(`${f}:${line}`);
+    }
+  }
+  // the only places: the defaults in the signatures that take them
+  const allowed = new Set(['npm-fetch.js', 'npm-release.js', 'provenance.js']);
+  const bad = found.filter((at) => !allowed.has(at.split(':')[0]));
+  assert.deepStrictEqual(bad, [], `trust or registry passed from: ${bad.join(', ')}`);
+  for (const f of allowed) {
+    const src = code(f);
+    assert.doesNotMatch(src, /[{,]\s*(trust|registry)\s*:\s*(?!null\b|REGISTRY\b|npmFetch\.REGISTRY\b|trust\b|registry\b)/, `${f} sets trust or registry to something of its own`);
+  }
+  assert.match(fs.readFileSync(path.join(lib, 'install.js'), 'utf8'), /\.\.\.fromNpm/, 'install passes only its test-only argument on');
+});
+
+test('a bundled lockfile entry is exempt only beneath a runtime package\'s own node_modules', () => {
+  const SHA = `sha512-${'C'.repeat(86)}==`;
+  const base = () => ({lockfileVersion: 3, packages: {'': {}, [`node_modules/${SELF}`]: {version: '0.4.0'}, 'node_modules/countinghouse': {version: '1.2.3', integrity: SHA}}});
+  const under = base();
+  under.packages[`node_modules/${SELF}/node_modules/@sigstore/core`] = {version: '3.2.1', inBundle: true};
+  under.packages['node_modules/countinghouse/node_modules/x'] = {version: '1.0.0', inBundle: true};
+  assert.ok(fillLockfile(under, SHA));
+  const loose = base();
+  loose.packages['node_modules/evil'] = {version: '6.6.6', inBundle: true};
+  assert.throws(() => fillLockfile(loose, SHA), (e) => e.code === 'LOCKFILE_INTEGRITY' && /node_modules\/evil/.test(e.message));
+  const underOther = base();
+  underOther.packages['node_modules/left-pad/node_modules/y'] = {version: '1.0.0', inBundle: true};
+  assert.throws(() => fillLockfile(underOther, SHA), (e) => e.code === 'LOCKFILE_INTEGRITY');
+});
