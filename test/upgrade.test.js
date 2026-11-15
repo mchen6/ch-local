@@ -20,54 +20,117 @@ const registry = (latest) => async (url) => {
   return {ok: true, status: 200, json: async () => ({name, 'dist-tags': {latest: latest[name]}})};
 };
 
-test('upgrade shows installed and available versions and does nothing on no', async () => {
-  const s = setup();
+// `ch-local upgrade` from npm (docs/development/auto-upgrade.md): the newer
+// ch-local, checked by its provenance, its pins read from its verified bytes,
+// shown with what it adds, and on a yes installed through install. A fake
+// registry and the test root reach it only as its test-only argument.
+const {npmWorld} = require('./npm-world');
+const {release, npm} = require('./install-helpers');
+const recordOf = (home) => JSON.parse(fs.readFileSync(path.join(home, 'packs.json'), 'utf8'));
+const historyOf = (home) => { try { return fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (e) { return []; } };
+const realFetch = (url, opts) => globalThis.fetch(url, opts);
+
+test('upgrade shows the installed and the newer ch-local, checked; a no changes nothing', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release());
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: registry({'@countinghouse/ch-local': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0'})});
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     const before = fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8');
-    assert.strictEqual(await upgrade({}, io), 0);
-    assert.match(io.out, /@countinghouse\/ch-local\s+0\.2\.0 -> 0\.3\.0/);
-    assert.match(io.out, /@countinghouse\/ch-step-redact\s+0\.1\.0 \(up to date\)/);
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /ch-local 0\.1\.0 -> 0\.2\.0, its provenance checked/);
+    assert.match(io.out, /nothing changed/);
     assert.strictEqual(io.asked.length, 1);
     assert.deepStrictEqual(io.execs, []);
     assert.strictEqual(fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8'), before);
   } finally {
+    await w.close();
     s.done();
   }
 });
 
-test('nothing newer: upgrade says so and asks nothing', async () => {
-  const s = setup();
+test('nothing newer: up to date, nothing asked; a major: announced, nothing asked or installed', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.2.0'});
+  const w = await npmWorld(release());
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, fetch: registry({'@countinghouse/ch-local': '0.2.0', '@countinghouse/ch-step-redact': '0.1.0'})});
-    assert.strictEqual(await upgrade({}, io), 0);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.match(io.out, /everything is up to date/);
     assert.deepStrictEqual(io.asked, []);
   } finally {
+    await w.close();
     s.done();
   }
-});
-
-test('a yes is answered honestly while nothing is on npm: nothing changes', async () => {
-  const s = setup();
+  const s2 = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w2 = await npmWorld(release(), {version: '1.0.0'});
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], fetch: registry({'@countinghouse/ch-local': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0'})});
-    assert.strictEqual(await upgrade({}, io), 1);
-    assert.match(io.err, /installing from npm arrives with the first release/);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s2.home}, fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w2.fromNpm), 0, io.err);
+    assert.match(io.out, /ch-local 1\.0\.0 is a major upgrade/);
+    assert.deepStrictEqual(io.asked, []);
     assert.deepStrictEqual(io.execs, []);
   } finally {
+    await w2.close();
+    s2.done();
+  }
+});
+
+test('a development override in force: upgrade refuses, naming it, and fetches nothing', async () => {
+  for (const env of [{CH_LOCAL_DEV: '1'}, {CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://127.0.0.1:1'}]) {
+    const s = setup({'@countinghouse/ch-local': '0.1.0'});
+    try {
+      const io = fakeIo({env: Object.assign({COUNTINGHOUSE_HOME: s.home}, env), fetch: realFetch});
+      assert.strictEqual(await upgrade({}, io), 1);
+      assert.match(io.err, new RegExp(`upgrades are off while a development override is set \\(${Object.keys(env)[0]}\\)`));
+      assert.deepStrictEqual(io.fetches, []);
+    } finally {
+      s.done();
+    }
+  }
+});
+
+test('a release whose provenance fails is never offered: said, recorded, nothing asked or installed', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release(), {lie: '@countinghouse/ch-local'});
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 1);
+    assert.match(io.err, /@countinghouse\/ch-local@0\.2\.0 .*not installed \(PROVENANCE_IDENTITY\)/);
+    assert.deepStrictEqual(io.asked, []);
+    assert.deepStrictEqual(io.execs, []);
+    const h = historyOf(s.home).filter((e) => e.kind === 'upgrade');
+    assert.deepStrictEqual(h.map((e) => [e.how, e.outcome, e.to]), [['cli', 'refused', '0.2.0']]);
+  } finally {
+    await w.close();
     s.done();
   }
 });
 
-test('a package npm does not know is shown as not published, not as an error', async () => {
-  const s = setup();
+test('a yes installs the new release from npm through install, recorded in history, rollback named', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release());
   try {
-    const fetch = async () => ({ok: false, status: 404, json: async () => ({})});
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, fetch});
-    assert.strictEqual(await upgrade({}, io), 0);
-    assert.match(io.out, /@countinghouse\/ch-local\s+0\.2\.0 \(not on npm yet\)/);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.strictEqual(recordOf(s.home).runtime.versions['@countinghouse/ch-local'], '0.2.0');
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0; ch-local rollback undoes it/);
+    const h = historyOf(s.home).filter((e) => e.kind === 'upgrade');
+    assert.deepStrictEqual(h.map((e) => [e.how, e.outcome, e.from, e.to]), [['cli', 'installed', '0.1.0', '0.2.0']]);
+    assert.ok(io.fetches.every((u) => u.startsWith(w.reg.url)), 'the fake registry only');
   } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+test('what the new release adds is shown before the question', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release(), {edit: (doc) => { doc.allowedOrigins['https://api.example.invalid'] = ['NEW_TOKEN']; }});
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /it adds:\n  an origin: https:\/\/api\.example\.invalid/);
+  } finally {
+    await w.close();
     s.done();
   }
 });
