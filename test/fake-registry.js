@@ -21,6 +21,7 @@ const tarballPath = (name, version) => `/${name}/-/${name.split('/').pop()}-${ve
 
 async function fakeRegistry() {
   const packages = new Map();   // name -> {versions: Map(version -> {bytes, tamper}), latest}
+  const attestations = new Map();   // name@version -> the JSON served
   const requests = [];
   let base = null;
   const server = http.createServer((req, res) => {
@@ -30,6 +31,11 @@ async function fakeRegistry() {
       res.writeHead(status, {'content-type': type});
       res.end(body);
     };
+    // attestations: /-/npm/v1/attestations/<name>@<version>
+    if (url.startsWith('/-/npm/v1/attestations/')) {
+      const a = attestations.get(url.slice('/-/npm/v1/attestations/'.length));
+      return a == null ? send(404, JSON.stringify({error: 'Not found'})) : send(200, typeof a === 'string' ? a : JSON.stringify(a));
+    }
     // a tarball: /<name>/-/<basename>-<version>.tgz
     for (const [name, p] of packages) {
       for (const [version, v] of p.versions) {
@@ -69,6 +75,7 @@ async function fakeRegistry() {
       if (latest) p.latest = version;
       return sri(bytes);
     },
+    attest(name, version, doc) { attestations.set(`${name}@${version}`, doc); },
     tamper(name, version, t) { Object.assign(packages.get(name).versions.get(version).tamper, t); },
     close: () => new Promise((resolve) => { server.closeAllConnections(); server.close(() => resolve()); })
   };

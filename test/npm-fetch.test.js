@@ -110,6 +110,23 @@ test('a registry that is down, or answers an error, is FETCH_FAILED, naming the 
   await assert.rejects(npmFetch.packument(NAME, broken, {registry: url}), (e) => e.code === 'FETCH_FAILED' && /503/.test(e.message));
 });
 
+test('attestations: the registry\'s for name@version, at most 1 MB, JSON; none is null', async() => {
+  const reg = await fakeRegistry();
+  try {
+    reg.attest(NAME, '0.3.0', {attestations: [{predicateType: 'x', bundle: {}}]});
+    assert.deepStrictEqual(await npmFetch.attestations(NAME, '0.3.0', io, {registry: reg.url}), {attestations: [{predicateType: 'x', bundle: {}}]});
+    assert.ok(reg.requests.includes(`/-/npm/v1/attestations/${NAME}@0.3.0`));
+    assert.strictEqual(await npmFetch.attestations(NAME, '0.3.1', io, {registry: reg.url}), null);
+    reg.attest(NAME, '0.3.2', 'not json');
+    assert.strictEqual(await code(npmFetch.attestations(NAME, '0.3.2', io, {registry: reg.url})), 'FETCH_FAILED');
+    reg.attest(NAME, '0.3.3', {padding: 'x'.repeat(2 * 1024 * 1024)});
+    assert.strictEqual(await code(npmFetch.attestations(NAME, '0.3.3', io, {registry: reg.url})), 'FETCH_TOO_LARGE');
+    assert.strictEqual(npmFetch.ATTESTATIONS_MAX, 1024 * 1024);
+  } finally {
+    await reg.close();
+  }
+});
+
 test('the defaults: tarballs at most 50 MB, packuments 16 MB', () => {
   assert.strictEqual(npmFetch.TARBALL_MAX, 50 * 1024 * 1024);
   assert.strictEqual(npmFetch.PACKUMENT_MAX, 16 * 1024 * 1024);
