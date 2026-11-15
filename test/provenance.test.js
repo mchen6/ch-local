@@ -107,3 +107,57 @@ test('nothing in the module reads the environment, a file named by it, or argv',
   const src = require('node:fs').readFileSync(require.resolve('../lib/provenance'), 'utf8');
   assert.doesNotMatch(src, /process\.env|io\.env|process\.argv|CH_LOCAL_DEV/);
 });
+
+// the review of #41 -----------------------------------------------------------
+
+test('(1) the publish attestation is bound to npm\'s key: one signed by any certificate is refused', () => {
+  const minted = att(root.provenance(NAME, V, sha512Hex, pin, at), root.publish(NAME, V, sha512Hex, at, {withCertificate: pin}));
+  assert.strictEqual(codeOf(() => verify(minted)), 'PROVENANCE_CHAIN');
+  // nor is a provenance accepted that npm's key signed instead of a certificate
+  const keyed = att(root.publish(NAME, V, sha512Hex, at), root.publish(NAME, V, sha512Hex, at));
+  keyed.attestations[0].predicateType = 'https://slsa.dev/provenance/v1';
+  assert.ok(['PROVENANCE_CHAIN', 'PROVENANCE_IDENTITY'].includes(codeOf(() => verify(keyed))));
+});
+
+test('(2) npm\'s publish statement is Statement/v0.1, the provenance v1; a real recorded pair verifies offline under the shipped root', () => {
+  const v1Publish = att(root.provenance(NAME, V, sha512Hex, pin, at), root.publish(NAME, V, sha512Hex, at, {type: 'https://in-toto.io/Statement/v1'}));
+  assert.strictEqual(codeOf(() => verify(v1Publish)), 'PROVENANCE_IDENTITY');
+  // @sigstore/verify@3.1.1's own attestations, as the registry serves them
+  // (test/fixtures/attestations), built from sigstore/sigstore-js main
+  const real = JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, 'fixtures', 'attestations', 'sigstore-verify-3.1.1.json'), 'utf8'));
+  const r = provenance.verifyAttestations({name: '@sigstore/verify', version: '3.1.1',
+    integrity: 'sha512-qv7+G3J2cc6wwFj3yKvXOamzqhMwSk1ogPGmhpS8iXllcPrJaIIBA+4HbttlHVu1pqWTdmaCH/WE7UOC51kdoA==',
+    identity: {repository: 'sigstore/sigstore-js', repositoryId: 495574555, ownerId: 71096353, workflow: '.github/workflows/release.yml', ref: 'refs/heads/main'},
+    attestations: real});
+  assert.ok(r.builtAt instanceof Date && r.publishedAt instanceof Date);
+  assert.ok(r.publishedAt.getTime() > Date.UTC(2025, 0, 1));
+  // and the same real pair, held to another repository's identity, fails
+  assert.strictEqual(codeOf(() => provenance.verifyAttestations({name: '@sigstore/verify', version: '3.1.1',
+    integrity: 'sha512-qv7+G3J2cc6wwFj3yKvXOamzqhMwSk1ogPGmhpS8iXllcPrJaIIBA+4HbttlHVu1pqWTdmaCH/WE7UOC51kdoA==',
+    identity: {repository: 'sigstore/sigstore-js', repositoryId: 495574556, ownerId: 71096353, workflow: '.github/workflows/release.yml', ref: 'refs/heads/main'},
+    attestations: real})), 'PROVENANCE_IDENTITY');
+});
+
+test('(3) the SAN is compared exactly, not as a pattern', () => {
+  // ".github" as a pattern matches "xgithub"; the predicate agrees with the pin
+  const predicate = {buildDefinition: {buildType: 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1',
+    externalParameters: {workflow: {ref: `refs/tags/v${V}`, repository: 'https://github.com/mchen6/ch-local', path: '.github/workflows/publish.yml'}},
+    internalParameters: {github: {event_name: 'push'}}}};
+  const lookalike = att(root.provenance(NAME, V, sha512Hex, Object.assign({}, pin, {workflow: 'xgithub/workflows/publish.yml'}), at, {overrides: {predicate}}), root.publish(NAME, V, sha512Hex, at));
+  assert.strictEqual(codeOf(() => verify(lookalike)), 'PROVENANCE_IDENTITY');
+});
+
+test('(4) the statement and the log entry are the parsed bundle\'s: a bundle without a DSSE envelope is refused', () => {
+  const g = good();
+  const prov = JSON.parse(JSON.stringify(g.attestations[0].bundle));
+  // a message signature beside the envelope: the parsed bundle prefers it
+  prov.messageSignature = {messageDigest: {algorithm: 'SHA2_256', digest: Buffer.alloc(32).toString('base64')}, signature: Buffer.alloc(64).toString('base64')};
+  assert.notStrictEqual(codeOf(() => verify({attestations: [{predicateType: provenance.PROVENANCE, bundle: prov}, g.attestations[1]]})), 'passed');
+});
+
+test('(5) a known npm key used outside its window is a chain failure, not "can\'t verify yet"', () => {
+  const expired = JSON.parse(JSON.stringify(root.npmKeys));
+  expired.keys[0].expires = new Date(at.getTime() - 3600e3).toISOString();
+  const t = provenance.trustMaterial(root.trustedRoot, expired);
+  assert.strictEqual(codeOf(() => verify(good(), {trust: t})), 'PROVENANCE_CHAIN');
+});
