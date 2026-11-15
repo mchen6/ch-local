@@ -1,0 +1,41 @@
+{
+  "v": 1,
+  "release": {
+    "security": {
+      "fixes": "loosening a guarding setting is confirmed at a terminal and bound by the operator's ceiling (countinghouse part 3)"
+    }
+  },
+  "runtime": {
+    "packages": [
+      "@countinghouse/ch-local",
+      "countinghouse"
+    ],
+    "lockfile": null
+  },
+  "packs": {
+    "ci-failure-triage": {
+      "packages": [
+        "@countinghouse/ch-pack-ci-failure-triage",
+        "@countinghouse/ch-access-github",
+        "@countinghouse/ch-step-redact",
+        "@countinghouse/ch-step-log-clean",
+        "@countinghouse/ch-step-error-patterns",
+        "@countinghouse/ch-step-failure-signature",
+        "@countinghouse/ch-step-dedupe",
+        "@countinghouse/ch-step-owner-hint",
+        "@countinghouse/ch-step-report"
+      ],
+      "credentials": [
+        "COUNTINGHOUSE_GITHUB_TOKEN",
+        "GITHUB_TOKEN"
+      ]
+    }
+  },
+  "allowedOrigins": {
+    "https://api.githubcopilot.com": [
+      "COUNTINGHOUSE_GITHUB_TOKEN",
+      "GITHUB_TOKEN"
+    ]
+  },
+  "pins": {}
+}
