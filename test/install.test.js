@@ -229,6 +229,8 @@ async function npmRelease(r, {lie = null, shim = false} = {}) {
   }
   const lockfile = JSON.parse(JSON.stringify(r.lockfile));
   lockfile.packages['node_modules/countinghouse'].integrity = r.pins.countinghouse.integrity;
+  // a release can't carry its own digest: fetchRelease fills it from the verified one
+  delete lockfile.packages['node_modules/@countinghouse/ch-local'].integrity;
   // this platform's native shim, pinned and published, when asked for
   const targets = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
   const shimSection = {packages: Object.fromEntries(targets.map((t) => [t, `@countinghouse/ch-shim-${t}`]))};
@@ -393,8 +395,9 @@ test('--unreleased-pins needs CH_LOCAL_DEV=1', async () => {
 test('--unreleased-pins refuses a lockfile whose runtime packages do not resolve to their tarballs, or whose dependencies are not integrity-pinned registry tarballs', async () => {
   const r = release();
   const lock = (entries) => ({name: 'countinghouse-home-app', lockfileVersion: 3, requires: true, packages: {'': {}, ...entries}});
-  const good = {'node_modules/@countinghouse/ch-local': {version: '0.2.0', resolved: 'file:tarballs/countinghouse-ch-local-0.2.0.tgz'},
-    'node_modules/countinghouse': {version: '8.0.0', resolved: 'file:tarballs/countinghouse-8.0.0.tgz'},
+  // each runtime package with its pin's integrity (the re-check of #42: npm ci installs any tarball for an entry without one)
+  const good = {'node_modules/@countinghouse/ch-local': {version: '0.2.0', resolved: 'file:tarballs/countinghouse-ch-local-0.2.0.tgz', integrity: r.pins['@countinghouse/ch-local'].integrity},
+    'node_modules/countinghouse': {version: '8.0.0', resolved: 'file:tarballs/countinghouse-8.0.0.tgz', integrity: r.pins.countinghouse.integrity},
     'node_modules/left-pad': {version: '1.3.0', resolved: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz', integrity: r.pins.countinghouse.integrity}};
   for (const [why, entries] of [
     ['a runtime package from a URL', {...good, 'node_modules/countinghouse': {version: '8.0.0', resolved: 'https://evil.example/countinghouse-8.0.0.tgz', integrity: r.pins.countinghouse.integrity}}],
@@ -437,7 +440,11 @@ test('--unreleased-pins: a runtime package\'s lockfile version and integrity mus
     [{'node_modules/countinghouse/node_modules/inner': {version: '1.0.0', inBundle: true}}, 2, /bundles it/],
     // its parent bundles it, but its tarball does not hold it: refused once read
     [{[ch]: {...r.lockfile.packages[ch], bundleDependencies: ['inner']}, 'node_modules/countinghouse/node_modules/inner': {version: '1.0.0', inBundle: true}}, 1, /not in the tarball/],
-    [{'node_modules/linked': {resolved: '../elsewhere', link: true}}, 2, /linked/]
+    [{'node_modules/linked': {resolved: '../elsewhere', link: true}}, 2, /linked/],
+    // the re-check of #42: a runtime package with no integrity, a link of any value, a key outside node_modules
+    [{[ch]: {...r.lockfile.packages[ch], integrity: undefined}}, 2, /integrity for countinghouse/],
+    [{'node_modules/dep': {link: 1, resolved: 'https://registry.npmjs.org/../../../outside', integrity: r.pins.countinghouse.integrity}}, 2, /links node_modules\/dep/],
+    [{'../outside': {version: '1.0.0', resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz', integrity: r.pins.countinghouse.integrity}}, 2, /not a node_modules path/]
   ];
   for (const [entries, code, why] of cases) {
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: home(), CH_LOCAL_DEV: '1'}, exec: npm()});
