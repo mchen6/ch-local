@@ -163,3 +163,12 @@ test('(5) a known npm key used outside its window is a chain failure, not "can\'
   const t = provenance.trustMaterial(root.trustedRoot, expired);
   assert.strictEqual(codeOf(() => verify(good(), {trust: t})), 'PROVENANCE_CHAIN');
 });
+
+test('a pin\'s tag is exactly its workflow\'s prefix and its version: v for publish.yml, shim-v for shim.yml; any other workflow is refused', () => {
+  assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {tag: `shim-v${V}`})})), 'PIN_INCOMPLETE', 'publish.yml with shim-v');
+  assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {workflow: '.github/workflows/release.yml'})})), 'PIN_INCOMPLETE');
+  // a shim pin, signed as shim.yml at shim-v<version>, verifies
+  const shimPin = Object.assign({}, pin, {workflow: '.github/workflows/shim.yml', tag: `shim-v${V}`});
+  const shim = att(root.provenance(NAME, V, sha512Hex, shimPin, at), root.publish(NAME, V, sha512Hex, at));
+  assert.strictEqual(codeOf(() => verify(shim, {pin: shimPin})), 'passed');
+});

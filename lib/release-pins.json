@@ -11,6 +11,16 @@
     "ownerId": 1168741,
     "workflow": ".github/workflows/publish.yml"
   },
+  "shim": {
+    "packages": {
+      "darwin-arm64": "@countinghouse/ch-shim-darwin-arm64",
+      "darwin-x64": "@countinghouse/ch-shim-darwin-x64",
+      "linux-arm64": "@countinghouse/ch-shim-linux-arm64",
+      "linux-x64": "@countinghouse/ch-shim-linux-x64",
+      "win32-arm64": "@countinghouse/ch-shim-win32-arm64",
+      "win32-x64": "@countinghouse/ch-shim-win32-x64"
+    }
+  },
   "runtime": {
     "packages": [
       "@countinghouse/ch-local",
