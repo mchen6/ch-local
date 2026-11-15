@@ -689,3 +689,58 @@ test('start --home must be absolute and an existing directory, and is refused wi
     assert.strictEqual(f.spawned.length, 0);
   }
 });
+
+// the review of #32 (c7c6923): a runtime that ignores SIGTERM, and an abort
+// before the spawn
+test('start in session mode: a runtime that ignores SIGTERM gets SIGKILL after the bound', async () => {
+  const home = installedHome();
+  const f = ghLoggedIn(io(home));
+  f.sessionKillMs = 200;
+  let finish = null;
+  f.spawn = (cmd, args) => { f.spawned.push({cmd, args}); return {kill: (sig) => { f.killed.push(sig); if (sig === 'SIGKILL') finish(137); }, exited: new Promise((r) => { finish = r; })}; };
+  const ac = new AbortController();
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, signal: ac.signal}}, f);
+  await new Promise((r) => setTimeout(r, 50));
+  ac.abort();
+  assert.strictEqual(await done, 137);
+  assert.deepStrictEqual(f.killed, ['SIGTERM', 'SIGKILL']);
+});
+
+test('start in session mode: an abort while it waits for the home\'s lock ends the wait, with nothing spawned', async () => {
+  const home = installedHome();
+  const f = ghLoggedIn(io(home));
+  // a live holder on this host: the wait would go on
+  const {lockHost} = require('../lib/lock');
+  fs.writeFileSync(path.join(home, 'packs.lock'), JSON.stringify({pid: process.pid, host: lockHost(), at: new Date().toISOString()}) + '\n');
+  const ac = new AbortController();
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, signal: ac.signal}}, f);
+  await new Promise((r) => setTimeout(r, 300));
+  ac.abort();
+  const code = await Promise.race([done, new Promise((r) => setTimeout(() => r('still waiting'), 3000))]);
+  assert.notStrictEqual(code, 'still waiting');
+  assert.notStrictEqual(code, 0);
+  assert.strictEqual(f.spawned.length, 0);
+});
+
+test('start --home must be owned by this user and not group- or world-writable', {skip: process.platform === 'win32'}, async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  fs.chmodSync(home, 0o777);
+  const f = io(home);
+  assert.strictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home], f), 2, f.err);
+  assert.match(f.err, /writable/);
+  assert.strictEqual(f.spawned.length, 0);
+});
+
+test('start\'s own runtime (--home) is given only paths under the home, as session mode is', {skip: process.platform === 'win32'}, async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  const outside = tmp('ch-local-outside-');
+  const at = path.join(home, 'app', 'node_modules', 'countinghouse');
+  fs.renameSync(at, path.join(outside, 'countinghouse'));
+  fs.symlinkSync(path.join(outside, 'countinghouse'), at);
+  const f = io(home);
+  assert.notStrictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home], f), 0);
+  assert.strictEqual(f.spawned.length, 0);
+  assert.match(f.err, /outside the home/);
+});

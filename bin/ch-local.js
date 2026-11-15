@@ -144,6 +144,8 @@ async function main(argv, io) {
           try { st = fs.statSync(v); } catch (err) { st = null; }
           if (st == null || !st.isDirectory()) { io.stderr.write(`ch-local start: --home ${v} is not a directory\n`); return 2; }
           home = fs.realpathSync(v);
+          const owned = require('../lib/home').homeOwnershipProblem(home);
+          if (owned != null) { io.stderr.write(`ch-local start: --home ${v}: ${owned}\n`); return 2; }
           i += 2;
           continue;
         }

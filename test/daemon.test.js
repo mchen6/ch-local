@@ -259,3 +259,32 @@ test('on Windows the daemon is refused for now (the shim then runs one runtime p
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+test('a runtime that does not end when stopped does not hold start.lock: the daemon returns after its bound', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  try {
+    const io = daemonIo(home);
+    io.daemonReadyMs = 300;
+    io.daemonStopMs = 300;
+    const t0 = Date.now();
+    const code = await daemon({home}, io, {run: () => new Promise(() => {})});   // never ends, whatever it is told
+    assert.strictEqual(code, 1);
+    assert.ok(Date.now() - t0 < 5000, 'bounded');
+    assert.ok(!fs.existsSync(path.join(runDirOf(home), 'start.lock')), 'the lock released');
+    assert.match(io.err, /did not end/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('daemon --home must be owned by this user and not group- or world-writable', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  try {
+    fs.chmodSync(home, 0o775);
+    const io = daemonIo(home);
+    assert.strictEqual(await daemon({home}, io, {run: async() => 0}), 2);
+    assert.match(io.err, /writable/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
