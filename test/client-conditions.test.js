@@ -111,9 +111,10 @@ test('an installed plugin with an Elicitation hook, in hooks/hooks.json, plugin.
     assert.deepStrictEqual(w.ask(), {mayElicit: false, why: 'plugin hook present'}, `case ${i}`);
   }
   const w = world();
-  const cache = path.join(w.root, 'cache');
-  w.write(path.join(cache, 'mkt', 'p', '1.0.0', 'hooks', 'hooks.json'), HOOK('Elicitation'));
-  assert.strictEqual(w.ask({env: Object.assign({}, w.env, {CLAUDE_CODE_PLUGIN_CACHE_DIR: cache})}).why, 'plugin hook present', 'CLAUDE_CODE_PLUGIN_CACHE_DIR');
+  // CLAUDE_CODE_PLUGIN_CACHE_DIR names the plugins root: its cache/ is read
+  const pluginsRoot = path.join(w.root, 'plugins-root');
+  w.write(path.join(pluginsRoot, 'cache', 'mkt', 'p', '1.0.0', 'hooks', 'hooks.json'), HOOK('Elicitation'));
+  assert.strictEqual(w.ask({env: Object.assign({}, w.env, {CLAUDE_CODE_PLUGIN_CACHE_DIR: pluginsRoot})}).why, 'plugin hook present', 'CLAUDE_CODE_PLUGIN_CACHE_DIR');
 });
 
 test('the client\'s own command line: --settings with a hook, or a --plugin-dir with one: no; unreadable: no', () => {
@@ -245,7 +246,7 @@ test('the real reader on this platform (Windows CI runs PowerShell here): read, 
   if (process.platform !== 'win32') assert.strictEqual(c.policyPresent, false);
   // the service reads from start's parent, 8 up, as production does
   const found = clientLines((await readClientContext(process.ppid)).lines);
-  assert.ok(found === null || /claude/i.test(JSON.stringify(found[found.length - 1])), JSON.stringify(found));
+  assert.ok(found === null || found.some((argv) => argv.slice(0, 2).some((a) => /claude/i.test(a))), JSON.stringify(found));
   // the service over the real reader: an answer, never a default yes
   const w = world();
   const svc = conditionsService({home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed}, {waitMs: 60000});
