@@ -7,8 +7,8 @@
 //! that need no I/O; the I/O (the trust checks, the handshake, the relay)
 //! comes next, under its own security review.
 
-// unsafe is denied everywhere; the one exception (reviewer, 2026-11-14) is
-// the Windows FFI module, win_ffi, which allows it block by block.
+// unsafe is denied everywhere; the two exceptions (reviewer, 2026-11-14)
+// are win_ffi (Windows) and unix_ffi (POSIX), which allow it block by block.
 #![deny(unsafe_code)]
 
 pub mod answer;
@@ -24,6 +24,9 @@ pub mod mac;
 pub mod message;
 pub mod secret;
 pub mod trust;
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub mod unix_ffi;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod win_ffi;

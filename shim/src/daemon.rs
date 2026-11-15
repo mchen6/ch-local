@@ -13,9 +13,9 @@
 //! foreground group; on Windows DETACHED_PROCESS | CREATE_NO_WINDOW, with
 //! the shim's stdio handles made non-inheritable first.
 //!
-//! Residual (POSIX, raised with the reviewer): a descriptor above 2 that the
-//! client passed the shim without FD_CLOEXEC is inherited by the daemon;
-//! closing it in the child needs pre_exec, which is unsafe.
+//! On POSIX, a descriptor above 2 that the client passed the shim without
+//! FD_CLOEXEC was marked FD_CLOEXEC at the shim's start (unix_ffi), so the
+//! daemon never inherits it.
 
 use std::fmt;
 use std::process::{Command, Stdio};
