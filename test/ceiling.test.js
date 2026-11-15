@@ -181,7 +181,7 @@ test('start: says an outside edit and the ceiling\'s clamps, passes the clamped 
     Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
     let args = null;
     let end = null;
-    f.spawn = (c, a) => { args = a; return {kill: () => {}, exited: new Promise((resolve) => { end = resolve; }), send: () => {}, onMessage: () => {}}; };
+    f.spawn = (c, a) => { args = a; return {kill: () => {}, exited: new Promise((resolve) => { end = resolve; }), send: () => {}, onMessage: (fn) => setImmediate(() => fn({type: 'ready'}))}; };
     const done = start({passThrough: []}, f);
     for (let i = 0; end == null && i < 500; i++) {
       await new Promise((res) => setTimeout(res, 10));
@@ -230,7 +230,7 @@ const startOnce = async (home) => {
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret'}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
   let args = null;
-  f.spawn = (c, a) => { args = a; return {kill: () => {}, exited: Promise.resolve(0), send: () => {}, onMessage: () => {}}; };
+  f.spawn = (c, a) => { args = a; return {kill: () => {}, exited: Promise.resolve(0), send: () => {}, onMessage: (fn) => setImmediate(() => fn({type: 'ready'}))}; };
   const code = await start({passThrough: []}, f);
   return {code, args, err: f.err};
 };
@@ -315,7 +315,7 @@ test('the review of P4: an outside loosening the ceiling forbids is not applied 
     const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret'}, homedir: '/nowhere'});
     Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
     let spawned = false;
-    f.spawn = () => { spawned = true; return {kill: () => {}, exited: Promise.resolve(0), send: () => {}, onMessage: () => {}}; };
+    f.spawn = () => { spawned = true; return {kill: () => {}, exited: Promise.resolve(0), send: () => {}, onMessage: (fn) => setImmediate(() => fn({type: 'ready'}))}; };
     const done = start({passThrough: []}, f);
     for (let k = 0; !spawned && k < 300; k++) await new Promise((res) => setTimeout(res, 10));
     await done;
