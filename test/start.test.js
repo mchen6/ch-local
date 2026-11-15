@@ -665,3 +665,27 @@ test('start in session mode passes on the runtime\'s listening message', async (
   deliver({type: 'listening', socket, id: 3});   // with an id it is a reply, not this
   assert.deepStrictEqual(heard, [{type: 'listening', socket}]);
 });
+
+// the shim's own-runtime hand-over (the review of ch-local #29):
+// `start --stdio --own-runtime --home <abs> <pass-through>`
+test('start --home names the home, over COUNTINGHOUSE_HOME; --own-runtime is taken; both before the pass-through', async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  const other = installedHome();
+  const f = io(other);   // COUNTINGHOUSE_HOME names another home
+  assert.strictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home, '--locale', 'en'], f), 0, f.err);
+  const {args} = f.spawned[0];
+  assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'), 'the --home given, not COUNTINGHOUSE_HOME');
+  assert.ok(!args.includes('--own-runtime') && !args.includes('--home'), 'neither reaches the runtime');
+  assert.ok(args.includes('--locale'), 'the pass-through still does');
+});
+
+test('start --home must be absolute and an existing directory, and is refused with exit 2 otherwise', async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  for (const bad of [['--home'], ['--home', 'relative/home'], ['--home', path.join(home, 'missing')]]) {
+    const f = io(home);
+    assert.strictEqual(await main(['start', '--stdio', ...bad], f), 2, `${bad.join(' ')}: ${f.err}`);
+    assert.strictEqual(f.spawned.length, 0);
+  }
+});

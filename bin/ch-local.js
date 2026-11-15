@@ -128,7 +128,28 @@ async function main(argv, io) {
     }
     if (command === 'start') {
       if (rest[0] !== '--stdio') return usage();
-      return await require('../lib/start').start({passThrough: rest.slice(1)}, io);
+      // ch-local's own options, before any pass-through runtime flag: the
+      // native shim's hand-over is `start --stdio --own-runtime --home <abs>`
+      // (#236 section 5), so a client's COUNTINGHOUSE_HOME can't pick the home
+      let i = 1;
+      let home = null;
+      for (;;) {
+        if (rest[i] === '--own-runtime') { i += 1; continue; }
+        if (rest[i] === '--home') {
+          const v = rest[i + 1];
+          const {isFullPath} = require('../lib/home');
+          if (typeof v !== 'string' || !isFullPath(v)) { io.stderr.write('ch-local start: --home must be an absolute path\n'); return 2; }
+          let st = null;
+          const fs = require('node:fs');
+          try { st = fs.statSync(v); } catch (err) { st = null; }
+          if (st == null || !st.isDirectory()) { io.stderr.write(`ch-local start: --home ${v} is not a directory\n`); return 2; }
+          home = fs.realpathSync(v);
+          i += 2;
+          continue;
+        }
+        break;
+      }
+      return await require('../lib/start').start({passThrough: rest.slice(i), home}, io);
     }
     if (command === 'settings') {
       if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return await require('../lib/settings-command').settings({action: 'get'}, io);
