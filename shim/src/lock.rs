@@ -97,13 +97,10 @@ fn host_name() -> String {
     rustix::system::uname().nodename().to_string_lossy().into_owned()
 }
 
-// Node's os.hostname() on Windows is the DNS host name
-// (GetComputerNameExW); win_ffi gives it. Until then COMPUTERNAME, which a
-// lock written by Node may not match: such a holder then counts as another
-// host's, judged only by its heartbeat, never taken for dead early.
+// Node's os.hostname() on Windows: the DNS host name (GetComputerNameExW).
 #[cfg(windows)]
 fn host_name() -> String {
-    std::env::var("COMPUTERNAME").unwrap_or_default()
+    crate::win_ffi::dns_hostname().unwrap_or_default()
 }
 
 #[cfg(unix)]
@@ -117,11 +114,13 @@ pub(crate) fn alive(pid: i64) -> bool {
     }
 }
 
-// win_ffi's OpenProcess check comes with it; until then a Windows holder is
-// never judged dead by its pid, only by its heartbeat.
+// As Node's process.kill(pid, 0) on Windows: OpenProcess, and not exited.
 #[cfg(windows)]
-pub(crate) fn alive(_pid: i64) -> bool {
-    true
+pub(crate) fn alive(pid: i64) -> bool {
+    match u32::try_from(pid) {
+        Ok(pid) => crate::win_ffi::process_alive(pid),
+        Err(_) => false,
+    }
 }
 
 fn random_hex() -> String {

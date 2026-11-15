@@ -39,6 +39,7 @@ dependencies = [
  "rustix",
  "serde_json",
  "sha2",
+ "windows-sys",
  "zeroize",
 ]
 

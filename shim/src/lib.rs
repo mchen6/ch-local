@@ -24,6 +24,9 @@ pub mod mac;
 pub mod message;
 pub mod secret;
 pub mod trust;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod win_ffi;
 
 #[cfg(test)]
 mod conformance;
