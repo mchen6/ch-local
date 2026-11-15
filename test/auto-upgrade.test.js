@@ -127,3 +127,15 @@ test('only the child\'s one line is said; a check still running (under its 15-mi
   fs.writeFileSync(path.join(where.home, 'upgrade-check.lock'), String(later - 21 * 60 * 1000));
   assert.strictEqual((await run(where, {status: 0, stdout: ''}, later)).r.checked, true);
 });
+
+test('the re-check of #48: a stamp start\'s check can\'t trust is not read, and that is recorded', {skip: process.platform === 'win32'}, async () => {
+  const {h, where} = await home();
+  setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+  const f = path.join(h, 'upgrade-check.json');
+  fs.writeFileSync(f, JSON.stringify({lastCheck: Date.now()}), {mode: 0o666});
+  fs.chmodSync(f, 0o666);
+  const r = await run(where, {status: 0, stdout: ''}, Date.now());
+  assert.strictEqual(r.r.checked, true, 'its lastCheck was not taken');
+  assert.match(fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8'), /"outcome":"stamp-reset".*group or others/);
+});
+

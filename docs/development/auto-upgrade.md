@@ -62,7 +62,11 @@ those are dropped anyway (below).
    - it's strict semver (`MAJOR.MINOR.PATCH`, digits only, no prerelease
      or build part);
    - it's greater than the installed version by semver precedence;
-   - its major version is the installed one's.
+   - for the automatic upgrade, its major version is the installed one's.
+     Another major is announced and nothing more of it is fetched.
+     `ch-local upgrade` takes it through every step below, exactly as any
+     other version, shows it as a major ("a major upgrade: it may change how
+     things work"), and installs it only on a yes at a terminal.
 
    A 0.x minor change (0.1 to 0.2) or a 0.0.x patch change is treated as a
    major by the automatic upgrade, since under semver either may break. It's
@@ -318,9 +322,12 @@ included (as the acceptance run's security review showed). So:
   stops if any says no.
 - **It prints one line**, the outcome's announcement. The install it runs
   says nothing of its own: its lines name paths and credentials.
-- **It keeps `shim.json` as it is.** Its environment is the session's (a
+- **It never writes `shim.json`.** Its environment is the session's (a
   client config's `PATH`, `HOME`, `TMPDIR`), which the shared daemon would
   give every client. Only an install from the command writes `shim.json`.
+  If it's missing or invalid, the automatic upgrade leaves it, records
+  that, and its line says: run ch-local install to repair the relay's
+  settings.
 - **Its environment is `shim.json`'s allowlist** (`PATH`, `HOME`, `LANG`,
   `TMPDIR`; on Windows `USERPROFILE`, `SystemRoot`, `TEMP`, `TMP`, `APPDATA`,
   `LOCALAPPDATA`), whether or not the shared runtime is in use. That drops:
@@ -417,6 +424,11 @@ included (as the acceptance run's security review showed). So:
   lookup's `powershell.exe` elsewhere. That's within the local same-user
   residual already recorded for the ACL checks (#169 section 3), and
   accepted.
+- **A stamp reset drops `declined`.** An `upgrade-check.json` that isn't
+  this user's alone is not read, so its record starts again. That also
+  drops the declined versions, and a version rolled back from can return
+  after a fresh 72 hours. Only a same-user act can make the file fail the
+  check, and the reset is recorded. Accepted.
 - **The verifier is the last of its majors.** `@sigstore/verify` 3.1.1 and
   `@sigstore/core` 3.2.1 end their major lines, with no advisories today. A
   future fix may land only on 4.x, which needs Node `^22.22.2 || ^24.15.0
@@ -451,7 +463,10 @@ included (as the acceptance run's security review showed). So:
   - a release directory changed between the check and `loadTarballs`;
   - a release adding a credential, an origin, or a package to a pack: not
     installed automatically, announced;
-  - a version not strict semver, a lower one, a prerelease, a major;
+  - a version not strict semver, a lower one, a prerelease: refused on both
+    paths;
+  - a major: announced and never fetched by the automatic upgrade; checked
+    in full, shown as a major and installed on a yes by `ch-local upgrade`;
   - **the wait:**
     - with the publish attestation's time 71 hours ago, the automatic
       upgrade doesn't install; at 73 hours it does; `ch-local upgrade`

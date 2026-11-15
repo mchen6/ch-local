@@ -50,7 +50,7 @@ test('upgrade shows the installed and the newer ch-local, checked; a no changes 
   }
 });
 
-test('nothing newer: up to date, nothing asked; a major: announced, nothing asked or installed', async () => {
+test('nothing newer: up to date, nothing asked; a major: checked, shown as a major, and installed only on a yes at a terminal', async () => {
   const s = setup({'@countinghouse/ch-local': '0.2.0'});
   const w = await npmWorld(release());
   try {
@@ -65,11 +65,18 @@ test('nothing newer: up to date, nothing asked; a major: announced, nothing aske
   const s2 = setup({'@countinghouse/ch-local': '0.1.0'});
   const w2 = await npmWorld(release(), {version: '1.0.0'});
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s2.home}, fetch: realFetch});
-    assert.strictEqual(await upgrade({}, io, w2.fromNpm), 0, io.err);
-    assert.match(io.out, /ch-local 1\.0\.0 is a major upgrade/);
-    assert.deepStrictEqual(io.asked, []);
-    assert.deepStrictEqual(io.execs, []);
+    const no = tty({env: {COUNTINGHOUSE_HOME: s2.home}, answers: ['no'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, no, w2.fromNpm), 0, no.err);
+    assert.match(no.out, /ch-local 0\.1\.0 -> 1\.0\.0, its provenance checked/);
+    assert.match(no.out, /ch-local 1\.0\.0 is a major upgrade: it may change how things work \(an automatic upgrade never takes it\)/);
+    assert.strictEqual(no.asked.length, 1);
+    assert.deepStrictEqual(no.execs, []);
+    const piped = fakeIo({env: {COUNTINGHOUSE_HOME: s2.home}, answers: ['yes'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, piped, w2.fromNpm), 2, 'no terminal: nothing installed');
+    const yes = tty({env: {COUNTINGHOUSE_HOME: s2.home}, answers: ['yes'], exec: npm('1.0.0'), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, yes, w2.fromNpm), 0, yes.err);
+    assert.match(yes.out, /upgraded ch-local 0\.1\.0 -> 1\.0\.0/);
+    assert.strictEqual(recordOf(s2.home).runtime.versions['@countinghouse/ch-local'], '1.0.0');
   } finally {
     await w2.close();
     s2.done();

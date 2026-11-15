@@ -88,6 +88,32 @@ test('up to date, or an older or non-strict latest: nothing; a major: announced,
   }
 });
 
+test('the review of #48: with allowMajor (ch-local upgrade only), a major is checked like any other; a downgrade, a prerelease or a non-strict version stays refused', async() => {
+  const findMajor = (reg, installed) => findUpgrade({data: current, installed, packs: ['ci-failure-triage'], io, registry: reg.url, trust, allowMajor: true});
+  const good = await registryWith('1.0.0');
+  try {
+    const r = await findMajor(good, '0.3.0');
+    assert.deepStrictEqual([r.kind, r.to, r.major], ['available', '1.0.0', true]);
+    assert.ok(good.requests.some((u) => u.endsWith('.tgz')), 'fetched and verified');
+  } finally {
+    await good.close();
+  }
+  const lie = await registryWith('1.0.0', {lie: 'digest'});
+  try {
+    assert.match(String(await codeOf(findMajor(lie, '0.3.0'))), /^PROVENANCE/, 'a major whose provenance fails is refused');
+  } finally {
+    await lie.close();
+  }
+  for (const [latest, installed] of [['0.2.0', '1.0.0'], ['2.0.0-rc.1', '1.0.0'], ['v2.0.0', '1.0.0']]) {
+    const reg = await registryWith(latest);
+    try {
+      assert.strictEqual((await findMajor(reg, installed)).kind, 'up-to-date', `${latest} over ${installed}`);
+    } finally {
+      await reg.close();
+    }
+  }
+});
+
 test('the new release\'s provenance, against the installed release\'s own identity: another repository or digest fails', async() => {
   const other = await registryWith('0.4.0', {identity: Object.assign({}, current.self, {repository: 'someone/ch-local', tag: 'v0.4.0'})});
   const digest = await registryWith('0.4.0', {lie: 'digest'});
