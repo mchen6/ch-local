@@ -144,6 +144,12 @@ running. The daemon holds the runtime for every session of this user.
   its own (`COUNTINGHOUSE_GITHUB_TOKEN`, or `GITHUB_TOKEN` with no `gh`
   login) then differs from the daemon's, and runs its own runtime. That
   fails safe: no session gets another's token, or none silently.
+- **Installs and rollbacks are picked up while it runs.** `ch-local install`
+  and `ch-local rollback` leave an upgrade request in
+  `<home>/run/daemon/requests`. A daemon that's running then drains its
+  runtime and restarts it on the release now in place. If ch-local itself
+  changed, it hands over to a new daemon. Confirmed loosenings don't survive
+  a hand-over (each session is told), and tightenings do.
 - **On Windows it doesn't run yet.** Each session runs its own runtime there
   until the Windows daemon lands.
 

@@ -346,3 +346,22 @@ test('a security confirmation answered other than yes says that only yes confirm
   assert.match(io.out, /nothing changed: only "yes" confirms/);
   assert.strictEqual(versionOf(s.home, REDACT), '0.2.0');
 });
+
+test('a running daemon is told: a rollback appends an upgrade request, after the home\'s lock is released (the review of #35)', {skip: process.platform === 'win32'}, async () => {
+  const s = await upgraded();
+  const dir = path.join(s.home, 'run', 'daemon');
+  fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+  fs.chmodSync(path.join(s.home, 'run'), 0o700);
+  fs.chmodSync(dir, 0o700);
+  const io = rio(s.home);
+  assert.strictEqual(await rollback({}, io), 0, io.err);
+  const lines = fs.readFileSync(path.join(dir, 'requests'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepStrictEqual(lines.map((l) => l.op), ['upgrade']);
+  assert.ok(!fs.existsSync(path.join(s.home, 'packs.lock')), 'and the home\'s lock was released');
+  // a rollback that changes nothing asks for nothing
+  fs.rmSync(path.join(dir, 'requests'));
+  const none = rio(s.home);
+  fs.rmSync(path.join(s.home, 'previous'), {recursive: true, force: true});
+  assert.notStrictEqual(await rollback({}, none), 0);
+  assert.ok(!fs.existsSync(path.join(dir, 'requests')));
+});
