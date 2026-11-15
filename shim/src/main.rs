@@ -59,7 +59,8 @@ fn main() -> ExitCode {
         Exit::Done => ExitCode::SUCCESS,
         Exit::OwnRuntime { reason, held, rest: lines, replay } => {
             eprintln!("{reason}");
-            own(&home, &[], held, lines, replay)
+            let out = lines.out();
+            own(&home, &[], held, lines, replay, out)
         }
         Exit::Refused => ExitCode::from(1),
     }
@@ -70,9 +71,10 @@ fn own(
     args: &[std::ffi::OsString],
     held: Vec<Vec<u8>>,
     lines: impl Iterator<Item = relay::Piece> + Send + 'static,
-    replay: Option<Vec<u8>>,
+    replay: Option<(Vec<u8>, String)>,
+    out: ch_shim::out::Out,
 ) -> ExitCode {
-    exit_of(relay::own_runtime(home, args, held, lines, replay))
+    exit_of(relay::own_runtime(home, args, held, lines, replay, out))
 }
 
 /// The per-session runtime's exit code as the shim's.

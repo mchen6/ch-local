@@ -31,6 +31,11 @@ use crate::{answer, child};
 
 /// After the client's stdin ends: answers are relayed this long at most.
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
+/// Sent after a replayed initialize.
+const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+/// How long the shim waits for the per-session runtime's output to end
+/// after the runtime exits: a process it started may hold the pipe.
+const PUMP_DRAIN: Duration = Duration::from_secs(2);
 /// How long a welcomed connection waits for `settled` before it is
 /// closed and attached again (the runtime's own conditions? wait is 12 s).
 const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
@@ -116,6 +121,10 @@ enum State {
     Draining,
     Unreachable(String),
     Closing(Instant),
+    /// A mid-session fallback refused (failed.json while holding records):
+    /// every request is answered SESSION_CANT_FALL_BACK until stdin ends,
+    /// then the shim exits non-zero. Nothing attaches again.
+    Refused,
 }
 
 pub struct Relay {
@@ -151,9 +160,6 @@ pub struct Relay {
     child_queue: std::collections::VecDeque<Option<u64>>,
     /// stdout failed: the client is gone, and the shim ends.
     stdout_gone: bool,
-    /// A mid-session fallback refused (failed.json while holding records):
-    /// every request is answered SESSION_CANT_FALL_BACK until stdin ends.
-    refused: bool,
     /// Connections in a row left at the settle deadline; at two, the
     /// runtime is unreachable (its held requests answered) instead of
     /// retried every deadline for ever.
@@ -171,9 +177,10 @@ pub enum Exit {
         reason: String,
         held: Vec<Vec<u8>>,
         rest: Rest,
-        /// A session that was live: its recorded initialize line, replayed
-        /// to the per-session runtime first (#236 section 6, failed.json).
-        replay: Option<Vec<u8>>,
+        /// A session that was live: its initialize under the shim's replay
+        /// id, and that id, replayed to the per-session runtime first and its
+        /// answer dropped (#236 section 6, failed.json).
+        replay: Option<(Vec<u8>, String)>,
     },
     /// A mid-session fallback refused: the session held records, and every
     /// request was answered SESSION_CANT_FALL_BACK until stdin ended. The
@@ -203,6 +210,14 @@ pub enum Piece {
     Line(Vec<u8>),
     /// Bytes as they came (raw mode).
     Raw(Vec<u8>),
+}
+
+impl Rest {
+    /// The shim's stdout, which the per-session runtime's relayed output
+    /// shares with Rest's own answers (one lock, whole lines).
+    pub fn out(&self) -> Out {
+        self.out.clone()
+    }
 }
 
 impl Iterator for Rest {
@@ -258,7 +273,6 @@ impl Relay {
             child_running: false,
             child_queue: std::collections::VecDeque::new(),
             stdout_gone: false,
-            refused: false,
             settle_losses: 0,
             give_up: None,
         }
@@ -308,13 +322,23 @@ impl Relay {
     fn on(&mut self, ev: Ev) -> Option<Exit> {
         match ev {
             Ev::Stdin(lines::Read::Line(line)) => self.line(line),
+            // a refused session's unread line: the refusal, its id unknown
+            Ev::Stdin(lines::Read::TooLong(_)) if self.state == State::Refused => {
+                self.say(&answer::cant_fall_back(b"null"))
+            }
             Ev::Stdin(lines::Read::TooLong(_)) => self.say(&answer::too_long(self.limit.get())),
             Ev::Stdin(lines::Read::Eof) => return self.eof(),
             // raw mode starts at the hand-over, when Rest has the queue
             Ev::Stdin(lines::Read::Chunk(_)) => {}
             Ev::Attached(Ok(a)) => self.attached(a),
             Ev::Attached(Err(AttachError::SharedFailed(r))) => return self.shared_failed(r),
-            Ev::Attached(Err(e)) => self.unreachable(e.to_string()),
+            Ev::Attached(Err(e)) => {
+                self.unreachable(e.to_string());
+                // stdin ended during the attach (eof deferred it): over now
+                if self.stdin_done {
+                    return Some(Exit::Done);
+                }
+            }
             Ev::Retry => {
                 if matches!(self.state, State::Unreachable(_)) {
                     self.attach();
@@ -386,10 +410,8 @@ impl Relay {
         if line.iter().all(|b| matches!(b, b' ' | b'\t' | b'\r')) {
             return;
         }
-        if self.refused {
-            return self.refuse_line(&line);
-        }
         match &self.state {
+            State::Refused => self.refuse_line(&line),
             State::Live => self.forward(line),
             State::Unreachable(why) => {
                 let why = why.clone();
@@ -642,6 +664,10 @@ impl Relay {
                 for line in self.held.take() {
                     self.forward(line);
                 }
+                // stdin ended during the attach (eof deferred it): its end now
+                if self.stdin_done {
+                    return self.eof();
+                }
             }
             "conditions?" => {
                 if let Some(seq) = op.get("seq").and_then(Value::as_u64) {
@@ -680,21 +706,28 @@ impl Relay {
     /// The legacy replay (section 6, step 4): the kept initialize line with
     /// the shim's own id, its answer dropped; then notifications/initialized
     /// to the runtime, and tools/list_changed to the client.
-    fn replay_initialize(&mut self) {
-        let Some(line) = self.initialize.clone() else { return };
-        let Ok(Value::Object(mut o)) = serde_json::from_slice::<Value>(&line) else { return };
+    /// The kept initialize line under the shim's own next replay id
+    /// (`ch-shim-replay-<n>`, section 6 step 4), and that id: what a replay
+    /// sends, and how its answer is told from the client's.
+    fn next_replay(&mut self) -> Option<(Vec<u8>, String)> {
+        let line = self.initialize.clone()?;
+        let Ok(Value::Object(mut o)) = serde_json::from_slice::<Value>(&line) else { return None };
         self.replays += 1;
-        o.insert("id".into(), Value::String(format!("ch-shim-replay-{}", self.replays)));
+        let id = format!("ch-shim-replay-{}", self.replays);
+        o.insert("id".into(), Value::String(id.clone()));
+        Some((serde_json::to_vec(&Value::Object(o)).expect("JSON serialises"), id))
+    }
+
+    fn replay_initialize(&mut self) {
+        let Some((replay, _)) = self.next_replay() else { return };
         let Some(n) = self.seq.take() else { return };
         self.dropped.lock().expect("dropped lock").insert(n);
-        let replay = serde_json::to_vec(&Value::Object(o)).expect("JSON serialises");
         if let (Ok(p), Some(w)) = (message::to_runtime(Some(n), &replay, self.to_runtime.message), self.writer.as_mut())
         {
             let _ = frame::write_frame(w, Kind::Message, &p, self.to_runtime);
         }
-        let initialized = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
         if let (Ok(p), Some(w)) =
-            (message::to_runtime(None, initialized, self.to_runtime.message), self.writer.as_mut())
+            (message::to_runtime(None, INITIALIZED, self.to_runtime.message), self.writer.as_mut())
         {
             let _ = frame::write_frame(w, Kind::Message, &p, self.to_runtime);
         }
@@ -805,7 +838,7 @@ impl Relay {
     /// per-session runtime's output is the only thing on stdout from here;
     /// stdin's bytes pass through unsplit, since that runtime bounds its lines
     /// itself and the shim buffers none of them.
-    fn hand_over(&mut self, reason: String, replay: Option<Vec<u8>>) -> Exit {
+    fn hand_over(&mut self, reason: String, replay: Option<(Vec<u8>, String)>) -> Exit {
         self.close_and_crash_answer();
         if let Some(w) = self.writer.take() {
             let _ = w.shutdown();
@@ -825,8 +858,7 @@ impl Relay {
     fn shared_failed(&mut self, r: crate::failed::Reason) -> Option<Exit> {
         if !self.records.is_empty() {
             let _ = writeln!(io::stderr(), "{}", crate::failed::refusal_line(r));
-            self.refused = true;
-            self.state = State::Attaching;
+            self.state = State::Refused;
             for line in self.held.take() {
                 self.refuse_line(&line);
             }
@@ -835,7 +867,18 @@ impl Relay {
             }
             return None;
         }
-        let replay = self.initialize.clone();
+        let replay = if self.initialize.is_some() {
+            let built = self.next_replay();
+            if built.is_none() {
+                let _ = writeln!(
+                    io::stderr(),
+                    "ch-shim: this session's initialize could not be replayed; its own runtime starts uninitialized"
+                );
+            }
+            built
+        } else {
+            None
+        };
         Some(self.hand_over(crate::failed::startup_line(r), replay))
     }
 
@@ -849,8 +892,14 @@ impl Relay {
 
     fn eof(&mut self) -> Option<Exit> {
         self.stdin_done = true;
-        if self.refused {
+        if self.state == State::Refused {
             return Some(Exit::Refused);
+        }
+        // a session holding records, mid-reattach: what the attach finds
+        // decides (a failed.json means the refusal, its answers and a
+        // non-zero exit), so nothing ends before it does
+        if self.writer.is_none() && self.state == State::Attaching && !self.records.is_empty() {
+            return None;
         }
         if self.writer.is_none() {
             let why = match &self.state {
@@ -914,45 +963,79 @@ pub fn own_runtime(
     args: &[OsString],
     held: Vec<Vec<u8>>,
     rest: impl Iterator<Item = Piece> + Send + 'static,
-    replay: Option<Vec<u8>>,
+    replay: Option<(Vec<u8>, String)>,
+    out: Out,
 ) -> io::Result<i32> {
-    own_runtime_to(home, args, held, rest, replay, Box::new(io::stdout()))
-}
-
-/// The id a replayed initialize is sent with: the shim's own, so its answer
-/// is told from every answer of the client's and dropped.
-fn replay_id() -> String {
-    let mut b = [0u8; 8];
-    let _ = getrandom::fill(&mut b);
-    format!("ch-shim-replay-{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
-}
-
-/// The replayed initialize: the client's own line with the shim's id, and
-/// what marks its answer.
-fn replayed(line: &[u8]) -> Option<(Vec<u8>, String)> {
-    let mut v: serde_json::Map<String, Value> = serde_json::from_slice(line).ok()?;
-    let id = replay_id();
-    v.insert("id".into(), Value::String(id.clone()));
-    Some((serde_json::to_vec(&v).ok()?, id))
+    own_runtime_to(home, args, held, rest, replay, out)
 }
 
 /// How much of the per-session runtime's output is looked through for the
-/// replayed initialize's answer before it is all passed on as it comes.
+/// replayed initialize's answer before it is all passed on as it comes, and
+/// the most of one line held while looking.
 const REPLAY_LOOK_LINES: usize = 64;
-const REPLAY_LOOK_BYTES: usize = 8 << 20;
+const REPLAY_LOOK_BYTES: usize = 1 << 20;
 
-/// own_runtime, its output to `out` when a replay's answer must be dropped
-/// (with no replay the runtime writes the shim's stdout itself).
+/// One line of `r` to `out` under its lock, so whole lines never interleave
+/// with the shim's own answers, streamed as it comes; `start` is the part
+/// already read. Ok(false) at EOF.
+fn relay_line<R: io::BufRead>(r: &mut R, out: &Out, start: &[u8]) -> io::Result<bool> {
+    let mut held = out.lock();
+    if !start.is_empty() {
+        held.raw(start)?;
+        if start.ends_with(b"\n") {
+            return Ok(true);
+        }
+    }
+    loop {
+        let buf = r.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(false);
+        }
+        let (take, done) = match buf.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len(), false),
+        };
+        held.raw(&buf[..take])?;
+        r.consume(take);
+        if done {
+            return Ok(true);
+        }
+    }
+}
+
+/// The start of a line, at most `cap` bytes, and whether it is the whole line.
+fn line_start<R: io::BufRead>(r: &mut R, cap: usize) -> io::Result<(Vec<u8>, bool)> {
+    let mut line = Vec::new();
+    loop {
+        let buf = r.fill_buf()?;
+        if buf.is_empty() {
+            return Ok((line, false));
+        }
+        let room = cap - line.len();
+        let (take, done) = match buf.iter().take(room).position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len().min(room), false),
+        };
+        line.extend_from_slice(&buf[..take]);
+        r.consume(take);
+        if done || line.len() >= cap {
+            return Ok((line, done));
+        }
+    }
+}
+
+/// own_runtime, the runtime's output relayed through `out` when a replay's
+/// answer must be dropped. With no replay the runtime writes the shim's
+/// stdout itself, unread.
 pub fn own_runtime_to(
     home: &Home,
     args: &[OsString],
     held: Vec<Vec<u8>>,
     rest: impl Iterator<Item = Piece> + Send + 'static,
-    replay: Option<Vec<u8>>,
-    mut out: Box<dyn Write + Send>,
+    replay: Option<(Vec<u8>, String)>,
+    out: Out,
 ) -> io::Result<i32> {
     let shim = config::read_shim(home).map_err(|e| io::Error::other(e.to_string()))?;
-    let replay = replay.as_deref().and_then(replayed);
     let mut cmd = own_command(&shim, home, args);
     cmd.stdin(Stdio::piped());
     if replay.is_some() {
@@ -961,10 +1044,7 @@ pub fn own_runtime_to(
     let mut child: Child = cmd.spawn()?;
     let mut stdin: ChildStdin = child.stdin.take().expect("piped");
     let first: Vec<Piece> = match &replay {
-        Some((init, _)) => vec![
-            Piece::Line(init.clone()),
-            Piece::Line(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec()),
-        ],
+        Some((init, _)) => vec![Piece::Line(init.clone()), Piece::Line(INITIALIZED.to_vec())],
         None => Vec::new(),
     };
     thread::spawn(move || {
@@ -979,43 +1059,45 @@ pub fn own_runtime_to(
         }
         // dropping stdin closes it: the client's EOF, passed on
     });
-    let pump = replay.map(|(_, id)| {
+    let pumped = replay.map(|(_, id)| {
         let stdout = child.stdout.take().expect("piped");
+        let (done_tx, done_rx) = mpsc::channel::<()>();
         thread::spawn(move || {
-            use std::io::BufRead;
-            let mut r = io::BufReader::new(stdout);
-            let mut looked = (0usize, 0usize);
-            let mut line = Vec::new();
-            // until the replayed initialize's answer, which is dropped
-            loop {
-                line.clear();
-                match r.read_until(b'\n', &mut line) {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => looked = (looked.0 + 1, looked.1 + n),
+            let mut r = io::BufReader::with_capacity(64 * 1024, stdout);
+            // look for the replayed initialize's answer, which is dropped;
+            // each line looked at is held only up to REPLAY_LOOK_BYTES
+            for _ in 0..REPLAY_LOOK_LINES {
+                let Ok((start, whole)) = line_start(&mut r, REPLAY_LOOK_BYTES) else { break };
+                if start.is_empty() {
+                    let _ = done_tx.send(());
+                    return;
                 }
-                let is_it = serde_json::from_slice::<Value>(line.trim_ascii_end())
-                    .ok()
-                    .is_some_and(|v| v.get("id").and_then(Value::as_str) == Some(&id));
+                let is_it = whole
+                    && serde_json::from_slice::<Value>(start.trim_ascii_end())
+                        .ok()
+                        .is_some_and(|v| v.get("id").and_then(Value::as_str) == Some(id.as_str()));
                 if is_it {
                     break;
                 }
-                if out.write_all(&line).and_then(|()| out.flush()).is_err() {
+                if !matches!(relay_line(&mut r, &out, &start), Ok(true)) {
+                    let _ = done_tx.send(());
                     return;
                 }
-                if looked.0 >= REPLAY_LOOK_LINES || looked.1 >= REPLAY_LOOK_BYTES {
-                    break;
-                }
             }
-            let _ = io::copy(&mut r, &mut out);
-            let _ = out.flush();
-        })
+            while let Ok(true) = relay_line(&mut r, &out, &[]) {}
+            let _ = done_tx.send(());
+        });
+        done_rx
     });
     let code = child.wait()?.code().unwrap_or(1);
-    if let Some(p) = pump {
-        let _ = p.join();
+    // a process the runtime started may hold its stdout: waited for at most
+    // PUMP_DRAIN, then the shim exits with the runtime's code regardless
+    if let Some(done) = pumped {
+        let _ = done.recv_timeout(PUMP_DRAIN);
     }
     Ok(code)
 }
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::fs;
@@ -1978,7 +2060,11 @@ mod tests {
         let exit = done.join().unwrap();
         let Exit::OwnRuntime { reason, replay, .. } = exit else { panic!("not handed over") };
         assert_eq!(reason, crate::failed::startup_line(crate::failed::Reason::NeverListened));
-        assert_eq!(replay.as_deref(), Some(&init[..]), "the recorded initialize is replayed");
+        let (line, id) = replay.expect("the recorded initialize is replayed");
+        assert_eq!(id, "ch-shim-replay-1", "under the shim's own replay id");
+        let mut want: Value = serde_json::from_slice(init).unwrap();
+        want["id"] = Value::String(id);
+        assert_eq!(serde_json::from_slice::<Value>(&line).unwrap(), want);
         drop(client_in);
     }
 
@@ -1996,9 +2082,11 @@ mod tests {
         let shim = serde_json::json!({"node": node, "chLocal": echo, "env": {"PATH": "/usr/bin:/bin"}});
         private(&home.root().join("shim.json"), shim.to_string().as_bytes());
         let sink = Sink::default();
-        let init = br#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#.to_vec();
+        let init = br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","method":"initialize","params":{}}"#.to_vec();
         let held = vec![br#"{"jsonrpc":"2.0","id":5,"method":"tools/list"}"#.to_vec()];
-        let code = own_runtime_to(&home, &[], held, std::iter::empty(), Some(init), Box::new(sink.clone())).unwrap();
+        let out = Out::new(Box::new(sink.clone()));
+        let code =
+            own_runtime_to(&home, &[], held, std::iter::empty(), Some((init, "ch-shim-replay-1".into())), out).unwrap();
         assert_eq!(code, 0);
         assert_eq!(
             sink.lines(),
@@ -2058,5 +2146,125 @@ mod tests {
         until_op(&mut s2, "bye");
         drop(s2);
         done.join().unwrap();
+    }
+
+    /// A per-session runtime script for own_runtime_to: `body` is JS run per
+    /// stdin line `m` (parsed), after which it answers requests by id.
+    fn echo_runtime(home: &Home, before: &str) -> bool {
+        let Some(node) = node() else { return false };
+        let echo = home.root().join("echo.js");
+        fs::write(&echo, format!("{before}\nrequire('readline').createInterface({{input: process.stdin}}).on('line', (l) => {{ const m = JSON.parse(l); if (m.id !== undefined) process.stdout.write(JSON.stringify({{jsonrpc: '2.0', id: m.id, result: {{method: m.method}}}}) + '\\n'); }});\n")).unwrap();
+        let shim = serde_json::json!({"node": node, "chLocal": echo, "env": {"PATH": "/usr/bin:/bin"}});
+        private(&home.root().join("shim.json"), shim.to_string().as_bytes());
+        true
+    }
+
+    #[test]
+    fn a_grandchild_holding_the_runtimes_stdout_doesnt_hold_the_shim() {
+        let (home, _sock) = home();
+        // the runtime starts a long-lived process that inherits its stdout
+        if !echo_runtime(
+            &home,
+            "require('child_process').spawn('sleep', ['8'], {stdio: ['ignore', 'inherit', 'ignore'], detached: true}).unref(); setTimeout(() => process.exit(0), 300);",
+        ) {
+            return eprintln!("no node on PATH: skipped");
+        }
+        let sink = Sink::default();
+        let init = br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","method":"initialize"}"#.to_vec();
+        let started = Instant::now();
+        let code = own_runtime_to(
+            &home,
+            &[],
+            vec![],
+            std::iter::empty(),
+            Some((init, "ch-shim-replay-1".into())),
+            Out::new(Box::new(sink.clone())),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert!(started.elapsed() < Duration::from_secs(5), "held for {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_huge_line_ahead_of_the_replayed_answer_passes_whole_and_the_answer_is_still_dropped() {
+        let (home, _sock) = home();
+        // a 3 MiB notification first, then the answers
+        if !echo_runtime(
+            &home,
+            "process.stdout.write(JSON.stringify({jsonrpc: '2.0', method: 'big', params: {x: 'y'.repeat(3 << 20)}}) + '\\n');",
+        ) {
+            return eprintln!("no node on PATH: skipped");
+        }
+        let sink = Sink::default();
+        let init = br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","method":"initialize"}"#.to_vec();
+        let held = vec![br#"{"jsonrpc":"2.0","id":5,"method":"tools/list"}"#.to_vec()];
+        own_runtime_to(
+            &home,
+            &[],
+            held,
+            std::iter::empty(),
+            Some((init, "ch-shim-replay-1".into())),
+            Out::new(Box::new(sink.clone())),
+        )
+        .unwrap();
+        let lines = sink.lines();
+        assert_eq!(lines.len(), 2, "{} lines", lines.len());
+        let big: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(big["params"]["x"].as_str().map(str::len), Some(3 << 20), "the big line, whole");
+        assert_eq!(lines[1], r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#);
+    }
+
+    #[test]
+    fn a_refused_sessions_line_too_long_to_read_gets_the_refusal_with_a_null_id() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { retry_unit: Duration::from_millis(50), ..Timing::default() };
+        let (mut client_in, sink, done) = start_with(home.clone(), timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1"); // maxToRuntime 65536: lines over 61440 are unread
+        until_op(&mut s, "client");
+        settled(&mut s);
+        // a line's bound is fixed when its read begins: one line now, so the
+        // next read starts under the welcomed bound
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/x\"}\n").unwrap();
+        let _ = read_m(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"tighten":"x"}}"#, BIG).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        write_failed(&home, "restarts-exhausted");
+        drop(listener);
+        drop(s);
+        thread::sleep(Duration::from_millis(300));
+        let big = format!("{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"a\",\"params\":\"{}\"}}\n", "x".repeat(70_000));
+        client_in.write_all(big.as_bytes()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":null");
+        assert_eq!(sink.lines(), [want]);
+    }
+
+    #[test]
+    fn eof_during_the_reattach_of_a_session_with_records_still_refuses_and_exits_non_zero() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        // the default backoff: a quick loss waits 2 s before the reattach
+        let (mut client_in, sink, done) = start(home.clone());
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"tighten":"x"}}"#, BIG).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        write_failed(&home, "restarts-exhausted");
+        drop(listener);
+        drop(s);
+        thread::sleep(Duration::from_millis(100));
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"a\"}\n").unwrap();
+        drop(client_in); // EOF inside the backoff, before the reattach finds failed.json
+        assert!(matches!(done.join().unwrap(), Exit::Refused), "an EOF mid-reattach must not skip the refusal");
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
+        assert_eq!(sink.lines(), [want]);
     }
 }

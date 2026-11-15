@@ -101,6 +101,8 @@ test('the shim install puts in <home>/shim wins over any other lookup; a link th
     fs.writeFileSync(bin, 'binary', {mode: 0o755});
     assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: bin, note: null}, '<home>/shim/ch-shim first');
     if (process.platform !== 'win32') {
+      fs.chmodSync(bin, 0o644);
+      assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: '/x/ch-shim', note: null}, 'a file that is not executable is passed over');
       fs.rmSync(bin);
       fs.symlinkSync('/x/ch-shim', bin);
       assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: '/x/ch-shim', note: null}, 'a link in <home>/shim is passed over');
