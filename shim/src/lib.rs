@@ -13,6 +13,7 @@
 
 pub mod answer;
 pub mod attach;
+pub mod child;
 pub mod config;
 pub mod daemon;
 pub mod endpoint;
