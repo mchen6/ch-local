@@ -185,4 +185,8 @@ test('readMember: one file\'s bytes from a tarball in memory, by the same rules;
   assert.throws(() => readMember(tgz(member('package/a', {type: '2', linkname: 'b'})), 'a'), /type/);
   assert.throws(() => readMember(Buffer.from('not gzip'), 'a'), /not a gzip tarball/);
   assert.throws(() => readMember(bytes, 'lib/release-pins.json', {maxFileBytes: 3}), /per-file cap/);
+  // node_modules only in a runtime package's tarball (bundled), never a pack's
+  const runtime = packageTgz({name: '@countinghouse/ch-local', version: '0.4.0'}, {'node_modules/@sigstore/verify/package.json': '{}'});
+  assert.throws(() => readMember(runtime, 'node_modules/@sigstore/verify/package.json'), /node_modules/);
+  assert.strictEqual(readMember(runtime, 'node_modules/@sigstore/verify/package.json', {}, {bundled: true}).toString(), '{}');
 });
