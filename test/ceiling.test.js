@@ -210,6 +210,45 @@ test('start: says an outside edit and the ceiling\'s clamps, passes the clamped 
   assert.match(refused.err, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting; the operator fixes the file, or the settings are tightened back/);
 });
 
+// The runtime's own default never governs under ch-local: start passes the
+// two caps always (the stored value, or ch-local's default, after the
+// ceiling), so the two repositories' defaults cannot drift into a ceiling
+// that bounds nothing (countinghouse #283).
+test('start: always passes --maxOutputBytes and --requestTimeout, stored or not, as the ceiling leaves them', async () => {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  assert.ok(!fs.existsSync(where.settings) || readSettings(where).values.maxOutputBytes === undefined, 'nothing stored');
+  const go = async () => {
+    const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret'}, homedir: '/nowhere'});
+    Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
+    let args = null;
+    let end = null;
+    f.spawn = (c, a) => { args = a; return {kill: () => {}, exited: new Promise((resolve) => { end = resolve; }), send: () => {}, onMessage: (fn) => setImmediate(() => fn({type: 'ready'}))}; };
+    const done = start({passThrough: []}, f);
+    for (let i = 0; end == null && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+    if (end != null) end(0);
+    return {code: await done, args, err: f.err};
+  };
+  const after = (args, flag) => args.filter((a, i) => args[i - 1] === flag);
+  // no ceiling, nothing stored: ch-local's defaults, in the runtime's units
+  reader(home, {state: 'none'});
+  const plain = await go();
+  assert.deepStrictEqual(after(plain.args, '--maxOutputBytes'), [String(16 * MiB)], plain.err);
+  assert.deepStrictEqual(after(plain.args, '--requestTimeout'), ['30']);
+  // a ceiling under the default, nothing stored: the runtime runs at the ceiling
+  reader(home, trusted({maxOutputBytes: 12 * MiB, requestTimeout: 20000}));
+  const bounded = await go();
+  assert.deepStrictEqual(after(bounded.args, '--maxOutputBytes'), [String(12 * MiB)], bounded.err);
+  assert.deepStrictEqual(after(bounded.args, '--requestTimeout'), ['20']);
+  // a stored value under the ceiling is the one passed
+  assert.strictEqual((await run(home, ['settings', 'set', 'maxOutputBytes', '4MiB'], {interactive: false})).code, 0);
+  assert.deepStrictEqual(after((await go()).args, '--maxOutputBytes'), [String(4 * MiB)]);
+  // (neither can be passed through to ch-local start, so no client's flag competes)
+});
+
 test('the review of P4: no reader on Windows looks where ProgramData really is too; the reader is asked once while nothing changes', () => {
   assert.deepStrictEqual(fallbackFiles('win32', {ProgramData: 'D:\\mine', SystemDrive: 'C:'}),
     ['D:\\mine\\countinghouse\\ceiling.json', 'C:\\ProgramData\\countinghouse\\ceiling.json']);

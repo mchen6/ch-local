@@ -102,7 +102,9 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   assert.match(f.err, /not loading other: it is turned off/);
   assert.deepStrictEqual(args.slice(args.indexOf('--maxOutputBytes'), args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(32 * 1024 * 1024)]);
   assert.strictEqual(args.filter((a) => a === '--locale').length, 1, 'the client\'s own --locale only');
-  assert.ok(!args.includes('--requestTimeout'), 'none set');
+  // none stored: the default, passed all the same (the two caps always are,
+  // so the runtime's own default never governs: countinghouse #283)
+  assert.deepStrictEqual(args.slice(args.indexOf('--requestTimeout'), args.indexOf('--requestTimeout') + 2), ['--requestTimeout', '30']);
   assert.strictEqual((await cli(home, 'settings', 'set', 'pack.other', 'on')).code, 0);
   for (let i = 0; requests.length < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual([requests[0].type, requests[0].name], ['load', '@countinghouse/ch-pack-other']);
