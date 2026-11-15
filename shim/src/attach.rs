@@ -545,3 +545,113 @@ mod tests {
         assert_eq!(e.kind, TrustKind::Missing);
     }
 }
+
+/// The Windows path, end to end, on CI's Windows legs: a runtime written
+/// from the contract in Node (net's pipe server, crypto's HMAC; no unsafe
+/// test code), a home made private with icacls, and the attach loop over
+/// the named pipe: trust::windows check_dir and the file checks, the strict
+/// pipe name, the SQOS open, the handshake.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::io::{BufRead, BufReader};
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    use super::*;
+
+    const SERVER: &str = r#"
+const net = require('net'), crypto = require('crypto');
+const secret = Buffer.from(process.argv[1], 'hex'), name = process.argv[2];
+const frame = (k, p) => { const h = Buffer.alloc(5); h[0] = k.charCodeAt(0); h.writeUInt32BE(p.length, 1); return Buffer.concat([h, p]); };
+const mac = (label, a, b) => crypto.createHmac('sha256', secret).update(Buffer.concat([Buffer.from(label), Buffer.from([1]), a, b])).digest();
+net.createServer((s) => {
+  let buf = Buffer.alloc(0), stage = 0, nc, ns;
+  s.on('error', () => {});
+  s.on('data', (d) => {
+    buf = Buffer.concat([buf, d]);
+    while (buf.length >= 5 && buf.length >= 5 + buf.readUInt32BE(1)) {
+      const kind = String.fromCharCode(buf[0]), len = buf.readUInt32BE(1), p = buf.subarray(5, 5 + len);
+      buf = buf.subarray(5 + len);
+      if (stage === 0 && kind === 'H') {
+        nc = Buffer.from(JSON.parse(p).nc, 'base64'); ns = crypto.randomBytes(32);
+        s.write(frame('P', Buffer.from(JSON.stringify({ns: ns.toString('base64'), ms: mac('ch-server', nc, ns).toString('base64')}))));
+        stage = 1;
+      } else if (stage === 1 && kind === 'A') {
+        if (JSON.parse(p).mc !== mac('ch-client', ns, nc).toString('base64')) { s.end(frame('R', Buffer.from('{"code":"BAD_PROOF","message":"m"}'))); return; }
+        s.write(frame('W', Buffer.from(JSON.stringify({session: 's', resumeToken: 'rt_pipe', runtimeVersion: '8.0.0', maxToRuntime: 65536, maxToShim: 65536}))));
+        stage = 2;
+      }
+    }
+  });
+}).listen(name, () => console.log('listening'));
+"#;
+
+    fn icacls_private(path: &Path, me: &str) {
+        let st = Command::new("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r", &format!("*{me}:F"), "*S-1-5-18:F"])
+            .status()
+            .unwrap();
+        assert!(st.success(), "icacls {}", path.display());
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// A private home whose daemon.json names a pipe a Node server holds.
+    fn pipe_home() -> Option<(Home, std::process::Child)> {
+        if Command::new("node").arg("-v").output().is_err() {
+            assert!(std::env::var("CI").is_err(), "node is needed for this test in CI");
+            return None;
+        }
+        let me = crate::trust::sid_string(&crate::win_ffi::current_user_sid().unwrap());
+        let mut b = [0u8; 16];
+        getrandom::fill(&mut b).unwrap();
+        let root = std::env::temp_dir().join(format!("ch-shim-pipe-{}", hex(&b[..6])));
+        let run = root.join("run").join("daemon");
+        std::fs::create_dir_all(&run).unwrap();
+        icacls_private(&run, &me);
+        let secret = [7u8; 32];
+        let pipe = format!(r"\\.\pipe\countinghouse-{}", hex(&b));
+        let files = [
+            ("secret", format!("{}\n", hex(&secret))),
+            ("daemon.json", serde_json::json!({"pid": std::process::id(), "socket": pipe, "runtimeVersion": "8.0.0", "daemonVersion": "0.1.0", "started": "x"}).to_string()),
+        ];
+        for (name, body) in files {
+            let p = run.join(name);
+            std::fs::write(&p, body).unwrap();
+            icacls_private(&p, &me);
+        }
+        let mut server =
+            Command::new("node").args(["-e", SERVER, &hex(&secret), &pipe]).stdout(Stdio::piped()).spawn().unwrap();
+        let mut first = String::new();
+        BufReader::new(server.stdout.as_mut().unwrap()).read_line(&mut first).unwrap();
+        assert_eq!(first.trim(), "listening");
+        Some((Home::new(&root).unwrap(), server))
+    }
+
+    #[test]
+    fn it_attaches_over_a_named_pipe_to_a_runtime_that_proves_the_secret() {
+        let Some((home, mut server)) = pipe_home() else { return };
+        let a = attach(&home, None);
+        let _ = server.kill();
+        let a = a.unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(a.welcome.resume_token, "rt_pipe");
+        assert!(a.new_session);
+    }
+
+    #[test]
+    fn a_run_directory_everyone_can_read_stops_the_attach() {
+        let Some((home, mut server)) = pipe_home() else { return };
+        let st = Command::new("icacls").arg(home.run_dir()).args(["/grant", "*S-1-1-0:R"]).status().unwrap();
+        assert!(st.success());
+        let r = attach(&home, None);
+        let _ = server.kill();
+        match r {
+            Err(AttachError::Stop(w)) => assert!(w.contains("accessible by S-1-1-0"), "{w}"),
+            Err(e) => panic!("stopped for another reason: {e}"),
+            Ok(_) => panic!("attached through a run directory Everyone can read"),
+        }
+    }
+}
