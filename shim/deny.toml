@@ -10,7 +10,11 @@
 # numbers in the sweep's fallback). Only win_ffi.rs calls into windows-sys,
 # only unix_ffi.rs into libc.
 #
-# unsafe: win_ffi.rs 28 blocks (one test-only), unix_ffi.rs 2, and main.rs's
+# Also Win32_System_Diagnostics_ToolHelp (the parent's pid), and
+# Win32_Storage_FileSystem with Win32_System_IO (the overlapped named pipe:
+# CreateFileW, ReadFile, WriteFile, OVERLAPPED, CancelIoEx).
+#
+# unsafe: win_ffi.rs 54 blocks (one test-only), unix_ffi.rs 2, and main.rs's
 # one call to unix_ffi::startup_sweep. #![deny(unsafe_code)] everywhere else.
 
 [graph]

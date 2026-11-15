@@ -13,15 +13,23 @@
 
 pub mod answer;
 pub mod attach;
+pub mod child;
 pub mod config;
 pub mod daemon;
 pub mod endpoint;
 pub mod frame;
 pub mod handshake;
+pub mod held;
 pub mod inflight;
+pub mod lines;
 pub mod lock;
 pub mod mac;
 pub mod message;
+pub mod out;
+pub mod process;
+pub mod reader;
+pub mod records;
+pub mod relay;
 pub mod secret;
 pub mod trust;
 #[cfg(unix)]
@@ -29,7 +37,7 @@ pub mod trust;
 pub mod unix_ffi;
 #[cfg(windows)]
 #[allow(unsafe_code)]
-mod win_ffi;
+pub(crate) mod win_ffi;
 
 #[cfg(test)]
 mod conformance;

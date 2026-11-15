@@ -98,6 +98,8 @@ fn spawn(home: &Home) -> Result<(), StartError> {
     let mut cmd = Command::new(&shim.node);
     cmd.arg(&shim.ch_local)
         .arg("daemon")
+        .arg("--home")
+        .arg(home.root())
         .env_clear()
         .envs(shim.env.iter().map(|(k, v)| (k, v)))
         .current_dir(home.root())
@@ -175,7 +177,7 @@ mod windows_tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&saw).unwrap()).unwrap();
-        assert_eq!(v["args"], serde_json::json!(["daemon"]));
+        assert_eq!(v["args"], serde_json::json!(["daemon", "--home", root]));
         assert_eq!(
             std::path::Path::new(v["cwd"].as_str().unwrap()).canonicalize().unwrap(),
             root.canonicalize().unwrap()

@@ -442,7 +442,7 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
         let saw = fs::read_to_string(&out).unwrap();
-        assert!(saw.contains("args:daemon\n"), "{saw}");
+        assert!(saw.contains(&format!("args:daemon --home {}\n", t.home.root().display())), "{saw}");
         assert!(saw.contains(&format!("cwd:{}\n", fs::canonicalize(t.home.root()).unwrap().display())), "{saw}");
         let ids: Vec<&str> = saw.lines().find(|l| l.starts_with("pid:")).unwrap().split(' ').collect();
         assert_eq!(
@@ -543,5 +543,194 @@ mod tests {
         let t = home();
         let e = crate::trust::read_private_in(&t.home.run_dir(), "secret", 65).unwrap_err();
         assert_eq!(e.kind, TrustKind::Missing);
+    }
+}
+
+/// The Windows path, end to end, on CI's Windows legs: a runtime written
+/// from the contract in Node (net's pipe server, crypto's HMAC; no unsafe
+/// test code), a home made private with icacls, and the attach loop over
+/// the named pipe: trust::windows check_dir and the file checks, the strict
+/// pipe name, the SQOS open, the handshake.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::io::{BufRead, BufReader};
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    use super::*;
+
+    const SERVER: &str = r#"
+const net = require('net'), crypto = require('crypto');
+const secret = Buffer.from(process.argv[1], 'hex'), name = process.argv[2];
+const frame = (k, p) => { const h = Buffer.alloc(5); h[0] = k.charCodeAt(0); h.writeUInt32BE(p.length, 1); return Buffer.concat([h, p]); };
+const mac = (label, a, b) => crypto.createHmac('sha256', secret).update(Buffer.concat([Buffer.from(label), Buffer.from([1]), a, b])).digest();
+net.createServer((s) => {
+  let buf = Buffer.alloc(0), stage = 0, nc, ns;
+  s.on('error', () => {});
+  s.on('data', (d) => {
+    buf = Buffer.concat([buf, d]);
+    while (buf.length >= 5 && buf.length >= 5 + buf.readUInt32BE(1)) {
+      const kind = String.fromCharCode(buf[0]), len = buf.readUInt32BE(1), p = buf.subarray(5, 5 + len);
+      buf = buf.subarray(5 + len);
+      if (stage === 0 && kind === 'H') {
+        nc = Buffer.from(JSON.parse(p).nc, 'base64'); ns = crypto.randomBytes(32);
+        s.write(frame('P', Buffer.from(JSON.stringify({ns: ns.toString('base64'), ms: mac('ch-server', nc, ns).toString('base64')}))));
+        stage = 1;
+      } else if (stage === 1 && kind === 'A') {
+        if (JSON.parse(p).mc !== mac('ch-client', ns, nc).toString('base64')) { s.end(frame('R', Buffer.from('{"code":"BAD_PROOF","message":"m"}'))); return; }
+        s.write(frame('W', Buffer.from(JSON.stringify({session: 's', resumeToken: 'rt_pipe', runtimeVersion: '8.0.0', maxToRuntime: 65536, maxToShim: 65536}))));
+        stage = 2;
+      } else if (stage === 2 && kind === 'C') {
+        // the session side: settled after the first client frame
+        const op = JSON.parse(p);
+        if (op.op === 'client' && op.seq === undefined) s.write(frame('C', Buffer.from('{"op":"settled"}')));
+        if (op.op === 'bye') s.end();
+      } else if (stage === 2 && kind === 'M') {
+        // a request (a seq header) is answered with that seq
+        const hn = p.readUInt16BE(0), line = JSON.parse(p.subarray(2 + hn));
+        if (hn > 0) {
+          const header = p.subarray(0, 2 + hn);
+          const body = Buffer.from(JSON.stringify({jsonrpc: '2.0', id: line.id, result: {over: 'the pipe'}}));
+          s.write(frame('M', Buffer.concat([header, body])));
+        }
+      }
+    }
+  });
+}).listen(name, () => console.log('listening'));
+"#;
+
+    fn icacls_private(path: &Path, me: &str) {
+        let st = Command::new("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r", &format!("*{me}:F"), "*S-1-5-18:F"])
+            .status()
+            .unwrap();
+        assert!(st.success(), "icacls {}", path.display());
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// A private home whose daemon.json names a pipe a Node server holds.
+    fn pipe_home() -> Option<(Home, std::process::Child)> {
+        if Command::new("node").arg("-v").output().is_err() {
+            assert!(std::env::var("CI").is_err(), "node is needed for this test in CI");
+            return None;
+        }
+        let me = crate::trust::sid_string(&crate::win_ffi::current_user_sid().unwrap());
+        let mut b = [0u8; 16];
+        getrandom::fill(&mut b).unwrap();
+        let root = std::env::temp_dir().join(format!("ch-shim-pipe-{}", hex(&b[..6])));
+        let run = root.join("run").join("daemon");
+        std::fs::create_dir_all(&run).unwrap();
+        icacls_private(&run, &me);
+        let secret = [7u8; 32];
+        let pipe = format!(r"\\.\pipe\countinghouse-{}", hex(&b));
+        let files = [
+            ("secret", format!("{}\n", hex(&secret))),
+            ("daemon.json", serde_json::json!({"pid": std::process::id(), "socket": pipe, "runtimeVersion": "8.0.0", "daemonVersion": "0.1.0", "started": "x"}).to_string()),
+        ];
+        for (name, body) in files {
+            let p = run.join(name);
+            std::fs::write(&p, body).unwrap();
+            icacls_private(&p, &me);
+        }
+        let mut server =
+            Command::new("node").args(["-e", SERVER, &hex(&secret), &pipe]).stdout(Stdio::piped()).spawn().unwrap();
+        let mut first = String::new();
+        BufReader::new(server.stdout.as_mut().unwrap()).read_line(&mut first).unwrap();
+        assert_eq!(first.trim(), "listening");
+        Some((Home::new(&root).unwrap(), server))
+    }
+
+    #[test]
+    fn it_attaches_over_a_named_pipe_to_a_runtime_that_proves_the_secret() {
+        let Some((home, mut server)) = pipe_home() else { return };
+        let a = attach(&home, None);
+        let _ = server.kill();
+        let a = a.unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(a.welcome.resume_token, "rt_pipe");
+        assert!(a.new_session);
+    }
+
+    /// The relay over a real named pipe (the native review: a synchronous
+    /// pipe handle shared by the reader and main deadlocks on Windows,
+    /// where I/O on one file object is serialized). A request must be
+    /// answered within 20 s; the test fails at that deadline rather than
+    /// hanging the job.
+    #[test]
+    fn the_relay_answers_a_request_over_a_named_pipe() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let Some((home, mut server)) = pipe_home() else { return };
+        // a shim.json whose conditions child answers at once
+        let me = crate::trust::sid_string(&crate::win_ffi::current_user_sid().unwrap());
+        let node = String::from_utf8(Command::new("node").args(["-p", "process.execPath"]).output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        let script = home.root().join("conditions.js");
+        std::fs::write(
+            &script,
+            "console.log(JSON.stringify({status: 'ok', conditions: 'no', repo: null, token: null}))",
+        )
+        .unwrap();
+        let shim = serde_json::json!({"node": node, "chLocal": script, "env": {"SystemRoot": std::env::var("SystemRoot").unwrap()}});
+        std::fs::write(home.shim_json(), shim.to_string()).unwrap();
+        icacls_private(&home.shim_json(), &me);
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let sink = Sink::default();
+        let relay = crate::relay::Relay::new(
+            crate::relay::Setup {
+                home,
+                rest: vec![],
+                client_env: vec![],
+                parent: std::process::id(),
+                timing: Default::default(),
+            },
+            crate::out::Out::new(Box::new(sink.clone())),
+        );
+        std::thread::spawn(move || relay.run(reader));
+        writer.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n").unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        let answered = loop {
+            let got = String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned();
+            if got.contains("the pipe") || Instant::now() > until {
+                break got;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let _ = server.kill();
+        assert!(
+            answered.contains(r#""id":1"#) && answered.contains("the pipe"),
+            "no answer over the pipe within 20 s: {answered:?}"
+        );
+    }
+
+    #[test]
+    fn a_run_directory_everyone_can_read_stops_the_attach() {
+        let Some((home, mut server)) = pipe_home() else { return };
+        let st = Command::new("icacls").arg(home.run_dir()).args(["/grant", "*S-1-1-0:R"]).status().unwrap();
+        assert!(st.success());
+        let r = attach(&home, None);
+        let _ = server.kill();
+        match r {
+            Err(AttachError::Stop(w)) => assert!(w.contains("accessible by S-1-1-0"), "{w}"),
+            Err(e) => panic!("stopped for another reason: {e}"),
+            Ok(_) => panic!("attached through a run directory Everyone can read"),
+        }
     }
 }

@@ -129,6 +129,24 @@ spec, which is still under review, and is not yet wired to a runtime.
   ch-shim at all runs the per-session mode. The Linux builds are static
   (musl), so they need no particular glibc.
 
+### The daemon (`ch-local daemon`)
+
+The shim starts `ch-local daemon --home <home>` when no shared runtime is
+running. The daemon holds the runtime for every session of this user.
+- **Its home and environment are fixed.** `--home` must be absolute, be
+  the daemon's working directory, and be owned by this user with no group or
+  world write. Its environment is `shim.json`'s allowlist (`PATH`, `HOME`,
+  `LANG`, `TMPDIR`; on Windows their equivalents), never a client's.
+- **Its GitHub token comes from `gh auth token` only**, held in memory as
+  `COUNTINGHOUSE_GITHUB_TOKEN`. A `GITHUB_TOKEN` in a shell doesn't reach
+  it. With no `gh` login, the shared runtime has no token, so a pack that
+  needs one isn't loaded there. A session whose client chooses a token of
+  its own (`COUNTINGHOUSE_GITHUB_TOKEN`, or `GITHUB_TOKEN` with no `gh`
+  login) then differs from the daemon's, and runs its own runtime. That
+  fails safe: no session gets another's token, or none silently.
+- **On Windows it doesn't run yet.** Each session runs its own runtime there
+  until the Windows daemon lands.
+
 ### Publishing the shim
 
 A tag `shim-v<version>` on a `main` commit, where `<version>` is
