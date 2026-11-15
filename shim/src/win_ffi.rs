@@ -18,8 +18,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
 use windows_sys::Win32::Security::{
     ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION, GetAce, GetAclInformation,
-    GetLengthSid, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY,
-    TOKEN_USER, TokenUser,
+    GetKernelObjectSecurity, GetLengthSid, GetSecurityDescriptorOwner, GetTokenInformation, IsValidSid,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
@@ -140,7 +140,45 @@ pub fn file_acl(file: &File) -> io::Result<Acl> {
     acl_of(file.as_raw_handle() as HANDLE)
 }
 
-/// The owner and DACL of any open handle (a file, a directory, a pipe).
+/// The owner SID of any kernel object's open handle (a named pipe here:
+/// GetSecurityInfo's SE_FILE_OBJECT path refuses a pipe handle with
+/// ERROR_INVALID_PARAMETER). The handle needs READ_CONTROL.
+fn handle_owner(handle: HANDLE) -> io::Result<Vec<u8>> {
+    let mut need = 0u32;
+    // SAFETY: a size query: no buffer (length 0), need is a local.
+    unsafe { GetKernelObjectSecurity(handle, OWNER_SECURITY_INFORMATION, ptr::null_mut(), 0, &mut need) };
+    if need == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // u64s: a security descriptor wants pointer alignment
+    let mut buf = vec![0u64; (need as usize).div_ceil(8)];
+    let len = u32::try_from(buf.len() * 8).unwrap_or(u32::MAX);
+    // SAFETY: buf holds len bytes, writable, alive across the call.
+    if unsafe {
+        GetKernelObjectSecurity(
+            handle,
+            OWNER_SECURITY_INFORMATION,
+            buf.as_mut_ptr() as PSECURITY_DESCRIPTOR,
+            len,
+            &mut need,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let mut owner: PSID = ptr::null_mut();
+    let mut defaulted = 0;
+    // SAFETY: buf now holds the self-relative descriptor just filled in;
+    // owner and defaulted are locals.
+    if unsafe { GetSecurityDescriptorOwner(buf.as_mut_ptr() as PSECURITY_DESCRIPTOR, &mut owner, &mut defaulted) } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: owner is null or points inside buf, which is alive here.
+    unsafe { sid_bytes(owner) }.ok_or_else(|| io::Error::other("the pipe has no valid owner SID"))
+}
+
+/// The owner and DACL of an open file or directory's handle.
 fn acl_of(handle: HANDLE) -> io::Result<Acl> {
     let mut owner: PSID = ptr::null_mut();
     let mut dacl: *mut ACL = ptr::null_mut();
@@ -410,7 +448,8 @@ impl Pipe {
         // SAFETY: h is the valid handle CreateFileW just returned, owned
         // nowhere else.
         let handle = unsafe { OwnedHandle::from_raw_handle(h as _) };
-        let owner = acl_of(handle.as_raw_handle() as HANDLE).map_err(|e| context("reading the pipe's owner", e))?.owner;
+        let owner =
+            handle_owner(handle.as_raw_handle() as HANDLE).map_err(|e| context("reading the pipe's owner", e))?;
         let user = current_user_sid().map_err(|e| context("reading this user's SID", e))?;
         if owner != user && owner != crate::trust::SYSTEM && owner != crate::trust::ADMINISTRATORS {
             return Err(io::Error::new(
