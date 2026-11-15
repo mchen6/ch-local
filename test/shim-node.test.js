@@ -19,18 +19,26 @@ const conditions = require('../lib/conditions-command');
 const VECTORS = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'shim', 'tests', 'vectors', 'contract-2.json'), 'utf8'));
 const tmpHome = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ch-c4-'));
 
+// Each platform's case runs on every OS: the platform is given, and so are
+// its paths (no host temporary directory, whose form is the host's)
 test('shim.json: absolute node and chLocal, and only the allowlisted environment, as strings (POSIX)', () => {
-  const home = tmpHome();
-  try {
-    const env = {PATH: '/usr/bin:/bin', HOME: '/home/dev', LANG: 'en_US.UTF-8', TMPDIR: '/tmp', NODE_OPTIONS: '--require /tmp/x.js',
-      COUNTINGHOUSE_GITHUB_TOKEN: 'not-for-the-daemon', SHELL: '/bin/zsh'};
-    const body = shimConfig.shimJsonFor({node: '/usr/local/bin/node', home, env, platform: 'linux'});
-    assert.deepStrictEqual(body, {node: '/usr/local/bin/node', chLocal: path.join(home, 'bin', 'ch-local.js'),
-      env: {PATH: '/usr/bin:/bin', HOME: '/home/dev', LANG: 'en_US.UTF-8', TMPDIR: '/tmp'}});
-    assert.strictEqual(shimConfig.shimJsonProblem(body, 'linux'), null);
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
+  const home = '/home/dev/.countinghouse';
+  const env = {PATH: '/usr/bin:/bin', HOME: '/home/dev', LANG: 'en_US.UTF-8', TMPDIR: '/tmp', NODE_OPTIONS: '--require /tmp/x.js',
+    COUNTINGHOUSE_GITHUB_TOKEN: 'not-for-the-daemon', SHELL: '/bin/zsh'};
+  const body = shimConfig.shimJsonFor({node: '/usr/local/bin/node', home, env, platform: 'linux'});
+  assert.deepStrictEqual(body, {node: '/usr/local/bin/node', chLocal: '/home/dev/.countinghouse/bin/ch-local.js',
+    env: {PATH: '/usr/bin:/bin', HOME: '/home/dev', LANG: 'en_US.UTF-8', TMPDIR: '/tmp'}});
+  assert.strictEqual(shimConfig.shimJsonProblem(body, 'linux'), null);
+});
+
+test('shim.json: absolute node and chLocal, and only the allowlisted environment, as strings (Windows)', () => {
+  const home = 'C:\\Users\\dev\\.countinghouse';
+  const env = {PATH: 'C:\\Windows\\system32', USERPROFILE: 'C:\\Users\\dev', NODE_OPTIONS: '--require C:\\x.js', COUNTINGHOUSE_GITHUB_TOKEN: 'not-for-the-daemon'};
+  const body = shimConfig.shimJsonFor({node: 'C:\\Program Files\\nodejs\\node.exe', home, env, platform: 'win32'});
+  assert.deepStrictEqual(body, {node: 'C:\\Program Files\\nodejs\\node.exe', chLocal: 'C:\\Users\\dev\\.countinghouse\\bin\\ch-local.js',
+    env: {PATH: 'C:\\Windows\\system32', USERPROFILE: 'C:\\Users\\dev'}});
+  assert.strictEqual(shimConfig.shimJsonProblem(body, 'win32'), null);
+  assert.match(shimConfig.shimJsonProblem(body, 'linux'), /node is not an absolute path/, 'and judged by its own platform\'s rule');
 });
 
 test('shim.json on Windows takes USERPROFILE and the Windows variables, never HOME or TMPDIR', () => {
