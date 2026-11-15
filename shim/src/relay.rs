@@ -723,4 +723,135 @@ mod tests {
             "only 8 was unanswered"
         );
     }
+
+    fn start(home: Home) -> (UnixStream, Sink, thread::JoinHandle<Exit>) {
+        let (client_in, input) = UnixStream::pair().unwrap();
+        let sink = Sink::default();
+        let relay =
+            Relay::new(Setup { home, rest: vec![], client_env: vec![], parent: 1 }, Out::new(Box::new(sink.clone())));
+        (client_in, sink, thread::spawn(move || relay.run(input)))
+    }
+
+    fn control_payload(s: &mut UnixStream) -> Value {
+        loop {
+            let (kind, len) = frame::read_head(s, BIG).unwrap();
+            let mut p = vec![0u8; len as usize];
+            s.read_exact(&mut p).unwrap();
+            if kind == Kind::Control {
+                return serde_json::from_slice(&p).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn conditions_asked_is_answered_with_its_seq() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        assert_eq!(control_payload(&mut s)["status"], "ok", "the first client frame");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":5}"#, BIG).unwrap();
+        let c = control_payload(&mut s);
+        assert_eq!(
+            (c["op"].as_str(), c["seq"].as_u64(), c["conditions"].as_str()),
+            (Some("client"), Some(5), Some("no"))
+        );
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+    }
+
+    #[test]
+    fn own_runtime_before_settled_hands_over_the_held_lines_and_the_rest() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"own-runtime","reason":"token"}"#, BIG).unwrap();
+        let exit = done.join().unwrap();
+        let Exit::OwnRuntime { reason, held, rest } = exit else { panic!("not handed over") };
+        assert_eq!(reason, "token");
+        assert_eq!(held, vec![br#"{"jsonrpc":"2.0","id":1,"method":"a"}"#.to_vec()]);
+        client_in.write_all(b"{\"later\":1}\n").unwrap();
+        drop(client_in);
+        assert_eq!(
+            rest.collect::<Vec<_>>(),
+            vec![br#"{"later":1}"#.to_vec()],
+            "lines after the hand-over reach it too"
+        );
+    }
+
+    #[test]
+    fn a_drain_holds_new_requests_and_forwards_them_after_the_reconnect_with_no_crash_answer() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"drain"}"#, BIG).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"a\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        welcome(&mut s2, "rt2");
+        until_op(&mut s2, "client");
+        settled(&mut s2);
+        let (seq, body) = read_m(&mut s2);
+        assert_eq!((seq, body), (Some(1), br#"{"jsonrpc":"2.0","id":3,"method":"a"}"#.to_vec()));
+        reply(&mut s2, 1, r#"{"jsonrpc":"2.0","id":3,"result":{}}"#);
+        drop(client_in);
+        until_op(&mut s2, "bye");
+        drop(s2);
+        done.join().unwrap();
+        assert_eq!(sink.lines(), [r#"{"jsonrpc":"2.0","id":3,"result":{}}"#], "no crash answer during a drain");
+    }
+
+    #[test]
+    fn a_legacy_session_replays_initialize_after_a_reconnect_and_drops_its_answer() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":0,"result":{"v":1}}"#);
+        thread::sleep(Duration::from_millis(100));
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        welcome(&mut s2, "rt2");
+        until_op(&mut s2, "client");
+        settled(&mut s2);
+        let (rseq, replay) = read_m(&mut s2);
+        let replay: Value = serde_json::from_slice(&replay).unwrap();
+        assert_eq!((replay["id"].as_str(), replay["method"].as_str()), (Some("ch-shim-replay-1"), Some("initialize")));
+        let (nseq, initialized) = read_m(&mut s2);
+        assert_eq!((nseq, initialized), (None, br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec()));
+        reply(&mut s2, rseq.unwrap(), r#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{"v":1}}"#);
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in);
+        until_op(&mut s2, "bye");
+        drop(s2);
+        done.join().unwrap();
+        assert_eq!(
+            sink.lines(),
+            [
+                r#"{"jsonrpc":"2.0","id":0,"result":{"v":1}}"#,
+                r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#
+            ],
+            "the replay's answer is dropped; the client hears list_changed"
+        );
+    }
 }
