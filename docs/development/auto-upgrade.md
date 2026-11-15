@@ -62,7 +62,16 @@ those are dropped anyway (below).
    - it's strict semver (`MAJOR.MINOR.PATCH`, digits only, no prerelease
      or build part);
    - it's greater than the installed version by semver precedence;
-   - its major version is the installed one's.
+   - for the automatic upgrade, its major version is the installed one's.
+     Another major is announced and nothing more of it is fetched.
+     `ch-local upgrade` takes it through every step below, exactly as any
+     other version, shows it as a major ("a major upgrade: it may change how
+     things work"), and installs it only on a yes at a terminal.
+
+   A 0.x minor change (0.1 to 0.2) or a 0.0.x patch change is treated as a
+   major by the automatic upgrade, since under semver either may break. It's
+   announced and never installed automatically. `ch-local upgrade` shows it
+   as one that may break, and asks.
 2. **Its tarball is fetched and checked**, as every tarball below is
    (`lib/npm-fetch.js`):
    - `dist.tarball` must be the registry's own path for that name and
@@ -93,7 +102,10 @@ those are dropped anyway (below).
      one, an origin, or a variable sent to an existing origin;
    - a release that changes an identity: self's, or an existing pin's
      repository, repository or owner ID, or workflow. This covers the
-     runtime, an installed pack's packages and the shim.
+     runtime, an installed pack's packages and the shim;
+   - a release that pins, for the first time, a package this install uses:
+     the runtime's, an installed pack's or the shim's. Who builds it is new,
+     so it counts as an identity change.
 
    **A pack the user hasn't installed** is never installed by an automatic
    upgrade. So a change to it, an identity change included, never blocks
@@ -201,10 +213,18 @@ A pin without all five is refused.
   see the version.
 - A younger version is announced once ("<v> is available; it installs
   automatically after <time>"), and checked again later.
+- **It fails closed.** Both times must be known: a first-seen time that isn't
+  a finite number no later than now is reset to now, and the version waits.
+- **`upgrade-check.json` is this user's alone.** It must be a regular file,
+  not a link, owned by the user, with no access for group or others (on
+  Windows, an owner-only DACL). One that isn't is not read, so the wait
+  starts again, and it's written back as such: a temp file created
+  exclusively, mode 0600, renamed into place.
 - It's a soak against a compromised account. A bad release published in an
   attack has three days to be found and pulled before any automatic upgrade
   installs it.
-- `ch-local upgrade` doesn't wait.
+- `ch-local upgrade` doesn't wait. Its yes is a person's at a terminal, as
+  for any loosening: with no terminal (a piped answer), it installs nothing.
 
 ## The trusted root, and its rotation
 
@@ -287,7 +307,10 @@ included (as the acceptance run's security review showed). So:
   - `CH_LOCAL_REMOTE_MAP` set;
   - a home whose record is `unreleased` (installed with `--unreleased-pins`).
 
-  The automatic check doesn't test the last one today; it will.
+  Start's check tests these before it runs the child. The child's
+  environment allowlist drops the two variables, so the child can't see
+  them. An override is announced and recorded, and no child runs. The child
+  tests them again itself.
 
 ## The child that applies it, and its environment
 
@@ -297,6 +320,14 @@ included (as the acceptance run's security review showed). So:
   child, so it trusts nothing its parent decided. It re-reads `autoUpgrade`
   and the operator's ceiling, the overrides above, and the 72-hour wait, and
   stops if any says no.
+- **It prints one line**, the outcome's announcement. The install it runs
+  says nothing of its own: its lines name paths and credentials.
+- **It never writes `shim.json`.** Its environment is the session's (a
+  client config's `PATH`, `HOME`, `TMPDIR`), which the shared daemon would
+  give every client. Only an install from the command writes `shim.json`.
+  If it's missing or invalid, the automatic upgrade leaves it, records
+  that, and its line says: run ch-local install to repair the relay's
+  settings.
 - **Its environment is `shim.json`'s allowlist** (`PATH`, `HOME`, `LANG`,
   `TMPDIR`; on Windows `USERPROFILE`, `SystemRoot`, `TEMP`, `TMP`, `APPDATA`,
   `LOCALAPPDATA`), whether or not the shared runtime is in use. That drops:
@@ -307,15 +338,12 @@ included (as the acceptance run's security review showed). So:
   - the proxy and CA variables: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and
     their lowercase forms, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
     `SSL_CERT_DIR`, `NODE_TLS_REJECT_UNAUTHORIZED`.
-- **The Windows ceiling path reads the environment today.** `lib/ceiling.js`
-  looks for the fallback ceiling under `env.ProgramData` and
-  `env.SystemDrive`, which a client's config can set.
-  - Neither is on the allowlist, so the child falls back to
-    `C:\ProgramData` alone.
-  - The build goes further, for the child and for start alike: the ceiling
-    is looked up in the Windows known folder
-    (`[Environment]::GetFolderPath('CommonApplicationData')`, read through
-    `lib/win-acl.js`'s PowerShell), never from the environment.
+- **The Windows ceiling path never reads the environment.** A client's
+  config can set `ProgramData` and `SystemDrive`, so `lib/ceiling.js` looks
+  for the fallback ceiling in the Windows known folder instead
+  (`[Environment]::GetFolderPath('CommonApplicationData')`, read once
+  through `lib/win-acl.js`'s PowerShell), and in `C:\ProgramData` as well,
+  for the child and for start alike.
   - That lookup's `powershell.exe` is found under `SystemRoot`, which is on
     the allowlist and a client's config can set. That's a residual, below.
 
@@ -396,6 +424,11 @@ included (as the acceptance run's security review showed). So:
   lookup's `powershell.exe` elsewhere. That's within the local same-user
   residual already recorded for the ACL checks (#169 section 3), and
   accepted.
+- **A stamp reset drops `declined`.** An `upgrade-check.json` that isn't
+  this user's alone is not read, so its record starts again. That also
+  drops the declined versions, and a version rolled back from can return
+  after a fresh 72 hours. Only a same-user act can make the file fail the
+  check, and the reset is recorded. Accepted.
 - **The verifier is the last of its majors.** `@sigstore/verify` 3.1.1 and
   `@sigstore/core` 3.2.1 end their major lines, with no advisories today. A
   future fix may land only on 4.x, which needs Node `^22.22.2 || ^24.15.0
@@ -430,7 +463,10 @@ included (as the acceptance run's security review showed). So:
   - a release directory changed between the check and `loadTarballs`;
   - a release adding a credential, an origin, or a package to a pack: not
     installed automatically, announced;
-  - a version not strict semver, a lower one, a prerelease, a major;
+  - a version not strict semver, a lower one, a prerelease: refused on both
+    paths;
+  - a major: announced and never fetched by the automatic upgrade; checked
+    in full, shown as a major and installed on a yes by `ch-local upgrade`;
   - **the wait:**
     - with the publish attestation's time 71 hours ago, the automatic
       upgrade doesn't install; at 73 hours it does; `ch-local upgrade`

@@ -84,7 +84,10 @@ async function main(argv, io) {
     if (command === 'install') {
       const a = parse(rest, {values: ['--pack', '--from', '--unreleased-pins']});
       if (a == null || a.positional.length > 0 || a.values['--pack'] === undefined) return usage();
-      return await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+      const code = await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+      // asked once whether to turn automatic upgrades on (off with no terminal)
+      if (code === 0) await require('../lib/upgrade').offerAuto(io);
+      return code;
     }
     if (command === 'add-pack') {
       const a = parse(rest, {values: ['--from', '--unreleased-pins']});
@@ -161,8 +164,16 @@ async function main(argv, io) {
       return usage();
     }
     if (command === 'upgrade') {
-      const a = parse(rest, {values: ['--auto']});
+      const a = parse(rest, {values: ['--auto'], flags: ['--apply-auto']});
       if (a == null || a.positional.length > 0) return usage();
+      // start's background check runs this, in a child with the allowlisted
+      // environment (lib/auto-upgrade.js); it re-checks everything itself
+      if (a.flags['--apply-auto']) {
+        if (a.values['--auto'] !== undefined) return usage();
+        const r = await require('../lib/auto-apply').autoApply({io});
+        if (r.line != null) io.stdout.write(`${r.line}\n`);
+        return 0;
+      }
       return await require('../lib/upgrade').upgrade({auto: a.values['--auto']}, io);
     }
   } catch (err) {

@@ -125,6 +125,33 @@ test('ch-local\'s version must be strict MAJOR.MINOR.PATCH, before anything is f
   }
 });
 
+test('an upgrade\'s verified ch-local: its bytes installed as given, under the installed self, never fetched again (the review of #42, 4)', async() => {
+  const w = await world();
+  try {
+    const bytes = Buffer.from(`the ${SELF}@${w.selfVersion} tarball`);
+    const integrity = sri(bytes);
+    const publishedAt = new Date(at.getTime() - 3600e3);
+    const r = await fetchRelease({data: w.data, version: w.selfVersion, names, dir: w.dir, io, registry: w.reg.url, trust,
+      verifiedSelf: {version: w.selfVersion, bytes, integrity, publishedAt, identity: w.data.self}});
+    assert.ok(!w.reg.requests.some((u) => u.includes('ch-local')), 'ch-local not fetched again');
+    assert.strictEqual(r.pins[SELF].integrity, integrity);
+    assert.strictEqual(r.published[SELF], publishedAt);
+    assert.ok(fs.readFileSync(path.join(w.dir, tarballName(SELF, w.selfVersion))).equals(bytes), 'the same bytes written');
+    // bytes that are not what it says, or for another version: refused
+    const w2 = await world();
+    try {
+      assert.strictEqual(await codeOf(fetchRelease({data: w2.data, version: w2.selfVersion, names, dir: w2.dir, io, registry: w2.reg.url, trust,
+        verifiedSelf: {version: w2.selfVersion, bytes: Buffer.from('other'), integrity, publishedAt, identity: w2.data.self}})), 'INTEGRITY_MISMATCH');
+      assert.strictEqual(await codeOf(fetchRelease({data: w2.data, version: w2.selfVersion, names, dir: w2.dir, io, registry: w2.reg.url, trust,
+        verifiedSelf: {version: '9.9.9', bytes, integrity, publishedAt, identity: w2.data.self}})), 'SELF_MISMATCH');
+    } finally {
+      await w2.close();
+    }
+  } finally {
+    await w.close();
+  }
+});
+
 test('a package no pin names (other than ch-local) is refused before anything is fetched', async() => {
   const w = await world();
   try {
@@ -160,7 +187,7 @@ test('no lib/ code names `trust` or `registry` but the three that take them; ins
   // code only: comments and strings set nothing
   // code only: comments, strings and template text set nothing (test/code-only.js)
   const code = (f) => require('./code-only').codeOnly(fs.readFileSync(path.join(lib, f), 'utf8'));
-  const allowed = new Set(['npm-fetch.js', 'npm-release.js', 'provenance.js']);
+  const allowed = new Set(['npm-fetch.js', 'npm-release.js', 'provenance.js', 'npm-upgrade.js']);
   const found = [];
   for (const f of fs.readdirSync(lib).filter((x) => x.endsWith('.js') && !allowed.has(x))) {
     // any identifier, shorthand and destructuring included (the review of #42)
@@ -183,7 +210,14 @@ test('no lib/ code names `trust` or `registry` but the three that take them; ins
   const lines = install.split('\n').filter((l) => /fromNpm/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim());
   assert.deepStrictEqual(lines, [
     'async function install({pack, from, unreleasedPins}, io, release = ALLOWLIST, fromNpm = {}) {',
-    'version: allow.release.version, names, dir: path.join(fetched, \'release\'), io, ...fromNpm});'
+    'version: allow.release.version, names, dir: path.join(fetched, \'release\'), io, verifiedSelf: allow.verifiedSelf || null, ...fromNpm});'
+  ]);
+  // upgrade: likewise, its signature and its two pass-ons
+  const upgrade = fs.readFileSync(path.join(lib, 'upgrade.js'), 'utf8');
+  assert.deepStrictEqual(upgrade.split('\n').filter((l) => /fromNpm/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim()), [
+    'async function upgrade({auto}, io, fromNpm = {}) {',
+    'found = await findUpgrade({data, installed: from, packs, io, allowMajor: true, ...fromNpm});',
+    'const code = await require(\'./install\').install({pack: packs[0]}, io, allow, fromNpm);'
   ]);
 });
 
@@ -209,20 +243,37 @@ test('bin/ and lib/: no code names `trust` or `registry` outside the three, and 
   const files = [...fs.readdirSync(path.join(root, 'lib')).filter((f) => f.endsWith('.js')).map((f) => `lib/${f}`),
     ...fs.readdirSync(path.join(root, 'bin')).filter((f) => f.endsWith('.js')).map((f) => `bin/${f}`)];
   const code = (f) => require('./code-only').codeOnly(fs.readFileSync(path.join(root, f), 'utf8'));
-  const three = new Set(['lib/npm-fetch.js', 'lib/npm-release.js', 'lib/provenance.js']);
+  const three = new Set(['lib/npm-fetch.js', 'lib/npm-release.js', 'lib/provenance.js', 'lib/npm-upgrade.js']);
   const named = [];
   const calls = [];
   for (const f of files) {
     const src = code(f);
     if (!three.has(f)) for (const m of src.matchAll(/\b(trust|registry)\b/g)) named.push(`${f}: ${m[1]}`);
-    for (const m of src.matchAll(/\binstall\s*\(/g)) {
+    for (const m of src.matchAll(/\b(install|upgrade|autoApply)\s*\(/g)) {
       if (/\bfunction\s+$/.test(src.slice(Math.max(0, m.index - 20), m.index))) continue;
-      calls.push([f, topLevelArgs(src, m.index + m[0].length - 1)]);
+      const line = src.slice(src.lastIndexOf('\n', m.index) + 1, src.indexOf('\n', m.index)).trim();
+      calls.push([f, m[1], topLevelArgs(src, m.index + m[0].length - 1), line]);
     }
+    // (lib/npm.js's fromNpm is npm's own path, npm_execpath: another thing)
+    if (!['lib/install.js', 'lib/upgrade.js', 'lib/auto-apply.js', 'lib/npm.js'].includes(f)) assert.doesNotMatch(src, /\bfromNpm\b/, `${f} names fromNpm`);
   }
   assert.deepStrictEqual(named, [], `named outside the three: ${named.join(', ')}`);
-  assert.ok(calls.length >= 1, 'bin/ch-local.js calls install');
-  assert.deepStrictEqual(calls.filter(([, n]) => n !== 2), [], 'an install( call with other than two arguments');
+  assert.ok(calls.some(([f, fn]) => f === 'bin/ch-local.js' && fn === 'install'), 'bin/ch-local.js calls install');
+  // install( with two arguments, but for upgrade's and the automatic
+  // upgrade's own calls, verbatim: the verified release's allow, and their
+  // own test-only fromNpm (pinned by the scan above); upgrade( with two, and
+  // autoApply( with {io} alone, so nothing passes theirs on
+  // (the automatic upgrade's install says nothing of its own: its io is a quiet copy)
+  const passOn = {'lib/upgrade.js': 'const code = await require(\'\').install({pack: packs[0]}, io, allow, fromNpm);',
+    'lib/auto-apply.js': 'const code = await require(\'\').install({pack: packs[0]}, quiet, allow, fromNpm);'};
+  const odd = calls.filter(([f, fn, n, line]) => {
+    if (fn === 'install') return !(n === 2 || passOn[f] === line);
+    if (fn === 'upgrade') return n !== 2;
+    return !/autoApply\(\{io\}\)/.test(line);
+  });
+  assert.deepStrictEqual(odd, [], 'a call that could pass a test-only argument');
+  assert.deepStrictEqual(calls.filter(([f, fn]) => fn !== 'install' || f !== 'bin/ch-local.js').map(([f, fn]) => `${f} ${fn}`).sort(),
+    ['bin/ch-local.js autoApply', 'bin/ch-local.js upgrade', 'lib/auto-apply.js install', 'lib/upgrade.js install']);
   // the counter itself
   assert.deepStrictEqual(['f()', 'f(a)', 'f({a, b}, io)', 'f(a, io, undefined, JSON.parse(io.env.X))', 'f({x: [1, 2]}, g(h, i))'].map((s) => topLevelArgs(s, 1)), [0, 1, 2, 4, 2]);
 });

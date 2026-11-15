@@ -346,3 +346,15 @@ test('a security confirmation answered other than yes says that only yes confirm
   assert.match(io.out, /nothing changed: only "yes" confirms/);
   assert.strictEqual(versionOf(s.home, REDACT), '0.2.0');
 });
+
+test('the review of #48: the version rolled back from is declined, so the automatic upgrade never installs it again', async () => {
+  const s = await upgraded();
+  const left = record(s.home).runtime.versions['@countinghouse/ch-local'];
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  const {stamp, problem} = require('../lib/upgrade-stamp').readStamp(s.home);
+  assert.strictEqual(problem, null);
+  assert.deepStrictEqual(stamp.declined, [left]);
+  // rolling back again keeps it once
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.deepStrictEqual(require('../lib/upgrade-stamp').readStamp(s.home).stamp.declined, [left]);
+});
