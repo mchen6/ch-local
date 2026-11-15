@@ -100,6 +100,8 @@ test('a pin without its whole identity, or for another version, is refused befor
     assert.strictEqual(codeOf(() => verify(good(), {pin: p})), 'PIN_INCOMPLETE', field);
   }
   assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {version: '0.2.0'})})), 'PIN_INCOMPLETE');
+  // the tag is v<version>, for every pin, ch-local's in-memory one included
+  assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {tag: 'v0.3.1'})})), 'PIN_INCOMPLETE', 'a tag not v<version>');
   assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {repositoryId: '1000001'})})), 'PIN_INCOMPLETE', 'a numeric ID as a number');
 });
 
