@@ -21,6 +21,9 @@ use windows_sys::Win32::Security::{
     TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -302,6 +305,37 @@ pub fn stdio_inheritable(which: u32) -> Option<bool> {
     Some(flags & HANDLE_FLAG_INHERIT != 0)
 }
 
+/// This process's parent's pid, from a Toolhelp process snapshot (the
+/// documented way). Read once, at startup, before any wait, so the parent
+/// has had the least time to exit and its pid to be reused. The snapshot
+/// handle is closed on every path.
+pub fn parent_pid() -> Option<u32> {
+    let me = std::process::id();
+    // SAFETY: a process snapshot of the whole system (pid 0); the handle, if
+    // valid, is closed below on every path.
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snap.is_null() || snap == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return None;
+    }
+    // SAFETY: PROCESSENTRY32W is plain data; dwSize is set as the API needs.
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    let mut found = None;
+    // SAFETY: snap is a valid snapshot handle and entry a local with dwSize set.
+    let mut ok = unsafe { Process32FirstW(snap, &mut entry) } != 0;
+    while ok {
+        if entry.th32ProcessID == me {
+            found = Some(entry.th32ParentProcessID);
+            break;
+        }
+        // SAFETY: as above.
+        ok = unsafe { Process32NextW(snap, &mut entry) } != 0;
+    }
+    // SAFETY: snap was opened above and is closed once, whatever was found.
+    unsafe { CloseHandle(snap) };
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Command;
@@ -363,6 +397,11 @@ mod tests {
             return;
         };
         assert_eq!(dns_hostname().unwrap(), String::from_utf8_lossy(&out.stdout));
+    }
+
+    #[test]
+    fn the_parent_pid_is_read() {
+        assert!(parent_pid().is_some_and(|p| p != 0 && p != std::process::id()));
     }
 
     #[test]

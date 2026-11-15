@@ -18,10 +18,15 @@ pub mod daemon;
 pub mod endpoint;
 pub mod frame;
 pub mod handshake;
+pub mod held;
 pub mod inflight;
+pub mod lines;
 pub mod lock;
 pub mod mac;
 pub mod message;
+pub mod out;
+pub mod process;
+pub mod records;
 pub mod secret;
 pub mod trust;
 #[cfg(unix)]
