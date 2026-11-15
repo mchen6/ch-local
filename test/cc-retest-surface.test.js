@@ -142,14 +142,26 @@ test('no approved snapshot, a snapshot from another extractor, or a bad version:
   fs.rmSync(approved, {recursive: true, force: true});
 });
 
+// The run's temp directory is a private one (TMPDIR, TMP and TEMP point at
+// it, so os.tmpdir() and anything the run spawns see it), and only it is
+// diffed: other test files, run in parallel, make their own directories in
+// the shared one, which this test must never count (it once did: ch-home-*
+// and ch-release-* in CI).
 test('a run writes nothing but its snapshot: no temp directory, no unpacked file', async () => {
-  const before = new Set(fs.readdirSync(os.tmpdir()));
   const approved = tmp('ccr-f-');
-  await run(['2.1.300', '--approve'], registry({'2.1.300': {js: BASE_JS, bin: BASE_BIN}}), approved);
-  const after = fs.readdirSync(os.tmpdir()).filter((f) => !before.has(f) && f !== path.basename(approved));
-  assert.deepStrictEqual(after, []);
+  const own = tmp('ccr-tmp-');
+  const saved = {TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP};
+  try {
+    Object.assign(process.env, {TMPDIR: own, TMP: own, TEMP: own});
+    assert.strictEqual(os.tmpdir(), own, 'the run sees its own temp directory');
+    await run(['2.1.300', '--approve'], registry({'2.1.300': {js: BASE_JS, bin: BASE_BIN}}), approved);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v == null) delete process.env[k]; else process.env[k] = v; }
+  }
+  assert.deepStrictEqual(fs.readdirSync(own), []);
   assert.deepStrictEqual(fs.readdirSync(approved), ['2.1.300.json']);
   fs.rmSync(approved, {recursive: true, force: true});
+  fs.rmSync(own, {recursive: true, force: true});
 });
 
 test('streamed in small chunks, every identifier is found whole, once, and none is cut at a chunk edge', async () => {
