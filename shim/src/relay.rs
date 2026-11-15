@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{self, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -33,9 +33,11 @@ use crate::{answer, child};
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
 /// Sent after a replayed initialize.
 const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
-/// How long the shim waits for the per-session runtime's output to end
-/// after the runtime exits: a process it started may hold the pipe.
+/// After the per-session runtime exits, its output is waited for while it
+/// keeps coming (a process it started may hold the pipe, writing or not):
+/// until PUMP_DRAIN passes with nothing read, or PUMP_MAX in all.
 const PUMP_DRAIN: Duration = Duration::from_secs(2);
+const PUMP_MAX: Duration = CLOSING_GRACE;
 /// How long a welcomed connection waits for `settled` before it is
 /// closed and attached again (the runtime's own conditions? wait is 12 s).
 const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
@@ -330,15 +332,9 @@ impl Relay {
             Ev::Stdin(lines::Read::Eof) => return self.eof(),
             // raw mode starts at the hand-over, when Rest has the queue
             Ev::Stdin(lines::Read::Chunk(_)) => {}
-            Ev::Attached(Ok(a)) => self.attached(a),
+            Ev::Attached(Ok(a)) => return self.attached(a),
             Ev::Attached(Err(AttachError::SharedFailed(r))) => return self.shared_failed(r),
-            Ev::Attached(Err(e)) => {
-                self.unreachable(e.to_string());
-                // stdin ended during the attach (eof deferred it): over now
-                if self.stdin_done {
-                    return Some(Exit::Done);
-                }
-            }
+            Ev::Attached(Err(e)) => return self.unreachable_or_end(e.to_string()),
             Ev::Retry => {
                 if matches!(self.state, State::Unreachable(_)) {
                     self.attach();
@@ -572,7 +568,15 @@ impl Relay {
         }
     }
 
-    fn attached(&mut self, a: Attached) {
+    fn attached(&mut self, a: Attached) -> Option<Exit> {
+        if a.new_session && self.records.lost() {
+            // a new session can't be given back a record that wasn't kept:
+            // the connection is dropped unused
+            drop(a);
+            return self.refuse_session(
+                "ch-shim: the runtime restarted, and this session holds a tightening that couldn't be kept for replay; it can't go on",
+            );
+        }
         self.generation += 1;
         self.retries = 0;
         self.to_runtime = a.welcome.to_runtime;
@@ -580,7 +584,7 @@ impl Relay {
         self.resume = Some(a.welcome.resume_token.clone());
         let read_half = match a.conn.try_clone_conn() {
             Ok(r) => r,
-            Err(e) => return self.unreachable(format!("the connection could not be shared ({e})")),
+            Err(e) => return self.unreachable_or_end(format!("the connection could not be shared ({e})")),
         };
         let (tx, generation) = (self.tx.clone(), self.generation);
         let shared = Shared {
@@ -616,8 +620,9 @@ impl Relay {
             let frame = self.records.replay_frame();
             self.control(&frame);
         }
-        self.state = if matches!(self.state, State::Closing(_)) { return } else { State::Unsettled };
+        self.state = if matches!(self.state, State::Closing(_)) { return None } else { State::Unsettled };
         self.conditions(None);
+        None
     }
 
     /// Asks for a run of the conditions child: one runs at a time, at most
@@ -678,8 +683,12 @@ impl Relay {
                 // the entry's bytes as the runtime sent them, never
                 // re-serialized: replay hands them back exactly
                 type Fields = std::collections::BTreeMap<String, Box<serde_json::value::RawValue>>;
-                if let Some(entry) = serde_json::from_slice::<Fields>(raw).ok().and_then(|mut f| f.remove("entry")) {
-                    self.records.record(entry);
+                match serde_json::from_slice::<Fields>(raw).ok().and_then(|mut f| f.remove("entry")) {
+                    Some(entry) => {
+                        self.records.record(entry);
+                    }
+                    // a tightening that can't be kept for replay: lost
+                    None => self.records.lose(),
                 }
             }
             "forget" => self.records.forget(),
@@ -693,6 +702,13 @@ impl Relay {
                     .filter(|c| !c.is_control())
                     .take(64)
                     .collect();
+                // never looser: a session holding records refuses, as on a
+                // failed.json; with none it runs its own, as before
+                if self.records.holds_any() {
+                    return self.refuse_session(&format!(
+                        "ch-shim: this session can't share the runtime ({reason}), and it holds tightenings a runtime of its own wouldn't have; it can't go on"
+                    ));
+                }
                 return Some(self.hand_over(
                     format!("ch-shim: this session can't share the runtime ({reason}); it runs its own"),
                     None,
@@ -786,6 +802,18 @@ impl Relay {
         for a in answers {
             self.say(&a);
         }
+        // stdin ended during an attach (eof deferred it until the attach
+        // decided, and it found a runtime): that connection is gone before
+        // it settled, so nothing more can reach a runtime; the held requests
+        // say they didn't run, and the shim ends, not reattaching for ever (L1)
+        if self.stdin_done {
+            for line in self.held.take() {
+                if let Some((ids, batch)) = Self::ids_of(&message::classify(&line)) {
+                    self.answer_each(&ids, batch, |id| answer::crash(id, false));
+                }
+            }
+            return Some(Exit::Done);
+        }
         if let Some(why) = self.give_up.take() {
             // unreachable: the held requests are answered, and the retry
             // schedule (not every deadline) decides when to try again
@@ -811,6 +839,13 @@ impl Relay {
             });
         }
         None
+    }
+
+    /// Unreachable; and if stdin ended during the attach (eof deferred it),
+    /// the end now.
+    fn unreachable_or_end(&mut self, why: String) -> Option<Exit> {
+        self.unreachable(why);
+        if self.stdin_done { Some(Exit::Done) } else { None }
     }
 
     fn unreachable(&mut self, why: String) {
@@ -856,16 +891,8 @@ impl Relay {
     /// takes no replay, so it refuses; otherwise it runs its own, replaying
     /// its initialize first if it was live.
     fn shared_failed(&mut self, r: crate::failed::Reason) -> Option<Exit> {
-        if !self.records.is_empty() {
-            let _ = writeln!(io::stderr(), "{}", crate::failed::refusal_line(r));
-            self.state = State::Refused;
-            for line in self.held.take() {
-                self.refuse_line(&line);
-            }
-            if self.stdin_done {
-                return Some(Exit::Refused);
-            }
-            return None;
+        if self.records.holds_any() {
+            return self.refuse_session(&crate::failed::refusal_line(r));
         }
         let replay = if self.initialize.is_some() {
             let built = self.next_replay();
@@ -880,6 +907,30 @@ impl Relay {
             None
         };
         Some(self.hand_over(crate::failed::startup_line(r), replay))
+    }
+
+    /// The session can't go on (never looser): stderr says why; whatever is
+    /// in flight on a live connection is crash-answered and the connection
+    /// closed (a new generation, so its reader's events are ignored); each
+    /// held and later request is answered SESSION_CANT_FALL_BACK; at stdin's
+    /// end the shim exits 1.
+    fn refuse_session(&mut self, why: &str) -> Option<Exit> {
+        let _ = writeln!(io::stderr(), "{why}");
+        if self.writer.is_some() {
+            self.close_and_crash_answer();
+            if let Some(w) = self.writer.take() {
+                let _ = w.shutdown();
+            }
+        }
+        self.generation += 1;
+        self.state = State::Refused;
+        for line in self.held.take() {
+            self.refuse_line(&line);
+        }
+        if self.stdin_done {
+            return Some(Exit::Refused);
+        }
+        None
     }
 
     /// One line of a refused session: each request (a batch's each) answered
@@ -898,7 +949,7 @@ impl Relay {
         // a session holding records, mid-reattach: what the attach finds
         // decides (a failed.json means the refusal, its answers and a
         // non-zero exit), so nothing ends before it does
-        if self.writer.is_none() && self.state == State::Attaching && !self.records.is_empty() {
+        if self.writer.is_none() && self.state == State::Attaching && self.records.holds_any() {
             return None;
         }
         if self.writer.is_none() {
@@ -978,10 +1029,10 @@ const REPLAY_LOOK_BYTES: usize = 1 << 20;
 /// One line of `r` to `out` under its lock, so whole lines never interleave
 /// with the shim's own answers, streamed as it comes; `start` is the part
 /// already read. Ok(false) at EOF.
-fn relay_line<R: io::BufRead>(r: &mut R, out: &Out, start: &[u8]) -> io::Result<bool> {
+fn relay_line<R: io::BufRead>(r: &mut R, out: &Out, start: &[u8], p: &Progress) -> io::Result<bool> {
     let mut held = out.lock();
     if !start.is_empty() {
-        held.raw(start)?;
+        p.wrote(|| held.raw(start), start.len())?;
         if start.ends_with(b"\n") {
             return Ok(true);
         }
@@ -995,11 +1046,67 @@ fn relay_line<R: io::BufRead>(r: &mut R, out: &Out, start: &[u8]) -> io::Result<
             Some(i) => (i + 1, true),
             None => (buf.len(), false),
         };
-        held.raw(&buf[..take])?;
+        p.wrote(|| held.raw(&buf[..take]), take)?;
         r.consume(take);
         if done {
             return Ok(true);
         }
+    }
+}
+
+/// The pump's progress: bytes read from the runtime's output and written to
+/// the client, and whether a write to the client is under way (a slow client
+/// holds the pump there, with nothing read meanwhile).
+#[derive(Default)]
+struct Progress {
+    moved: AtomicU64,
+    writing: AtomicBool,
+}
+
+impl Progress {
+    fn wrote(&self, write: impl FnOnce() -> io::Result<()>, n: usize) -> io::Result<()> {
+        self.writing.store(true, Ordering::Relaxed);
+        let r = write();
+        self.writing.store(false, Ordering::Relaxed);
+        self.moved.fetch_add(n as u64, Ordering::Relaxed);
+        r
+    }
+}
+
+/// A reader that counts the bytes read through it into the pump's progress.
+struct Counted<R> {
+    inner: R,
+    progress: Arc<Progress>,
+}
+
+impl<R: io::Read> io::Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.progress.moved.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+/// Waits for the pump to end (`done`) while it makes progress (bytes moved,
+/// or a write to the client under way): until `idle` passes with neither, or
+/// `max` in all.
+fn drain(done: &Receiver<()>, p: &Progress, idle: Duration, max: Duration) {
+    let until = Instant::now() + max;
+    let mut seen = p.moved.load(Ordering::Relaxed);
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        match done.recv_timeout(idle.min(left)) {
+            Err(RecvTimeoutError::Timeout) => {}
+            _ => return,
+        }
+        let now = p.moved.load(Ordering::Relaxed);
+        if now == seen && !p.writing.load(Ordering::Relaxed) {
+            return;
+        }
+        seen = now;
     }
 }
 
@@ -1062,8 +1169,11 @@ pub fn own_runtime_to(
     let pumped = replay.map(|(_, id)| {
         let stdout = child.stdout.take().expect("piped");
         let (done_tx, done_rx) = mpsc::channel::<()>();
+        let progress = Arc::new(Progress::default());
+        let counted = Counted { inner: stdout, progress: progress.clone() };
+        let p = progress.clone();
         thread::spawn(move || {
-            let mut r = io::BufReader::with_capacity(64 * 1024, stdout);
+            let mut r = io::BufReader::with_capacity(64 * 1024, counted);
             // look for the replayed initialize's answer, which is dropped;
             // each line looked at is held only up to REPLAY_LOOK_BYTES
             for _ in 0..REPLAY_LOOK_LINES {
@@ -1079,21 +1189,21 @@ pub fn own_runtime_to(
                 if is_it {
                     break;
                 }
-                if !matches!(relay_line(&mut r, &out, &start), Ok(true)) {
+                if !matches!(relay_line(&mut r, &out, &start, &p), Ok(true)) {
                     let _ = done_tx.send(());
                     return;
                 }
             }
-            while let Ok(true) = relay_line(&mut r, &out, &[]) {}
+            while let Ok(true) = relay_line(&mut r, &out, &[], &p) {}
             let _ = done_tx.send(());
         });
-        done_rx
+        (done_rx, progress)
     });
     let code = child.wait()?.code().unwrap_or(1);
-    // a process the runtime started may hold its stdout: waited for at most
-    // PUMP_DRAIN, then the shim exits with the runtime's code regardless
-    if let Some(done) = pumped {
-        let _ = done.recv_timeout(PUMP_DRAIN);
+    // a process the runtime started may hold its stdout: waited for while
+    // its output keeps coming, then the shim exits with the runtime's code
+    if let Some((done, progress)) = pumped {
+        drain(&done, &progress, PUMP_DRAIN, PUMP_MAX);
     }
     Ok(code)
 }
@@ -1492,6 +1602,41 @@ mod tests {
         until_op(&mut s3, "bye");
         drop(s3);
         done.join().unwrap();
+    }
+
+    #[test]
+    fn a_new_session_after_a_record_too_big_to_keep_refuses_rather_than_replay_less() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        let big = format!(r#"{{"op":"record","entry":"{}"}}"#, "x".repeat(crate::records::MAX_BYTES));
+        frame::write_frame(&mut s, Kind::Control, big.as_bytes(), BIG).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        assert_eq!(refuse_resume(&mut s2).as_deref(), Some("rt1"));
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        assert_eq!(welcome(&mut s3, "rt3"), None, "a new session: no resume");
+        // no replay of less than the runtime was told: the connection ends
+        let mut ops = Vec::new();
+        while let Ok((_, p)) = frame::read_frame(&mut s3, BIG) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&p) {
+                ops.push(v["op"].as_str().unwrap_or("").to_string());
+            }
+        }
+        assert!(!ops.iter().any(|o| o == "replay"), "no partial replay: {ops:?}");
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"a\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
+        assert_eq!(sink.lines(), [want]);
     }
 
     #[test]
@@ -2209,6 +2354,58 @@ mod tests {
     }
 
     #[test]
+    fn the_drain_waits_while_a_write_to_a_slow_client_is_under_way_and_no_longer_than_its_cap() {
+        let (_tx, done) = mpsc::channel::<()>();
+        let p = Arc::new(Progress::default());
+        p.writing.store(true, Ordering::Relaxed);
+        let q = p.clone();
+        let t = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(800));
+            q.writing.store(false, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        drain(&done, &p, Duration::from_millis(200), Duration::from_secs(5));
+        let took = started.elapsed();
+        t.join().unwrap();
+        assert!(took >= Duration::from_millis(800), "waited for the write: {took:?}");
+        assert!(took < Duration::from_millis(1500), "then the idle wait only: {took:?}");
+        p.writing.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        drain(&done, &p, Duration::from_millis(100), Duration::from_millis(600));
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(600) && took < Duration::from_millis(1000), "the cap: {took:?}");
+    }
+
+    // L2: output still arriving after the runtime exits is waited for while
+    // it keeps coming (here 6 lines, 600 ms apart: 3.6 s, past PUMP_DRAIN)
+    #[test]
+    fn output_still_trickling_after_the_runtime_exits_is_all_relayed() {
+        let (home, _sock) = home();
+        let tick = "let i = 0; const t = setInterval(() => { process.stdout.write(JSON.stringify({jsonrpc: '2.0', method: 'tick', params: {i}}) + '\\n'); if (++i === 6) clearInterval(t); }, 600);";
+        let js = format!(
+            "require('child_process').spawn(process.execPath, ['-e', {}], {{stdio: ['ignore', 'inherit', 'ignore']}}); setTimeout(() => process.exit(0), 300);",
+            serde_json::to_string(tick).unwrap()
+        );
+        if !echo_runtime(&home, &js) {
+            return eprintln!("no node on PATH: skipped");
+        }
+        let sink = Sink::default();
+        let init = br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","method":"initialize"}"#.to_vec();
+        let code = own_runtime_to(
+            &home,
+            &[],
+            vec![],
+            std::iter::empty(),
+            Some((init, "ch-shim-replay-1".into())),
+            Out::new(Box::new(sink.clone())),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        let ticks = sink.lines().iter().filter(|l| l.contains("\"tick\"")).count();
+        assert_eq!(ticks, 6, "every line the runtime's output carried: {:?}", sink.lines());
+    }
+
+    #[test]
     fn a_huge_line_ahead_of_the_replayed_answer_passes_whole_and_the_answer_is_still_dropped() {
         let (home, _sock) = home();
         // a 3 MiB notification first, then the answers
@@ -2265,6 +2462,119 @@ mod tests {
         let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
         let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":null");
         assert_eq!(sink.lines(), [want]);
+    }
+
+    // A1 (never looser): mid-session, the runtime's own-runtime op is the
+    // same fallback as failed.json's, so a session holding records refuses
+    fn own_runtime_mid_session(record: &str) -> (Exit, Vec<String>) {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, record.as_bytes(), BIG).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"own-runtime","reason":"token"}"#, BIG).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"a\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in);
+        let exit = done.join().unwrap();
+        drop(s);
+        (exit, sink.lines())
+    }
+
+    #[test]
+    fn own_runtime_mid_session_with_a_record_refuses_rather_than_hand_over() {
+        let (exit, lines) = own_runtime_mid_session(r#"{"op":"record","entry":{"tighten":"x"}}"#);
+        assert!(matches!(exit, Exit::Refused), "a session holding records must not move to a runtime without them");
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
+        assert_eq!(lines, [want]);
+    }
+
+    #[test]
+    fn own_runtime_mid_session_after_a_record_too_big_to_keep_refuses_too() {
+        // L3: the record wasn't kept, but the tightening it carried exists
+        let big = format!(r#"{{"op":"record","entry":"{}"}}"#, "x".repeat(crate::records::MAX_BYTES));
+        let (exit, lines) = own_runtime_mid_session(&big);
+        assert!(matches!(exit, Exit::Refused), "a dropped record still counts");
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
+        assert_eq!(lines, [want]);
+    }
+
+    #[test]
+    fn own_runtime_mid_session_after_forget_hands_over_as_before() {
+        let (exit, _) = own_runtime_mid_session(r#"{"op":"forget"}"#);
+        assert!(matches!(exit, Exit::OwnRuntime { .. }), "no records: the hand-over, as now");
+    }
+
+    #[test]
+    fn own_runtime_mid_session_after_a_record_that_cant_be_read_refuses_too() {
+        // a record frame without an entry: its tightening is lost all the same
+        let (exit, _) = own_runtime_mid_session(r#"{"op":"record","entri":{"tighten":"x"}}"#);
+        assert!(matches!(exit, Exit::Refused));
+    }
+
+    // An EOF deferred during the reattach of a session with records, then an
+    // attach that succeeds: the end follows what the runtime does
+    type Deferred = (Exit, Vec<String>, Vec<(Option<u64>, Vec<u8>)>, Duration);
+
+    fn eof_deferred_then_attached(settle: bool) -> Deferred {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { settle: Duration::from_millis(500), ..Timing::default() };
+        let (mut client_in, sink, done) = start_with(home.clone(), timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"tighten":"x"}}"#, BIG).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(s); // lost: the backoff waits before the reattach
+        thread::sleep(Duration::from_millis(100));
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"a\"}\n").unwrap();
+        drop(client_in); // EOF inside the backoff: deferred until the attach decides
+        let (mut s2, _) = listener.accept().unwrap();
+        welcome(&mut s2, "rt2");
+        let started = Instant::now();
+        let mut seen = Vec::new();
+        if settle {
+            until_op(&mut s2, "client");
+            settled(&mut s2);
+            seen = until_op(&mut s2, "bye");
+        } else {
+            // never settled: the connection is closed at the settle deadline
+            while frame::read_frame(&mut s2, BIG).is_ok() {}
+        }
+        let exit = done.join().unwrap();
+        let took = started.elapsed();
+        drop(s2);
+        (exit, sink.lines(), seen, took)
+    }
+
+    // L1: it ends at the settle deadline, not reattaching for ever
+    #[test]
+    fn eof_deferred_then_an_attach_that_never_settles_ends_at_the_settle_deadline() {
+        let (exit, lines, _, took) = eof_deferred_then_attached(false);
+        assert!(matches!(exit, Exit::Done));
+        assert!(took < Duration::from_secs(10), "ended at the deadline, took {took:?}");
+        assert_eq!(lines.len(), 1, "the held request is answered once: {lines:?}");
+        assert!(lines[0].contains("\"id\":4"));
+    }
+
+    // and a runtime that does settle still gets the held request
+    #[test]
+    fn eof_deferred_then_an_attach_that_settles_still_forwards_the_held_request() {
+        let (exit, _, seen, _) = eof_deferred_then_attached(true);
+        assert!(matches!(exit, Exit::Done), "an ordinary end: answered, then bye");
+        assert!(
+            seen.iter().any(|(_, body)| body.windows(6).any(|w| w == b"\"id\":4")),
+            "id 4 reached the runtime before bye: {seen:?}"
+        );
     }
 
     #[test]
