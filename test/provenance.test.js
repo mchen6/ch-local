@@ -172,3 +172,18 @@ test('a pin\'s tag is exactly its workflow\'s prefix and its version: v for publ
   const shim = att(root.provenance(NAME, V, sha512Hex, shimPin, at), root.publish(NAME, V, sha512Hex, at));
   assert.strictEqual(codeOf(() => verify(shim, {pin: shimPin})), 'passed');
 });
+
+test('start, upgrade and the CLI load without the Sigstore libraries: they are loaded only when a verification runs', () => {
+  const {spawnSync} = require('node:child_process');
+  const root = require('node:path').join(__dirname, '..');
+  const script = [
+    "const Module = require('node:module');",
+    'const orig = Module._resolveFilename;',
+    "Module._resolveFilename = function (req, ...a) { if (req.startsWith('@sigstore/')) throw Object.assign(new Error('no ' + req), {code: 'MODULE_NOT_FOUND'}); return orig.call(this, req, ...a); };",
+    `for (const f of ['lib/start.js', 'lib/upgrade.js', 'lib/auto-apply.js', 'lib/install.js', 'bin/ch-local.js']) require(require('node:path').join(${JSON.stringify(root)}, f));`,
+    "process.stdout.write('loaded');"
+  ].join('\n');
+  const r = spawnSync(process.execPath, ['-e', script], {encoding: 'utf8', timeout: 60000});
+  assert.strictEqual(r.stdout, 'loaded', r.stderr);
+});
+
