@@ -50,7 +50,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   const done = start({passThrough}, f);
   await until(() => end != null);
   const runDir = () => path.join(home, 'run', fs.readdirSync(path.join(home, 'run'))[0]);
-  return {home, r, f, requests, cmd, done, args: () => spawnedArgs, end: () => end(0), runDir,
+  return {home, r, f, requests, cmd, done, args: () => spawnedArgs, end: () => end(0), runDir, ask: (m) => listener(m),
     history: () => (fs.existsSync(path.join(home, 'history.jsonl')) ? fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [])};
 }
 
@@ -376,4 +376,16 @@ test('never silent: a runtime whose control request fails does not end start; wh
     s.end();
     await s.done;
   }
+});
+
+test('start answers the runtime\'s may-elicit (countinghouse part 3 P2, Task 4): from the client\'s conditions, by its r-id', async () => {
+  const s = await running({answer: (m) => (m.type === undefined ? null : {ok: true})});
+  s.ask({id: 'r1', type: 'may-elicit', client: {name: 'claude-code', version: '2.1.323'}});
+  s.ask({id: 'r2', type: 'may-elicit', client: {name: 'other', version: '1.0.0'}});
+  await until(() => s.requests.filter((m) => /^r/.test(String(m.id))).length === 2);
+  const replies = s.requests.filter((m) => /^r/.test(String(m.id)));
+  // this start's env is no interactive Claude Code session's
+  assert.deepStrictEqual(replies, [{id: 'r1', ok: true, mayElicit: false, why: 'not an interactive session'}, {id: 'r2', ok: true, mayElicit: false, why: 'no conditions known'}]);
+  s.end();
+  await s.done;
 });
