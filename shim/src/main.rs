@@ -45,7 +45,10 @@ fn main() -> ExitCode {
         return own(&home, &rest, Vec::new(), stdin_lines());
     }
     let client_env = std::env::vars_os().collect();
-    let relay = Relay::new(Setup { home: home.clone(), rest: Vec::new(), client_env, parent }, Out::stdout());
+    let relay = Relay::new(
+        Setup { home: home.clone(), rest: Vec::new(), client_env, parent, timing: Default::default() },
+        Out::stdout(),
+    );
     match relay.run(io::stdin()) {
         Exit::Done => ExitCode::SUCCESS,
         Exit::OwnRuntime { reason, held, rest: lines } => {

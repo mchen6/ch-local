@@ -45,6 +45,23 @@ pub struct Setup {
     pub client_env: Vec<(OsString, OsString)>,
     /// The client's pid, read once at startup.
     pub parent: u32,
+    pub timing: Timing,
+}
+
+/// How long an attach may take, and the unit of the background retries'
+/// backoff (5, 10, 30, 30 units): the spec's 20 s and 1 s; shorter in tests.
+#[derive(Clone, Copy, Debug)]
+pub struct Timing {
+    pub attach: Duration,
+    pub retry_unit: Duration,
+    /// After stdin's EOF, how long answers are still relayed.
+    pub closing: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Timing {
+        Timing { attach: attach::BUDGET, retry_unit: Duration::from_secs(1), closing: CLOSING_GRACE }
+    }
 }
 
 enum Ev {
@@ -192,9 +209,10 @@ impl Relay {
 
     fn attach(&mut self) {
         self.state = if matches!(self.state, State::Closing(_)) { return } else { State::Attaching };
-        let (tx, home, resume) = (self.tx.clone(), self.setup.home.clone(), self.resume.clone());
+        let (tx, home, resume, budget) =
+            (self.tx.clone(), self.setup.home.clone(), self.resume.clone(), self.setup.timing.attach);
         thread::spawn(move || {
-            let _ = tx.send(Ev::Attached(attach::attach(&home, resume.as_deref())));
+            let _ = tx.send(Ev::Attached(attach::attach_within(&home, resume.as_deref(), Instant::now() + budget)));
         });
     }
 
@@ -530,11 +548,11 @@ impl Relay {
             self.answer_unreachable(&line, &why);
         }
         self.state = State::Unreachable(why);
-        let wait = RETRIES[self.retries.min(RETRIES.len() - 1)];
+        let wait = self.setup.timing.retry_unit * RETRIES[self.retries.min(RETRIES.len() - 1)] as u32;
         self.retries += 1;
         let tx = self.tx.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_secs(wait));
+            thread::sleep(wait);
             let _ = tx.send(Ev::Retry);
         });
     }
@@ -559,7 +577,7 @@ impl Relay {
             }
         }
         self.control(br#"{"op":"bye"}"#);
-        self.state = State::Closing(Instant::now() + CLOSING_GRACE);
+        self.state = State::Closing(Instant::now() + self.setup.timing.closing);
         if self.inflight.lock().expect("in-flight lock").is_empty() {
             return Some(self.finish());
         }
@@ -729,8 +747,10 @@ mod tests {
         let listener = UnixListener::bind(&sock).unwrap();
         let (mut client_in, input) = UnixStream::pair().unwrap();
         let sink = Sink::default();
-        let relay =
-            Relay::new(Setup { home, rest: vec![], client_env: vec![], parent: 1 }, Out::new(Box::new(sink.clone())));
+        let relay = Relay::new(
+            Setup { home, rest: vec![], client_env: vec![], parent: 1, timing: Timing::default() },
+            Out::new(Box::new(sink.clone())),
+        );
         let done = thread::spawn(move || relay.run(input));
         client_in
             .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"n\"}\n")
@@ -764,8 +784,10 @@ mod tests {
         let listener = UnixListener::bind(&sock).unwrap();
         let (mut client_in, input) = UnixStream::pair().unwrap();
         let sink = Sink::default();
-        let relay =
-            Relay::new(Setup { home, rest: vec![], client_env: vec![], parent: 1 }, Out::new(Box::new(sink.clone())));
+        let relay = Relay::new(
+            Setup { home, rest: vec![], client_env: vec![], parent: 1, timing: Timing::default() },
+            Out::new(Box::new(sink.clone())),
+        );
         let done = thread::spawn(move || relay.run(input));
         let (mut s, _) = listener.accept().unwrap();
         welcome(&mut s, "rt1");
@@ -803,8 +825,10 @@ mod tests {
     fn start(home: Home) -> (UnixStream, Sink, thread::JoinHandle<Exit>) {
         let (client_in, input) = UnixStream::pair().unwrap();
         let sink = Sink::default();
-        let relay =
-            Relay::new(Setup { home, rest: vec![], client_env: vec![], parent: 1 }, Out::new(Box::new(sink.clone())));
+        let relay = Relay::new(
+            Setup { home, rest: vec![], client_env: vec![], parent: 1, timing: Timing::default() },
+            Out::new(Box::new(sink.clone())),
+        );
         (client_in, sink, thread::spawn(move || relay.run(input)))
     }
 
@@ -929,5 +953,212 @@ mod tests {
             ],
             "the replay's answer is dropped; the client hears list_changed"
         );
+    }
+
+    /// AUTH answered with REFUSED RESUME_REFUSED, after a proven PROVE.
+    fn refuse_resume(s: &mut UnixStream) -> Option<String> {
+        let sk = secret::parse(format!("{}\n", "07".repeat(32)).as_bytes()).unwrap();
+        let (_, hello) = frame::read_frame(s, BIG).unwrap();
+        let hello: Value = serde_json::from_slice(&hello).unwrap();
+        let nc: [u8; 32] = B64.decode(hello["nc"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let ns = [9u8; 32];
+        let prove =
+            format!("{{\"ns\":\"{}\",\"ms\":\"{}\"}}", B64.encode(ns), B64.encode(mac::server_proof(&sk, 1, &nc, &ns)));
+        frame::write_frame(s, Kind::Prove, prove.as_bytes(), BIG).unwrap();
+        let (_, auth) = frame::read_frame(s, BIG).unwrap();
+        let auth: Value = serde_json::from_slice(&auth).unwrap();
+        frame::write_frame(s, Kind::Refused, br#"{"code":"RESUME_REFUSED","message":"m"}"#, BIG).unwrap();
+        auth.get("resume").and_then(Value::as_str).map(String::from)
+    }
+
+    #[test]
+    fn a_refused_resume_opens_a_new_session_whose_first_frame_replays_the_records() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(
+            &mut s,
+            Kind::Control,
+            br#"{"op":"record","entry":{"kind":"value","name":"maxOutputBytes","value":1048576}}"#,
+            BIG,
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        assert_eq!(refuse_resume(&mut s2).as_deref(), Some("rt1"));
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        assert_eq!(welcome(&mut s3, "rt3"), None, "a new session: no resume");
+        let first = control_payload(&mut s3);
+        assert_eq!(first["op"], "replay");
+        assert_eq!(
+            first["entries"],
+            serde_json::json!([{"kind": "value", "name": "maxOutputBytes", "value": 1048576}])
+        );
+        assert_eq!(control_payload(&mut s3)["op"], "client", "then the client frame");
+        settled(&mut s3);
+        drop(client_in);
+        until_op(&mut s3, "bye");
+        drop(s3);
+        done.join().unwrap();
+    }
+
+    #[test]
+    fn unreachable_answers_each_request_then_a_background_retry_attaches() {
+        let (home, sock) = home();
+        // no socket yet; the stand-in daemon (the conditions script) starts
+        // nothing, so the attach gives up at its (short) budget
+        let (client_in, input) = UnixStream::pair().unwrap();
+        let sink = Sink::default();
+        let timing = Timing {
+            attach: Duration::from_millis(400),
+            retry_unit: Duration::from_millis(100),
+            closing: CLOSING_GRACE,
+        };
+        let relay = Relay::new(
+            Setup { home, rest: vec![], client_env: vec![], parent: 1, timing },
+            Out::new(Box::new(sink.clone())),
+        );
+        let mut client_in = client_in;
+        let done = thread::spawn(move || relay.run(input));
+        thread::sleep(Duration::from_millis(700));
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let answered: Value = serde_json::from_str(&sink.lines()[0]).unwrap();
+        assert_eq!((answered["id"].as_u64(), answered["error"]["code"].as_i64()), (Some(1), Some(-32603)));
+        assert!(
+            answered["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("countinghouse could not reach its shared runtime (")
+        );
+        // the runtime appears; the retry (500 ms on) attaches
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"b\"}\n").unwrap();
+        let (seq, body) = read_m(&mut s);
+        assert_eq!((seq, body), (Some(1), br#"{"jsonrpc":"2.0","id":2,"method":"b"}"#.to_vec()));
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+    }
+
+    fn start_with(home: Home, timing: Timing) -> (UnixStream, Sink, thread::JoinHandle<Exit>) {
+        let (client_in, input) = UnixStream::pair().unwrap();
+        let sink = Sink::default();
+        let relay = Relay::new(
+            Setup { home, rest: vec![], client_env: vec![], parent: 1, timing },
+            Out::new(Box::new(sink.clone())),
+        );
+        (client_in, sink, thread::spawn(move || relay.run(input)))
+    }
+
+    #[test]
+    fn eof_with_a_line_held_before_settled_says_it_did_not_run() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"a\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+        let a: Value = serde_json::from_str(&sink.lines()[0]).unwrap();
+        assert_eq!((a["id"].as_u64(), a["error"]["data"]["mayHaveRun"].as_bool()), (Some(4), Some(false)));
+    }
+
+    #[test]
+    fn own_runtime_while_live_crash_answers_what_was_in_flight_and_writes_no_late_answer() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"a\"}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"own-runtime","reason":"token"}"#, BIG).unwrap();
+        assert!(matches!(done.join().unwrap(), Exit::OwnRuntime { .. }));
+        // the runtime answers late, on the old connection: never written
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":3,"result":{}}"#);
+        thread::sleep(Duration::from_millis(200));
+        let lines = sink.lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let a: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!((a["id"].as_u64(), a["error"]["data"]["mayHaveRun"].as_bool()), (Some(3), Some(true)));
+        drop(client_in);
+    }
+
+    #[test]
+    fn a_held_line_larger_than_the_welcome_allows_is_answered_with_its_id_and_never_forwarded() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        // before WELCOME, under the default 8 MiB bound
+        let big = format!("{{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"a\",\"params\":\"{}\"}}\n", "x".repeat(70_000));
+        client_in.write_all(big.as_bytes()).unwrap();
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1"); // maxToRuntime 65536
+        until_op(&mut s, "client");
+        settled(&mut s);
+        // request 9's answer is written while settled is handled: once it is
+        // there, the session is Live, and request 10 isn't held behind the
+        // big line (held, the two would be over WELCOME's byte bound, and 10
+        // would be refused, correctly, as never sent)
+        for _ in 0..200 {
+            if !sink.lines().is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"b\"}\n").unwrap();
+        let (seq, body) = read_m(&mut s);
+        assert_eq!(body, br#"{"jsonrpc":"2.0","id":10,"method":"b"}"#.to_vec(), "the big line was never sent");
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":10,"result":{}}"#);
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+        let lines = sink.lines();
+        let a: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!((a["id"].as_u64(), a["error"]["code"].as_i64()), (Some(9), Some(-32600)));
+        assert_eq!(lines.len(), 2, "one answer each, no crash answer for 9: {lines:?}");
+    }
+
+    #[test]
+    fn after_the_closing_grace_a_crash_answer_is_final_and_a_late_reply_is_discarded() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { closing: Duration::from_millis(200), ..Timing::default() };
+        let (mut client_in, sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"a\"}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        assert!(matches!(done.join().unwrap(), Exit::Done), "ended at the grace");
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":5,"result":{}}"#);
+        thread::sleep(Duration::from_millis(200));
+        let lines = sink.lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("RUNTIME_RESTARTED"));
     }
 }
