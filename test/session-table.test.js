@@ -12,7 +12,7 @@ const HASH = 'f'.repeat(64);
 const STATE = {overrides: [{name: 'requestTimeout', value: 120000, loosening: true, over: 30000, version: null}], locks: ['pack'], formsLeft: 2};
 
 test('a fresh table restores empty', () => {
-  assert.deepStrictEqual(createSessionTable().restore(), {type: 'restore', sessions: [], declines: []});
+  assert.deepStrictEqual(createSessionTable().restore(), {type: 'restore', sessions: [], declines: [], reset: []});
 });
 
 test('a session is restored once it has a resume hash: its latest hash and state; its end drops it', () => {
@@ -81,5 +81,35 @@ test('clear() empties the table (a restore the runtime refused, #34 review)', ()
   t.told({type: 'session-resume', session: ID(1), hash: HASH});
   t.told({type: 'decline', kind: 'pack', at: Date.now()});
   t.clear();
-  assert.deepStrictEqual(t.restore(), {type: 'restore', sessions: [], declines: []});
+  assert.deepStrictEqual(t.restore(), {type: 'restore', sessions: [], declines: [], reset: []});
+});
+
+test('the shared vectors\' restoreRows (#270): each accepted row is kept as told, each refused one never (one shape with countinghouse\'s restore.js and B2)', () => {
+  const V = JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'shim', 'tests', 'vectors', 'contract-2.json'), 'utf8')).restoreRows;
+  const t = createSessionTable({warn: () => {}});
+  for (const row of V.accepted) {
+    assert.strictEqual(t.told({type: 'session-resume', session: row.session, hash: row.resume}), true);
+    assert.strictEqual(t.told({type: 'session-state', session: row.session, state: row.state}), true, JSON.stringify(row));
+  }
+  assert.deepStrictEqual(t.restore().sessions, V.accepted);
+  // the table is fed by told messages and handoffs, never raw rows: whatever
+  // a refused row's parts are, what it hands a runtime is never that row, and
+  // is always exactly {session, resume, state}
+  for (const c of V.refused) {
+    const u = createSessionTable({warn: () => {}});
+    u.seed({sessions: [c.row], declines: []});
+    for (const out of u.restore().sessions) {
+      assert.deepStrictEqual(Object.keys(out).sort(), ['resume', 'session', 'state'], c.why);
+      assert.notDeepStrictEqual(out, c.row, `${c.why}: never handed on as it was`);
+    }
+  }
+});
+
+test('restore carries reset: the sessions a handoff took loosenings from, once (the Reviewer\'s ruling on #35)', () => {
+  const t = createSessionTable();
+  const state = {overrides: [{name: 'requestTimeout', value: 120000, loosening: true, over: 30000, version: null}], locks: [], formsLeft: 3};
+  t.seed({sessions: [{session: ID(1), resume: HASH, state}, {session: ID(2), resume: HASH.replace(/f$/, 'e'), state: EMPTY_STATE}], declines: []});
+  assert.deepStrictEqual(t.restore().reset, [ID(1)]);
+  assert.deepStrictEqual(t.restore().reset, [], 'told once: the next runtime is not told again');
+  assert.deepStrictEqual(createSessionTable().restore(), {type: 'restore', sessions: [], declines: [], reset: []});
 });

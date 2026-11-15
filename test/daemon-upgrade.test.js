@@ -289,7 +289,7 @@ test('(3) a handoff never restores a loosening: confirmed loosenings and enabled
     const s = scripted(home);
     const state = {overrides: [
       {name: 'requestTimeout', value: 120000, loosening: true, over: 30000, version: null},
-      {name: 'maxOutputBytes', value: 1024, loosening: false, over: null, version: null},
+      {name: 'maxOutputBytes', value: 1048576, loosening: false, over: null, version: null},
       {name: 'pack.extra', value: true, loosening: true, over: null, version: '1.0.0'},
       {name: 'pack.hidden', value: false, loosening: false, over: null, version: '1.0.0'}
     ], locks: ['pack'], formsLeft: 1};
