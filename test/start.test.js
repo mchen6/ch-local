@@ -52,13 +52,14 @@ function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/
   f.killed = [];
   f.exits = [];
   f.signal = null;
-  f.trapSignals = (handler) => { f.signal = handler; return () => { f.signal = null; }; };
+  f.trapSignals = (handler, signals) => { f.signal = handler; f.trapped = signals; return () => { f.signal = null; }; };
   f.exit = (code) => { f.exits.push(code); };
   f.alive = (pid) => pid === 4242 || pid === 7;
   void path;
   // What the runtime would see when it starts: its args, its environment, the
   // config directory's files (by relative path) and the remote credentials.
-  f.spawn = (cmd, args, {env: childEnv} = {}) => {
+  f.spawn = (cmd, args, {env: childEnv, detached} = {}) => {
+    f.detached = detached;
     const dir = args[args.indexOf('--deviceConfigPath') + 1];
     const config = {};
     const walk = (d, rel) => { for (const e of fs.readdirSync(d, {withFileTypes: true})) { const r = rel ? `${rel}/${e.name}` : e.name; if (e.isDirectory()) walk(path.join(d, e.name), r); else config[r] = JSON.parse(fs.readFileSync(path.join(d, e.name), 'utf8')); } };
@@ -71,6 +72,8 @@ function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/
   return f;
 }
 
+// the shared runtime (session mode) is POSIX-only until C4c, the Windows daemon
+const POSIX_ONLY = process.platform === 'win32' && 'shared runtime is POSIX-only until C4c';
 const valueOf = (args, flag) => args[args.indexOf(flag) + 1];
 
 test('start runs the profile: local store, enforce, the one store, no auth file, no usageDir, no port', async () => {
@@ -384,6 +387,9 @@ const filesUnder = (dir) => {
   if (fs.existsSync(dir)) walk(dir);
   return out;
 };
+// a session runtime's environment is the allowlist only (no GITHUB_TOKEN):
+// its token comes from gh, here logged in
+const ghLoggedIn = (f) => { f.exec = async(cmd) => (cmd === 'gh' ? {status: 0, stdout: 'gho_exampleexampleexample\n'} : {status: 0, stdout: ''}); return f; };
 const withExec = (f, exec) => { f.exec = async (cmd, args, opts) => { f.execs.push({cmd, args, opts}); return exec(cmd, args, opts); }; return f; };
 
 test('start asks gh for the GitHub token and gives it to the runtime in its environment only, never in a file or a line', async () => {
@@ -576,4 +582,168 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
   const f = io(home, {platform: 'linux'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
+});
+
+// C4b: ch-local daemon's runtime, start in session mode (countinghouse #236)
+test('start in session mode: framework.js on --sessionSocket, never --stdio, and the same profile otherwise', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = io(home);
+  const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
+  assert.strictEqual(await start({passThrough: [], session: {socket, home}}, ghLoggedIn(f)), 0, f.err);
+  const {args} = f.spawned[0];
+  assert.strictEqual(args[0], path.join(home, 'app', 'node_modules', 'countinghouse', 'framework.js'));
+  assert.strictEqual(valueOf(args, '--sessionSocket'), socket);
+  assert.ok(!args.includes('--stdio') && !args.some((a) => /countinghouse-stdio/.test(a)), 'no stdio');
+  assert.strictEqual(valueOf(args, '--store'), 'local');
+  assert.strictEqual(valueOf(args, '--controlChannel'), 'ipc');
+  assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'));
+});
+
+test('start in session mode refuses a path it would pass that resolves outside the home, and starts nothing', {skip: process.platform === 'win32'}, async () => {
+  const home = installedHome();
+  const outside = tmp('ch-local-outside-');
+  // the app's countinghouse is a link out of the home
+  const at = path.join(home, 'app', 'node_modules', 'countinghouse');
+  fs.renameSync(at, path.join(outside, 'countinghouse'));
+  fs.symlinkSync(path.join(outside, 'countinghouse'), at);
+  const f = io(home);
+  const code = await start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home}}, ghLoggedIn(f));
+  assert.notStrictEqual(code, 0);
+  assert.strictEqual(f.spawned.length, 0);
+  assert.match(f.err, /outside the home/);
+});
+
+// C4b's review: the session runtime's home, signals, group and environment
+test('start in session mode takes its home from session.home, not the environment, which holds only the allowlist', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = io(home, {env: {PATH: '/usr/bin', HOME: '/home/dev', NODE_OPTIONS: '--require /tmp/x.js', GITHUB_TOKEN: 'example-shell-token'}});
+  delete f.env.COUNTINGHOUSE_HOME;   // the shim's cleared environment never carries it
+  f.exec = async(cmd) => (cmd === 'gh' ? {status: 0, stdout: 'gho_exampleexampleexample\n'} : {status: 0, stdout: ''});
+  const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
+  assert.strictEqual(await start({passThrough: [], session: {socket, home}}, f), 0, f.err);
+  const {args, env} = f.spawned[0];
+  assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'), 'the home named, not ~/.countinghouse');
+  assert.strictEqual(args[0], path.join(home, 'app', 'node_modules', 'countinghouse', 'framework.js'));
+  // the runtime's environment: the allowlist, and the one token start adds
+  assert.deepStrictEqual(Object.keys(env).sort(), ['COUNTINGHOUSE_GITHUB_TOKEN', 'HOME', 'PATH']);
+  assert.strictEqual(env.COUNTINGHOUSE_GITHUB_TOKEN, 'gho_exampleexampleexample');
+});
+
+test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime in its own process group', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home}}, ghLoggedIn(f)), 0, f.err);
+  assert.deepStrictEqual(f.trapped, ['SIGINT', 'SIGTERM']);
+  assert.strictEqual(f.detached, true);
+  const g = io(installedHome());
+  await start({passThrough: []}, g);
+  assert.strictEqual(g.trapped, undefined, 'a stdio start traps as before');
+  assert.notStrictEqual(g.detached, true);
+});
+
+test('start in session mode: an aborted signal kills the runtime, and the start ends', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = io(home);
+  let finish = null;
+  f.spawn = (cmd, args) => { f.spawned.push({cmd, args}); return {kill: (sig) => { f.killed.push(sig); finish(143); }, exited: new Promise((r) => { finish = r; })}; };
+  const ac = new AbortController();
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, signal: ac.signal}}, ghLoggedIn(f));
+  await new Promise((r) => setTimeout(r, 50));
+  ac.abort();
+  assert.strictEqual(await done, 143);
+  assert.deepStrictEqual(f.killed, ['SIGTERM']);
+});
+
+test('start in session mode passes on the runtime\'s listening message', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = io(home);
+  let deliver = null;
+  f.spawn = (cmd, args) => { f.spawned.push({cmd, args}); return {kill: () => {}, exited: new Promise(() => {}), send: () => {}, onMessage: (fn) => { deliver = fn; }}; };
+  const heard = [];
+  const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
+  start({passThrough: [], session: {socket, home, onListening: (m) => heard.push(m)}}, ghLoggedIn(f));
+  for (let i = 0; i < 50 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
+  deliver({type: 'listening', socket});
+  deliver({type: 'listening', socket, id: 3});   // with an id it is a reply, not this
+  assert.deepStrictEqual(heard, [{type: 'listening', socket}]);
+});
+
+// the shim's own-runtime hand-over (the review of ch-local #29):
+// `start --stdio --own-runtime --home <abs> <pass-through>`
+test('start --home names the home, over COUNTINGHOUSE_HOME; --own-runtime is taken; both before the pass-through', async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  const other = installedHome();
+  const f = io(other);   // COUNTINGHOUSE_HOME names another home
+  assert.strictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home, '--locale', 'en'], f), 0, f.err);
+  const {args} = f.spawned[0];
+  // --home is taken by its real path (macOS: /var is a link to /private/var)
+  assert.strictEqual(valueOf(args, '--storePath'), path.join(fs.realpathSync(home), 'store'), 'the --home given, not COUNTINGHOUSE_HOME');
+  assert.ok(!args.includes('--own-runtime') && !args.includes('--home'), 'neither reaches the runtime');
+  assert.ok(args.includes('--locale'), 'the pass-through still does');
+});
+
+test('start --home must be absolute and an existing directory, and is refused with exit 2 otherwise', async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  for (const bad of [['--home'], ['--home', 'relative/home'], ['--home', path.join(home, 'missing')]]) {
+    const f = io(home);
+    assert.strictEqual(await main(['start', '--stdio', ...bad], f), 2, `${bad.join(' ')}: ${f.err}`);
+    assert.strictEqual(f.spawned.length, 0);
+  }
+});
+
+// the review of #32 (c7c6923): a runtime that ignores SIGTERM, and an abort
+// before the spawn
+test('start in session mode: a runtime that ignores SIGTERM gets SIGKILL after the bound', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = ghLoggedIn(io(home));
+  f.sessionKillMs = 200;
+  let finish = null;
+  f.spawn = (cmd, args) => { f.spawned.push({cmd, args}); return {kill: (sig) => { f.killed.push(sig); if (sig === 'SIGKILL') finish(137); }, exited: new Promise((r) => { finish = r; })}; };
+  const ac = new AbortController();
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, signal: ac.signal}}, f);
+  await new Promise((r) => setTimeout(r, 50));
+  ac.abort();
+  assert.strictEqual(await done, 137);
+  assert.deepStrictEqual(f.killed, ['SIGTERM', 'SIGKILL']);
+});
+
+test('start in session mode: an abort while it waits for the home\'s lock ends the wait, with nothing spawned', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = ghLoggedIn(io(home));
+  // a live holder on this host: the wait would go on
+  const {lockHost} = require('../lib/lock');
+  fs.writeFileSync(path.join(home, 'packs.lock'), JSON.stringify({pid: process.pid, host: lockHost(), at: new Date().toISOString()}) + '\n');
+  const ac = new AbortController();
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, signal: ac.signal}}, f);
+  await new Promise((r) => setTimeout(r, 300));
+  ac.abort();
+  const code = await Promise.race([done, new Promise((r) => setTimeout(() => r('still waiting'), 3000))]);
+  assert.notStrictEqual(code, 'still waiting');
+  assert.notStrictEqual(code, 0);
+  assert.strictEqual(f.spawned.length, 0);
+});
+
+test('start --home must be owned by this user and not group- or world-writable', {skip: process.platform === 'win32'}, async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  fs.chmodSync(home, 0o777);
+  const f = io(home);
+  assert.strictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home], f), 2, f.err);
+  assert.match(f.err, /writable/);
+  assert.strictEqual(f.spawned.length, 0);
+});
+
+test('start\'s own runtime (--home) is given only paths under the home, as session mode is', {skip: process.platform === 'win32'}, async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  const outside = tmp('ch-local-outside-');
+  const at = path.join(home, 'app', 'node_modules', 'countinghouse');
+  fs.renameSync(at, path.join(outside, 'countinghouse'));
+  fs.symlinkSync(path.join(outside, 'countinghouse'), at);
+  const f = io(home);
+  assert.notStrictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home], f), 0);
+  assert.strictEqual(f.spawned.length, 0);
+  assert.match(f.err, /outside the home/);
 });
