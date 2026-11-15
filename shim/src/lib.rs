@@ -7,14 +7,29 @@
 //! that need no I/O; the I/O (the trust checks, the handshake, the relay)
 //! comes next, under its own security review.
 
-#![forbid(unsafe_code)]
+// unsafe is denied everywhere; the two exceptions (reviewer, 2026-11-14)
+// are win_ffi (Windows) and unix_ffi (POSIX), which allow it block by block.
+#![deny(unsafe_code)]
 
 pub mod answer;
+pub mod attach;
+pub mod config;
+pub mod daemon;
+pub mod endpoint;
 pub mod frame;
+pub mod handshake;
 pub mod inflight;
+pub mod lock;
 pub mod mac;
 pub mod message;
 pub mod secret;
+pub mod trust;
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub mod unix_ffi;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod win_ffi;
 
 #[cfg(test)]
 mod conformance;

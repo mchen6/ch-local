@@ -254,3 +254,158 @@ fn the_drain_overflow_answer() {
     let d = &vectors()["drainOverflowAnswer"];
     assert_eq!(answer::crash(b"7", false), d["json"].as_str().unwrap().as_bytes());
 }
+
+/// A connection for the handshake tests: the runtime's frames, given in
+/// advance, are read; what the shim writes is kept.
+struct Scripted {
+    from_runtime: std::io::Cursor<Vec<u8>>,
+    to_runtime: Vec<u8>,
+}
+
+impl std::io::Read for Scripted {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.from_runtime.read(buf)
+    }
+}
+
+impl std::io::Write for Scripted {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.to_runtime.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn scripted(frames: &[Vec<u8>]) -> Scripted {
+    Scripted { from_runtime: std::io::Cursor::new(frames.concat()), to_runtime: Vec::new() }
+}
+
+fn frame_hex(name: &str) -> Vec<u8> {
+    hex(vectors()["handshake"]["frames"][name]["hex"].as_str().unwrap())
+}
+
+fn handshake_inputs() -> (secret::Secret, [u8; 32]) {
+    let h = &vectors()["handshake"];
+    (secret_of(h["secretHex"].as_str().unwrap()), b32(h["ncHex"].as_str().unwrap()))
+}
+
+#[test]
+fn the_handshake_writes_the_vectors_hello_and_auth_and_reads_welcome() {
+    use crate::handshake;
+    let (s, nc) = handshake_inputs();
+    let mut conn = scripted(&[frame_hex("prove"), frame_hex("welcome")]);
+    let w = handshake::attach(&mut conn, &s, nc, None).unwrap();
+    assert_eq!(conn.to_runtime, [frame_hex("hello"), frame_hex("auth")].concat());
+    assert_eq!((w.session.as_str(), w.resume_token.as_str()), ("s_example_session", "rt_example_resume_value"));
+    assert_eq!((w.to_runtime.message, w.to_shim.message), (8_392_704, 537_919_488));
+}
+
+#[test]
+fn a_resume_is_sent_as_the_vector_says() {
+    use crate::handshake;
+    let (s, nc) = handshake_inputs();
+    let mut conn = scripted(&[frame_hex("prove"), frame_hex("welcome")]);
+    handshake::attach(&mut conn, &s, nc, Some("rt_example_resume_value")).unwrap();
+    assert_eq!(conn.to_runtime, [frame_hex("hello"), frame_hex("authResume")].concat());
+}
+
+#[test]
+fn a_prove_whose_ms_is_wrong_ends_it_with_no_auth_sent() {
+    use crate::handshake;
+    let (s, nc) = handshake_inputs();
+    let prove = vectors()["handshake"]["frames"]["prove"]["json"].as_str().unwrap().to_string();
+    let mut p: serde_json::Map<String, Value> = serde_json::from_str(&prove).unwrap();
+    use base64::Engine;
+    let mut ms = base64::engine::general_purpose::STANDARD.decode(p["ms"].as_str().unwrap()).unwrap();
+    ms[0] ^= 0x01;
+    p.insert("ms".into(), Value::String(base64::engine::general_purpose::STANDARD.encode(ms)));
+    let bad = frame::encode(frame::Kind::Prove, serde_json::to_string(&p).unwrap().as_bytes(), CAPS).unwrap();
+    let mut conn = scripted(&[bad, frame_hex("welcome")]);
+    assert!(matches!(handshake::attach(&mut conn, &s, nc, None), Err(handshake::HandshakeError::WrongProof)));
+    assert_eq!(conn.to_runtime, frame_hex("hello"), "nothing after HELLO");
+}
+
+#[test]
+fn a_refused_auth_after_proof_names_its_code() {
+    use crate::handshake::{self, HandshakeError, Refusal};
+    let (s, nc) = handshake_inputs();
+    let mut conn = scripted(&[frame_hex("prove"), frame_hex("refused")]);
+    match handshake::attach(&mut conn, &s, nc, None) {
+        Err(HandshakeError::Refused { refusal: Refusal::BadProof, .. }) => {}
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn every_refused_code_after_proof_maps_to_its_action_and_its_text_is_cleaned() {
+    use crate::handshake::{self, HandshakeError, Refusal};
+    let (s, nc) = handshake_inputs();
+    for (code, want) in [
+        ("BAD_PROOF", Refusal::BadProof),
+        ("PROTOCOL", Refusal::Protocol),
+        ("RESUME_REFUSED", Refusal::ResumeRefused),
+        ("BUSY", Refusal::Busy),
+        ("SHUTTING_DOWN", Refusal::ShuttingDown),
+        ("SOMETHING_NEW", Refusal::Unknown("SOMETHING_NEW".into())),
+    ] {
+        let message = format!("a\\u001b[31mred\\u0007{}", "x".repeat(500));
+        let r = frame::encode(
+            frame::Kind::Refused,
+            format!("{{\"code\":\"{code}\",\"message\":\"{message}\"}}").as_bytes(),
+            CAPS,
+        )
+        .unwrap();
+        let mut conn = scripted(&[frame_hex("prove"), r]);
+        match handshake::attach(&mut conn, &s, nc, None) {
+            Err(HandshakeError::Refused { refusal, message }) => {
+                assert_eq!(refusal, want, "{code}");
+                assert!(!message.chars().any(char::is_control), "{code}: control characters kept");
+                assert!(message.chars().count() <= 200, "{code}: not capped");
+            }
+            other => panic!("{code}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn before_proof_only_protocol_counts_and_nothing_of_its_text_is_kept() {
+    use crate::handshake::{self, HandshakeError};
+    let (s, nc) = handshake_inputs();
+    let protocol =
+        frame::encode(frame::Kind::Refused, br#"{"code":"PROTOCOL","message":"\u001b]0;pwned\u0007"}"#, CAPS).unwrap();
+    let mut conn = scripted(&[protocol]);
+    let e = handshake::attach(&mut conn, &s, nc, None).unwrap_err();
+    assert!(matches!(e, HandshakeError::UnprovenProtocol));
+    assert!(!e.to_string().contains("pwned"));
+    // every other code from an unproven peer is just an unexpected frame
+    for code in ["BAD_PROOF", "RESUME_REFUSED", "BUSY", "SHUTTING_DOWN", "ANYTHING"] {
+        let r =
+            frame::encode(frame::Kind::Refused, format!("{{\"code\":\"{code}\",\"message\":\"m\"}}").as_bytes(), CAPS)
+                .unwrap();
+        let mut conn = scripted(&[r]);
+        assert!(
+            matches!(handshake::attach(&mut conn, &s, nc, None), Err(HandshakeError::Unexpected(frame::Kind::Refused))),
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn an_m_or_c_frame_before_welcome_closes_it() {
+    use crate::handshake::{self, HandshakeError};
+    let (s, nc) = handshake_inputs();
+    let c = frame::encode(frame::Kind::Control, b"{\"op\":\"drain\"}", CAPS).unwrap();
+    let mut conn = scripted(&[frame_hex("prove"), c]);
+    assert!(matches!(
+        handshake::attach(&mut conn, &s, nc, None),
+        Err(HandshakeError::Unexpected(frame::Kind::Control))
+    ));
+    let m = vec![b'M', 0, 0, 0, 2, 0, 0];
+    let mut conn = scripted(&[frame_hex("prove"), m]);
+    assert!(matches!(
+        handshake::attach(&mut conn, &s, nc, None),
+        Err(HandshakeError::Frame(frame::FrameError::OverCap { .. } | frame::FrameError::MessageNotWhole))
+    ));
+}
