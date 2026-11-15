@@ -19,38 +19,39 @@ const home = () => {
 };
 const file = (h) => path.join(h, 'run', 'daemon', 'requests');
 
-test('an upgrade request is one JSON line, appended, at 0600', {skip: process.platform === 'win32'}, () => {
+test('an upgrade request is one JSON line, appended, at 0600, under start.lock', {skip: process.platform === 'win32'}, async () => {
   const h = home();
   try {
-    assert.strictEqual(requestUpgrade(h, {now: () => 1700000000000}), true);
-    assert.strictEqual(requestUpgrade(h, {now: () => 1700000000001}), true);
+    assert.strictEqual(await requestUpgrade(h, {now: () => 1700000000000}), true);
+    assert.strictEqual(await requestUpgrade(h, {now: () => 1700000000001}), true);
+    assert.ok(!fs.existsSync(path.join(h, 'run', 'daemon', 'start.lock')), 'the lock released');
     assert.strictEqual(fs.readFileSync(file(h), 'utf8'), '{"op":"upgrade","at":1700000000000}\n{"op":"upgrade","at":1700000000001}\n');
     assert.strictEqual(fs.statSync(file(h)).mode & 0o777, 0o600);
   } finally { fs.rmSync(h, {recursive: true, force: true}); }
 });
 
-test('no daemon directory, or one that is not private, or a link at the file: nothing is written', {skip: process.platform === 'win32'}, () => {
+test('no daemon directory, or one that is not private, or a link at the file: nothing is written', {skip: process.platform === 'win32'}, async () => {
   const none = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-rq-'));
-  assert.strictEqual(requestUpgrade(none), false);
+  assert.strictEqual(await requestUpgrade(none), false);
   fs.rmSync(none, {recursive: true, force: true});
   const open = home();
   fs.chmodSync(path.join(open, 'run', 'daemon'), 0o755);
-  assert.strictEqual(requestUpgrade(open), false);
+  assert.strictEqual(await requestUpgrade(open), false);
   assert.ok(!fs.existsSync(file(open)));
   fs.rmSync(open, {recursive: true, force: true});
   const linked = home();
   const elsewhere = path.join(linked, 'elsewhere');
   fs.writeFileSync(elsewhere, '');
   fs.symlinkSync(elsewhere, file(linked));
-  assert.strictEqual(requestUpgrade(linked), false);
+  assert.strictEqual(await requestUpgrade(linked), false);
   assert.strictEqual(fs.readFileSync(elsewhere, 'utf8'), '', 'never written through a link');
   fs.rmSync(linked, {recursive: true, force: true});
 });
 
-test('readRequests reads the lines after an offset, by the private-file checks; partial and bad lines are skipped', {skip: process.platform === 'win32'}, () => {
+test('readRequests reads the lines after an offset, by the private-file checks; partial and bad lines are skipped', {skip: process.platform === 'win32'}, async () => {
   const h = home();
   try {
-    requestUpgrade(h, {now: () => 1});
+    await requestUpgrade(h, {now: () => 1});
     const a = readRequests(h, 0);
     assert.deepStrictEqual(a.requests, [{op: 'upgrade', at: 1}]);
     fs.appendFileSync(file(h), 'not json\n{"op":"other"}\n{"op":"upgrade","at":2}\n{"op":"upgr');

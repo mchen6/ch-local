@@ -34,7 +34,10 @@ function scripted(home) {
     opts.onControl((msg) => { call.requests.push(msg); return Promise.resolve({ok: true}); });
     opts.signal.addEventListener('abort', () => { call.exit(143); });
     r.calls.push(call);
-    opts.onListening({type: 'listening', socket: opts.socket});
+    // r.delay: this runtime is slow to listen (ms)
+    const delay = typeof r.delay === 'function' ? r.delay(r.calls.length) : 0;
+    if (delay > 0) setTimeout(() => { if (!call.ended) opts.onListening({type: 'listening', socket: opts.socket}); }, delay);
+    else opts.onListening({type: 'listening', socket: opts.socket});
     return exited;
   };
   r.nth = async(n, ms = 5000) => {
@@ -78,7 +81,7 @@ test('the runtime changed: drained, stopped, and the new one started with the ta
     await adopted(home);
     one.tell({type: 'session-resume', session: ID(1), hash: HASH});
     set(runtimePkg, '8.1.0');
-    requestUpgrade(home);
+    await requestUpgrade(home);
     const two = await s.nth(1);
     assert.ok(one.requests.some((m) => m.type === 'drain'), 'drained first');
     assert.strictEqual(one.ended, true);
@@ -101,7 +104,7 @@ test('an upgrade request with nothing changed does nothing', {skip: process.plat
     const done = daemon({home}, io, {run: s.run});
     const one = await s.nth(0);
     await adopted(home);
-    requestUpgrade(home);
+    await requestUpgrade(home);
     await tick(300);
     assert.strictEqual(s.calls.length, 1);
     assert.deepStrictEqual(one.requests.filter((m) => m.type === 'drain'), []);
@@ -128,7 +131,7 @@ test('ch-local changed: a new daemon is started with the table on its handoff pi
     await adopted(home);
     one.tell({type: 'session-resume', session: ID(7), hash: HASH});
     set(self, '2.0.0');
-    requestUpgrade(home);
+    await requestUpgrade(home);
     assert.strictEqual(await done, 0, io.err);
     assert.ok(one.requests.some((m) => m.type === 'drain'), 'drained first');
     assert.strictEqual(one.ended, true, 'its runtime stopped before the new daemon starts');
@@ -184,4 +187,133 @@ test('the CLI: daemon --handoff reads the table from fd 3 (io.readHandoff), and 
   assert.strictEqual(await main(['daemon', '--home', io.cwd], io), 2);
   assert.deepStrictEqual(seen, ['read'], 'no --handoff: fd 3 is not read');
   fs.rmSync(io.cwd, {recursive: true, force: true});
+});
+
+// the review of #35 --------------------------------------------------------------
+
+test('(1) a runtime upgrade holds start.lock from the stop until the new runtime is ready: a daemon spawned meanwhile finds this one', {skip: process.platform === 'win32'}, async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    const s = scripted(home);
+    s.delay = (n) => (n === 2 ? 600 : 0);   // the upgraded runtime is slow to listen
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    await adopted(home);
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    await s.nth(1);
+    await tick(50);
+    const other = scripted(home);
+    const io2 = daemonIo(home);
+    io2.daemonPackage = io.daemonPackage;
+    const second = daemon({home}, io2, {run: other.run});
+    assert.strictEqual(await second, 0, 'it waited on the lock, then found this daemon');
+    assert.strictEqual(other.calls.length, 0, 'and started no runtime');
+    assert.strictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).pid, process.pid, 'this daemon\'s daemon.json kept');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('(2) a crash during a runtime upgrade\'s drain: the crash\'s restart stands, no second restart, and the next crash still counts', {skip: process.platform === 'win32'}, async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    io.daemonDrainMs = 400;
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    const until = Date.now() + 3000;
+    while (!one.requests.some((m) => m.type === 'drain') && Date.now() < until) await tick();
+    await one.exit(1);   // it crashes while draining
+    const two = await s.nth(1);
+    await tick(800);
+    assert.strictEqual(s.calls.length, 2, 'the upgrade did not stop the restarted runtime too');
+    assert.strictEqual(two.ended, false);
+    assert.strictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).runtimeVersion, '8.1.0');
+    await two.exit(1);   // a real crash: counted, restarted after the backoff
+    await s.nth(2);
+    assert.strictEqual((io.err.match(/the shared runtime ended \(exit 1\)/g) || []).length, 2, 'both crashes counted');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('(2) a crash during a ch-local upgrade\'s drain: the runtime running then is the one stopped before the new daemon starts', {skip: process.platform === 'win32'}, async() => {
+  const {home, io, self, set} = setup();
+  try {
+    io.daemonDrainMs = 400;
+    const s = scripted(home);
+    let runningAtSpawn = null;
+    io.spawnDaemon = () => {
+      runningAtSpawn = s.calls.filter((c) => !c.ended).length;
+      setTimeout(() => fs.writeFileSync(daemonJson(home), JSON.stringify({pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: '2.0.0', started: 'z'}), {mode: 0o600}), 100);
+      return true;
+    };
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    set(self, '2.0.0');
+    await requestUpgrade(home);
+    const until = Date.now() + 3000;
+    while (!one.requests.some((m) => m.type === 'drain') && Date.now() < until) await tick();
+    await one.exit(1);
+    const two = await s.nth(1);
+    assert.strictEqual(await done, 0, io.err);
+    assert.strictEqual(two.ended, true, 'the restarted runtime was stopped');
+    assert.strictEqual(runningAtSpawn, 0, 'no runtime of this daemon\'s left when the new daemon starts');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('(3) a handoff never restores a loosening: confirmed loosenings and enabled packs are dropped; tightenings, packs off, locks and forms left are kept', {skip: process.platform === 'win32'}, async() => {
+  const {home, io} = setup();
+  try {
+    const s = scripted(home);
+    const state = {overrides: [
+      {name: 'requestTimeout', value: 120000, loosening: true, over: 30000, version: null},
+      {name: 'maxOutputBytes', value: 1024, loosening: false, over: null, version: null},
+      {name: 'pack.extra', value: true, loosening: true, over: null, version: '1.0.0'},
+      {name: 'pack.hidden', value: false, loosening: false, over: null, version: '1.0.0'}
+    ], locks: ['pack'], formsLeft: 1};
+    const handoff = encodeHandoff({type: 'restore', sessions: [{session: ID(5), resume: HASH, state}], declines: []});
+    const done = daemon({home, handoff}, io, {run: s.run});
+    const one = await s.nth(0);
+    assert.deepStrictEqual(one.restore.sessions[0].state, {overrides: [state.overrides[1], state.overrides[3]], locks: ['pack'], formsLeft: 1});
+    assert.match(io.err, /1 session\(s\) lost loosenings/);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('(5) the requests file is emptied once read, under start.lock, and a request written meanwhile is never lost', {skip: process.platform === 'win32'}, async() => {
+  const {home, io} = setup();
+  try {
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    await adopted(home);
+    await requestUpgrade(home);
+    const file = path.join(runDirOf(home), 'requests');
+    const until = Date.now() + 3000;
+    while (fs.statSync(file).size > 0 && Date.now() < until) await tick();
+    assert.strictEqual(fs.statSync(file).size, 0, 'emptied');
+    await requestUpgrade(home);
+    const until2 = Date.now() + 3000;
+    while (!/nothing changed[\s\S]*nothing changed/.test(io.err) && Date.now() < until2) await tick();
+    assert.match(io.err, /nothing changed[\s\S]*nothing changed/, 'the second request was read too');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
 });
