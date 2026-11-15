@@ -521,39 +521,59 @@ test('the locale setting reaches the runtime as its own locale: en-US or zh-CN',
   }
 });
 
-// countinghouse refuses --moduleSandbox enforce on Windows until a module's
-// identity is designed for Windows file URLs (countinghouse#195): start
-// passes audit there, and refuses an explicit enforce before starting anything.
-test('on Windows start passes --moduleSandbox audit, and refuses an explicit enforce with the runtime\'s words, starting nothing', async () => {
+// On Windows enforce needs a countinghouse with #195 (lib/sandbox-support.js:
+// its lib/fs-broker/virtual-drive.js). With an older one start keeps #17's
+// behaviour: audit, said, and an explicit enforce refused before anything
+// starts. With one that has it, Windows is like every platform.
+const withWindowsEnforce = (home) => {
+  const f = path.join(home, 'app', 'node_modules', 'countinghouse', 'lib', 'fs-broker', 'virtual-drive.js');
+  fs.mkdirSync(path.dirname(f), {recursive: true});
+  fs.writeFileSync(f, 'module.exports = {};\n');
+};
+const sandboxOf = (args) => args.filter((a, i, all) => a === '--moduleSandbox' || all[i - 1] === '--moduleSandbox');
+
+test('on Windows with a runtime older than countinghouse#195: audit, said; an explicit enforce refused, starting nothing', async () => {
   const home = installedHome();
   const f = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.strictEqual(valueOf(f.spawned[0].args, '--moduleSandbox'), 'audit');
-  assert.strictEqual(f.spawned[0].args.filter((a) => a.startsWith('--moduleSandbox')).length, 1);
+  assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
+  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; `ch-local upgrade` installs one that can/);
   for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
     const g = io(home, {platform: 'win32'});
     assert.notStrictEqual(await start({passThrough}, g), 0);
     assert.strictEqual(g.spawned.length, 0, 'nothing started');
-    assert.match(g.err, /--moduleSandbox enforce is not available on Windows yet: .*countinghouse\/issues\/195\)\. Use --moduleSandbox audit, the Windows mode for now\./);
+    assert.match(g.err, /--moduleSandbox enforce needs a countinghouse that runs it on Windows .*issues\/195\), and the installed one is older: run `ch-local upgrade`, or use --moduleSandbox audit until then\./);
   }
   const off = io(home, {platform: 'win32'});
   assert.notStrictEqual(await start({passThrough: ['--moduleSandbox', 'off']}, off), 0);
-  assert.match(off.err, /on Windows a pack runs under audit/);
-  const h = io(home, {platform: 'win32'});
-  assert.strictEqual(await start({passThrough: ['--moduleSandbox', 'audit']}, h), 0, h.err);
-  assert.strictEqual(valueOf(h.spawned[0].args, '--moduleSandbox'), 'audit');
+  assert.match(off.err, /with the installed countinghouse a pack runs under audit on Windows/);
+  // a stored enforce is read, and audit runs
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'enforce'}}));
+  const w = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: []}, w), 0, w.err);
+  assert.deepStrictEqual(sandboxOf(w.spawned[0].args), ['--moduleSandbox', 'audit']);
 });
 
-test('a stored moduleSandbox audit reaches the runtime once; on Windows a stored enforce is read, and start runs audit', async () => {
+test('on Windows with a runtime that has countinghouse#195: enforce by default, an explicit enforce passed, a stored audit honoured', async () => {
+  const home = installedHome();
+  withWindowsEnforce(home);
+  const f = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'enforce']);
+  assert.doesNotMatch(f.err, /cannot run --moduleSandbox enforce/);
+  const g = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: ['--moduleSandbox', 'enforce']}, g), 0, g.err);
+  assert.deepStrictEqual(sandboxOf(g.spawned[0].args), ['--moduleSandbox', 'enforce'], 'once, as passed');
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+  const h = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: []}, h), 0, h.err);
+  assert.deepStrictEqual(sandboxOf(h.spawned[0].args), ['--moduleSandbox', 'audit']);
+});
+
+test('a stored moduleSandbox audit reaches the runtime once', async () => {
   const home = installedHome();
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
   const f = io(home, {platform: 'linux'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.deepStrictEqual(f.spawned[0].args.filter((a, i, all) => a === '--moduleSandbox' || all[i - 1] === '--moduleSandbox'), ['--moduleSandbox', 'audit']);
-  const {sandboxEntry} = require('../lib/settings');
-  assert.deepStrictEqual(sandboxEntry('win32').stored, ['enforce', 'audit'], 'a stored enforce stays readable on Windows');
-  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'enforce'}}));
-  const w = io(home, {platform: 'win32'});
-  assert.strictEqual(await start({passThrough: []}, w), 0, w.err);
-  assert.deepStrictEqual(w.spawned[0].args.filter((a, i, all) => a === '--moduleSandbox' || all[i - 1] === '--moduleSandbox'), ['--moduleSandbox', 'audit']);
+  assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
 });

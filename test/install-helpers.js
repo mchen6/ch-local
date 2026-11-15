@@ -56,13 +56,19 @@ function release({versions = {}, extra = {}} = {}) {
   return {from, allow, pins, lockfile};
 }
 
-// npm as the stub sees it: ci installs the launcher at the given version.
+// npm as the stub sees it: ci installs the launcher at the given version,
+// and a current countinghouse (one with countinghouse#195's
+// lib/fs-broker/virtual-drive.js, so Windows runs like every platform; the
+// older-runtime test removes it).
 const npm = (version = '0.2.0') => (cmd, args, {cwd}) => {
   if (args.includes('ci')) {
     const dir = path.join(cwd, 'node_modules', '@countinghouse', 'ch-local');
     fs.mkdirSync(path.join(dir, 'bin'), {recursive: true});
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: '@countinghouse/ch-local', version}));
     fs.writeFileSync(path.join(dir, 'bin', 'ch-local.js'), '');
+    const drive = path.join(cwd, 'node_modules', 'countinghouse', 'lib', 'fs-broker', 'virtual-drive.js');
+    fs.mkdirSync(path.dirname(drive), {recursive: true});
+    fs.writeFileSync(drive, 'module.exports = {};\n');
   }
   return {status: 0, stdout: '', stderr: ''};
 };
