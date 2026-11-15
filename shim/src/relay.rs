@@ -404,7 +404,7 @@ impl Relay {
         let env = child::child_env(self.setup.client_env.clone());
         thread::spawn(move || {
             let printed = match config::read_shim(&home) {
-                Ok(shim) => child::run(&shim, parent, env, child::TIMEOUT),
+                Ok(shim) => child::run(&shim, home.root(), parent, env, child::TIMEOUT),
                 Err(e) => Err(format!("shim.json: {e}")),
             };
             let _ = tx.send(Ev::Client { generation, frame: child::client_frame(seq, printed) });

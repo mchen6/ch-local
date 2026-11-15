@@ -442,7 +442,7 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
         let saw = fs::read_to_string(&out).unwrap();
-        assert!(saw.contains("args:daemon\n"), "{saw}");
+        assert!(saw.contains(&format!("args:daemon --home {}\n", t.home.root().display())), "{saw}");
         assert!(saw.contains(&format!("cwd:{}\n", fs::canonicalize(t.home.root()).unwrap().display())), "{saw}");
         let ids: Vec<&str> = saw.lines().find(|l| l.starts_with("pid:")).unwrap().split(' ').collect();
         assert_eq!(

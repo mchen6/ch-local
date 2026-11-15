@@ -1,5 +1,5 @@
 //! The conditions child (contract 2, section 5): `<node> <chLocal>
-//! conditions --for <client pid>`, run once per connection and again for
+//! conditions --for <client pid> --home <home>`, run once per connection and again for
 //! each `conditions?`, its one JSON line carried as the `client` frame.
 //! - Its environment is the client's (the shim's own), minus every name
 //!   starting `NODE_` or `npm_config_`, so nothing acts in Node before
@@ -86,6 +86,7 @@ pub fn client_frame(seq: Option<u64>, printed: Result<Vec<u8>, String>) -> Vec<u
 /// failed.
 pub fn run(
     shim: &ShimInfo,
+    home: &std::path::Path,
     for_pid: u32,
     env: Vec<(OsString, OsString)>,
     timeout: Duration,
@@ -95,6 +96,8 @@ pub fn run(
         .arg("conditions")
         .arg("--for")
         .arg(for_pid.to_string())
+        .arg("--home")
+        .arg(home)
         .env_clear()
         .envs(env)
         .stdin(Stdio::null())
@@ -191,6 +194,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_child_that_hangs_is_killed_at_its_timeout_and_one_that_prints_is_read() {
+        use std::path::Path;
         let dir = std::env::temp_dir();
         let shim = |script: &str| {
             let p = dir.join(format!("ch-shim-child-{}-{}.sh", std::process::id(), script.len()));
@@ -199,13 +203,13 @@ mod tests {
         };
         let hang = shim("sleep 30\n");
         let started = Instant::now();
-        let r = run(&hang, 1, vec![], Duration::from_millis(500));
+        let r = run(&hang, Path::new("/h"), 1, vec![], Duration::from_millis(500));
         assert!(r.is_err_and(|w| w.contains("no answer")));
         assert!(started.elapsed() < Duration::from_secs(5));
         let prints = shim("echo \"{\\\"status\\\":\\\"ok\\\",\\\"args\\\":\\\"$*\\\"}\"\n");
-        let out = run(&prints, 42, vec![], TIMEOUT).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "{\"status\":\"ok\",\"args\":\"conditions --for 42\"}\n");
+        let out = run(&prints, Path::new("/h"), 42, vec![], TIMEOUT).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "{\"status\":\"ok\",\"args\":\"conditions --for 42 --home /h\"}\n");
         let fails = shim("exit 3\n");
-        assert!(run(&fails, 1, vec![], TIMEOUT).is_err_and(|w| w.contains("exited")));
+        assert!(run(&fails, Path::new("/h"), 1, vec![], TIMEOUT).is_err_and(|w| w.contains("exited")));
     }
 }
