@@ -262,10 +262,15 @@ test('an install while a rollback is interrupted refuses and moves nothing', asy
   const s = await upgraded();
   await killedAfterSwap(s.home);
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
+  const listing = (dir) => fs.readdirSync(dir, {recursive: true}).sort();
+  const appBefore = listing(path.join(s.home, 'app'));
+  const packsBefore = listing(path.join(s.home, 'packs'));
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: s.r2.from}, io, s.r2.allow), 1);
   assert.match(io.err, /a rollback was interrupted; run `ch-local rollback` to finish it/);
   assert.ok(fs.existsSync(path.join(s.home, 'rollback.journal')), 'the journal is kept');
-  assert.strictEqual(versionOf(s.home, REDACT), '0.1.0', 'the swapped app is untouched');
+  // the packs are in their own trees (packs in place): nothing of either moved
+  assert.deepStrictEqual(listing(path.join(s.home, 'app')), appBefore, 'the swapped app is untouched');
+  assert.deepStrictEqual(listing(path.join(s.home, 'packs')), packsBefore, 'the pack trees are untouched');
   assert.ok(fs.existsSync(path.join(s.home, 'previous', 'app', 'node_modules')), 'the newer release is kept');
   const fin = rio(s.home);
   assert.strictEqual(await rollback({}, fin), 0, fin.err);

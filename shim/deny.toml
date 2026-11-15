@@ -1,0 +1,50 @@
+# cargo deny check: licences, bans, advisories and sources for the shim's
+# dependency tree. Run in CI (shim.yml) beside cargo audit.
+#
+# The approved crates and features (the reviewer, 2026-11-14): getrandom;
+# rustix with only std, process, fs and system (Unix); windows-sys with only
+# Win32_Foundation, Win32_Security (+ Authorization), Win32_System_Threading,
+# Win32_System_SystemInformation (GetComputerNameExW, so start.lock's host
+# matches Node's os.hostname()) and Win32_System_Console (GetStdHandle, the
+# shim's stdio made non-inheritable); libc (Unix: fcntl over bare descriptor
+# numbers in the sweep's fallback). Only win_ffi.rs calls into windows-sys,
+# only unix_ffi.rs into libc.
+#
+# Also Win32_System_Diagnostics_ToolHelp (the parent's pid), and
+# Win32_Storage_FileSystem with Win32_System_IO (the overlapped named pipe:
+# CreateFileW, ReadFile, WriteFile, OVERLAPPED, CancelIoEx).
+#
+# unsafe: win_ffi.rs 54 blocks (one test-only), unix_ffi.rs 2, and main.rs's
+# one call to unix_ffi::startup_sweep. #![deny(unsafe_code)] everywhere else.
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin", "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc",
+]
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+# Permissive licences only, compatible with the shim's Apache-2.0, and only
+# those the tree has (cargo deny list): a new one is a decision, not a default.
+# memchr is "Unlicense OR MIT", taken as MIT.
+allow = ["Apache-2.0", "MIT", "BSD-3-Clause"]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# No async runtime, no TLS stack, no HTTP: the shim is a local relay.
+deny = [
+  { crate = "tokio" }, { crate = "async-std" }, { crate = "smol" },
+  { crate = "openssl" }, { crate = "openssl-sys" }, { crate = "native-tls" },
+  { crate = "reqwest" }, { crate = "hyper" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

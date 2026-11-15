@@ -8,7 +8,7 @@ const path = require('node:path');
 const {add} = require('../lib/clients');
 const {uninstall} = require('../lib/uninstall');
 const {snippet} = require('../lib/snippets');
-const {fakeIo, tmp} = require('./fake-io');
+const {fakeIo, tmp, FAKE_NODE} = require('./fake-io');
 
 // A user home with ~/.countinghouse installed (bin/ch-local.js present).
 function setup() {
@@ -20,7 +20,7 @@ function setup() {
   return {user, home, done: () => fs.rmSync(user, {recursive: true, force: true})};
 }
 const io = (s, answers = []) => fakeIo({env: {}, homedir: s.user, answers});
-const entryFor = (s, client) => snippet(client, {node: '/usr/local/bin/node', launcher: path.join(s.home, 'bin', 'ch-local.js')}).text;
+const entryFor = (s, client) => snippet(client, {node: FAKE_NODE, launcher: path.join(s.home, 'bin', 'ch-local.js')}).text;
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
 test('add records what it wrote and uninstall removes exactly that', async () => {

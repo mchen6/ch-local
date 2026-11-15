@@ -18,18 +18,20 @@ test('requiring the script runs nothing', () => {
 });
 
 // The printed commands are for bash (dogfood is a developer path; reviewer,
-// 2026-11-12): PowerShell has no `read -rs`, and Windows paths are another form.
+// 2026-11-12): Windows paths are another form.
 const BASH_ONLY = process.platform === 'win32' && 'the printed commands are for bash (Git Bash or WSL on Windows)';
 
-test('the instructions: read the token without echo, the claude mcp add line, claude --resume; never a token value', {skip: BASH_ONLY}, () => {
+test('the instructions: gh auth login, the claude mcp add line with no token, claude --resume; never a token value', {skip: BASH_ONLY}, () => {
   const before = process.env.COUNTINGHOUSE_GITHUB_TOKEN;
-  process.env.COUNTINGHOUSE_GITHUB_TOKEN = 'ghp_secret_value_123';
+  const value = `t${require('node:crypto').randomBytes(12).toString('hex')}`;
+  process.env.COUNTINGHOUSE_GITHUB_TOKEN = value;
   try {
     const text = dogfood.instructions({node: '/usr/bin/node', home: '/home/me/.countinghouse', defaultHome: '/home/me/.countinghouse'});
-    assert.match(text, /^  read -rs COUNTINGHOUSE_GITHUB_TOKEN$/m, 'pasted, not echoed, not in the shell history');
-    assert.ok(text.includes('  claude mcp add --scope user countinghouse -e "COUNTINGHOUSE_GITHUB_TOKEN=$COUNTINGHOUSE_GITHUB_TOKEN" -- /usr/bin/node /home/me/.countinghouse/bin/ch-local.js start --stdio'), text);
+    assert.match(text, /^  gh auth login$/m, 'the token is gh\'s, held in memory by the launcher');
+    assert.ok(text.includes('  claude mcp add --scope user countinghouse -- /usr/bin/node /home/me/.countinghouse/bin/ch-local.js start --stdio'), text);
     assert.match(text, /^  claude --resume$/m);
-    assert.ok(!text.includes('ghp_secret_value_123'));
+    assert.ok(!text.includes(value));
+    assert.ok(!/COUNTINGHOUSE_GITHUB_TOKEN|read -rs/.test(text), 'no token variable goes into Claude Code\'s configuration');
     assert.ok(!/claude mcp add.*[<>]/.test(text), 'nothing a shell would read as a redirection');
     assert.ok(!text.includes('COUNTINGHOUSE_HOME'), 'the default home needs no variable');
   } finally {
@@ -97,7 +99,8 @@ test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY |
   const pairs = (v, flag) => (v || '').split(',').filter(Boolean).flatMap((p) => [flag, p]);
   const out = {text: '', write(s) { this.text += s; }};
   const before = process.env.COUNTINGHOUSE_GITHUB_TOKEN;
-  process.env.COUNTINGHOUSE_GITHUB_TOKEN = 'ghp_secret_value_123';
+  const value = `t${require('node:crypto').randomBytes(12).toString('hex')}`;
+  process.env.COUNTINGHOUSE_GITHUB_TOKEN = value;
   let code;
   try {
     code = await dogfood.main(['--src', SRC, ...pairs(process.env.CH_DOGFOOD_CLONES, '--clone'), ...pairs(process.env.CH_DOGFOOD_REFS, '--ref'), '--home', home], {stdout: out, stderr: out});
@@ -109,8 +112,8 @@ test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY |
   assert.deepStrictEqual(Object.keys(record.packs), ['ci-failure-triage']);
   assert.strictEqual(record.unreleased, true);
   assert.ok(fs.existsSync(path.join(home, 'app', 'node_modules', 'countinghouse', 'bin', 'countinghouse-stdio.js')));
-  assert.ok(out.text.includes(`claude mcp add --scope user countinghouse -e "COUNTINGHOUSE_GITHUB_TOKEN=$COUNTINGHOUSE_GITHUB_TOKEN" -e "COUNTINGHOUSE_HOME=${home}" -- ${process.execPath} ${path.join(home, 'bin', 'ch-local.js')} start --stdio`), out.text.slice(-1500));
-  assert.ok(!out.text.includes('ghp_secret_value_123'), 'never a token value');
+  assert.ok(out.text.includes(`claude mcp add --scope user countinghouse -e "COUNTINGHOUSE_HOME=${home}" -- ${process.execPath} ${path.join(home, 'bin', 'ch-local.js')} start --stdio`), out.text.slice(-1500));
+  assert.ok(!out.text.includes(value), 'never a token value');
   assert.ok(!/COUNTINGHOUSE_GITHUB_TOKEN is set|start will use/.test(out.text), 'install did not look at this shell\'s token');
   assert.deepStrictEqual(fs.readdirSync(parent), ['home'], 'nothing beside the home');
   assert.strictEqual(works(), worksBefore, 'the work directory is removed');

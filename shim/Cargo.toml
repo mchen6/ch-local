@@ -1,0 +1,38 @@
+[package]
+name = "ch-shim"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "countinghouse's per-session shim: relays one MCP client's stdio to the user's shared runtime"
+repository = "https://github.com/mchen6/ch-local"
+publish = false
+
+# Few, widely used crates, and no async runtime: the shim is two relays and
+# a handshake, which threads and blocking I/O do in a few hundred KB.
+[dependencies]
+base64 = "0.22"
+getrandom = "0.3"
+hmac = "0.12"
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+# fcntl on a bare descriptor number, only in unix_ffi's sweep fallback
+libc = "0.2"
+# safe wrappers: geteuid, kill(pid, 0), uname, getrlimit
+rustix = { version = "1", default-features = false, features = ["std", "process", "fs", "system"] }
+
+[target.'cfg(windows)'.dependencies]
+# only win_ffi.rs calls into these (the one module allowed unsafe)
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+# arithmetic that overflows panics (and so aborts) in release too
+overflow-checks = true
+strip = true

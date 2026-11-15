@@ -63,26 +63,26 @@ function homeFor(args, env = process.env) {
   return DEFAULT_HOME();
 }
 
-// What the user runs. The token is read into the shell without echo, so it is
-// in neither the terminal nor the shell's history; the line passes it to
-// Claude Code, which keeps it in its user configuration. A home other than
-// the default goes with every command, since the launcher finds its home by
-// COUNTINGHOUSE_HOME.
+// What the user runs. The token is gh's: the launcher asks `gh auth token`
+// at every start and holds it in memory, so no line carries a token value and
+// none is written to Claude Code's configuration (Matt, 2026-11-13). A home
+// other than the default goes with every command, since the launcher finds
+// its home by COUNTINGHOUSE_HOME.
 function instructions({node, home, defaultHome = DEFAULT_HOME()}) {
   const launcher = path.join(home, 'bin', 'ch-local.js');
   const other = path.resolve(home) !== path.resolve(defaultHome);
   const homeFlag = other ? ` -e "COUNTINGHOUSE_HOME=${home}"` : '';
   const homeEnv = other ? `COUNTINGHOUSE_HOME=${word(home)} ` : '';
   return [
-    ...(process.platform === 'win32' ? ['These commands are for bash: run them in Git Bash or WSL (PowerShell has no `read -rs`).', ''] : []),
-    'Paste your token when asked (it is not shown, and not kept in your shell history). Use a',
-    'fine-grained token that can only read the repositories you want triaged:',
+    ...(process.platform === 'win32' ? ['These commands are for bash: run them in Git Bash or WSL.', ''] : []),
+    'Log the GitHub CLI in, once (the launcher asks it for the token at each start and keeps it',
+    'in memory; no token goes into Claude Code\'s configuration):',
     '',
-    '  read -rs COUNTINGHOUSE_GITHUB_TOKEN',
+    '  gh auth login',
     '',
     'Add the server to Claude Code, then restart your session so it loads it:',
     '',
-    `  claude mcp add --scope user countinghouse -e "COUNTINGHOUSE_GITHUB_TOKEN=$COUNTINGHOUSE_GITHUB_TOKEN"${homeFlag} -- ${word(node)} ${word(launcher)} start --stdio`,
+    `  claude mcp add --scope user countinghouse${homeFlag} -- ${word(node)} ${word(launcher)} start --stdio`,
     '  claude --resume',
     '',
     'What is installed, and how to take it all back:',

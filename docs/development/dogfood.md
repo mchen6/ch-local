@@ -25,7 +25,7 @@ configuration: you run the printed commands yourself.
 ## Run it
 
 From a ch-local checkout, with Node 24, in bash (on Windows, Git Bash or WSL:
-the printed commands are bash's, and PowerShell has no `read -rs`):
+the printed commands are bash's, and Windows paths are another form):
 
     node scripts/dogfood.js
 
@@ -53,18 +53,18 @@ install does.
 
 The script ends with the commands to run:
 
-    read -rs COUNTINGHOUSE_GITHUB_TOKEN
-    claude mcp add --scope user countinghouse -e "COUNTINGHOUSE_GITHUB_TOKEN=$COUNTINGHOUSE_GITHUB_TOKEN" -- <node> <home>/bin/ch-local.js start --stdio
+    gh auth login
+    claude mcp add --scope user countinghouse -- <node> <home>/bin/ch-local.js start --stdio
     claude --resume
 
-`read -rs` takes the token you paste without showing it, and keeps it out of
-your shell history. Use a fine-grained token that can only read the
-repositories you want triaged: Actions read and Contents read. Claude Code
-keeps it in its user configuration and passes it to the server's
-environment. ch-local sends it only to GitHub's MCP server
-(`https://api.githubcopilot.com`, the one origin the launcher allows). With
-a home other than `~/.countinghouse`, the line also passes
-`COUNTINGHOUSE_HOME`.
+The launcher asks `gh auth token` for the token at each start and holds it in
+memory: no token goes into Claude Code's configuration or any file. gh's
+token can write to your repositories; for a fine-grained, read-only one, set
+it in `COUNTINGHOUSE_GITHUB_TOKEN` in the environment Claude Code starts from
+(plaintext there), and the launcher uses it instead. ch-local
+sends it only to GitHub's MCP server (`https://api.githubcopilot.com`, the
+one origin the launcher allows). With a home other than `~/.countinghouse`,
+the line also passes `COUNTINGHOUSE_HOME`.
 
 The script then prints the `status` and `uninstall` commands for that home,
 and `claude mcp remove --scope user countinghouse`.

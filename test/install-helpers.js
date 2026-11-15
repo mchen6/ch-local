@@ -26,7 +26,10 @@ const api = (tool) => JSON.stringify({device: {friendlyName: tool, serviceList: 
 function release({versions = {}, extra = {}} = {}) {
   const from = tmp('ch-release-');
   const pins = {};
-  for (const [name, version] of RUNTIME) {
+  for (const [name, pinned] of RUNTIME) {
+    // versions may move a runtime package too (but ch-local's own, which the
+    // npm stub installs at its fixed version)
+    const version = (name !== '@countinghouse/ch-local' && versions[name]) || pinned;
     const bytes = Buffer.from(`fake tarball of ${name}@${version}`);
     fs.writeFileSync(path.join(from, tarballName(name, version)), bytes);
     pins[name] = {version, integrity: integrityOf(bytes)};
@@ -53,18 +56,35 @@ function release({versions = {}, extra = {}} = {}) {
   return {from, allow, pins, lockfile};
 }
 
-// npm as the stub sees it: ci installs the launcher at the given version.
+// npm as the stub sees it: ci installs the launcher at the given version,
+// and a current countinghouse (one with countinghouse#195's
+// lib/fs-broker/virtual-drive.js, so Windows runs like every platform; the
+// older-runtime test removes it).
 const npm = (version = '0.2.0') => (cmd, args, {cwd}) => {
   if (args.includes('ci')) {
     const dir = path.join(cwd, 'node_modules', '@countinghouse', 'ch-local');
     fs.mkdirSync(path.join(dir, 'bin'), {recursive: true});
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: '@countinghouse/ch-local', version}));
     fs.writeFileSync(path.join(dir, 'bin', 'ch-local.js'), '');
+    const drive = path.join(cwd, 'node_modules', 'countinghouse', 'lib', 'fs-broker', 'virtual-drive.js');
+    fs.mkdirSync(path.dirname(drive), {recursive: true});
+    fs.writeFileSync(drive, 'module.exports = {};\n');
   }
   return {status: 0, stdout: '', stderr: ''};
 };
 
-const pkgDir = (home, name) => path.join(home, 'app', 'node_modules', ...name.split('/'));
 const record = (home) => JSON.parse(fs.readFileSync(path.join(home, 'packs.json'), 'utf8'));
+// A package's directory: in the tree of the recorded pack that has it
+// (<home>/packs/<pack>/<version>/node_modules; packs in place, part 2), the
+// first such pack unless `pack` is named; in the flat app when no recorded
+// pack has it (what a test checks is gone).
+const pkgDir = (home, name, pack = null) => {
+  let rec = null;
+  try { rec = record(home); } catch (e) { rec = null; }
+  const packs = (rec != null) ? rec.packs : {};
+  const owner = pack != null ? pack : Object.keys(packs).find((p) => packs[p].packages[name] != null);
+  if (owner == null || packs[owner] == null) return path.join(home, 'app', 'node_modules', ...name.split('/'));
+  return path.join(home, 'packs', owner, require('../lib/pack-dir').packKey(packs[owner].packages), 'node_modules', ...name.split('/'));
+};
 
 module.exports = {release, npm, pkgDir, record, integrityOf, RUNTIME, PACKAGES};
