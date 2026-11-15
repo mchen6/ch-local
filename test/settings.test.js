@@ -94,7 +94,7 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   f.spawn = (c, a) => {
     args = a;
     return {kill: () => {}, exited: new Promise((resolve) => { end = resolve; }),
-      send: (m) => { requests.push(m); setImmediate(() => listener({id: m.id, ok: true})); }, onMessage: (fn) => { listener = fn; }};
+      send: (m) => { requests.push(m); setImmediate(() => listener({id: m.id, ok: true})); }, onMessage: (fn) => { listener = fn; setImmediate(() => fn({type: 'ready'})); }};
   };
   const done = start({passThrough: ['--locale', 'zh']}, f);
   for (let i = 0; end == null && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
