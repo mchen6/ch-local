@@ -75,8 +75,10 @@ fn by_listing() -> io::Result<usize> {
 }
 
 fn by_range() -> io::Result<usize> {
+    // the HARD limit: a client that lowered the soft one after opening
+    // descriptors above it can't hide them from the sweep
     let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
-    let top = limit.current.unwrap_or(FALLBACK_CAP).min(FALLBACK_CAP);
+    let top = limit.maximum.unwrap_or(FALLBACK_CAP).min(FALLBACK_CAP);
     let mut marked = 0;
     for fd in 3..top {
         marked += usize::from(mark(fd as i32)?);
