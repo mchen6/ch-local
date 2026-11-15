@@ -62,3 +62,38 @@ test('readRequests reads the lines after an offset, by the private-file checks; 
     assert.deepStrictEqual(readRequests(h, 0).requests, [], 'not 0600: not read');
   } finally { fs.rmSync(h, {recursive: true, force: true}); }
 });
+
+test('emptyRequests leaves a file that grew after the read: false, nothing lost (the review of #35)', {skip: process.platform === 'win32'}, async () => {
+  const {emptyRequests} = require('../lib/daemon-requests');
+  const h = home();
+  try {
+    await requestUpgrade(h, {now: () => 1});
+    const a = readRequests(h, 0);
+    await requestUpgrade(h, {now: () => 2});
+    assert.strictEqual(emptyRequests(h, a.offset), false);
+    assert.deepStrictEqual(readRequests(h, a.offset).requests, [{op: 'upgrade', at: 2}], 'the later line still there');
+    assert.strictEqual(emptyRequests(h, fs.statSync(file(h)).size), true);
+    assert.strictEqual(fs.statSync(file(h)).size, 0);
+  } finally { fs.rmSync(h, {recursive: true, force: true}); }
+});
+
+test('requestUpgrade waits while start.lock is held, writing nothing, and writes once it is released (the review of #35)', {skip: process.platform === 'win32'}, async () => {
+  const {withLockFile} = require('../lib/lock');
+  const h = home();
+  try {
+    let release = null;
+    const held = new Promise((r) => { release = r; });
+    const dir = path.join(h, 'run', 'daemon');
+    const holder = withLockFile(path.join(dir, 'start.lock'), dir, {stderr: {write: () => {}}}, () => held.then(() => 0), {wait: true});
+    await new Promise((r) => setTimeout(r, 50));
+    let done = false;
+    const asking = requestUpgrade(h).then((v) => { done = true; return v; });
+    await new Promise((r) => setTimeout(r, 400));
+    assert.strictEqual(done, false, 'still waiting on the lock');
+    assert.ok(!fs.existsSync(file(h)), 'nothing written meanwhile');
+    release();
+    await holder;
+    assert.strictEqual(await asking, true);
+    assert.ok(fs.readFileSync(file(h), 'utf8').includes('"op":"upgrade"'));
+  } finally { fs.rmSync(h, {recursive: true, force: true}); }
+});

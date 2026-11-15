@@ -29,15 +29,16 @@ function scripted(home) {
     let end = null;
     const exited = new Promise((res) => { end = res; });
     const call = {opts, restore: opts.restore(), requests: [], ended: false};
-    call.exit = async(code) => { if (call.ended) return; call.ended = true; await rt.close(); end(code); };
+    call.exit = async(code) => { if (call.ended) return; call.ended = true; await rt.close(); if (typeof r.onEnd === 'function') r.onEnd(call); end(code); };
     call.tell = (m) => opts.onTold(m);
     opts.onControl((msg) => { call.requests.push(msg); return Promise.resolve({ok: true}); });
     opts.signal.addEventListener('abort', () => { call.exit(143); });
     r.calls.push(call);
     // r.delay: this runtime is slow to listen (ms)
     const delay = typeof r.delay === 'function' ? r.delay(r.calls.length) : 0;
-    if (delay > 0) setTimeout(() => { if (!call.ended) opts.onListening({type: 'listening', socket: opts.socket}); }, delay);
-    else opts.onListening({type: 'listening', socket: opts.socket});
+    const listen = () => { call.listenedAt = Date.now(); opts.onListening({type: 'listening', socket: opts.socket}); };
+    if (delay > 0) setTimeout(() => { if (!call.ended) listen(); }, delay);
+    else listen();
     return exited;
   };
   r.nth = async(n, ms = 5000) => {
@@ -200,14 +201,23 @@ test('(1) a runtime upgrade holds start.lock from the stop until the new runtime
     await s.nth(0);
     await adopted(home);
     set(runtimePkg, '8.1.0');
-    await requestUpgrade(home);
-    await s.nth(1);
-    await tick(50);
+    // a shim's daemon arrives the moment the old runtime has ended, before the
+    // upgraded one starts
     const other = scripted(home);
-    const io2 = daemonIo(home);
-    io2.daemonPackage = io.daemonPackage;
-    const second = daemon({home}, io2, {run: other.run});
-    assert.strictEqual(await second, 0, 'it waited on the lock, then found this daemon');
+    let second = null;
+    s.onEnd = (c) => {
+      if (c !== s.calls[0] || second != null) return;
+      const io2 = daemonIo(home);
+      io2.daemonPackage = io.daemonPackage;
+      second = daemon({home}, io2, {run: other.run}).then((code) => ({code, at: Date.now()}));
+    };
+    await requestUpgrade(home);
+    const two = await s.nth(1);
+    const until2 = Date.now() + 5000;
+    while (second == null && Date.now() < until2) await tick();
+    const got = await second;
+    assert.strictEqual(got.code, 0, 'it waited on the lock, then found this daemon');
+    assert.ok(two.listenedAt != null && got.at >= two.listenedAt, 'still waiting until the upgraded runtime listened');
     assert.strictEqual(other.calls.length, 0, 'and started no runtime');
     assert.strictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).pid, process.pid, 'this daemon\'s daemon.json kept');
     io.signal('SIGTERM');
@@ -311,6 +321,30 @@ test('(5) the requests file is emptied once read, under start.lock, and a reques
     const until2 = Date.now() + 3000;
     while (!/nothing changed[\s\S]*nothing changed/.test(io.err) && Date.now() < until2) await tick();
     assert.match(io.err, /nothing changed[\s\S]*nothing changed/, 'the second request was read too');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('(2b) a crash at the drain itself: still one restart, never a second runtime over the first (the re-check of #35)', {skip: process.platform === 'win32'}, async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    io.daemonDrainMs = 200;
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    // the drain is the runtime's last act: it crashes as it is asked
+    const answered = one.requests.push.bind(one.requests);
+    one.requests.push = (m) => { answered(m); if (m.type === 'drain') setTimeout(() => one.exit(1), 0); return one.requests.length; };
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    await s.nth(1);
+    await tick(1200);
+    assert.strictEqual(s.calls.length, 2, 'one runtime after the crash, not two');
+    assert.strictEqual(s.calls.filter((c) => !c.ended).length, 1, 'and exactly one running');
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);
   } finally {
