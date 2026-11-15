@@ -133,3 +133,14 @@ test('an expired root: announced at every check, nothing fetched', () => {
   assert.strictEqual(rootExpired({certificateAuthorities: [{validFor: {start: '2022-01-01T00:00:00Z'}}]}, Date.UTC(2030, 0, 1)), false, 'an open window');
   assert.strictEqual(rootExpired(require('../lib/sigstore/trusted-root.json'), Date.now()), false, 'the shipped root is current');
 });
+
+test('the CLI: `ch-local upgrade --apply-auto` runs it and prints its line; with --auto it is a usage error', async() => {
+  const {main} = require('../bin/ch-local');
+  const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}});
+  assert.strictEqual(await main(['upgrade', '--apply-auto'], io), 0);
+  assert.match(io.out, /automatic upgrades are off while a development override is set \(CH_LOCAL_DEV\)/);
+  assert.deepStrictEqual(io.fetches, []);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
+  assert.strictEqual(await main(['upgrade', '--apply-auto', '--auto', 'on'], io2), 2);
+});

@@ -160,8 +160,16 @@ async function main(argv, io) {
       return usage();
     }
     if (command === 'upgrade') {
-      const a = parse(rest, {values: ['--auto']});
+      const a = parse(rest, {values: ['--auto'], flags: ['--apply-auto']});
       if (a == null || a.positional.length > 0) return usage();
+      // start's background check runs this, in a child with the allowlisted
+      // environment (lib/auto-upgrade.js); it re-checks everything itself
+      if (a.flags['--apply-auto']) {
+        if (a.values['--auto'] !== undefined) return usage();
+        const r = await require('../lib/auto-apply').autoApply({io});
+        if (r.line != null) io.stdout.write(`${r.line}\n`);
+        return 0;
+      }
       return await require('../lib/upgrade').upgrade({auto: a.values['--auto']}, io);
     }
   } catch (err) {

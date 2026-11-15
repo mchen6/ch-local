@@ -14,10 +14,13 @@ const {layout} = require('../lib/home');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm} = require('./install-helpers');
 
-const registry = (latest) => async (url) => {
-  const name = decodeURIComponent(url.split('/').pop());
-  if (latest === 'down') return {status: 503, ok: false};
-  return latest[name] == null ? {status: 404, ok: false} : {status: 200, ok: true, json: async () => ({'dist-tags': {latest: latest[name]}})};
+// The check runs `ch-local upgrade --apply-auto` (lib/auto-apply.js) in a
+// child of its own; here a stand-in for that child: what it was run with,
+// and what it says.
+const child = (answer = {status: 0, stdout: ''}) => {
+  const runs = [];
+  const exec = async(cmd, args, opts) => { runs.push({cmd, args, opts}); if (answer === 'hang') return {status: null, stdout: '', stderr: 'killed'}; return answer; };
+  return {runs, exec};
 };
 async function home() {
   const h = tmp('ch-home-');
@@ -25,60 +28,62 @@ async function home() {
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), r.allow), 0);
   return {h, where: layout({COUNTINGHOUSE_HOME: h})};
 }
-const run = (where, latest, now) => {
+const shell = {PATH: '/usr/bin', HOME: '/home/u', LANG: 'C', TMPDIR: '/tmp', NODE_OPTIONS: '--require /x.js', npm_execpath: '/evil/npm-cli.js',
+  npm_config_registry: 'https://evil.example.invalid/', HTTPS_PROXY: 'http://proxy.example.invalid:3128', NODE_EXTRA_CA_CERTS: '/evil.pem', SSL_CERT_FILE: '/evil.pem'};
+const run = (where, answer, now) => {
   const said = [];
-  const io = Object.assign(fakeIo({fetch: registry(latest)}), {pid: 1});
-  return autoCheck({where, io, say: (s) => said.push(s), host: 'box', now}).then((r) => ({r, said, fetches: io.fetches}));
+  const c = child(answer);
+  const io = Object.assign(fakeIo({env: shell, exec: c.exec}), {pid: 1, platform: 'linux'});
+  return autoCheck({where, io, say: (x) => said.push(x), host: 'box', now}).then((r) => ({r, said, runs: c.runs}));
 };
 
-test('off by default: no check, no network', async () => {
+test('off by default: no check, no child', async () => {
   const {where} = await home();
-  const {r, fetches} = await run(where, {}, Date.now());
-  assert.deepStrictEqual([r.checked, r.why, fetches.length], [false, 'off', 0]);
+  const {r, runs} = await run(where, undefined, Date.now());
+  assert.deepStrictEqual([r.checked, r.why, runs.length], [false, 'off', 0]);
 });
 
-test('on: a newer version is said and recorded; the next start within the day does not check again', async () => {
+test('on: the child runs as `ch-local upgrade --apply-auto`, with the allowlisted environment only; its lines are said; the next start within the day does not run it', async () => {
   const {h, where} = await home();
   setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
   const now = Date.now();
-  const first = await run(where, {'@countinghouse/ch-step-redact': '0.2.0'}, now);
+  const first = await run(where, {status: 0, stdout: 'ch-local 0.3.0 is available; it installs automatically after 2026-01-01T00:00:00.000Z\n'}, now);
   assert.strictEqual(first.r.checked, true);
-  assert.deepStrictEqual(first.r.newer.map((n) => [n.name, n.have, n.latest]), [['@countinghouse/ch-step-redact', '0.1.0', '0.2.0']]);
-  assert.match(first.said[0], /^@countinghouse\/ch-step-redact 0\.2\.0 is available \(installed 0\.1\.0\)/);
-  const lines = fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.ok(lines.some((e) => e.by === 'auto-upgrade' && e.change === 'upgrade available'));
-  const again = await run(where, {}, now + 60 * 60 * 1000);
-  assert.deepStrictEqual([again.r.checked, again.r.why, again.fetches.length], [false, 'not due', 0]);
-  const nextDay = await run(where, {}, now + 25 * 60 * 60 * 1000);
-  assert.strictEqual(nextDay.r.checked, true);
+  assert.deepStrictEqual(first.runs.map((x) => x.args), [[path.join(h, 'bin', 'ch-local.js'), 'upgrade', '--apply-auto']]);
+  assert.deepStrictEqual(Object.keys(first.runs[0].opts.env).sort(), ['COUNTINGHOUSE_HOME', 'HOME', 'LANG', 'PATH', 'TMPDIR'], 'no npm_execpath, NODE_OPTIONS, npm_config_*, proxy or CA variable');
+  assert.strictEqual(first.runs[0].opts.env.COUNTINGHOUSE_HOME, h);
+  assert.deepStrictEqual(first.said, ['ch-local 0.3.0 is available; it installs automatically after 2026-01-01T00:00:00.000Z']);
+  const again = await run(where, undefined, now + 60 * 60 * 1000);
+  assert.deepStrictEqual([again.r.checked, again.r.why, again.runs.length], [false, 'not due', 0]);
+  assert.strictEqual((await run(where, undefined, now + 25 * 60 * 60 * 1000)).r.checked, true);
 });
 
-test('weekly waits a week; never never checks; a failed check is said, recorded, and changes nothing', async () => {
+test('the stamp keeps what the child wrote: lastCheck is merged in, never written over', async () => {
+  const {where} = await home();
+  setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+  fs.writeFileSync(path.join(where.home, 'upgrade-check.json'), JSON.stringify({firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], lastSuccess: 7}));
+  const now = Date.now();
+  await run(where, {status: 0, stdout: ''}, now);
+  const stamp = JSON.parse(fs.readFileSync(path.join(where.home, 'upgrade-check.json'), 'utf8'));
+  assert.deepStrictEqual(stamp, {firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], lastSuccess: 7, lastCheck: now});
+});
+
+test('weekly waits a week; never never checks; a child that fails is said, and tried again an hour later; one start checks at a time', async () => {
   const {where} = await home();
   setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
   setSetting(where, 'upgradeCheck', 'weekly', {by: 'cli'});
   const now = Date.now();
-  assert.strictEqual((await run(where, {}, now)).r.checked, true);
-  assert.strictEqual((await run(where, {}, now + 2 * 24 * 60 * 60 * 1000)).r.why, 'not due');
+  assert.strictEqual((await run(where, {status: 0, stdout: ''}, now)).r.checked, true);
+  assert.strictEqual((await run(where, undefined, now + 2 * 24 * 60 * 60 * 1000)).r.why, 'not due');
   setSetting(where, 'upgradeCheck', 'never', {by: 'cli'});
-  assert.strictEqual((await run(where, {}, now + 30 * 24 * 60 * 60 * 1000)).r.why, 'never');
+  assert.strictEqual((await run(where, undefined, now + 30 * 24 * 60 * 60 * 1000)).r.why, 'never');
   setSetting(where, 'upgradeCheck', 'daily', {by: 'cli'});
-  const failed = await run(where, 'down', now + 31 * 24 * 60 * 60 * 1000);
+  const t = now + 31 * 24 * 60 * 60 * 1000;
+  const failed = await run(where, 'hang', t);
   assert.ok(failed.r.failed);
-  assert.match(failed.said[0], /^automatic upgrade check failed \(the npm registry answered 503/);
-});
-
-test('a registry that never answers is abandoned at the timeout and tried again an hour later; one start checks at a time', async () => {
-  const {where} = await home();
-  setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
-  const hang = (url, opts) => new Promise((resolve, reject) => { opts.signal.addEventListener('abort', () => reject(new Error('aborted'))); });
-  const now = Date.now();
-  const io = Object.assign(fakeIo({fetch: hang}), {pid: 1});
-  const said = [];
-  const r = await autoCheck({where, io, say: (x) => said.push(x), host: 'box', now, timeoutMs: 100});
-  assert.match(r.failed, /no answer within 0\.1 s/);
-  assert.strictEqual((await run(where, {}, now + 30 * 60 * 1000)).r.why, 'not due', 'not within the hour');
-  assert.strictEqual((await run(where, {}, now + 61 * 60 * 1000)).r.checked, true, 'an hour later');
-  fs.writeFileSync(path.join(where.home, 'upgrade-check.lock'), String(now + 2 * 24 * 60 * 60 * 1000));
-  assert.strictEqual((await run(where, {}, now + 2 * 24 * 60 * 60 * 1000 + 1000)).r.why, 'another start is checking');
+  assert.match(failed.said[0], /^automatic upgrade check failed/);
+  assert.strictEqual((await run(where, undefined, t + 30 * 60 * 1000)).r.why, 'not due', 'not within the hour');
+  assert.strictEqual((await run(where, {status: 0, stdout: ''}, t + 61 * 60 * 1000)).r.checked, true, 'an hour later');
+  fs.writeFileSync(path.join(where.home, 'upgrade-check.lock'), String(t + 2 * 24 * 60 * 60 * 1000));
+  assert.strictEqual((await run(where, undefined, t + 2 * 24 * 60 * 60 * 1000 + 1000)).r.why, 'another start is checking');
 });
