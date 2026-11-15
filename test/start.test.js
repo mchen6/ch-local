@@ -72,6 +72,8 @@ function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/
   return f;
 }
 
+// the shared runtime (session mode) is POSIX-only until C4c, the Windows daemon
+const POSIX_ONLY = process.platform === 'win32' && 'shared runtime is POSIX-only until C4c';
 const valueOf = (args, flag) => args[args.indexOf(flag) + 1];
 
 test('start runs the profile: local store, enforce, the one store, no auth file, no usageDir, no port', async () => {
@@ -583,7 +585,7 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
 });
 
 // C4b: ch-local daemon's runtime, start in session mode (countinghouse #236)
-test('start in session mode: framework.js on --sessionSocket, never --stdio, and the same profile otherwise', async () => {
+test('start in session mode: framework.js on --sessionSocket, never --stdio, and the same profile otherwise', {skip: POSIX_ONLY}, async () => {
   const home = installedHome();
   const f = io(home);
   const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
@@ -612,7 +614,7 @@ test('start in session mode refuses a path it would pass that resolves outside t
 });
 
 // C4b's review: the session runtime's home, signals, group and environment
-test('start in session mode takes its home from session.home, not the environment, which holds only the allowlist', async () => {
+test('start in session mode takes its home from session.home, not the environment, which holds only the allowlist', {skip: POSIX_ONLY}, async () => {
   const home = installedHome();
   const f = io(home, {env: {PATH: '/usr/bin', HOME: '/home/dev', NODE_OPTIONS: '--require /tmp/x.js', GITHUB_TOKEN: 'example-shell-token'}});
   delete f.env.COUNTINGHOUSE_HOME;   // the shim's cleared environment never carries it
@@ -627,7 +629,7 @@ test('start in session mode takes its home from session.home, not the environmen
   assert.strictEqual(env.COUNTINGHOUSE_GITHUB_TOKEN, 'gho_exampleexampleexample');
 });
 
-test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime in its own process group', async () => {
+test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime in its own process group', {skip: POSIX_ONLY}, async () => {
   const home = installedHome();
   const f = io(home);
   assert.strictEqual(await start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home}}, ghLoggedIn(f)), 0, f.err);
@@ -639,7 +641,7 @@ test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime 
   assert.notStrictEqual(g.detached, true);
 });
 
-test('start in session mode: an aborted signal kills the runtime, and the start ends', async () => {
+test('start in session mode: an aborted signal kills the runtime, and the start ends', {skip: POSIX_ONLY}, async () => {
   const home = installedHome();
   const f = io(home);
   let finish = null;
@@ -652,7 +654,7 @@ test('start in session mode: an aborted signal kills the runtime, and the start 
   assert.deepStrictEqual(f.killed, ['SIGTERM']);
 });
 
-test('start in session mode passes on the runtime\'s listening message', async () => {
+test('start in session mode passes on the runtime\'s listening message', {skip: POSIX_ONLY}, async () => {
   const home = installedHome();
   const f = io(home);
   let deliver = null;
@@ -693,7 +695,7 @@ test('start --home must be absolute and an existing directory, and is refused wi
 
 // the review of #32 (c7c6923): a runtime that ignores SIGTERM, and an abort
 // before the spawn
-test('start in session mode: a runtime that ignores SIGTERM gets SIGKILL after the bound', async () => {
+test('start in session mode: a runtime that ignores SIGTERM gets SIGKILL after the bound', {skip: POSIX_ONLY}, async () => {
   const home = installedHome();
   const f = ghLoggedIn(io(home));
   f.sessionKillMs = 200;
@@ -707,7 +709,7 @@ test('start in session mode: a runtime that ignores SIGTERM gets SIGKILL after t
   assert.deepStrictEqual(f.killed, ['SIGTERM', 'SIGKILL']);
 });
 
-test('start in session mode: an abort while it waits for the home\'s lock ends the wait, with nothing spawned', async () => {
+test('start in session mode: an abort while it waits for the home\'s lock ends the wait, with nothing spawned', {skip: POSIX_ONLY}, async () => {
   const home = installedHome();
   const f = ghLoggedIn(io(home));
   // a live holder on this host: the wait would go on

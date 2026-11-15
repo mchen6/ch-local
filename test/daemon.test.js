@@ -157,7 +157,7 @@ test('a runtime that never proves the secret within the bound: exit 1, no daemon
   }
 });
 
-test('--home and the working directory must agree; --home is required and absolute', async() => {
+test('--home and the working directory must agree; --home is required and absolute', {skip: process.platform === 'win32' && 'shared runtime is POSIX-only until C4c'}, async() => {
   const home = tmpHome();
   const other = tmpHome();
   try {
