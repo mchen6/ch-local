@@ -52,5 +52,15 @@ function daemonIo(home) {
   return io;
 }
 const runDirOf = (home) => path.join(home, 'run', 'daemon');
+// a socket a daemon of this home would choose (C4c): on Windows a new pipe
+// name of the form, on POSIX the run directory's (name: another one there)
+const socketIn = (runDir, name = 'sessions.sock') => (process.platform === 'win32' ? require('../lib/session-socket').newPipeName() : path.join(runDir, name));
+// the run directory, as a test makes it ahead of the daemon (POSIX 0700)
+const makeRunDir = (home) => {
+  const runDir = runDirOf(home);
+  fs.mkdirSync(runDir, {recursive: true, mode: 0o700});
+  if (process.platform !== 'win32') fs.chmodSync(path.join(home, 'run'), 0o700);
+  return runDir;
+};
 
-module.exports = {fakeRuntime, daemonIo, tmpHome, runDirOf, hmac, frame};
+module.exports = {fakeRuntime, daemonIo, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame};

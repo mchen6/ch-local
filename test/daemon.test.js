@@ -20,10 +20,18 @@ const path = require('node:path');
 const {fakeIo} = require('./fake-io');
 const {daemon, probe} = require('../lib/daemon');
 
-const {fakeRuntime, daemonIo, tmpHome, runDirOf, hmac, frame} = require('./daemon-fakes');
+const {fakeRuntime, daemonIo, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame} = require('./daemon-fakes');
+const {isPipeName} = require('../lib/session-socket');
+const WIN = process.platform === 'win32';
+// owner-only: 0600 and 0700 on POSIX; on Windows the DACL (privateProblem)
+const assertPrivate = (p, mode) => {
+  if (!WIN) return assert.strictEqual(fs.statSync(p).mode & 0o777, mode, p);
+  const winAcl = require('../lib/win-acl');
+  return assert.strictEqual(winAcl.privateProblem(p, winAcl.fileAcl(p), {directory: fs.statSync(p).isDirectory()}), null, p);
+};
 const readDaemonJson = (home) => JSON.parse(fs.readFileSync(path.join(runDirOf(home), 'daemon.json'), 'utf8'));
 
-test('no daemon yet: it starts the runtime, writes daemon.json once the socket proves the secret, frees start.lock, and cleans up when stopped', {skip: process.platform === 'win32'}, async() => {
+test('no daemon yet: it starts the runtime, writes daemon.json once the socket proves the secret, frees start.lock, and cleans up when stopped', async() => {
   const home = tmpHome();
   let runtime = null;
   let finish = null;
@@ -42,11 +50,15 @@ test('no daemon yet: it starts the runtime, writes daemon.json once the socket p
     while (!fs.existsSync(path.join(runDirOf(home), 'daemon.json')) && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
     const info = readDaemonJson(home);
     assert.strictEqual(info.pid, process.pid);
-    assert.strictEqual(info.socket, path.join(runDirOf(home), 'sessions.sock'));
+    // on Windows a pipe of the form (C4c), on POSIX the run directory's socket
+    if (WIN) assert.ok(isPipeName(info.socket), info.socket);
+    else assert.strictEqual(info.socket, path.join(runDirOf(home), 'sessions.sock'));
+    assert.strictEqual(info.socket, given.socket, 'the socket the runtime was given');
+    assert.strictEqual(given.sessionDir, runDirOf(home), 'and its run directory, as --sessionDir');
     assert.strictEqual(typeof info.runtimeVersion, 'string');
     assert.strictEqual(typeof info.daemonVersion, 'string');
-    assert.strictEqual(fs.statSync(path.join(runDirOf(home), 'daemon.json')).mode & 0o777, 0o600);
-    assert.strictEqual(fs.statSync(runDirOf(home)).mode & 0o777, 0o700);
+    assertPrivate(path.join(runDirOf(home), 'daemon.json'), 0o600);
+    assertPrivate(runDirOf(home), 0o700);
     lockWhileRunning = fs.existsSync(path.join(runDirOf(home), 'start.lock'));
     assert.strictEqual(lockWhileRunning, false, 'start.lock is released while the runtime runs');
     assert.deepStrictEqual(io.ignored, ['SIGHUP']);
@@ -64,12 +76,10 @@ test('no daemon yet: it starts the runtime, writes daemon.json once the socket p
   }
 });
 
-test('a live daemon already in daemon.json, whose socket proves the secret: this one exits 0 and starts nothing', {skip: process.platform === 'win32'}, async() => {
+test('a live daemon already in daemon.json, whose socket proves the secret: this one exits 0 and starts nothing', async() => {
   const home = tmpHome();
-  const runDir = runDirOf(home);
-  fs.mkdirSync(runDir, {recursive: true, mode: 0o700});
-  fs.chmodSync(path.join(home, 'run'), 0o700);
-  const socket = path.join(runDir, 'sessions.sock');
+  const runDir = makeRunDir(home);
+  const socket = socketIn(runDir);
   const live = await fakeRuntime(runDir, socket);
   fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({pid: process.pid, socket, runtimeVersion: 'x', daemonVersion: 'y', started: new Date().toISOString()}), {mode: 0o600});
   let started = false;
@@ -83,13 +93,11 @@ test('a live daemon already in daemon.json, whose socket proves the secret: this
   }
 });
 
-test('a daemon.json whose pid is dead, or whose socket does not prove the secret, is stale: a runtime is started', {skip: process.platform === 'win32'}, async() => {
+test('a daemon.json whose pid is dead, or whose socket does not prove the secret, is stale: a runtime is started', async() => {
   for (const kind of ['dead pid', 'wrong proof']) {
     const home = tmpHome();
-    const runDir = runDirOf(home);
-    fs.mkdirSync(runDir, {recursive: true, mode: 0o700});
-    fs.chmodSync(path.join(home, 'run'), 0o700);
-    const socket = path.join(runDir, 'sessions.sock');
+    const runDir = makeRunDir(home);
+    const socket = socketIn(runDir);
     const squatter = kind === 'wrong proof' ? await fakeRuntime(runDir, socket, {wrongSecret: true}) : null;
     fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({pid: kind === 'dead pid' ? 2147483646 : process.pid, socket, runtimeVersion: 'x', daemonVersion: 'y', started: 'z'}), {mode: 0o600});
     let started = false;
@@ -104,7 +112,7 @@ test('a daemon.json whose pid is dead, or whose socket does not prove the secret
   }
 });
 
-test('a runtime that never proves the secret within the bound: exit 1, no daemon.json', {skip: process.platform === 'win32'}, async() => {
+test('a runtime that never proves the secret within the bound: exit 1, no daemon.json', async() => {
   const home = tmpHome();
   try {
     const io = daemonIo(home);
@@ -119,7 +127,7 @@ test('a runtime that never proves the secret within the bound: exit 1, no daemon
   }
 });
 
-test('--home and the working directory must agree; --home is required and absolute', {skip: process.platform === 'win32' && 'shared runtime is POSIX-only until C4c'}, async() => {
+test('--home and the working directory must agree; --home is required and absolute', async() => {
   const home = tmpHome();
   const other = tmpHome();
   try {
@@ -136,16 +144,16 @@ test('--home and the working directory must agree; --home is required and absolu
   }
 });
 
-test('probe: true only for a socket that proves the secret', {skip: process.platform === 'win32'}, async() => {
+test('probe: true only for a socket that proves the secret', async() => {
   const home = tmpHome();
-  const runDir = runDirOf(home);
-  fs.mkdirSync(runDir, {recursive: true, mode: 0o700});
-  const socket = path.join(runDir, 's');
+  const runDir = makeRunDir(home);
+  const socket = socketIn(runDir, 's');
   const good = await fakeRuntime(runDir, socket);
   try {
     assert.strictEqual(await probe(socket, good.secret, 1000), true);
     assert.strictEqual(await probe(socket, crypto.randomBytes(32), 1000), false);
-    assert.strictEqual(await probe(path.join(runDir, 'nothing'), good.secret, 1000), false);
+    assert.strictEqual(await probe(socketIn(runDir, 'nothing'), good.secret, 1000), false);
+    assert.strictEqual(await probe('relative.sock', good.secret, 1000), false, 'never a relative path');
   } finally {
     await good.close();
     fs.rmSync(home, {recursive: true, force: true});
@@ -154,7 +162,7 @@ test('probe: true only for a socket that proves the secret', {skip: process.plat
 
 // C4b's review ---------------------------------------------------------------
 
-test('ready needs both the runtime\'s own listening tell and a PROVE on that socket: a proving socket alone is never adopted', {skip: process.platform === 'win32'}, async() => {
+test('ready needs both the runtime\'s own listening tell and a PROVE on that socket: a proving socket alone is never adopted', async() => {
   const home = tmpHome();
   let aborted = false;
   let other = null;
@@ -175,7 +183,7 @@ test('ready needs both the runtime\'s own listening tell and a PROVE on that soc
   }
 });
 
-test('a listening tell naming another socket is not ours', {skip: process.platform === 'win32'}, async() => {
+test('a listening tell naming another socket is not ours', async() => {
   const home = tmpHome();
   try {
     const io = daemonIo(home);
@@ -190,12 +198,12 @@ test('a listening tell naming another socket is not ours', {skip: process.platfo
   }
 });
 
-test('a daemon.json naming another socket is stale, whatever answers there', {skip: process.platform === 'win32'}, async() => {
+test('a daemon.json naming a socket this home\'s daemon would not choose is stale, whatever answers there', async() => {
   const home = tmpHome();
-  const runDir = runDirOf(home);
-  fs.mkdirSync(runDir, {recursive: true, mode: 0o700});
-  fs.chmodSync(path.join(home, 'run'), 0o700);
-  const elsewhere = path.join(runDir, 'other.sock');
+  const runDir = makeRunDir(home);
+  // POSIX: another socket in the run directory; Windows: a pipe not of the
+  // form (every pipe of the form is one a daemon may have chosen)
+  const elsewhere = WIN ? `\\\\.\\pipe\\other-${crypto.randomBytes(16).toString('hex')}` : path.join(runDir, 'other.sock');
   const live = await fakeRuntime(runDir, elsewhere);
   fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({pid: process.pid, socket: elsewhere, runtimeVersion: 'x', daemonVersion: 'y', started: 'z'}), {mode: 0o600});
   let started = false;
@@ -210,19 +218,109 @@ test('a daemon.json naming another socket is stale, whatever answers there', {sk
   }
 });
 
-test('on Windows the daemon is refused for now (the shim then runs one runtime per session)', async() => {
+// C4c, Windows's wiring with the platform and the DACL calls injected, so it
+// runs everywhere (the real calls run in test/win-acl.test.js on Windows)
+const winAclFake = (acl = () => ({user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', otherAces: false, rules: []})) => {
+  const calls = [];
+  return {calls, privateProblem: require('../lib/win-acl').privateProblem,
+    makePrivateDirs: (dirs, read) => { calls.push({dirs, read}); for (const d of dirs) fs.mkdirSync(d, {recursive: true}); return read.map(acl); }};
+};
+
+test('Windows (injected): the run directories made private first; each runtime start a new pipe of the form, with --sessionDir the run directory', async() => {
   const home = tmpHome();
   try {
     const io = daemonIo(home);
     io.platform = 'win32';
-    assert.strictEqual(await daemon({home}, io, {run: async() => 0}), 2);
-    assert.match(io.err, /Windows/);
+    io.winAcl = winAclFake();
+    io.daemonReadyMs = 300;
+    const given = [];
+    const code = await daemon({home}, io, {run: (opts) => { given.push(opts); return new Promise((resolve) => opts.signal.addEventListener('abort', () => resolve(143))); }});
+    assert.strictEqual(code, 1, 'the fake never listens');
+    assert.deepStrictEqual(io.winAcl.calls, [{dirs: [path.join(home, 'run'), runDirOf(home)], read: [home, path.join(home, 'run'), runDirOf(home)]}]);
+    assert.strictEqual(given.length, 1);
+    assert.ok(isPipeName(given[0].socket), given[0].socket);
+    assert.strictEqual(given[0].sessionDir, runDirOf(home));
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
 
-test('a runtime that does not end when stopped does not hold start.lock: the daemon returns after its bound', {skip: process.platform === 'win32'}, async() => {
+test('Windows (injected): a home or run directory that is not private refuses the start, naming it', async() => {
+  const home = tmpHome();
+  try {
+    const io = daemonIo(home);
+    io.platform = 'win32';
+    const open = {user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]};
+    io.winAcl = winAclFake(() => open);
+    let started = false;
+    assert.strictEqual(await daemon({home}, io, {run: async() => { started = true; return 0; }}), 2);
+    assert.match(io.err, /the home .* is accessible by S-1-1-0/);
+    assert.strictEqual(started, false);
+    const failing = daemonIo(home);
+    failing.platform = 'win32';
+    failing.winAcl = {privateProblem: () => null, makePrivateDirs: () => { throw Object.assign(new Error('timed out'), {code: 'ETIMEDOUT'}); }};
+    assert.strictEqual(await daemon({home}, failing, {run: async() => 0}), 2);
+    assert.match(failing.err, /could not be made private \(ETIMEDOUT\)/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('a home too long for a socket path: the runtime listens in $TMPDIR/ch-<uid>/ (made 0700), recorded in daemon.json, the secret still in the run directory', {skip: WIN && 'POSIX only: Windows has no socket path'}, async() => {
+  const base = tmpHome();
+  const home = path.join(base, 'h'.repeat(120));
+  fs.mkdirSync(home, {mode: 0o700});
+  fs.chmodSync(home, 0o700);
+  const tmpdir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-t-')));
+  let runtime = null;
+  try {
+    const io = daemonIo(home);
+    io.env.TMPDIR = tmpdir;
+    const uid = process.geteuid();
+    const want = path.join(tmpdir, `ch-${uid}`, 'sessions.sock');
+    let given = null;
+    const done = daemon({home}, io, {run: async(opts) => {
+      given = opts;
+      runtime = await fakeRuntime(runDirOf(home), opts.socket);
+      opts.onListening({type: 'listening', socket: opts.socket});
+      return new Promise((resolve) => opts.signal.addEventListener('abort', () => resolve(143)));
+    }});
+    const until = Date.now() + 5000;
+    while (!fs.existsSync(path.join(runDirOf(home), 'daemon.json')) && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+    assert.strictEqual(given.socket, want);
+    assert.strictEqual(given.sessionDir, runDirOf(home));
+    assert.strictEqual(readDaemonJson(home).socket, want);
+    assert.strictEqual(fs.statSync(path.dirname(want)).mode & 0o777, 0o700);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    if (runtime != null) await runtime.close();
+    fs.rmSync(base, {recursive: true, force: true});
+    fs.rmSync(tmpdir, {recursive: true, force: true});
+  }
+});
+
+test('a fallback directory that is not the user\'s own directory refuses the start', {skip: WIN && 'POSIX only'}, async() => {
+  const base = tmpHome();
+  const home = path.join(base, 'h'.repeat(120));
+  fs.mkdirSync(home, {mode: 0o700});
+  fs.chmodSync(home, 0o700);
+  const tmpdir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-t-')));
+  try {
+    fs.symlinkSync(base, path.join(tmpdir, `ch-${process.geteuid()}`));
+    const io = daemonIo(home);
+    io.env.TMPDIR = tmpdir;
+    let started = false;
+    assert.strictEqual(await daemon({home}, io, {run: async() => { started = true; return 0; }}), 2);
+    assert.match(io.err, /socket directory .* is not a directory/);
+    assert.strictEqual(started, false);
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
+    fs.rmSync(tmpdir, {recursive: true, force: true});
+  }
+});
+
+test('a runtime that does not end when stopped does not hold start.lock: the daemon returns after its bound', async() => {
   const home = tmpHome();
   try {
     const io = daemonIo(home);
@@ -239,7 +337,7 @@ test('a runtime that does not end when stopped does not hold start.lock: the dae
   }
 });
 
-test('daemon --home must be owned by this user and not group- or world-writable', {skip: process.platform === 'win32'}, async() => {
+test('daemon --home must be owned by this user and not group- or world-writable', {skip: WIN && 'POSIX modes; Windows: the DACL test above'}, async() => {
   const home = tmpHome();
   try {
     fs.chmodSync(home, 0o775);

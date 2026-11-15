@@ -1,0 +1,57 @@
+'use strict';
+// lib/win-acl.js, as countinghouse's copy (#275) plus makePrivateDirs (C4c):
+// the scripts name no cmdlet, privateProblem's rule for directories, and on
+// Windows, the daemon's run directories made private.
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const winAcl = require('../lib/win-acl');
+
+const USER = 'S-1-5-21-1000000000-1000000000-1000000000-1001';
+const FULL = 2032127;
+const ace = (sid, rights = FULL, extra = {}) => Object.assign({sid, rights, type: 'Allow', inheritOnly: false}, extra);
+const priv = () => ({user: USER, owner: USER, otherAces: false, rules: [ace(USER), ace(winAcl.SYSTEM)]});
+
+test('the PowerShell it runs names no cmdlet (a lookup rebuilds the module cache, and would load module code)', () => {
+  for (const name of ['FILE_ACL_SCRIPT', 'FILE_ACLS_SCRIPT', 'PRIVATE_DIRS_SCRIPT', 'CREATE_SCRIPT']) {
+    const code = winAcl[name].replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
+    assert.doesNotMatch(code, /\b[A-Z][a-z]+-[A-Z][A-Za-z]+\b/, name);
+  }
+});
+
+test('privateProblem: a directory\'s inherit-only allow rule for anyone else fails; a file\'s is skipped (countinghouse #275)', () => {
+  const flows = priv();
+  flows.rules.push(ace('S-1-1-0', FULL, {inheritOnly: true}));
+  assert.strictEqual(winAcl.privateProblem('a file', flows), null);
+  assert.match(String(winAcl.privateProblem('a directory', flows, {directory: true})), /inherit-only rule for S-1-1-0/);
+  const own = priv();
+  own.rules.push(ace(USER, FULL, {inheritOnly: true}), ace('S-1-1-0', 0x100000 | 0x20000 | 0x80, {inheritOnly: true}));
+  assert.strictEqual(winAcl.privateProblem('a directory', own, {directory: true}), null, 'its own people, and harmless rights, pass');
+  assert.match(String(winAcl.privateProblem('a directory', Object.assign(priv(), {rules: [ace(USER), ace('S-1-1-0', 1179817)]}), {directory: true})), /accessible by S-1-1-0/);
+});
+
+test('makePrivateDirs and fileAcls take one or more paths, none with a line break', () => {
+  assert.throws(() => winAcl.fileAcls([]), /one or more paths/);
+  assert.throws(() => winAcl.makePrivateDirs(['C:\\a\nb'], ['C:\\a']), /line break/);
+});
+
+test('on Windows: the run directories are made, or put right, private; the files made in them inherit only this user and SYSTEM', {skip: process.platform !== 'win32' && 'Windows only'}, () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-wa-')));
+  try {
+    const run = path.join(home, 'run');
+    const daemon = path.join(run, 'daemon');
+    fs.mkdirSync(run);   // there already, with the inherited DACL: put right
+    const acls = winAcl.makePrivateDirs([run, daemon], [run, daemon]);
+    assert.strictEqual(acls.length, 2);
+    for (const [i, d] of [run, daemon].entries()) assert.strictEqual(winAcl.privateProblem(d, acls[i], {directory: true}), null, JSON.stringify(acls[i]));
+    fs.writeFileSync(path.join(daemon, 'start.lock'), 'x');
+    assert.strictEqual(winAcl.privateProblem('a file made there', winAcl.fileAcl(path.join(daemon, 'start.lock'))), null);
+    // a second call on the same directories is the same
+    const again = winAcl.makePrivateDirs([run, daemon], [daemon]);
+    assert.strictEqual(winAcl.privateProblem(daemon, again[0], {directory: true}), null);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

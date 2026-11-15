@@ -24,7 +24,8 @@ const HASH = 'f'.repeat(64);
 function scripted(home) {
   const r = {calls: []};
   r.run = async(opts) => {
-    fs.rmSync(opts.socket, {force: true});
+    // a stale socket file (POSIX); a pipe leaves none
+    if (!require('../lib/session-socket').isPipeName(opts.socket)) fs.rmSync(opts.socket, {force: true});
     const rt = await fakeRuntime(runDirOf(home), opts.socket);
     let end = null;
     const exited = new Promise((res) => { end = res; });
@@ -73,7 +74,7 @@ function setup() {
   return {home, io, runtimePkg: path.join(rt, 'package.json'), self, set};
 }
 
-test('the runtime changed: drained, stopped, and the new one started with the table; daemon.json names its version', {skip: process.platform === 'win32'}, async() => {
+test('the runtime changed: drained, stopped, and the new one started with the table; daemon.json names its version', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
     const s = scripted(home);
@@ -98,7 +99,7 @@ test('the runtime changed: drained, stopped, and the new one started with the ta
   }
 });
 
-test('an upgrade request with nothing changed does nothing', {skip: process.platform === 'win32'}, async() => {
+test('an upgrade request with nothing changed does nothing', async() => {
   const {home, io} = setup();
   try {
     const s = scripted(home);
@@ -116,7 +117,7 @@ test('an upgrade request with nothing changed does nothing', {skip: process.plat
   }
 });
 
-test('ch-local changed: a new daemon is started with the table on its handoff pipe, never in argv or env; this one exits once it runs', {skip: process.platform === 'win32'}, async() => {
+test('ch-local changed: a new daemon is started with the table on its handoff pipe, never in argv or env; this one exits once it runs', async() => {
   const {home, io, self, set} = setup();
   try {
     const s = scripted(home);
@@ -150,7 +151,7 @@ test('ch-local changed: a new daemon is started with the table on its handoff pi
   }
 });
 
-test('a daemon started with a handoff seeds its table from it; a bad handoff starts empty, saying so', {skip: process.platform === 'win32'}, async() => {
+test('a daemon started with a handoff seeds its table from it; a bad handoff starts empty, saying so', async() => {
   const {home, io} = setup();
   try {
     const s = scripted(home);
@@ -181,18 +182,21 @@ test('the CLI: daemon --handoff reads the table from fd 3 (io.readHandoff), and 
   const {main} = require('../bin/ch-local');
   const seen = [];
   const io = daemonIo(tmpHome());
-  io.platform = 'win32';   // the daemon returns at once (C4c): only the CLI's reading is under test
+  // a --home that is not the working directory: the daemon returns 2 at
+  // once, so only the CLI's reading is under test
+  const other = tmpHome();
   io.readHandoff = async() => { seen.push('read'); return Buffer.alloc(0); };
-  assert.strictEqual(await main(['daemon', '--home', io.cwd, '--handoff'], io), 2);
+  assert.strictEqual(await main(['daemon', '--home', other, '--handoff'], io), 2);
   assert.deepStrictEqual(seen, ['read']);
-  assert.strictEqual(await main(['daemon', '--home', io.cwd], io), 2);
+  assert.strictEqual(await main(['daemon', '--home', other], io), 2);
   assert.deepStrictEqual(seen, ['read'], 'no --handoff: fd 3 is not read');
   fs.rmSync(io.cwd, {recursive: true, force: true});
+  fs.rmSync(other, {recursive: true, force: true});
 });
 
 // the review of #35 --------------------------------------------------------------
 
-test('(1) a runtime upgrade holds start.lock from the stop until the new runtime is ready: a daemon spawned meanwhile finds this one', {skip: process.platform === 'win32'}, async() => {
+test('(1) a runtime upgrade holds start.lock from the stop until the new runtime is ready: a daemon spawned meanwhile finds this one', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
     const s = scripted(home);
@@ -227,7 +231,7 @@ test('(1) a runtime upgrade holds start.lock from the stop until the new runtime
   }
 });
 
-test('(2) a crash during a runtime upgrade\'s drain: the crash\'s restart stands, no second restart, and the next crash still counts', {skip: process.platform === 'win32'}, async() => {
+test('(2) a crash during a runtime upgrade\'s drain: the crash\'s restart stands, no second restart, and the next crash still counts', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
     io.daemonDrainMs = 400;
@@ -255,7 +259,7 @@ test('(2) a crash during a runtime upgrade\'s drain: the crash\'s restart stands
   }
 });
 
-test('(2) a crash during a ch-local upgrade\'s drain: the runtime running then is the one stopped before the new daemon starts', {skip: process.platform === 'win32'}, async() => {
+test('(2) a crash during a ch-local upgrade\'s drain: the runtime running then is the one stopped before the new daemon starts', async() => {
   const {home, io, self, set} = setup();
   try {
     io.daemonDrainMs = 400;
@@ -283,7 +287,7 @@ test('(2) a crash during a ch-local upgrade\'s drain: the runtime running then i
   }
 });
 
-test('(3) a handoff never restores a loosening: confirmed loosenings and enabled packs are dropped; tightenings, packs off, locks and forms left are kept', {skip: process.platform === 'win32'}, async() => {
+test('(3) a handoff never restores a loosening: confirmed loosenings and enabled packs are dropped; tightenings, packs off, locks and forms left are kept', async() => {
   const {home, io} = setup();
   try {
     const s = scripted(home);
@@ -305,7 +309,7 @@ test('(3) a handoff never restores a loosening: confirmed loosenings and enabled
   }
 });
 
-test('(5) the requests file is emptied once read, under start.lock, and a request written meanwhile is never lost', {skip: process.platform === 'win32'}, async() => {
+test('(5) the requests file is emptied once read, under start.lock, and a request written meanwhile is never lost', async() => {
   const {home, io} = setup();
   try {
     const s = scripted(home);
@@ -328,7 +332,7 @@ test('(5) the requests file is emptied once read, under start.lock, and a reques
   }
 });
 
-test('(2b) a crash at the drain itself: still one restart, never a second runtime over the first (the re-check of #35)', {skip: process.platform === 'win32'}, async() => {
+test('(2b) a crash at the drain itself: still one restart, never a second runtime over the first (the re-check of #35)', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
     io.daemonDrainMs = 200;
