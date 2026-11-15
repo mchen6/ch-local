@@ -52,6 +52,9 @@ pub struct Shared {
     /// what was in flight and handed the session on or ended it: from then
     /// no runtime answer is written, so none can follow its crash answer.
     pub closed: Arc<AtomicBool>,
+    /// Answers the reader is writing now: taken out of the in-flight table,
+    /// so the relay's "nothing is in flight" checks count these too.
+    pub streaming: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Reads frames until the connection ends; the last event is always Lost.
@@ -94,6 +97,7 @@ fn one<R: Read>(conn: &mut R, caps: Caps, shared: &Shared) -> Result<Event, Ende
                     None
                 } else {
                     let pending = seq.and_then(|n| t.take(n));
+                    shared.streaming.fetch_add(1, Ordering::SeqCst);
                     Some((pending, shared.out.lock()))
                 }
             };
@@ -101,7 +105,7 @@ fn one<R: Read>(conn: &mut R, caps: Caps, shared: &Shared) -> Result<Event, Ende
                 io::copy(&mut conn.take(u64::from(rest)), &mut io::sink()).map_err(|e| Ended::Lost(e.to_string()))?;
                 return Ok(Event::Answered(seq));
             };
-            match held.stream(conn, u64::from(rest)) {
+            let result = match held.stream(conn, u64::from(rest)) {
                 Ok(()) => Ok(Event::Answered(seq)),
                 // cut short: the half line is ended; the request it answered
                 // gets its crash answer on the next line
@@ -112,7 +116,11 @@ fn one<R: Read>(conn: &mut R, caps: Caps, shared: &Shared) -> Result<Event, Ende
                     Err(Ended::Lost(e.to_string()))
                 }
                 Err(StreamError::Sink(e)) => Err(Ended::Stdout(e.to_string())),
-            }
+            };
+            drop(held);
+            // before Answered is sent, so the relay's check after it sees 0
+            shared.streaming.fetch_sub(1, Ordering::SeqCst);
+            result
         }
         Kind::Control => {
             let mut payload = vec![0u8; len as usize];
@@ -161,6 +169,7 @@ mod tests {
             dropped: Arc::new(Mutex::new(dropped.iter().copied().collect())),
             out: Out::new(Box::new(sink.clone())),
             closed: Arc::new(AtomicBool::new(false)),
+            streaming: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         let (tx, rx) = mpsc::sync_channel(1024);
         run(&frames[..], Caps { message: 1 << 20 }, shared.clone(), tx);

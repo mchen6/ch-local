@@ -13,7 +13,7 @@ use std::ptr;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED,
     ERROR_PIPE_NOT_CONNECTED, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, HANDLE_FLAG_INHERIT,
-    INVALID_HANDLE_VALUE, LocalFree, STILL_ACTIVE, SetHandleInformation, WAIT_TIMEOUT,
+    INVALID_HANDLE_VALUE, LocalFree, STILL_ACTIVE, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
 use windows_sys::Win32::Security::{
@@ -33,7 +33,7 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, WaitForSingleObject,
+    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
@@ -357,9 +357,18 @@ pub fn parent_pid() -> Option<u32> {
 /// then waited), so the kernel never touches a buffer after its call.
 pub struct Pipe {
     handle: std::sync::Arc<OwnedHandle>,
+    /// Set once by shutdown(), shared by every clone, never reset: an
+    /// operation started after it ends at once, and one pending when it is
+    /// set is cancelled (a CancelIoEx alone misses a read not yet issued).
+    cancel: std::sync::Arc<OwnedHandle>,
     read_event: OwnedHandle,
     write_event: OwnedHandle,
     read_timeout: std::sync::Mutex<Option<std::time::Duration>>,
+}
+
+/// `e` with what was being done, its kind kept.
+fn context(what: &str, e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("{what}: {e}"))
 }
 
 fn event() -> io::Result<OwnedHandle> {
@@ -396,13 +405,13 @@ impl Pipe {
             )
         };
         if h == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
+            return Err(context("opening the pipe", io::Error::last_os_error()));
         }
         // SAFETY: h is the valid handle CreateFileW just returned, owned
         // nowhere else.
         let handle = unsafe { OwnedHandle::from_raw_handle(h as _) };
-        let owner = acl_of(handle.as_raw_handle() as HANDLE)?.owner;
-        let user = current_user_sid()?;
+        let owner = acl_of(handle.as_raw_handle() as HANDLE).map_err(|e| context("reading the pipe's owner", e))?.owner;
+        let user = current_user_sid().map_err(|e| context("reading this user's SID", e))?;
         if owner != user && owner != crate::trust::SYSTEM && owner != crate::trust::ADMINISTRATORS {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -414,6 +423,7 @@ impl Pipe {
         }
         Ok(Pipe {
             handle: std::sync::Arc::new(handle),
+            cancel: std::sync::Arc::new(event()?),
             read_event: event()?,
             write_event: event()?,
             read_timeout: std::sync::Mutex::new(None),
@@ -423,6 +433,7 @@ impl Pipe {
     pub fn try_clone(&self) -> io::Result<Pipe> {
         Ok(Pipe {
             handle: self.handle.clone(),
+            cancel: self.cancel.clone(),
             read_event: event()?,
             write_event: event()?,
             read_timeout: std::sync::Mutex::new(None),
@@ -436,6 +447,10 @@ impl Pipe {
     /// Cancels every operation pending on the pipe (both directions, every
     /// clone's): a reader blocked on it returns.
     pub fn shutdown(&self) -> io::Result<()> {
+        // SAFETY: the cancel event is valid while self holds it.
+        if unsafe { SetEvent(self.cancel.as_raw_handle() as HANDLE) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
         // SAFETY: the handle is valid while self holds it; a null OVERLAPPED
         // cancels all of this process's I/O on it.
         if unsafe { CancelIoEx(self.raw(), ptr::null()) } == 0 {
@@ -456,10 +471,16 @@ impl Pipe {
     /// cancelled and then waited), so `buf` is never used after it returns.
     fn op(
         &self,
+        what: &str,
         event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
         start: impl FnOnce(*mut OVERLAPPED) -> i32,
     ) -> io::Result<usize> {
+        let cancel = self.cancel.as_raw_handle() as HANDLE;
+        // SAFETY: the cancel event is valid; a zero wait only polls it.
+        if unsafe { WaitForSingleObject(cancel, 0) } == WAIT_OBJECT_0 {
+            return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "the pipe was shut down"));
+        }
         // SAFETY: OVERLAPPED is plain data; zero is its documented start.
         let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
         ov.hEvent = event.as_raw_handle() as HANDLE;
@@ -472,18 +493,29 @@ impl Pipe {
                 return Ok(0);
             }
             if err != ERROR_IO_PENDING {
-                return Err(io::Error::from_raw_os_error(err as i32));
+                return Err(context(what, io::Error::from_raw_os_error(err as i32)));
             }
             let ms = timeout.map_or(INFINITE, |t| u32::try_from(t.as_millis()).unwrap_or(INFINITE - 1).max(1));
-            // SAFETY: the event is valid; waiting reads nothing of ours.
-            if unsafe { WaitForSingleObject(ov.hEvent, ms) } == WAIT_TIMEOUT {
-                // SAFETY: cancels this one operation; ov is still alive.
+            let both = [ov.hEvent, cancel];
+            // SAFETY: both events are valid for the wait; it reads nothing
+            // of ours.
+            let woke = unsafe { WaitForMultipleObjects(2, both.as_ptr(), 0, ms) };
+            if woke != WAIT_OBJECT_0 {
+                // timed out, or shut down: cancel this one operation
+                // SAFETY: ov is still alive.
                 unsafe { CancelIoEx(self.raw(), &ov) };
                 let mut n = 0u32;
                 // SAFETY: waits (bWait = 1) for the cancelled operation to
                 // complete, so the kernel is done with ov and the buffer.
-                unsafe { GetOverlappedResult(self.raw(), &ov, &mut n, 1) };
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "the pipe gave no answer in time"));
+                if unsafe { GetOverlappedResult(self.raw(), &ov, &mut n, 1) } != 0 {
+                    // it completed before the cancel took: its bytes count
+                    return Ok(n as usize);
+                }
+                return Err(if woke == WAIT_TIMEOUT {
+                    io::Error::new(io::ErrorKind::TimedOut, "the pipe gave no answer in time")
+                } else {
+                    io::Error::new(io::ErrorKind::ConnectionAborted, "the pipe was shut down")
+                });
             }
         }
         let mut n = 0u32;
@@ -498,7 +530,7 @@ impl Pipe {
             if err == ERROR_OPERATION_ABORTED {
                 return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "the pipe was shut down"));
             }
-            return Err(io::Error::from_raw_os_error(err as i32));
+            return Err(context(what, io::Error::from_raw_os_error(err as i32)));
         }
         Ok(n as usize)
     }
@@ -509,7 +541,7 @@ impl io::Read for Pipe {
         let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
         let timeout = *self.read_timeout.lock().expect("the timeout's lock");
         let (raw, ptr) = (self.raw(), buf.as_mut_ptr());
-        self.op(&self.read_event, timeout, |ov| {
+        self.op("reading the pipe", &self.read_event, timeout, |ov| {
             // SAFETY: buf (len bytes) and ov outlive the operation: op waits
             // for it to complete before returning.
             unsafe { ReadFile(raw, ptr, len, ptr::null_mut(), ov) }
@@ -521,7 +553,7 @@ impl io::Write for Pipe {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
         let (raw, ptr) = (self.raw(), buf.as_ptr());
-        let n = self.op(&self.write_event, None, |ov| {
+        let n = self.op("writing the pipe", &self.write_event, None, |ov| {
             // SAFETY: as in read: buf and ov outlive the operation.
             unsafe { WriteFile(raw, ptr, len, ptr::null_mut(), ov) }
         })?;
@@ -611,5 +643,83 @@ mod tests {
                 assert!(!inheritable, "standard handle {which} is still inheritable");
             }
         }
+    }
+
+    /// A pipe server (node, this user's), for the Pipe tests: it accepts
+    /// and sends nothing.
+    fn quiet_server() -> (std::process::Child, String) {
+        use std::io::BufRead;
+        let mut b = [0u8; 8];
+        getrandom::fill(&mut b).unwrap();
+        let name = format!(r"\\.\pipe\countinghouse-test-{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>());
+        let mut child = std::process::Command::new("node")
+            .args([
+                "-e",
+                "require('net').createServer(() => {}).listen(process.argv[1], () => console.log('up'))",
+                &name,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "up");
+        (child, name)
+    }
+
+    #[test]
+    fn a_shutdown_with_no_read_pending_still_ends_the_next_read() {
+        use std::io::Read;
+        let (mut server, name) = quiet_server();
+        let p = Pipe::open(&name).unwrap();
+        let mut r = p.try_clone().unwrap();
+        p.shutdown().unwrap(); // nothing is pending yet
+        let started = std::time::Instant::now();
+        let e = r.read(&mut [0u8; 8]).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::ConnectionAborted);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let _ = server.kill();
+        let _ = server.wait();
+    }
+
+    #[test]
+    fn a_shutdown_ends_a_read_pending_on_another_clone() {
+        use std::io::Read;
+        let (mut server, name) = quiet_server();
+        let p = Pipe::open(&name).unwrap();
+        let mut r = p.try_clone().unwrap();
+        let reader = std::thread::spawn(move || r.read(&mut [0u8; 8]).map_err(|e| e.kind()));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        p.shutdown().unwrap();
+        assert_eq!(reader.join().unwrap(), Err(io::ErrorKind::ConnectionAborted));
+        let _ = server.kill();
+        let _ = server.wait();
+    }
+
+    #[test]
+    fn a_pipe_opens_writes_and_reads_step_by_step() {
+        use std::io::{BufRead, Read, Write};
+        let mut b = [0u8; 8];
+        getrandom::fill(&mut b).unwrap();
+        let name = format!(r"\\.\pipe\countinghouse-test-{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>());
+        let mut server = std::process::Command::new("node")
+            .args([
+                "-e",
+                "require('net').createServer((c) => c.pipe(c)).listen(process.argv[1], () => console.log('up'))",
+                &name,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        io::BufReader::new(server.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let mut p = Pipe::open(&name).unwrap_or_else(|e| panic!("open: {e}"));
+        p.write_all(b"ping").unwrap_or_else(|e| panic!("write: {e}"));
+        p.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        let mut got = [0u8; 4];
+        p.read_exact(&mut got).unwrap_or_else(|e| panic!("read: {e}"));
+        assert_eq!(&got, b"ping");
+        let _ = server.kill();
+        let _ = server.wait();
     }
 }

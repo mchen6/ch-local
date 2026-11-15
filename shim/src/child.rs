@@ -113,9 +113,23 @@ pub fn run(
     // read on a thread that sends what it read: joined with a deadline, so
     // a grandchild that holds the pipe open can't hold the shim
     let (rtx, rrx) = std::sync::mpsc::channel();
+    // read to the answer's newline, not to EOF: a grandchild holding the
+    // pipe then can't hold this thread either (only a child that never ends
+    // its line, and leaves such a grandchild, still can)
     std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = (&mut stdout).take(STDOUT_MAX + 1).read_to_end(&mut out);
+        let mut buf = [0u8; 512];
+        loop {
+            match stdout.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    out.extend_from_slice(&buf[..n]);
+                    if out.contains(&b'\n') || out.len() as u64 > STDOUT_MAX {
+                        break;
+                    }
+                }
+            }
+        }
         let _ = rtx.send(out);
     });
     let deadline = Instant::now() + timeout;
@@ -204,8 +218,9 @@ mod tests {
         let shim = ShimInfo { node: "/bin/sh".into(), ch_local: p.clone(), env: vec![] };
         let started = Instant::now();
         let r = run(&shim, std::path::Path::new("/h"), 1, vec![], TIMEOUT);
-        assert!(started.elapsed() < Duration::from_secs(5), "held for {:?}", started.elapsed());
-        assert!(r.is_err_and(|w| w.contains("never ended")));
+        assert!(started.elapsed() < Duration::from_secs(2), "held for {:?}", started.elapsed());
+        // the line it printed is its answer: read to its newline, not to EOF
+        assert_eq!(r.unwrap(), b"{\"status\":\"ok\"}\n");
         let _ = std::fs::remove_file(&p);
     }
 

@@ -40,9 +40,6 @@ const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
 const QUICK_LOSS: Duration = Duration::from_secs(10);
 /// The most conditions? asks waiting for the child.
 const CHILD_QUEUE: usize = 8;
-/// After the hand-over, lines go to the per-session runtime, which bounds
-/// them itself.
-const OWN_LIMIT: usize = 1 << 30;
 /// How long finish() waits for an answer still streaming to stdout.
 const STDOUT_BARRIER: Duration = Duration::from_secs(5);
 /// The relay's event queue: bounded, so the stdin thread (and the reader)
@@ -72,6 +69,8 @@ pub struct Timing {
     pub closing: Duration,
     /// How long a welcomed connection may wait for `settled`.
     pub settle: Duration,
+    /// How long the exit waits for an answer still streaming to stdout.
+    pub barrier: Duration,
 }
 
 impl Default for Timing {
@@ -81,6 +80,7 @@ impl Default for Timing {
             retry_unit: Duration::from_secs(1),
             closing: CLOSING_GRACE,
             settle: SETTLE_DEADLINE,
+            barrier: STDOUT_BARRIER,
         }
     }
 }
@@ -129,6 +129,7 @@ pub struct Relay {
     inflight: Arc<Mutex<InFlight>>,
     dropped: Arc<Mutex<HashSet<u64>>>,
     closed: Arc<AtomicBool>,
+    streaming: Arc<std::sync::atomic::AtomicUsize>,
     records: Records,
     held: Held,
     resume: Option<String>,
@@ -161,26 +162,44 @@ pub enum Exit {
     },
 }
 
+#[derive(Debug, PartialEq)]
+enum Refusal {
+    Ids(Vec<Vec<u8>>, bool),
+    Null,
+    Nothing,
+}
+
 /// The rest of the client's lines, still arriving from the relay's stdin
 /// reader, after the relay has handed the session over.
 pub struct Rest {
     rx: Receiver<Ev>,
     out: Out,
-    limit: Limit,
+    /// The line bound before the hand-over, for a line cut at the switch.
+    limit: usize,
+}
+
+/// What goes to the per-session runtime's stdin.
+pub enum Piece {
+    /// A whole line, its newline to be added.
+    Line(Vec<u8>),
+    /// Bytes as they came (raw mode).
+    Raw(Vec<u8>),
 }
 
 impl Iterator for Rest {
-    type Item = Vec<u8>;
-    fn next(&mut self) -> Option<Vec<u8>> {
+    type Item = Piece;
+    fn next(&mut self) -> Option<Piece> {
         loop {
             match self.rx.recv().ok()? {
-                Ev::Stdin(lines::Read::Line(l)) => return Some(l),
+                Ev::Stdin(lines::Read::Line(l)) => return Some(Piece::Line(l)),
+                Ev::Stdin(lines::Read::Chunk(c)) => return Some(Piece::Raw(c)),
                 Ev::Stdin(lines::Read::Eof) => return None,
-                // still answered: the line was discarded unread, so nothing
-                // else can answer it (one small write; pipe writes that size
-                // are atomic beside the per-session runtime's own)
+                // only a line already past the bound when raw mode began:
+                // discarded unread, so nothing else can answer it (one small
+                // write; pipe writes that size are atomic beside the
+                // per-session runtime's own)
                 Ev::Stdin(lines::Read::TooLong(_)) => {
-                    let _ = self.out.message(&answer::too_long(self.limit.get()));
+                    let _ = self.out.message(&answer::too_long(self.limit));
                 }
                 // the old connection's late events
                 _ => {}
@@ -206,6 +225,7 @@ impl Relay {
             inflight: Arc::new(Mutex::new(InFlight::default())),
             dropped: Arc::new(Mutex::new(HashSet::new())),
             closed: Arc::new(AtomicBool::new(false)),
+            streaming: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             records: Records::default(),
             held: Held::default(),
             resume: None,
@@ -268,6 +288,8 @@ impl Relay {
             Ev::Stdin(lines::Read::Line(line)) => self.line(line),
             Ev::Stdin(lines::Read::TooLong(_)) => self.say(&answer::too_long(self.limit.get())),
             Ev::Stdin(lines::Read::Eof) => return self.eof(),
+            // raw mode starts at the hand-over, when Rest has the queue
+            Ev::Stdin(lines::Read::Chunk(_)) => {}
             Ev::Attached(Ok(a)) => self.attached(a),
             Ev::Attached(Err(e)) => self.unreachable(e.to_string()),
             Ev::Retry => {
@@ -298,7 +320,7 @@ impl Relay {
             }
             Ev::Reader { generation, .. } if generation != self.generation => {}
             Ev::Reader { event: reader::Event::Answered(_), .. } => {
-                if matches!(self.state, State::Closing(_)) && self.inflight.lock().expect("in-flight lock").is_empty() {
+                if matches!(self.state, State::Closing(_)) && self.nothing_in_flight() {
                     return Some(self.finish());
                 }
             }
@@ -347,9 +369,7 @@ impl Relay {
                 // answered as a held line that "did not run" instead
                 if Self::never_fits(&line, self.to_runtime.message) {
                     let limit = (self.to_runtime.message as usize).saturating_sub(4096);
-                    if let Some((ids, batch)) = Self::ids_of(&message::classify(&line)) {
-                        self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit));
-                    }
+                    self.refuse_too_long(&line, &message::classify(&line), limit);
                     return;
                 }
                 if let Err(over) = self.held.hold(line, self.to_runtime.message as usize) {
@@ -405,6 +425,29 @@ impl Relay {
     }
 
     /// The ids a request or batch line must be answered for, if any.
+    /// What a line too large to send gets: each request its too_long
+    /// answer; a notification or response nothing (nothing answers those);
+    /// a line that isn't a JSON object the null-id answer, as the runtime
+    /// would have given it.
+    fn too_long_refusal(line: &[u8], class: &Line) -> Refusal {
+        if let Some((ids, batch)) = Self::ids_of(class) {
+            return Refusal::Ids(ids, batch);
+        }
+        type Object<'a> = std::collections::HashMap<String, &'a serde_json::value::RawValue>;
+        match class {
+            Line::Plain if serde_json::from_slice::<Object>(line).is_err() => Refusal::Null,
+            _ => Refusal::Nothing,
+        }
+    }
+
+    fn refuse_too_long(&mut self, line: &[u8], class: &Line, limit: usize) {
+        match Self::too_long_refusal(line, class) {
+            Refusal::Ids(ids, batch) => self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit)),
+            Refusal::Null => self.say(&answer::too_long(limit)),
+            Refusal::Nothing => {}
+        }
+    }
+
     fn ids_of(class: &Line) -> Option<(Vec<Vec<u8>>, bool)> {
         match class {
             Line::Request { id, .. } => Some((vec![id.clone()], false)),
@@ -458,9 +501,7 @@ impl Relay {
             let limit = (self.to_runtime.message as usize).saturating_sub(4096);
             // a notification (or a response) too large is dropped: nothing
             // answers a notification
-            if let Some((ids, batch)) = Self::ids_of(&class) {
-                self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit));
-            }
+            self.refuse_too_long(&line, &class, limit);
             return;
         };
         if let Some(n) = seq {
@@ -492,6 +533,7 @@ impl Relay {
             dropped: self.dropped.clone(),
             out: self.out.clone(),
             closed: self.closed.clone(),
+            streaming: self.streaming.clone(),
         };
         let from_runtime = a.welcome.to_shim;
         let (rtx, rrx) = mpsc::sync_channel(QUEUE);
@@ -599,10 +641,14 @@ impl Relay {
                 if let Some(w) = self.writer.take() {
                     let _ = w.shutdown();
                 }
-                self.limit.set(OWN_LIMIT);
+                // from here stdin's bytes pass through unsplit: the
+                // per-session runtime bounds its lines itself, and the shim
+                // buffers none of them
+                let limit = self.limit.get();
+                self.limit.set(lines::Limit::RAW);
                 let (_, dead) = mpsc::sync_channel(1);
                 let rx = std::mem::replace(&mut self.rx, dead);
-                let rest = Rest { rx, out: self.out.clone(), limit: self.limit.clone() };
+                let rest = Rest { rx, out: self.out.clone(), limit };
                 return Some(Exit::OwnRuntime { reason, held: self.held.take(), rest });
             }
             _ => {}
@@ -644,23 +690,31 @@ impl Relay {
             t.crash_answers()
         };
         // a bounded barrier: an answer the reader is still streaming ends
-        // first (it holds stdout's lock); one stalled past STDOUT_BARRIER is
-        // left, and the crash answers aren't written after half of it
-        match self.out.lock_within(STDOUT_BARRIER) {
-            Some(mut held) => {
-                for a in answers {
-                    if held.message(&a).is_err() {
-                        self.stdout_gone = true;
-                        return;
-                    }
-                }
+        // first (it holds stdout's lock). One stalled past the barrier is
+        // cut: the connection is shut, so the reader ends that line and
+        // writes its request's crash answer, and then these follow. Only a
+        // stdout that takes nothing (the client not reading) loses them.
+        let wait = self.setup.timing.barrier;
+        let mut held = self.out.lock_within(wait);
+        if held.is_none() {
+            let _ = writeln!(io::stderr(), "ch-shim: an answer was still being written after {wait:?}; cutting it");
+            if let Some(w) = self.writer.as_ref() {
+                let _ = w.shutdown();
             }
-            None => {
-                let _ = writeln!(
-                    io::stderr(),
-                    "ch-shim: an answer was still being written after {} s; ending",
-                    STDOUT_BARRIER.as_secs()
-                );
+            held = self.out.lock_within(wait);
+        }
+        let Some(mut held) = held else {
+            let _ = writeln!(
+                io::stderr(),
+                "ch-shim: stdout took nothing for {wait:?}; {} answers not written",
+                answers.len()
+            );
+            return;
+        };
+        for a in answers {
+            if held.message(&a).is_err() {
+                self.stdout_gone = true;
+                return;
             }
         }
     }
@@ -739,10 +793,15 @@ impl Relay {
         }
         self.control(br#"{"op":"bye"}"#);
         self.state = State::Closing(Instant::now() + self.setup.timing.closing);
-        if self.inflight.lock().expect("in-flight lock").is_empty() {
+        if self.nothing_in_flight() {
             return Some(self.finish());
         }
         None
+    }
+
+    /// No request is waiting for its answer, and none is being written.
+    fn nothing_in_flight(&self) -> bool {
+        self.inflight.lock().expect("in-flight lock").is_empty() && self.streaming.load(Ordering::SeqCst) == 0
     }
 
     fn finish(&mut self) -> Exit {
@@ -776,14 +835,18 @@ pub fn own_runtime(
     home: &Home,
     args: &[OsString],
     held: Vec<Vec<u8>>,
-    rest: impl Iterator<Item = Vec<u8>> + Send + 'static,
+    rest: impl Iterator<Item = Piece> + Send + 'static,
 ) -> io::Result<i32> {
     let shim = config::read_shim(home).map_err(|e| io::Error::other(e.to_string()))?;
     let mut child: Child = own_command(&shim, home, args).stdin(Stdio::piped()).spawn()?;
     let mut stdin: ChildStdin = child.stdin.take().expect("piped");
     thread::spawn(move || {
-        for line in held.into_iter().chain(rest) {
-            if stdin.write_all(&line).and_then(|()| stdin.write_all(b"\n")).is_err() {
+        for piece in held.into_iter().map(Piece::Line).chain(rest) {
+            let wrote = match piece {
+                Piece::Line(l) => stdin.write_all(&l).and_then(|()| stdin.write_all(b"\n")),
+                Piece::Raw(b) => stdin.write_all(&b),
+            };
+            if wrote.is_err() {
                 return;
             }
         }
@@ -1055,11 +1118,16 @@ mod tests {
         assert_eq!(held, vec![br#"{"jsonrpc":"2.0","id":1,"method":"a"}"#.to_vec()]);
         client_in.write_all(b"{\"later\":1}\n").unwrap();
         drop(client_in);
-        assert_eq!(
-            rest.collect::<Vec<_>>(),
-            vec![br#"{"later":1}"#.to_vec()],
-            "lines after the hand-over reach it too"
-        );
+        let bytes: Vec<u8> = rest
+            .flat_map(|p| match p {
+                Piece::Line(mut l) => {
+                    l.push(b'\n');
+                    l
+                }
+                Piece::Raw(b) => b,
+            })
+            .collect();
+        assert_eq!(bytes, b"{\"later\":1}\n".to_vec(), "bytes after the hand-over reach it too, as they came");
     }
 
     #[test]
@@ -1194,6 +1262,7 @@ mod tests {
             retry_unit: Duration::from_millis(100),
             closing: CLOSING_GRACE,
             settle: SETTLE_DEADLINE,
+            barrier: STDOUT_BARRIER,
         };
         let relay = Relay::new(
             Setup { home, rest: vec![], client_env: vec![], parent: 1, timing },
@@ -1525,5 +1594,69 @@ mod tests {
         let args = fs::read_to_string(&seen).unwrap();
         let want = format!("start\n--stdio\n--own-runtime\n--home\n{}\n--flag\n", root.display());
         assert_eq!(args, want);
+    }
+
+    #[test]
+    fn a_stalled_stream_at_exit_is_cut_and_every_request_still_gets_an_answer() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing =
+            Timing { closing: Duration::from_millis(200), barrier: Duration::from_millis(200), ..Timing::default() };
+        let (mut client_in, sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n").unwrap();
+        let (seq_a, _) = read_m(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"b\"}\n").unwrap();
+        let _ = read_m(&mut s);
+        let body = br#"{"jsonrpc":"2.0","id":1,"result":{"text":"never finished"}}"#;
+        s.write_all(&m_head(seq_a.unwrap(), body.len())).unwrap();
+        s.write_all(&body[..12]).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in); // EOF; A's stream stalls past the grace and the barrier
+        done.join().unwrap();
+        let lines = sink.lines();
+        let ids: Vec<Option<u64>> =
+            lines[1..].iter().map(|l| serde_json::from_str::<Value>(l).ok().and_then(|v| v["id"].as_u64())).collect();
+        assert_eq!(lines[0].as_bytes(), &body[..12], "{lines:?}");
+        assert_eq!(ids, [Some(1), Some(2)], "A's crash answer after its cut line, then B's: {lines:?}");
+        drop(s);
+    }
+
+    #[test]
+    fn eof_while_an_answer_streams_waits_the_closing_grace_not_just_the_barrier() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing =
+            Timing { closing: Duration::from_secs(3), barrier: Duration::from_millis(200), ..Timing::default() };
+        let (mut client_in, sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"a\"}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        let body = br#"{"jsonrpc":"2.0","id":8,"result":{"text":"slow but in the grace"}}"#;
+        s.write_all(&m_head(seq.unwrap(), body.len())).unwrap();
+        s.write_all(&body[..10]).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in);
+        thread::sleep(Duration::from_millis(700)); // past the barrier, inside the grace
+        assert!(!done.is_finished(), "the shim ended while an answer was streaming, inside the closing grace");
+        let _ = s.write_all(&body[10..]);
+        done.join().unwrap();
+        assert_eq!(sink.lines(), [String::from_utf8(body.to_vec()).unwrap()]);
+    }
+
+    #[test]
+    fn a_line_too_long_to_send_is_answered_unless_it_is_a_notification() {
+        let refuse = |l: &[u8]| Relay::too_long_refusal(l, &message::classify(l));
+        assert_eq!(refuse(br#"{"jsonrpc":"2.0","method":"notifications/x"}"#), Refusal::Nothing);
+        assert_eq!(refuse(br#"{"jsonrpc":"2.0","id":4,"result":{}}"#), Refusal::Nothing, "a response");
+        assert_eq!(refuse(br#"[{"jsonrpc":"2.0","method":"n"}]"#), Refusal::Nothing, "a batch of notifications");
+        assert_eq!(refuse(br#"{"jsonrpc":"2.0","id":4,"method":"m"}"#), Refusal::Ids(vec![b"4".to_vec()], false));
+        assert_eq!(refuse(b"{not json"), Refusal::Null, "unparseable: the null-id answer");
     }
 }

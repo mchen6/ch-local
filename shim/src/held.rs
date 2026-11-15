@@ -34,7 +34,10 @@ impl Held {
         let class = message::classify(&line);
         let is_request = matches!(class, Line::Request { .. } | Line::Batch { .. });
         let cost = line.len() + LINE_OVERHEAD;
-        if self.bytes + cost > max_bytes || (is_request && self.requests >= MAX_REQUESTS) {
+        // an empty queue takes any line (the caller has refused one the
+        // connection could never carry), whatever the per-line charge
+        let over_bytes = !self.lines.is_empty() && self.bytes + cost > max_bytes;
+        if over_bytes || (is_request && self.requests >= MAX_REQUESTS) {
             return Err(match class {
                 Line::Request { id, .. } => Overflow { ids: vec![id], batch: false },
                 Line::Batch { ids } => Overflow { ids, batch: true },
@@ -96,5 +99,12 @@ mod tests {
         let mut tiny = Held::default();
         let n = (0..10_000).take_while(|_| tiny.hold(b"{}".to_vec(), 64 * 1024).is_ok()).count();
         assert!(n < 1100, "{n} tiny lines held in 64 KiB");
+        // a line that fits the connection is held when nothing else is,
+        // whatever the per-line charge
+        let cap = 1000;
+        let mut line = br#"{"jsonrpc":"2.0","id":1,"method":"x","params":""#.to_vec();
+        line.resize(cap - 40 - 2, b'a');
+        line.extend_from_slice(b"\"}");
+        assert_eq!(Held::default().hold(line, cap), Ok(()));
     }
 }

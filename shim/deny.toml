@@ -14,7 +14,7 @@
 # Win32_Storage_FileSystem with Win32_System_IO (the overlapped named pipe:
 # CreateFileW, ReadFile, WriteFile, OVERLAPPED, CancelIoEx).
 #
-# unsafe: win_ffi.rs 48 blocks (one test-only), unix_ffi.rs 2, and main.rs's
+# unsafe: win_ffi.rs 50 blocks (one test-only), unix_ffi.rs 2, and main.rs's
 # one call to unix_ffi::startup_sweep. #![deny(unsafe_code)] everywhere else.
 
 [graph]

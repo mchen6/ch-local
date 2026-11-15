@@ -42,13 +42,7 @@ fn main() -> ExitCode {
     if !rest.is_empty() {
         let shown: Vec<String> = rest.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         eprintln!("ch-shim: runtime flags given ({}): this session runs its own runtime", shown.join(" "));
-        return match relay::own_runtime_inherited(&home, &rest) {
-            Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
-            Err(e) => {
-                eprintln!("ch-shim: the per-session runtime could not be started ({e})");
-                ExitCode::from(1)
-            }
-        };
+        return exit_of(relay::own_runtime_inherited(&home, &rest));
     }
     let client_env = std::env::vars_os().collect();
     let relay = Relay::new(
@@ -68,9 +62,14 @@ fn own(
     home: &Home,
     args: &[std::ffi::OsString],
     held: Vec<Vec<u8>>,
-    lines: impl Iterator<Item = Vec<u8>> + Send + 'static,
+    lines: impl Iterator<Item = relay::Piece> + Send + 'static,
 ) -> ExitCode {
-    match relay::own_runtime(home, args, held, lines) {
+    exit_of(relay::own_runtime(home, args, held, lines))
+}
+
+/// The per-session runtime's exit code as the shim's.
+fn exit_of(r: io::Result<i32>) -> ExitCode {
+    match r {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(e) => {
             eprintln!("ch-shim: the per-session runtime could not be started ({e})");

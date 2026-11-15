@@ -20,6 +20,9 @@ pub enum Read {
     /// A line over the limit, discarded; its length so far.
     TooLong(usize),
     Eof,
+    /// Raw mode (after the hand-over): bytes as they came, newlines
+    /// included, for the per-session runtime, which bounds lines itself.
+    Chunk(Vec<u8>),
 }
 
 /// The bound a reader enforces, shared so the relay can change it when a
@@ -28,6 +31,9 @@ pub enum Read {
 pub struct Limit(Arc<AtomicUsize>);
 
 impl Limit {
+    /// No line splitting at all: next() passes bytes through as Chunks.
+    pub const RAW: usize = usize::MAX;
+
     pub fn new(n: usize) -> Limit {
         Limit(Arc::new(AtomicUsize::new(n)))
     }
@@ -41,11 +47,24 @@ impl Limit {
 
 /// Reads the next line from `r`, holding at most `limit` bytes of it.
 pub fn next<R: BufRead>(r: &mut R, limit: &Limit) -> io::Result<Read> {
+    // a line's bound is the one when its read began (a WELCOME that
+    // lowers it mid-line doesn't cut that line, which then gets its own
+    // id-bearing answer); only raw mode is looked for on every chunk: a
+    // switch mid-line passes the part already read on, the rest as it comes
     let max = limit.get();
     let mut line = Vec::new();
     let mut over = 0usize;
     loop {
         let buf = r.fill_buf()?;
+        if limit.get() == Limit::RAW && over == 0 {
+            if buf.is_empty() {
+                return Ok(if line.is_empty() { Read::Eof } else { Read::Chunk(line) });
+            }
+            line.extend_from_slice(buf);
+            let n = buf.len();
+            r.consume(n);
+            return Ok(Read::Chunk(line));
+        }
         if buf.is_empty() {
             // EOF: a last line without a newline is still a line
             return Ok(if over > 0 {
@@ -77,6 +96,27 @@ pub fn next<R: BufRead>(r: &mut R, limit: &Limit) -> io::Result<Read> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_raw_mode_bytes_pass_as_they_come_with_no_line_buffered() {
+        let mut input = b"{\"a\":1}\n".to_vec();
+        input.extend(std::iter::repeat_n(b'x', 1 << 20)); // a 1 MiB line, no newline
+        let mut r = io::BufReader::with_capacity(4096, &input[..]);
+        let l = Limit::new(16);
+        l.set(Limit::RAW);
+        let mut got = Vec::new();
+        loop {
+            match next(&mut r, &l).unwrap() {
+                Read::Chunk(c) => {
+                    assert!(c.len() <= 4096, "a chunk of {} bytes", c.len());
+                    got.extend(c);
+                }
+                Read::Eof => break,
+                other => panic!("{other:?} in raw mode"),
+            }
+        }
+        assert_eq!(got, input, "every byte, newlines included, in order");
+    }
 
     fn all(input: &[u8], limit: usize) -> Vec<Read> {
         let mut r = io::BufReader::with_capacity(4, input);
