@@ -10,13 +10,19 @@
 //! the client's environment, NODE_OPTIONS least of all. Its working
 //! directory is <home>, its stdio null, and it is detached: on POSIX its
 //! own process group (process_group(0)), so it is not in the terminal's
-//! foreground group; on Windows DETACHED_PROCESS | CREATE_NO_WINDOW.
+//! foreground group; on Windows DETACHED_PROCESS | CREATE_NO_WINDOW, with
+//! the shim's stdio handles made non-inheritable first.
+//!
+//! Residual (POSIX, raised with the reviewer): a descriptor above 2 that the
+//! client passed the shim without FD_CLOEXEC is inherited by the daemon;
+//! closing it in the child needs pre_exec, which is unsafe.
 
 use std::fmt;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use crate::config::{self, ConfigError, DaemonInfo, Home};
+use crate::endpoint;
 use crate::lock::{self, LockError};
 
 #[derive(Debug)]
@@ -31,7 +37,7 @@ impl fmt::Display for StartError {
         match self {
             StartError::Config(e) => write!(f, "{e}"),
             StartError::Lock(LockError::Held(Some(h))) => {
-                write!(f, "start.lock is held by pid {} on {}", h.pid, h.host)
+                write!(f, "start.lock is held ({})", h.content().trim_end())
             }
             StartError::Lock(LockError::Held(None)) => write!(f, "start.lock is held (being written)"),
             StartError::Lock(LockError::Io(e)) => write!(f, "start.lock: {e}"),
@@ -45,6 +51,15 @@ pub fn live(info: &DaemonInfo) -> bool {
     lock::alive(info.pid)
 }
 
+/// Running, for starting's purpose: alive AND taking connections. A
+/// daemon.json left by a crash whose pid was reused by another process is
+/// alive and never answers, so it must not stop a start.
+fn running(info: &DaemonInfo) -> bool {
+    live(info) && endpoint::probe(&info.socket, PROBE)
+}
+
+const PROBE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Starts the daemon unless, under the lock, a live one is found.
 /// Returns whether this call spawned one.
 pub fn ensure_started(home: &Home, deadline: Instant) -> Result<bool, StartError> {
@@ -55,7 +70,7 @@ pub fn ensure_started(home: &Home, deadline: Instant) -> Result<bool, StartError
         return spawn(home).map(|()| true);
     }
     let held = lock::acquire(&home.start_lock(), deadline).map_err(StartError::Lock)?;
-    let running = config::read_daemon(home).map_err(StartError::Config)?.is_some_and(|d| live(&d));
+    let running = config::read_daemon(home).map_err(StartError::Config)?.is_some_and(|d| running(&d));
     let spawned = if running { false } else { spawn(home).map(|()| true)? };
     drop(held);
     Ok(spawned)
@@ -91,6 +106,11 @@ fn detach(cmd: &mut Command) {
 #[cfg(windows)]
 fn detach(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
+    // Windows' CreateProcessW is called with handle inheritance on: the
+    // shim's own stdio (the client's pipes, inheritable when the client made
+    // them so) must not reach the daemon, which outlives the shim and would
+    // keep the client from ever seeing EOF. The daemon's own stdio is null.
+    crate::win_ffi::stdio_not_inherited();
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);

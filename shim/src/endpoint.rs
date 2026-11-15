@@ -127,6 +127,26 @@ mod imp {
 
 pub use imp::{Endpoint, check, connect};
 
+/// Whether anything is where daemon.json says the socket is (Windows: a
+/// pipe name is only a name, so true; its connect says).
+pub fn exists(socket: &str) -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+    std::fs::symlink_metadata(socket).is_ok()
+}
+
+/// Whether the runtime takes a connection there within `limit`: the
+/// endpoint checked, then a connect on a worker thread, closed at once.
+pub fn probe(socket: &str, limit: Duration) -> bool {
+    let Ok(end) = check(socket) else { return false };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(connect(&end).is_ok());
+    });
+    rx.recv_timeout(limit).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

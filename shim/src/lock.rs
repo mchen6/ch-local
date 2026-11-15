@@ -13,7 +13,7 @@
 //!   removed only if it is still the same holder;
 //! - released only while it still holds its own content.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,31 +28,65 @@ pub const STALE: Duration = Duration::from_secs(120);
 pub const BREAK_STALE: Duration = Duration::from_secs(10);
 pub const POLL: Duration = Duration::from_millis(200);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A lock's holder, as lib/lock.js reads one: any JSON value parsed from
+/// the file (readHolder), its fields compared as JavaScript compares them.
+/// Ours is always {pid, host, at}; another's may lack a field, or carry a
+/// value of another type, and is judged as Node would judge it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Holder {
-    pub pid: i64,
-    pub host: String,
-    pub at: String,
+    pub pid: Option<Value>,
+    pub host: Option<Value>,
+    pub at: Option<Value>,
 }
 
 impl Holder {
-    /// The lock file's content: compact JSON, pid, host, at, then a newline.
-    pub fn content(&self) -> String {
-        format!(
-            "{{\"pid\":{},\"host\":{},\"at\":{}}}\n",
-            self.pid,
-            serde_json::to_string(&self.host).expect("a string serialises"),
-            serde_json::to_string(&self.at).expect("a string serialises")
-        )
+    pub fn ours(pid: u32, host: &str, at: &str) -> Holder {
+        Holder { pid: Some(Value::from(pid)), host: Some(Value::from(host)), at: Some(Value::from(at)) }
     }
 
+    /// The lock file's content: compact JSON, pid, host, at, then a newline.
+    pub fn content(&self) -> String {
+        let field = |v: &Option<Value>| v.as_ref().map_or_else(|| "null".into(), Value::to_string);
+        format!("{{\"pid\":{},\"host\":{},\"at\":{}}}\n", field(&self.pid), field(&self.host), field(&self.at))
+    }
+
+    /// readHolder: None when the file is unreadable or isn't JSON, or is
+    /// JSON null (`holder == null` in lib/lock.js).
     fn parse(bytes: &[u8]) -> Option<Holder> {
         let v: Value = serde_json::from_slice(bytes).ok()?;
-        Some(Holder {
-            pid: v.get("pid")?.as_i64()?,
-            host: v.get("host")?.as_str()?.to_string(),
-            at: v.get("at")?.as_str()?.to_string(),
-        })
+        if v.is_null() {
+            return None;
+        }
+        let get = |k: &str| v.get(k).cloned();
+        Some(Holder { pid: get("pid"), host: get("host"), at: get("at") })
+    }
+
+    /// Number.isInteger(holder.pid): a JSON number with no fraction.
+    fn integer_pid(&self) -> Option<i64> {
+        let n = self.pid.as_ref()?.as_f64()?;
+        (n.fract() == 0.0 && n.is_finite()).then_some(n as i64)
+    }
+
+    fn on_host(&self, host: &str) -> bool {
+        self.host.as_ref().and_then(Value::as_str) == Some(host)
+    }
+
+    /// sameHolder: pid, host and at all equal (=== on JSON values: two
+    /// numbers by value, two strings by content, a missing field equal to a
+    /// missing field).
+    fn same(&self, other: &Holder) -> bool {
+        fn eq(a: &Option<Value>, b: &Option<Value>) -> bool {
+            match (a, b) {
+                (None, None) => true,
+                (Some(Value::Number(x)), Some(Value::Number(y))) => x.as_f64() == y.as_f64(),
+                (Some(Value::String(x)), Some(Value::String(y))) => x == y,
+                (Some(Value::Bool(x)), Some(Value::Bool(y))) => x == y,
+                (Some(Value::Null), Some(Value::Null)) => true,
+                // objects and arrays are never === in JavaScript
+                _ => false,
+            }
+        }
+        eq(&self.pid, &other.pid) && eq(&self.host, &other.host) && eq(&self.at, &other.at)
     }
 }
 
@@ -103,12 +137,22 @@ fn host_name() -> String {
     crate::win_ffi::dns_hostname().unwrap_or_default()
 }
 
+/// As Node's process.kill(pid, 0): true unless it fails with anything but
+/// EPERM. 0 is this process group and -n the group n, as kill(2) has them;
+/// a pid kill(2) can't take (past i32) fails as Node's does, dead.
 #[cfg(unix)]
 pub(crate) fn alive(pid: i64) -> bool {
-    let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else {
-        return false;
+    use rustix::process::{Pid, test_kill_current_process_group, test_kill_process, test_kill_process_group};
+    let Ok(raw) = i32::try_from(pid) else { return false };
+    let r = match raw {
+        0 => test_kill_current_process_group(),
+        n if n > 0 => test_kill_process(Pid::from_raw(n).expect("positive")),
+        n => match n.checked_neg().and_then(Pid::from_raw) {
+            Some(g) => test_kill_process_group(g),
+            None => return false,
+        },
     };
-    match rustix::process::test_kill_process(pid) {
+    match r {
         Ok(()) => true,
         Err(e) => e == rustix::io::Errno::PERM,
     }
@@ -202,14 +246,16 @@ impl Drop for Held {
         if let Some(t) = self.beat.take() {
             let _ = t.join();
         }
-        if read_holder(&self.lock).as_ref() == Some(&self.mine) {
+        if read_holder(&self.lock).is_some_and(|h| h.same(&self.mine)) {
             let _ = fs::remove_file(&self.lock);
         }
     }
 }
 
+// opened for writing (nothing written): Windows needs FILE_WRITE_ATTRIBUTES
+// to set the mtime, which a read-only handle lacks
 fn touch(lock: &Path) {
-    if let Ok(f) = File::open(lock) {
+    if let Ok(f) = OpenOptions::new().write(true).open(lock) {
         let _ = f.set_modified(SystemTime::now());
     }
 }
@@ -221,17 +267,21 @@ pub fn acquire(lock: &Path, deadline: Instant) -> Result<Held, LockError> {
 
 fn acquire_as(lock: &Path, deadline: Instant, heartbeat: Duration) -> Result<Held, LockError> {
     let host = this_host();
-    let mine = Holder { pid: i64::from(std::process::id()), host: host.clone(), at: iso_utc(SystemTime::now()) };
+    let mine = Holder::ours(std::process::id(), &host, &iso_utc(SystemTime::now()));
     loop {
         if create(lock, &mine).map_err(LockError::Io)? {
             break;
         }
         let holder = read_holder(lock);
         // empty or unreadable: being written, never stale
+        // lib/lock.js: gone = holder != null && Number.isInteger(holder.pid)
+        //   && ((holder.host === host && !alive(holder.pid)) || heartbeatAge > STALE_MS)
         if let Some(h) = &holder {
-            let gone = (h.host == host && !alive(h.pid)) || age(lock).is_some_and(|a| a > STALE);
-            if gone && clear_stale(lock, h).map_err(LockError::Io)? {
-                continue;
+            if let Some(pid) = h.integer_pid() {
+                let gone = (h.on_host(&host) && !alive(pid)) || age(lock).is_some_and(|a| a > STALE);
+                if gone && clear_stale(lock, h).map_err(LockError::Io)? {
+                    continue;
+                }
             }
         }
         if Instant::now() + POLL > deadline {
@@ -258,6 +308,7 @@ fn acquire_as(lock: &Path, deadline: Instant, heartbeat: Duration) -> Result<Hel
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::fs::File;
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
@@ -271,9 +322,9 @@ mod tests {
     #[test]
     fn the_content_is_lib_lock_js_s_byte_for_byte() {
         let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
-        let h = Holder { pid: 4242, host: "devbox#pid:[4026531836]".into(), at: "2026-11-15T09:30:00.000Z".into() };
+        let h = Holder::ours(4242, "devbox#pid:[4026531836]", "2026-11-15T09:30:00.000Z");
         assert_eq!(h.content(), v["startLock"]["content"].as_str().unwrap());
-        assert_eq!(Holder::parse(h.content().as_bytes()), Some(h));
+        assert!(Holder::parse(h.content().as_bytes()).unwrap().same(&h));
     }
 
     #[test]
@@ -299,10 +350,10 @@ mod tests {
         drop(held);
         assert!(!lock.exists(), "released");
         // a holder on this host whose pid is dead
-        let dead = Holder { pid: 2_000_000_000, host: this_host(), at: iso_utc(SystemTime::now()) };
+        let dead = Holder::ours(2_000_000_000, &this_host(), &iso_utc(SystemTime::now()));
         fs::write(&lock, dead.content()).unwrap();
         let held = acquire(&lock, Instant::now() + Duration::from_secs(1)).unwrap();
-        assert_eq!(read_holder(&lock).unwrap().pid, i64::from(std::process::id()));
+        assert_eq!(read_holder(&lock).unwrap().integer_pid(), Some(i64::from(std::process::id())));
         drop(held);
         fs::remove_dir_all(&d).unwrap();
     }
@@ -311,9 +362,9 @@ mod tests {
     fn another_host_s_lock_is_waited_for_until_its_heartbeat_is_two_minutes_old() {
         let d = dir();
         let lock = d.join("start.lock");
-        let other = Holder { pid: 1, host: "elsewhere".into(), at: iso_utc(SystemTime::now()) };
+        let other = Holder::ours(1, "elsewhere", &iso_utc(SystemTime::now()));
         fs::write(&lock, other.content()).unwrap();
-        assert!(matches!(acquire(&lock, Instant::now()), Err(LockError::Held(Some(h))) if h == other));
+        assert!(matches!(acquire(&lock, Instant::now()), Err(LockError::Held(Some(h))) if h.same(&other)));
         File::open(&lock).unwrap().set_modified(SystemTime::now() - Duration::from_secs(121)).unwrap();
         drop(acquire(&lock, Instant::now() + Duration::from_secs(1)).unwrap());
         fs::remove_dir_all(&d).unwrap();
@@ -330,14 +381,41 @@ mod tests {
     }
 
     #[test]
+    fn holders_are_judged_as_lib_lock_js_judges_them() {
+        let d = dir();
+        let lock = d.join("start.lock");
+        // no `at`, an integer pid in float form, another host, a stale
+        // heartbeat: Node clears it, so the shim must too
+        fs::write(&lock, "{\"pid\":123.0,\"host\":\"elsewhere\"}\n").unwrap();
+        File::open(&lock).unwrap().set_modified(SystemTime::now() - Duration::from_secs(180)).unwrap();
+        drop(acquire(&lock, Instant::now() + Duration::from_secs(1)).unwrap());
+        // pid 0 on this host: kill(0, 0) is this process group, alive, so a
+        // fresh lock is held
+        fs::write(
+            &lock,
+            format!("{{\"pid\":0,\"host\":{},\"at\":\"x\"}}\n", serde_json::to_string(&this_host()).unwrap()),
+        )
+        .unwrap();
+        assert!(matches!(acquire(&lock, Instant::now()), Err(LockError::Held(Some(_)))));
+        // a pid that isn't an integer is never gone, however old
+        fs::write(&lock, "{\"pid\":1.5,\"host\":\"elsewhere\",\"at\":\"x\"}\n").unwrap();
+        File::open(&lock).unwrap().set_modified(SystemTime::now() - Duration::from_secs(600)).unwrap();
+        assert!(matches!(acquire(&lock, Instant::now()), Err(LockError::Held(Some(_)))));
+        // JSON null is no holder (unreadable), never stale
+        fs::write(&lock, "null").unwrap();
+        assert!(matches!(acquire(&lock, Instant::now()), Err(LockError::Held(None))));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
     fn a_lock_no_longer_ours_is_left_on_release() {
         let d = dir();
         let lock = d.join("start.lock");
         let held = acquire(&lock, Instant::now() + Duration::from_secs(1)).unwrap();
-        let other = Holder { pid: 1, host: "elsewhere".into(), at: "x".into() };
+        let other = Holder::ours(1, "elsewhere", "x");
         fs::write(&lock, other.content()).unwrap();
         drop(held);
-        assert_eq!(read_holder(&lock), Some(other));
+        assert!(read_holder(&lock).unwrap().same(&other));
         fs::remove_dir_all(&d).unwrap();
     }
 

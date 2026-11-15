@@ -1,34 +1,47 @@
 //! Attaching: from the home's files to a WELCOMEd connection, within the
 //! spec's 20 s (contract 2, sections 1 and 6).
 //!
-//! Each try reads daemon.json (no daemon, or a dead pid: one is started
-//! under start.lock), the secret, and the endpoint, every one trust-checked,
-//! then connects and makes the handshake with a nonce from the OS. Then, by
-//! what happened:
+//! Each try reads daemon.json, the secret and the endpoint, every one
+//! trust-checked, then connects and makes the handshake with a nonce from
+//! the OS. The connect and the handshake run bounded by min(5 s, what is
+//! left of the 20 s), on a worker thread, so a runtime (or a squatter) that
+//! accepts and never answers can't hold the shim past its budget on any
+//! platform; a Windows pipe read has no timeout of its own.
+//!
+//! When there is no daemon, its pid is dead, or its socket refuses or is
+//! gone (a daemon.json left by a crash, its pid reused), one is started under
+//! start.lock, once per attach; then the shim polls for it. Then, by what
+//! happened:
 //! - a PROVE whose ms doesn't check, or BAD_PROOF: the runtime may have
-//!   restarted with a new secret, so the files are read again, at once;
-//! - RESUME_REFUSED: a new session, without `resume`, on a new connection;
-//!   the caller then replays its records;
-//! - BUSY, SHUTTING_DOWN, a connection refused or closed, a timeout: again
-//!   after 100 ms to 2 s, randomised;
+//!   restarted with a new secret, so the files are read again (100 ms on);
+//! - RESUME_REFUSED: at once, as a new session, without `resume` (once: a
+//!   new session has no resume to refuse);
+//! - BUSY, SHUTTING_DOWN, a file missing, half-written or replaced while
+//!   checked, a timeout: again after 100 ms to 2 s, randomised;
 //! - PROTOCOL, an unknown code, a file that fails its trust check: stop,
 //!   saying why;
 //! - 20 s gone: give up, saying the last reason.
 
 use std::fmt;
+use std::io;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::{self, ConfigError, Home};
 use crate::daemon;
 use crate::endpoint::{self, Conn};
 use crate::handshake::{self, HandshakeError, Refusal, Welcome};
+use crate::trust::TrustKind;
 
 /// How long an attach may take in all.
 pub const BUDGET: Duration = Duration::from_secs(20);
+/// The longest one connect and handshake may take.
+const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 /// The pause before the files are read again after a wrong proof.
 const REREAD_PAUSE: Duration = Duration::from_millis(100);
-/// The longest one handshake may take, its reads bounded by it.
-const HANDSHAKE_READ: Duration = Duration::from_secs(5);
+/// How often a started daemon is looked for.
+const POLL: Duration = Duration::from_millis(200);
 
 pub struct Attached {
     pub conn: Box<dyn Conn>,
@@ -56,10 +69,12 @@ impl fmt::Display for AttachError {
 }
 
 enum Next {
-    /// Read the files again at once.
+    /// Read the files again, after REREAD_PAUSE.
     Reread(String),
-    /// RESUME_REFUSED: again at once, as a new session.
+    /// RESUME_REFUSED.
     NewSession,
+    /// A daemon is starting: look again after POLL.
+    Poll(String),
     /// Wait 100 ms to 2 s, then try again.
     Later(String),
     Stop(String),
@@ -79,14 +94,23 @@ fn jitter() -> Duration {
 
 fn config_next(e: ConfigError) -> Next {
     match e {
-        // a file missing or half-written while a daemon starts or stops is
-        // tried again; one that fails its trust check is not
-        ConfigError::Trust(t) if t.why.contains("cannot be read") || t.why.contains("cannot be opened") => {
-            Next::Later(t.to_string())
-        }
+        // missing, or replaced while it was checked, while a daemon starts,
+        // stops or restarts: again; half-written JSON: again; a file that is
+        // there and fails its trust check: stop
+        ConfigError::Trust(t) if t.kind != TrustKind::Refused => Next::Later(t.to_string()),
         ConfigError::Malformed { .. } => Next::Later(e.to_string()),
         other => Next::Stop(other.to_string()),
     }
+}
+
+/// Runs `f` on a worker thread for at most `limit`; None past it. A worker
+/// left behind ends when its blocking call does, or with the process.
+fn bounded<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(limit).ok()
 }
 
 /// Attaches within BUDGET, resuming `resume` if given.
@@ -96,52 +120,91 @@ pub fn attach(home: &Home, resume: Option<&str>) -> Result<Attached, AttachError
 
 pub fn attach_within(home: &Home, resume: Option<&str>, deadline: Instant) -> Result<Attached, AttachError> {
     let mut resume = resume.map(String::from);
-    let mut last;
-    loop {
-        match try_once(home, resume.as_deref(), deadline) {
+    let mut spawned = false;
+    let mut last = String::from("not tried");
+    let pause = |d: Duration| thread::sleep(d.min(deadline.saturating_duration_since(Instant::now())));
+    while Instant::now() < deadline {
+        match try_once(home, resume.as_deref(), deadline, &mut spawned) {
             Ok((conn, welcome)) => return Ok(Attached { conn, welcome, new_session: resume.is_none() }),
-            // at once, once: a new session has no resume to refuse
+            Err(Next::NewSession) if resume.is_some() => resume = None,
             Err(Next::NewSession) => {
-                resume = None;
-                continue;
+                last = "the runtime refused a new session as a resume".into();
+                pause(jitter());
             }
             Err(Next::Stop(why)) => return Err(AttachError::Stop(why)),
-            // not at once: a secret that is wrong for good must not spin
             Err(Next::Reread(why)) => {
                 last = why;
-                std::thread::sleep(REREAD_PAUSE);
+                pause(REREAD_PAUSE);
+            }
+            Err(Next::Poll(why)) => {
+                last = why;
+                pause(POLL);
             }
             Err(Next::Later(why)) => {
                 last = why;
-                let wait = jitter();
-                if Instant::now() + wait >= deadline {
-                    return Err(AttachError::GaveUp(last));
-                }
-                std::thread::sleep(wait);
+                pause(jitter());
             }
         }
-        if Instant::now() >= deadline {
-            return Err(AttachError::GaveUp(last));
+    }
+    Err(AttachError::GaveUp(last))
+}
+
+/// No reachable daemon: start one, once per attach.
+fn start(home: &Home, deadline: Instant, spawned: &mut bool) -> Next {
+    if *spawned {
+        return Next::Poll("waiting for the daemon this shim started".into());
+    }
+    match daemon::ensure_started(home, deadline) {
+        Ok(true) => {
+            *spawned = true;
+            Next::Poll("the daemon is starting".into())
         }
+        // another started one, under the lock: try it at once
+        Ok(false) => Next::Reread("a daemon is running".into()),
+        Err(daemon::StartError::Config(c)) => config_next(c),
+        Err(other) => Next::Later(other.to_string()),
     }
 }
 
-fn try_once(home: &Home, resume: Option<&str>, deadline: Instant) -> Result<(Box<dyn Conn>, Welcome), Next> {
+/// A connection and its handshake's outcome.
+type Tried = (Box<dyn Conn>, Result<Welcome, HandshakeError>);
+
+fn unreachable_kind(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
+}
+
+fn try_once(
+    home: &Home,
+    resume: Option<&str>,
+    deadline: Instant,
+    spawned: &mut bool,
+) -> Result<(Box<dyn Conn>, Welcome), Next> {
     let info = match config::read_daemon(home).map_err(config_next)? {
         Some(info) if daemon::live(&info) => info,
-        _ => {
-            daemon::ensure_started(home, deadline).map_err(|e| match e {
-                daemon::StartError::Config(c) => config_next(c),
-                other => Next::Later(other.to_string()),
-            })?;
-            return Err(Next::Later("the daemon is starting".into()));
-        }
+        _ => return Err(start(home, deadline, spawned)),
     };
     let secret = config::read_secret(home).map_err(config_next)?;
-    let end = endpoint::check(&info.socket).map_err(|e| Next::Later(e.to_string()))?;
-    let mut conn = endpoint::connect(&end).map_err(|e| Next::Later(format!("connecting: {e}")))?;
-    let _ = conn.set_read_timeout(Some(HANDSHAKE_READ));
-    match handshake::attach(&mut conn, &secret, nonce(), resume) {
+    let end = match endpoint::check(&info.socket) {
+        Ok(e) => e,
+        // no socket where daemon.json says: a crashed daemon's file
+        Err(_) if !endpoint::exists(&info.socket) => return Err(start(home, deadline, spawned)),
+        Err(e) => return Err(Next::Stop(e.to_string())),
+    };
+    let limit = HANDSHAKE_LIMIT.min(deadline.saturating_duration_since(Instant::now()));
+    let resume = resume.map(String::from);
+    let outcome = bounded(limit, move || -> Result<Tried, io::Error> {
+        let mut conn = endpoint::connect(&end)?;
+        let _ = conn.set_read_timeout(Some(limit.max(Duration::from_millis(1))));
+        let w = handshake::attach(&mut conn, &secret, nonce(), resume.as_deref());
+        Ok((conn, w))
+    });
+    let (conn, result) = match outcome {
+        None => return Err(Next::Later(format!("the runtime did not answer within {} ms", limit.as_millis()))),
+        Some(Err(e)) if unreachable_kind(&e) => return Err(start(home, deadline, spawned)),
+        Some(Err(e)) => return Err(Next::Later(format!("connecting: {e}"))),
+        Some(Ok(x)) => x,
+    };
+    match result {
         Ok(w) => {
             let _ = conn.set_read_timeout(None);
             Ok((conn, w))
@@ -382,5 +445,96 @@ mod tests {
                 "the daemon was given {name}: {saw}"
             );
         }
+    }
+
+    fn script_home(t: &TestHome, runs: &Path) {
+        // a stand-in ch-local whose `daemon` only counts its starts
+        let script = t.home.root().join("count-starts.sh");
+        fs::write(&script, format!("echo started >> '{}'\n", runs.display())).unwrap();
+        let shim = serde_json::json!({"node": "/bin/sh", "chLocal": script, "env": {"PATH": "/usr/bin:/bin"}});
+        private(&t.home.shim_json(), shim.to_string().as_bytes());
+    }
+
+    #[test]
+    fn a_runtime_that_accepts_and_never_answers_is_given_up_on_by_the_deadline() {
+        let t = home();
+        write_secret(&t.home, &[7u8; 32]);
+        write_daemon_json(&t.home);
+        let listener = UnixListener::bind(socket_of(&t.home)).unwrap();
+        thread::spawn(move || {
+            let held: Vec<_> = listener.incoming().take(20).collect();
+            thread::sleep(Duration::from_secs(30));
+            drop(held);
+        });
+        let started = Instant::now();
+        assert!(matches!(
+            attach_within(&t.home, None, Instant::now() + Duration::from_secs(2)),
+            Err(AttachError::GaveUp(_))
+        ));
+        assert!(started.elapsed() < Duration::from_millis(2600), "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_daemon_json_whose_pid_lives_but_whose_socket_is_gone_starts_a_daemon_once() {
+        let t = home();
+        write_secret(&t.home, &[7u8; 32]);
+        // our own pid, alive: a crashed daemon's file with its pid reused
+        write_daemon_json(&t.home);
+        let runs = t.home.root().join("starts");
+        script_home(&t, &runs);
+        assert!(matches!(
+            attach_within(&t.home, None, Instant::now() + Duration::from_millis(1500)),
+            Err(AttachError::GaveUp(_))
+        ));
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 1, "started once, then polled");
+    }
+
+    #[test]
+    fn no_daemon_starts_one_once_however_long_it_takes_to_appear() {
+        let t = home();
+        let runs = t.home.root().join("starts");
+        script_home(&t, &runs);
+        assert!(matches!(
+            attach_within(&t.home, None, Instant::now() + Duration::from_millis(1500)),
+            Err(AttachError::GaveUp(_))
+        ));
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn a_runtime_refusing_every_session_as_a_resume_ends_at_the_deadline() {
+        let (t, _rx) = ready(vec![Reply::Refuse("RESUME_REFUSED"); 40]);
+        let started = Instant::now();
+        assert!(matches!(
+            attach_within(&t.home, None, Instant::now() + Duration::from_millis(1500)),
+            Err(AttachError::GaveUp(_))
+        ));
+        assert!(started.elapsed() < Duration::from_millis(2100));
+    }
+
+    #[test]
+    fn a_fifo_where_the_secret_should_be_is_refused_at_once() {
+        let (t, _rx) = ready(vec![]);
+        fs::remove_file(t.home.secret()).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            t.home.secret(),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let started = Instant::now();
+        assert!(matches!(attach(&t.home, None), Err(AttachError::Stop(w)) if w.contains("not a regular file")));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_missing_file_is_missing_not_refused() {
+        let t = home();
+        let e = crate::trust::read_private_in(&t.home.run_dir(), "secret", 65).unwrap_err();
+        assert_eq!(e.kind, TrustKind::Missing);
     }
 }

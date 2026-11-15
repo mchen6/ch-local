@@ -11,14 +11,16 @@ use std::os::windows::io::AsRawHandle;
 use std::ptr;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_SUCCESS, GetLastError, HANDLE, LocalFree, STILL_ACTIVE,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_SUCCESS, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, LocalFree,
+    STILL_ACTIVE, SetHandleInformation,
 };
 use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION, GetAce,
-    GetAclInformation, GetLengthSid, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION, GetAce, GetAclInformation,
+    GetLengthSid, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY,
+    TOKEN_USER, TokenUser,
 };
+use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -48,7 +50,29 @@ pub struct Acl {
     pub other_aces: bool,
 }
 
-/// A SID's bytes, copied out of memory the caller owns.
+/// A SID inside an ACE, copied out only if it lies wholly within the
+/// `room` bytes the ACE has for it: its header (2 bytes: revision, count)
+/// is read only when there is room for it, and its length (8 + 4 × count)
+/// checked against `room` before anything else is read.
+///
+/// # Safety
+/// `sid` must point to `room` readable bytes that stay valid for this call.
+unsafe fn sid_bytes_within(sid: *const u8, room: usize) -> Option<Vec<u8>> {
+    if room < 8 {
+        return None;
+    }
+    // SAFETY: room >= 8, so byte 1 (the sub-authority count) is readable.
+    let count = usize::from(unsafe { *sid.add(1) });
+    let len = 8 + 4 * count;
+    if len > room {
+        return None;
+    }
+    // SAFETY: len <= room bytes are readable (the caller's contract).
+    Some(unsafe { std::slice::from_raw_parts(sid, len) }.to_vec())
+}
+
+/// A SID's bytes, copied out of memory the OS gave (a token, a security
+/// descriptor), which holds the whole SID.
 ///
 /// # Safety
 /// `sid` must point to a SID that stays valid for this call.
@@ -144,6 +168,8 @@ pub fn file_acl(file: &File) -> io::Result<Acl> {
             acl.other_aces = true;
             return Ok(acl);
         }
+        let dacl_start = dacl as usize;
+        let dacl_end = dacl_start + info.AclBytesInUse as usize;
         for i in 0..info.AceCount {
             let mut ace: *mut c_void = ptr::null_mut();
             // SAFETY: i < AceCount; GetAce sets ace to point inside the DACL.
@@ -151,19 +177,30 @@ pub fn file_acl(file: &File) -> io::Result<Acl> {
                 acl.other_aces = true;
                 continue;
             }
-            // SAFETY: every ACE starts with an ACE_HEADER.
+            // the ACE header must lie within the DACL's used bytes
+            let at = ace as usize;
+            if at < dacl_start || at + size_of::<ACE_HEADER>() > dacl_end {
+                acl.other_aces = true;
+                continue;
+            }
+            // SAFETY: the header's 4 bytes are within the DACL (checked above).
             let header = unsafe { *(ace as *const ACE_HEADER) };
+            let size = usize::from(header.AceSize);
+            if at + size > dacl_end || size < 8 {
+                acl.other_aces = true;
+                continue;
+            }
             if header.AceType != ACCESS_ALLOWED_ACE_TYPE && header.AceType != ACCESS_DENIED_ACE_TYPE {
                 acl.other_aces = true;
                 continue;
             }
-            // SAFETY: allow and deny ACEs share ACCESS_ALLOWED_ACE's layout
-            // (header, mask, then the SID at SidStart), within the DACL.
-            let a = ace as *const ACCESS_ALLOWED_ACE;
-            let mask = unsafe { (*a).Mask };
-            // SAFETY: SidStart is the first word of the ACE's SID, inside the
-            // DACL, which lives in sd.
-            let sid = unsafe { sid_bytes(ptr::addr_of!((*a).SidStart) as PSID) };
+            // SAFETY: an allow or deny ACE is a header (4 bytes), a mask (4
+            // bytes) and the SID; size >= 8 and the ACE is within the DACL,
+            // so the mask at offset 4 is readable.
+            let mask = unsafe { *((ace as *const u8).add(4) as *const u32) };
+            // SAFETY: the SID starts at offset 8 and has size - 8 bytes of the
+            // ACE for it, all within the DACL; sid_bytes_within reads no more.
+            let sid = unsafe { sid_bytes_within((ace as *const u8).add(8), size - 8) };
             match sid {
                 Some(sid) => acl.rules.push(Rule {
                     sid,
@@ -216,4 +253,20 @@ pub fn dns_hostname() -> Option<String> {
         return None;
     }
     Some(String::from_utf16_lossy(&buf[..len as usize]))
+}
+
+/// The shim's own stdin, stdout and stderr handles made non-inheritable, so
+/// a process it spawns (the daemon) never holds the client's pipes.
+pub fn stdio_not_inherited() {
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: GetStdHandle returns this process's handle (or null or
+        // INVALID_HANDLE_VALUE, which SetHandleInformation refuses); clearing
+        // its inherit flag changes nothing else about it.
+        unsafe {
+            let h = GetStdHandle(which);
+            if !h.is_null() {
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
 }

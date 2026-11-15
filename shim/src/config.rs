@@ -99,10 +99,6 @@ impl Home {
     }
 }
 
-fn missing(path: &Path) -> bool {
-    matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-}
-
 fn json_object(path: &Path, bytes: &[u8]) -> Result<serde_json::Map<String, Value>, ConfigError> {
     match serde_json::from_slice::<Value>(bytes) {
         Ok(Value::Object(o)) => Ok(o),
@@ -136,15 +132,13 @@ pub struct DaemonInfo {
 /// is stopping). The run directory is checked first; a missing run
 /// directory is also None.
 pub fn read_daemon(home: &Home) -> Result<Option<DaemonInfo>, ConfigError> {
-    if missing(&home.run_dir()) {
-        return Ok(None);
-    }
-    trust::check_dir(&home.run_dir())?;
     let path = home.daemon_json();
-    if missing(&path) {
-        return Ok(None);
-    }
-    let bytes = trust::read_private(&path, JSON_MAX)?;
+    let bytes = match trust::read_private_in(&home.run_dir(), "daemon.json", JSON_MAX) {
+        Ok(b) => b,
+        // no run directory, or no daemon.json: no daemon (yet)
+        Err(e) if e.kind == trust::TrustKind::Missing => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
     let o = json_object(&path, &bytes)?;
     let pid = field(&path, &o, "pid")?
         .as_i64()
@@ -161,9 +155,8 @@ pub fn read_daemon(home: &Home) -> Result<Option<DaemonInfo>, ConfigError> {
 
 /// The runtime's secret; the run directory is checked first.
 pub fn read_secret(home: &Home) -> Result<Secret, ConfigError> {
-    trust::check_dir(&home.run_dir())?;
     let path = home.secret();
-    let bytes = trust::read_private(&path, SECRET_MAX)?;
+    let bytes = trust::read_private_in(&home.run_dir(), "secret", SECRET_MAX)?;
     secret::parse(&bytes).map_err(|e| ConfigError::Malformed { path, why: e.to_string() })
 }
 

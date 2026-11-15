@@ -16,9 +16,22 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// Why a check failed, which decides what the attach does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustKind {
+    /// Not there (yet): a daemon that is starting or stopping. Try again.
+    Missing,
+    /// It changed while it was checked (a file replaced by write-then-rename
+    /// during a restart). Try again.
+    Changed,
+    /// It is there and fails the rule: stop, naming it.
+    Refused,
+}
+
 #[derive(Debug)]
 pub struct TrustError {
     pub path: PathBuf,
+    pub kind: TrustKind,
     pub why: String,
 }
 
@@ -29,16 +42,24 @@ impl fmt::Display for TrustError {
 }
 
 fn refuse(path: &Path, why: impl Into<String>) -> TrustError {
-    TrustError { path: path.to_path_buf(), why: why.into() }
+    TrustError { path: path.to_path_buf(), kind: TrustKind::Refused, why: why.into() }
+}
+
+fn of_io(path: &Path, what: &str, e: std::io::Error) -> TrustError {
+    let kind = if e.kind() == std::io::ErrorKind::NotFound { TrustKind::Missing } else { TrustKind::Refused };
+    TrustError { path: path.to_path_buf(), kind, why: format!("it cannot be {what} ({e})") }
 }
 
 #[cfg(unix)]
 mod posix {
-    use std::fs::{self, File, OpenOptions};
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::fs::{self, File};
+    use std::os::fd::{AsFd, OwnedFd};
+    use std::os::unix::fs::MetadataExt;
     use std::path::Path;
 
-    use super::{TrustError, refuse};
+    use rustix::fs::{Mode, OFlags};
+
+    use super::{TrustError, TrustKind, of_io, refuse};
 
     fn euid() -> u32 {
         rustix::process::geteuid().as_raw()
@@ -48,11 +69,28 @@ mod posix {
         m.mode() & 0o7777
     }
 
-    pub fn check_dir(dir: &Path) -> Result<(), TrustError> {
-        let m = fs::symlink_metadata(dir).map_err(|e| refuse(dir, format!("it cannot be read ({e})")))?;
-        if m.file_type().is_symlink() {
-            return Err(refuse(dir, "it is a symbolic link"));
+    fn errno(path: &Path, what: &str, e: rustix::io::Errno) -> TrustError {
+        if e == rustix::io::Errno::LOOP || e == rustix::io::Errno::NOTDIR {
+            // O_NOFOLLOW met a symlink, or O_DIRECTORY a non-directory
+            return refuse(path, "it is a symbolic link or not what it should be");
         }
+        of_io(path, what, std::io::Error::from(e))
+    }
+
+    /// A directory opened without following a final symlink, and checked on
+    /// its descriptor: owned by this user, mode 0700 exactly. Files are then
+    /// opened relative to the descriptor (open_in), so the directory that
+    /// was checked is the one they are read from.
+    pub fn open_dir(dir: &Path) -> Result<OwnedFd, TrustError> {
+        let fd = rustix::fs::open(
+            dir,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| errno(dir, "opened", e))?;
+        let m = File::from(fd.try_clone().map_err(|e| of_io(dir, "read", e))?)
+            .metadata()
+            .map_err(|e| of_io(dir, "read", e))?;
         if !m.is_dir() {
             return Err(refuse(dir, "it is not a directory"));
         }
@@ -62,42 +100,108 @@ mod posix {
         if mode(&m) != 0o700 {
             return Err(refuse(dir, format!("its mode is {:04o}, not 0700", mode(&m))));
         }
-        Ok(())
+        Ok(fd)
     }
 
-    pub fn open_private(path: &Path) -> Result<File, TrustError> {
-        let before = fs::symlink_metadata(path).map_err(|e| refuse(path, format!("it cannot be read ({e})")))?;
-        if before.file_type().is_symlink() {
-            return Err(refuse(path, "it is a symbolic link"));
+    /// A file in an open directory: lstat'ed (at the directory), opened with
+    /// O_NOFOLLOW and O_NONBLOCK (a FIFO never blocks the shim), and fstat'ed
+    /// on the open descriptor; both stats must name the same file. A regular
+    /// file, owned by this user, mode 0600 exactly.
+    pub fn open_in(dir: impl AsFd, name: &str, shown: &Path) -> Result<File, TrustError> {
+        let before = rustix::fs::statat(&dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| errno(shown, "read", e))?;
+        if rustix::fs::FileType::from_raw_mode(before.st_mode) != rustix::fs::FileType::RegularFile {
+            return Err(refuse(shown, "it is not a regular file (or it is a symbolic link)"));
         }
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(path)
-            .map_err(|e| refuse(path, format!("it cannot be opened ({e})")))?;
-        let m = file.metadata().map_err(|e| refuse(path, format!("it cannot be read ({e})")))?;
-        if (m.dev(), m.ino()) != (before.dev(), before.ino()) {
-            return Err(refuse(path, "it was replaced while it was being opened"));
+        let fd = rustix::fs::openat(
+            &dir,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| errno(shown, "opened", e))?;
+        let file = File::from(fd);
+        let m = file.metadata().map_err(|e| of_io(shown, "read", e))?;
+        if (m.dev(), m.ino()) != (before.st_dev as u64, before.st_ino as u64) {
+            return Err(TrustError {
+                path: shown.to_path_buf(),
+                kind: TrustKind::Changed,
+                why: "it was replaced while it was being opened".into(),
+            });
         }
         if !m.is_file() {
-            return Err(refuse(path, "it is not a regular file"));
+            return Err(refuse(shown, "it is not a regular file"));
         }
         if m.uid() != euid() {
-            return Err(refuse(path, format!("it is owned by uid {}, not this user", m.uid())));
+            return Err(refuse(shown, format!("it is owned by uid {}, not this user", m.uid())));
         }
         if mode(&m) != 0o600 {
-            return Err(refuse(path, format!("its mode is {:04o}, not 0600", mode(&m))));
+            return Err(refuse(shown, format!("its mode is {:04o}, not 0600", mode(&m))));
         }
         Ok(file)
     }
+
+    /// A file whose directory is not itself private (shim.json in <home>):
+    /// the directory is opened (its final component not followed) only to
+    /// bind the file's open to it.
+    pub fn open_private(path: &Path) -> Result<File, TrustError> {
+        let (dir, name) = split(path)?;
+        let fd = rustix::fs::open(dir, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty())
+            .map_err(|e| errno(dir, "opened", e))?;
+        open_in(&fd, name, path)
+    }
+
+    pub fn split(path: &Path) -> Result<(&Path, &str), TrustError> {
+        match (path.parent(), path.file_name().and_then(|n| n.to_str())) {
+            (Some(d), Some(n)) => Ok((d, n)),
+            _ => Err(refuse(path, "it has no directory or no name")),
+        }
+    }
 }
 
-#[cfg(unix)]
-pub use posix::check_dir;
+/// A directory checked: owned by this user, not a symlink, private (POSIX
+/// 0700; Windows privateProblem).
+pub fn check_dir(dir: &Path) -> Result<(), TrustError> {
+    #[cfg(unix)]
+    return posix::open_dir(dir).map(|_| ());
+    #[cfg(windows)]
+    return windows::check_dir(dir);
+}
 
-#[cfg(unix)]
-fn open_private(path: &Path) -> Result<std::fs::File, TrustError> {
-    posix::open_private(path)
+/// Reads `name` in the private directory `dir`, checking the directory and
+/// then the file through the directory's descriptor (POSIX), at most `max`
+/// bytes (more is refused, never cut).
+pub fn read_private_in(dir: &Path, name: &str, max: usize) -> Result<Vec<u8>, TrustError> {
+    let shown = dir.join(name);
+    #[cfg(unix)]
+    let file = {
+        let fd = posix::open_dir(dir)?;
+        posix::open_in(&fd, name, &shown)?
+    };
+    #[cfg(windows)]
+    let file = {
+        windows::check_dir(dir)?;
+        windows::open_private(&shown)?
+    };
+    read_bounded(file, &shown, max)
+}
+
+/// A private file whose directory needn't be private (shim.json).
+pub fn read_private(path: &Path, max: usize) -> Result<Vec<u8>, TrustError> {
+    #[cfg(unix)]
+    let file = posix::open_private(path)?;
+    #[cfg(windows)]
+    let file = windows::open_private(path)?;
+    read_bounded(file, path, max)
+}
+
+fn read_bounded(file: std::fs::File, path: &Path, max: usize) -> Result<Vec<u8>, TrustError> {
+    let mut out = Vec::new();
+    file.take(max as u64 + 1).read_to_end(&mut out).map_err(|e| of_io(path, "read", e))?;
+    if out.len() > max {
+        return Err(refuse(path, format!("it is larger than {max} bytes")));
+    }
+    Ok(out)
 }
 
 /// SYSTEM (S-1-5-18) and Administrators (S-1-5-32-544), as SID bytes.
@@ -195,7 +299,7 @@ mod windows {
     }
 
     fn not_a_link(path: &Path) -> Result<(), TrustError> {
-        let m = fs::symlink_metadata(path).map_err(|e| refuse(path, format!("it cannot be read ({e})")))?;
+        let m = fs::symlink_metadata(path).map_err(|e| super::of_io(path, "read", e))?;
         if m.file_type().is_symlink() || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(refuse(path, "it is a symbolic link or another reparse point"));
         }
@@ -208,7 +312,7 @@ mod windows {
             .access_mode(READ_CONTROL)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(dir)
-            .map_err(|e| refuse(dir, format!("it cannot be opened ({e})")))?;
+            .map_err(|e| super::of_io(dir, "opened", e))?;
         check_open(dir, &f, true)
     }
 
@@ -220,30 +324,10 @@ mod windows {
             .access_mode(GENERIC_READ | READ_CONTROL)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
-            .map_err(|e| refuse(path, format!("it cannot be opened ({e})")))?;
+            .map_err(|e| super::of_io(path, "opened", e))?;
         check_open(path, &f, false)?;
         Ok(f)
     }
-}
-
-#[cfg(windows)]
-pub use windows::check_dir;
-
-#[cfg(windows)]
-fn open_private(path: &Path) -> Result<std::fs::File, TrustError> {
-    windows::open_private(path)
-}
-
-/// A private file's contents, checked first, at most `max` bytes (a file
-/// over it is refused, never cut).
-pub fn read_private(path: &Path, max: usize) -> Result<Vec<u8>, TrustError> {
-    let file = open_private(path)?;
-    let mut out = Vec::new();
-    file.take(max as u64 + 1).read_to_end(&mut out).map_err(|e| refuse(path, format!("it cannot be read ({e})")))?;
-    if out.len() > max {
-        return Err(refuse(path, format!("it is larger than {max} bytes")));
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
