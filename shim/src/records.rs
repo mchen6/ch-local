@@ -1,7 +1,8 @@
 //! What the shim keeps for replay (contract 2, section 1, control `record`,
 //! `forget`, `replay`): the runtime's opaque entries, as it sent them, at
 //! most 64 and 16 KiB in all, the oldest going first. In memory only. An
-//! entry too big to keep is remembered as lost: the tightening it carried
+//! entry too big to keep, or one pushed out by those bounds, is remembered
+//! as lost: the tightening it carried
 //! exists, and no replay can give it back, so the session counts as holding
 //! records (never looser after a restart or a loss) until `forget`.
 
@@ -33,6 +34,11 @@ impl Records {
         while self.entries.len() > MAX_ENTRIES || self.bytes > MAX_BYTES {
             let old = self.entries.pop_front().expect("over a bound, so not empty");
             self.bytes -= old.get().len();
+            // entries are opaque, so the shim can't tell whether a later one
+            // superseded it: a replay without it may be looser, so it fails
+            // closed (the reviewer's ruling on #50; B's #284 caps a session
+            // at 32 recorded changes, so a well-behaved one never gets here)
+            self.lost = true;
         }
         true
     }
@@ -103,6 +109,8 @@ mod tests {
         }
         assert_eq!(r.entries.len(), 64);
         assert_eq!(r.entries.front().unwrap().get(), "6");
+        assert!(r.lost(), "the six pushed out are lost: a replay can't give them back");
+        assert!(r.holds_any());
         let big = format!("\"{}\"", "x".repeat(10_000));
         r.record(raw(&big));
         r.record(raw(&big));
@@ -111,7 +119,12 @@ mod tests {
         assert!(!r.record(raw(&format!("\"{}\"", "x".repeat(MAX_BYTES)))), "one entry over 16 KiB alone");
         r.forget();
         assert!(r.is_empty());
+        assert!(!r.lost(), "forget clears the lost mark too");
         assert_eq!(r.replay_frame(), b"{\"op\":\"replay\",\"entries\":[]}");
+        for i in 0..64 {
+            r.record(raw(&i.to_string()));
+        }
+        assert!(!r.lost(), "64 exactly: nothing pushed out");
     }
 
     #[test]

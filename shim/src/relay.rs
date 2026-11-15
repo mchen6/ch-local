@@ -1067,8 +1067,9 @@ impl Progress {
     fn wrote(&self, write: impl FnOnce() -> io::Result<()>, n: usize) -> io::Result<()> {
         self.writing.store(true, Ordering::Relaxed);
         let r = write();
-        self.writing.store(false, Ordering::Relaxed);
+        // moved first: drain never sees "not writing" before the bytes count
         self.moved.fetch_add(n as u64, Ordering::Relaxed);
+        self.writing.store(false, Ordering::Relaxed);
         r
     }
 }
@@ -1623,6 +1624,44 @@ mod tests {
         let (mut s3, _) = listener.accept().unwrap();
         assert_eq!(welcome(&mut s3, "rt3"), None, "a new session: no resume");
         // no replay of less than the runtime was told: the connection ends
+        let mut ops = Vec::new();
+        while let Ok((_, p)) = frame::read_frame(&mut s3, BIG) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&p) {
+                ops.push(v["op"].as_str().unwrap_or("").to_string());
+            }
+        }
+        assert!(!ops.iter().any(|o| o == "replay"), "no partial replay: {ops:?}");
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"a\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
+        assert_eq!(sink.lines(), [want]);
+    }
+
+    #[test]
+    fn a_new_session_after_records_pushed_out_by_the_bound_refuses_rather_than_replay_less() {
+        // 65 records: the first (a `pack X off`, say) is pushed out of the
+        // 64 kept; a replay without it would run the session looser
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        for i in 0..65 {
+            let r = format!(r#"{{"op":"record","entry":{{"n":{i}}}}}"#);
+            frame::write_frame(&mut s, Kind::Control, r.as_bytes(), BIG).unwrap();
+        }
+        thread::sleep(Duration::from_millis(200));
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        assert_eq!(refuse_resume(&mut s2).as_deref(), Some("rt1"));
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        assert_eq!(welcome(&mut s3, "rt3"), None, "a new session: no resume");
         let mut ops = Vec::new();
         while let Ok((_, p)) = frame::read_frame(&mut s3, BIG) {
             if let Ok(v) = serde_json::from_slice::<Value>(&p) {
