@@ -48,3 +48,21 @@ test('readHandoff: nothing on fd 3 (no pipe) is null; more than the bound is nul
   await new Promise((res) => big.on('exit', res));
   assert.strictEqual(said, 'null', 'over its bound');
 });
+
+// the review of #39: readHandoff resolves once its stream, and the fd, has
+// closed, not before the asynchronous close
+test('readHandoff: by the time it resolves, its fd is closed', async () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-ho-')));
+  try {
+    const file = path.join(dir, 'handoff');
+    fs.writeFileSync(file, 'abc');
+    for (const max of [1024, 2]) {
+      const fd = fs.openSync(file, 'r');
+      const got = await readHandoff(fd, {max});
+      assert.strictEqual(got == null ? null : got.toString(), max === 1024 ? 'abc' : null);
+      assert.throws(() => fs.fstatSync(fd), (e) => e.code === 'EBADF', `fd closed (max ${max})`);
+    }
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});

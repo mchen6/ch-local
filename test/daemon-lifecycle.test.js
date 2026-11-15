@@ -63,6 +63,32 @@ const adopted = async(home) => {
 const failedJson = (home) => path.join(runDirOf(home), 'failed.json');
 const daemonJson = (home) => path.join(runDirOf(home), 'daemon.json');
 
+test('a runtime that ends unasked: daemon.json names no socket until its successor listens, then the successor\'s (the review of #39)', async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    io.daemonBackoffMs = [400];
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await adopted(home);
+    const first = await s.nth(0);
+    const read = () => JSON.parse(fs.readFileSync(daemonJson(home), 'utf8'));
+    assert.strictEqual(read().socket, first.opts.socket);
+    await first.exit(1);
+    const until = Date.now() + 2000;
+    while (read().socket != null && Date.now() < until) await tick();
+    assert.strictEqual(read().socket, null, 'cleared while the next one starts');
+    const second = await s.nth(1);
+    const back = Date.now() + 3000;
+    while (read().socket == null && Date.now() < back) await tick();
+    assert.strictEqual(read().socket, second.opts.socket, 'the successor\'s, once it listens');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('each runtime is handed the table: empty first, then what the crashed one told', async() => {
   const home = tmpHome();
   try {

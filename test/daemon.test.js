@@ -220,11 +220,13 @@ test('a daemon.json naming a socket this home\'s daemon would not choose is stal
 
 // C4c, Windows's wiring with the platform and the DACL calls injected, so it
 // runs everywhere (the real calls run in test/win-acl.test.js on Windows)
-const winAclFake = (acl = () => ({user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', otherAces: false, rules: []})) => {
+const PRIVATE = () => ({user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', otherAces: false, rules: []});
+const winAclFake = (acl = PRIVATE, homeAcl = PRIVATE) => {
   const calls = [];
-  return {calls, privateProblem: require('../lib/win-acl').privateProblem,
+  return {calls, privateProblem: require('../lib/win-acl').privateProblem, fileAcl: (p) => { calls.push({fileAcl: p}); return homeAcl(p); },
     makePrivateDirs: (dirs, read) => { calls.push({dirs, read}); for (const d of dirs) fs.mkdirSync(d, {recursive: true}); return read.map(acl); }};
 };
+const OPEN = () => ({user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]});
 
 test('Windows (injected): the run directories made private first; each runtime start a new pipe of the form, with --sessionDir the run directory', async() => {
   const home = tmpHome();
@@ -236,7 +238,8 @@ test('Windows (injected): the run directories made private first; each runtime s
     const given = [];
     const code = await daemon({home}, io, {run: (opts) => { given.push(opts); return new Promise((resolve) => opts.signal.addEventListener('abort', () => resolve(143))); }});
     assert.strictEqual(code, 1, 'the fake never listens');
-    assert.deepStrictEqual(io.winAcl.calls, [{dirs: [path.join(home, 'run'), runDirOf(home)], read: [home, path.join(home, 'run'), runDirOf(home)]}]);
+    // the home's ACL first, then the run directories made private and read back
+    assert.deepStrictEqual(io.winAcl.calls, [{fileAcl: home}, {dirs: [path.join(home, 'run'), runDirOf(home)], read: [path.join(home, 'run'), runDirOf(home)]}]);
     assert.strictEqual(given.length, 1);
     assert.ok(isPipeName(given[0].socket), given[0].socket);
     assert.strictEqual(given[0].sessionDir, runDirOf(home));
@@ -250,17 +253,79 @@ test('Windows (injected): a home or run directory that is not private refuses th
   try {
     const io = daemonIo(home);
     io.platform = 'win32';
-    const open = {user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]};
-    io.winAcl = winAclFake(() => open);
+    io.winAcl = winAclFake(PRIVATE, OPEN);
     let started = false;
     assert.strictEqual(await daemon({home}, io, {run: async() => { started = true; return 0; }}), 2);
-    assert.match(io.err, /the home .* is accessible by S-1-1-0/);
+    assert.match(io.err, /--home .*: it is accessible by S-1-1-0/);
     assert.strictEqual(started, false);
+    assert.ok(!io.winAcl.calls.some((c) => c.dirs != null), 'no DACL set under a home that fails');
+    const runOpen = daemonIo(home);
+    runOpen.platform = 'win32';
+    runOpen.winAcl = winAclFake(OPEN);
+    assert.strictEqual(await daemon({home}, runOpen, {run: async() => { started = true; return 0; }}), 2);
+    assert.match(runOpen.err, /its run directory .* is accessible by S-1-1-0/);
     const failing = daemonIo(home);
     failing.platform = 'win32';
-    failing.winAcl = {privateProblem: () => null, makePrivateDirs: () => { throw Object.assign(new Error('timed out'), {code: 'ETIMEDOUT'}); }};
+    failing.winAcl = {privateProblem: () => null, fileAcl: PRIVATE, makePrivateDirs: () => { throw Object.assign(new Error('timed out'), {code: 'ETIMEDOUT'}); }};
     assert.strictEqual(await daemon({home}, failing, {run: async() => 0}), 2);
     assert.match(failing.err, /could not be made private \(ETIMEDOUT\)/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('Windows (injected): a run directory that is a link (a junction reads as one) is refused before any DACL is set (the review of #39)', {skip: WIN && 'symlinks need a privilege on Windows: the logic runs elsewhere'}, async() => {
+  const home = tmpHome();
+  const target = tmpHome();
+  try {
+    fs.symlinkSync(target, path.join(home, 'run'));
+    const io = daemonIo(home);
+    io.platform = 'win32';
+    io.winAcl = winAclFake();
+    assert.strictEqual(await daemon({home}, io, {run: async() => 0}), 2);
+    assert.match(io.err, /its run directory .*run is not a directory \(a link or a junction is refused\)/);
+    assert.ok(!io.winAcl.calls.some((c) => c.dirs != null), 'its target\'s DACL never rewritten');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+    fs.rmSync(target, {recursive: true, force: true});
+  }
+});
+
+test('Windows (injected): a daemon.json\'s pipe is probed as the shim would (pipe-probe), never by Node\'s connect', async() => {
+  for (const verdict of [true, false]) {
+    const home = tmpHome();
+    try {
+      const runDir = makeRunDir(home);
+      const pipe = require('../lib/session-socket').newPipeName();
+      fs.writeFileSync(path.join(runDir, 'secret'), `${crypto.randomBytes(32).toString('hex')}\n`, {mode: 0o600});
+      fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({pid: process.pid, socket: pipe, runtimeVersion: 'x', daemonVersion: 'y', started: 'z'}), {mode: 0o600});
+      const io = daemonIo(home);
+      io.platform = 'win32';
+      io.winAcl = winAclFake();
+      io.daemonReadyMs = 200;
+      const probed = [];
+      io.probePipe = async(socket, secret) => { probed.push({socket, secret: secret.length}); return verdict; };
+      let started = false;
+      const code = await daemon({home}, io, {run: (opts) => { started = true; return new Promise((resolve) => opts.signal.addEventListener('abort', () => resolve(143))); }});
+      assert.deepStrictEqual(probed, [{socket: pipe, secret: 32}]);
+      if (verdict) { assert.strictEqual(code, 0); assert.strictEqual(started, false); assert.match(io.err, /another daemon/); }
+      else assert.strictEqual(started, true, 'not proven: stale, a runtime is started');
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  }
+});
+
+test('the home on Windows (injected): its owner and DACL as a directory, an unreadable ACL refused', () => {
+  const {homeOwnershipProblem} = require('../lib/home');
+  const home = tmpHome();
+  try {
+    assert.strictEqual(homeOwnershipProblem(home, 'win32', {fileAcl: PRIVATE}), null);
+    assert.match(String(homeOwnershipProblem(home, 'win32', {fileAcl: OPEN})), /accessible by S-1-1-0/);
+    const flows = PRIVATE();
+    flows.rules.push({sid: 'S-1-1-0', rights: 2032127, type: 'Allow', inheritOnly: true});
+    assert.match(String(homeOwnershipProblem(home, 'win32', {fileAcl: () => flows})), /inherit-only rule for S-1-1-0/);
+    assert.match(String(homeOwnershipProblem(home, 'win32', {fileAcl: () => { throw new Error('denied'); }})), /ACL could not be read/);
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }

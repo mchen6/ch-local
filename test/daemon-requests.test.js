@@ -97,3 +97,24 @@ test('requestUpgrade waits while start.lock is held, writing nothing, and writes
     assert.ok(fs.readFileSync(file(h), 'utf8').includes('"op":"upgrade"'));
   } finally { fs.rmSync(h, {recursive: true, force: true}); }
 });
+
+// the review of #39: on Windows the directory's owner and DACL decide, as a
+// directory; injected here, so it runs everywhere
+test('Windows (injected): a daemon directory whose DACL is not private gets no request; a private one does', async () => {
+  const h = home();
+  try {
+    const dir = path.join(h, 'run', 'daemon');
+    const user = 'S-1-5-21-1-2-3-1001';
+    const priv = () => ({user, owner: user, otherAces: false, rules: [{sid: user, rights: 2032127, type: 'Allow', inheritOnly: false}]});
+    const open = () => ({user, owner: user, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 2032127, type: 'Allow', inheritOnly: false}]});
+    const flows = () => ({user, owner: user, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 2032127, type: 'Allow', inheritOnly: true}]});
+    for (const acl of [open, flows, () => { throw new Error('denied'); }]) {
+      assert.strictEqual(await requestUpgrade(h, {platform: 'win32', fileAcl: acl}), false);
+      assert.ok(!fs.existsSync(path.join(dir, 'requests')));
+    }
+    assert.strictEqual(await requestUpgrade(h, {platform: 'win32', fileAcl: priv}), true);
+    assert.strictEqual(readRequests(h, 0).requests.length, 1);
+  } finally {
+    fs.rmSync(h, {recursive: true, force: true});
+  }
+});
