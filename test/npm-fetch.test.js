@@ -14,14 +14,11 @@ const io = {env: {}, fetch: (url, opts) => globalThis.fetch(url, opts)};
 const bytesOf = (n, seed = 1) => crypto.createHash('sha512').update(String(seed)).digest().toString('hex').repeat(Math.ceil(n / 128)).slice(0, n);
 const code = async(p) => { try { await p; return 'resolved'; } catch (e) { return e.code; } };
 
-test('the registry is registry.npmjs.org; another only under CH_LOCAL_DEV=1, and only a loopback http one (the tests\' fake)', () => {
+test('the registry is registry.npmjs.org; nothing in the environment chooses another', () => {
   assert.strictEqual(npmFetch.REGISTRY, 'https://registry.npmjs.org/');
-  assert.strictEqual(npmFetch.registryFor({env: {}}), npmFetch.REGISTRY);
-  assert.strictEqual(npmFetch.registryFor({env: {CH_LOCAL_DEV: '1'}}, {test: 'http://127.0.0.1:4873/'}), 'http://127.0.0.1:4873/');
-  assert.throws(() => npmFetch.registryFor({env: {}}, {test: 'http://127.0.0.1:4873/'}), /CH_LOCAL_DEV=1/);
-  for (const bad of ['https://registry.example.invalid/', 'http://10.0.0.1:4873/', 'http://127.0.0.1:4873', 'http://localhost.example.invalid:1/', 'file:///tmp/x/']) {
-    assert.throws(() => npmFetch.registryFor({env: {CH_LOCAL_DEV: '1'}}, {test: bad}), /loopback/, bad);
-  }
+  assert.strictEqual(npmFetch.registryFor, undefined, 'no selector: a test passes its fake as an argument');
+  const src = require('node:fs').readFileSync(require.resolve('../lib/npm-fetch'), 'utf8');
+  assert.doesNotMatch(src, /process\.env|io\.env|CH_LOCAL_DEV/, 'the module reads no environment');
 });
 
 test('a tarball: fetched from the registry, its sha512 checked against dist.integrity and its pin', async() => {
