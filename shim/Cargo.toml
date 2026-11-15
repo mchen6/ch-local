@@ -12,10 +12,15 @@ publish = false
 # a handshake, which threads and blocking I/O do in a few hundred KB.
 [dependencies]
 base64 = "0.22"
+getrandom = "0.3"
 hmac = "0.12"
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
 zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+# safe wrappers: geteuid, kill(pid, 0), uname (no unsafe in this crate)
+rustix = { version = "1", default-features = false, features = ["std", "process", "fs", "system"] }
 
 [profile.release]
 codegen-units = 1

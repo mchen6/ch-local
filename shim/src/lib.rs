@@ -18,6 +18,7 @@ pub mod inflight;
 pub mod mac;
 pub mod message;
 pub mod secret;
+pub mod trust;
 
 #[cfg(test)]
 mod conformance;
