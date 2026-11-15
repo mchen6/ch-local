@@ -756,9 +756,17 @@ impl Relay {
 /// no line bound of the shim's.
 pub fn own_runtime_inherited(home: &Home, args: &[OsString]) -> io::Result<i32> {
     let shim = config::read_shim(home).map_err(|e| io::Error::other(e.to_string()))?;
-    let mut child =
-        Command::new(&shim.node).arg(&shim.ch_local).args(["start", "--stdio", "--own-runtime"]).args(args).spawn()?;
+    let mut child = own_command(&shim, home, args).spawn()?;
     Ok(child.wait()?.code().unwrap_or(1))
+}
+
+/// `<node> <chLocal> start --stdio --own-runtime --home <home> <args>`: the
+/// shim's home goes with it (it wins over COUNTINGHOUSE_HOME there), and
+/// neither flag reaches the runtime itself.
+fn own_command(shim: &config::ShimInfo, home: &Home, args: &[OsString]) -> Command {
+    let mut c = Command::new(&shim.node);
+    c.arg(&shim.ch_local).args(["start", "--stdio", "--own-runtime", "--home"]).arg(home.root()).args(args);
+    c
 }
 
 /// The per-session runtime (section 5): `<node> <chLocal> start --stdio
@@ -771,12 +779,7 @@ pub fn own_runtime(
     rest: impl Iterator<Item = Vec<u8>> + Send + 'static,
 ) -> io::Result<i32> {
     let shim = config::read_shim(home).map_err(|e| io::Error::other(e.to_string()))?;
-    let mut child: Child = Command::new(&shim.node)
-        .arg(&shim.ch_local)
-        .args(["start", "--stdio", "--own-runtime"])
-        .args(args)
-        .stdin(Stdio::piped())
-        .spawn()?;
+    let mut child: Child = own_command(&shim, home, args).stdin(Stdio::piped()).spawn()?;
     let mut stdin: ChildStdin = child.stdin.take().expect("piped");
     thread::spawn(move || {
         for line in held.into_iter().chain(rest) {
@@ -1510,5 +1513,17 @@ mod tests {
         until_op(&mut s3, "bye");
         drop(s3);
         done.join().unwrap();
+    }
+
+    #[test]
+    fn the_per_session_runtime_is_started_with_this_home() {
+        let (home, _sock) = home();
+        let root = home.root().to_path_buf();
+        let seen = root.join("args.txt");
+        fs::write(root.join("ch-local.sh"), format!("printf '%s\\n' \"$@\" > '{}'\n", seen.display())).unwrap();
+        assert_eq!(own_runtime_inherited(&home, &["--flag".into()]).unwrap(), 0);
+        let args = fs::read_to_string(&seen).unwrap();
+        let want = format!("start\n--stdio\n--own-runtime\n--home\n{}\n--flag\n", root.display());
+        assert_eq!(args, want);
     }
 }
