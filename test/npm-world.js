@@ -45,6 +45,8 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
   }
   const lockfile = JSON.parse(JSON.stringify(r.lockfile));
   lockfile.packages['node_modules/countinghouse'].integrity = r.pins.countinghouse.integrity;
+  // a release cannot carry its own digest: fetchRelease fills it from the verified one
+  delete lockfile.packages[`node_modules/${SELF}`].integrity;
   lockfile.packages[`node_modules/${SELF}`].version = version;
   lockfile.packages[`node_modules/${SELF}`].resolved = `file:tarballs/${tarballName(SELF, version)}`;
   doc.runtime.lockfile = lockfile;
