@@ -675,7 +675,8 @@ test('start --home names the home, over COUNTINGHOUSE_HOME; --own-runtime is tak
   const f = io(other);   // COUNTINGHOUSE_HOME names another home
   assert.strictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home, '--locale', 'en'], f), 0, f.err);
   const {args} = f.spawned[0];
-  assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'), 'the --home given, not COUNTINGHOUSE_HOME');
+  // --home is taken by its real path (macOS: /var is a link to /private/var)
+  assert.strictEqual(valueOf(args, '--storePath'), path.join(fs.realpathSync(home), 'store'), 'the --home given, not COUNTINGHOUSE_HOME');
   assert.ok(!args.includes('--own-runtime') && !args.includes('--home'), 'neither reaches the runtime');
   assert.ok(args.includes('--locale'), 'the pass-through still does');
 });
