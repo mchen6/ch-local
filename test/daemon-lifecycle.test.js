@@ -213,3 +213,98 @@ test('the failed.json the daemon writes has exactly the vectors\' form, and is f
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// the review of #34 ------------------------------------------------------------
+
+test('(1) start.lock is held from a crash until the restarted runtime is ready: a second daemon meanwhile waits, then finds this one and starts nothing', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    io.daemonBackoffMs = [400];
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    await one.exit(1);   // a crash: the restart waits 400 ms
+    await tick(100);
+    assert.ok(fs.existsSync(path.join(runDirOf(home), 'start.lock')), 'held through the backoff');
+    // a shim's daemon arrives in the gap
+    const other = scripted(home);
+    const second = daemon({home}, fast(home), {run: other.run});
+    const two = await s.nth(1);
+    assert.strictEqual(await second, 0, 'it found the live daemon once the lock was free');
+    assert.strictEqual(other.calls.length, 0, 'and started no runtime');
+    assert.ok(fs.existsSync(daemonJson(home)), 'this daemon\'s daemon.json kept');
+    assert.ok(!fs.existsSync(path.join(runDirOf(home), 'start.lock')), 'released once ready');
+    two.tell({type: 'idle'});
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('(2) an idle-stop answered anything but CONTROL_BUSY (no answer, a failure) stops the runtime anyway', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    one.answers['idle-stop'] = () => ({ok: false, code: 'CONTROL_NO_ANSWER'});
+    one.tell({type: 'idle'});
+    assert.strictEqual(await done, 0, io.err);
+    assert.strictEqual(one.ended, true);
+    assert.ok(!fs.existsSync(daemonJson(home)));
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('(4) a CONTROL_BUSY with no busy told after it (a handshake in pre-auth) re-arms the idle timer', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    let n = 0;
+    one.answers['idle-stop'] = () => ((n += 1) === 1 ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true});
+    one.tell({type: 'idle'});
+    assert.strictEqual(await done, 0);
+    assert.strictEqual(one.requests.filter((m) => m.type === 'idle-stop').length, 2, 'asked again, with no new idle');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('(5) a SIGTERM during the first start, or during a backoff, is a stop: no failed.json, no restart', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    io.daemonReadyMs = 2000;
+    const s = scripted(home);
+    s.listens = false;
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+    assert.ok(!fs.existsSync(failedJson(home)), 'no failed.json for a stop');
+    const io2 = fast(home);
+    io2.daemonBackoffMs = [5000];
+    const t = scripted(home);
+    const done2 = daemon({home}, io2, {run: t.run});
+    const one = await t.nth(0);
+    await adopted(home);
+    await one.exit(1);
+    await tick(100);
+    const t0 = Date.now();
+    io2.signal('SIGTERM');
+    assert.strictEqual(await done2, 0);
+    assert.ok(Date.now() - t0 < 2000, 'the backoff sleep was interrupted');
+    assert.strictEqual(t.calls.length, 1, 'no restart');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

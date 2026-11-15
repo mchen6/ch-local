@@ -31,7 +31,7 @@ test('the empty state is the runtime\'s fresh one', () => {
   assert.deepStrictEqual(EMPTY_STATE, {overrides: [], locks: [], formsLeft: 3});
 });
 
-test('a state the runtime would refuse is never kept, and drops that session\'s older one', () => {
+test('a state the runtime would refuse is never kept, and drops that session\'s whole row', () => {
   const t = createSessionTable({warn: () => {}});
   t.told({type: 'session-resume', session: ID(1), hash: HASH});
   t.told({type: 'session-state', session: ID(1), state: STATE});
@@ -46,7 +46,7 @@ test('a state the runtime would refuse is never kept, and drops that session\'s 
   for (const state of bad) {
     assert.strictEqual(t.told({type: 'session-state', session: ID(1), state}), false, JSON.stringify(state));
   }
-  assert.deepStrictEqual(t.restore().sessions[0].state, EMPTY_STATE, 'the older state is dropped, never restored stale');
+  assert.deepStrictEqual(t.restore().sessions, [], 'the whole row goes (#34 review): its resume is refused, and the shim replays only-tighter');
 });
 
 test('bad ids and hashes are refused; past the row cap a new session is not kept', () => {
@@ -74,4 +74,12 @@ test('declines: the three kinds, a past epoch ms; kept 30 minutes; at most MAX_D
   assert.deepStrictEqual(t.restore().declines, []);
   for (let i = 0; i < MAX_DECLINES + 5; i++) t.told({type: 'decline', kind: 'requestTimeout', at: now});
   assert.strictEqual(t.restore().declines.length, MAX_DECLINES);
+});
+
+test('clear() empties the table (a restore the runtime refused, #34 review)', () => {
+  const t = createSessionTable();
+  t.told({type: 'session-resume', session: ID(1), hash: HASH});
+  t.told({type: 'decline', kind: 'pack', at: Date.now()});
+  t.clear();
+  assert.deepStrictEqual(t.restore(), {type: 'restore', sessions: [], declines: []});
 });
