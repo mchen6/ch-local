@@ -58,6 +58,10 @@ test('a pin carries its whole identity, a strict version and a sha512', () => {
     if (bad === undefined) delete d.pins['@countinghouse/ch-pack-ci-failure-triage'][field];
     assert.match(String(problemOf(d)), /pin/, `${field}: ${bad}`);
   }
+  // the tag is the version's own: refs/tags/v<version> is the ref provenance holds it to
+  const otherTag = shipped();
+  otherTag.pins = {'@countinghouse/ch-pack-ci-failure-triage': Object.assign(pin(), {tag: 'v1.2.4'})};
+  assert.match(String(problemOf(otherTag)), /tag must be v1\.2\.3/);
   const extra = shipped();
   extra.pins = {'@countinghouse/ch-pack-ci-failure-triage': Object.assign(pin(), {url: 'https://example.invalid/x.tgz'})};
   assert.match(String(problemOf(extra)), /pin/, 'no key beyond the identity');

@@ -171,6 +171,14 @@ test('no lib/ code passes `trust` or `registry`: only a test\'s own code does', 
   assert.match(fs.readFileSync(path.join(lib, 'install.js'), 'utf8'), /\.\.\.fromNpm/, 'install passes only its test-only argument on');
 });
 
+test('install and upgrade reach provenance only through verifyRelease (refs/tags/v<version>): no lib/ code but provenance.js names verifyAttestations', () => {
+  const lib = path.join(__dirname, '..', 'lib');
+  const callers = fs.readdirSync(lib).filter((f) => f.endsWith('.js') && f !== 'provenance.js')
+    .filter((f) => /verifyAttestations/.test(fs.readFileSync(path.join(lib, f), 'utf8')));
+  assert.deepStrictEqual(callers, []);
+  assert.match(fs.readFileSync(path.join(lib, 'npm-release.js'), 'utf8'), /provenance\.verifyRelease\(/);
+});
+
 test('a bundled lockfile entry is exempt only beneath a runtime package\'s own node_modules', () => {
   const SHA = `sha512-${'C'.repeat(86)}==`;
   const base = () => ({lockfileVersion: 3, packages: {'': {}, [`node_modules/${SELF}`]: {version: '0.4.0'}, 'node_modules/countinghouse': {version: '1.2.3', integrity: SHA}}});
