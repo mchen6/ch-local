@@ -35,16 +35,16 @@ test('settings get lists every setting with its default and bounds; set stays wi
   const home = tmp('ch-home-');
   const got = await cli(home, 'settings', 'get');
   assert.strictEqual(got.code, 0, got.io.err);
-  assert.match(got.io.out, /^maxOutputBytes = 8388608 {2}\(default 8388608; 1048576 to 268435456; guarding\)$/m);
+  assert.match(got.io.out, /^maxOutputBytes = 16777216 {2}\(default 16777216; 1048576 to 268435456; guarding\)$/m);
   assert.match(got.io.out, /^locale = en {2}\(default en; en, zh\)$/m);
-  for (const [name, value, stored] of [['maxOutputBytes', '64MiB', 64 * 1024 * 1024], ['requestTimeout', '20s', 20000], ['locale', 'zh', 'zh'], ['upgradeCheck', 'weekly', 'weekly']]) {
+  for (const [name, value, stored] of [['maxOutputBytes', '128MiB', 128 * 1024 * 1024], ['requestTimeout', '20s', 20000], ['locale', 'zh', 'zh'], ['upgradeCheck', 'weekly', 'weekly']]) {
     const r = await cli(home, 'settings', 'set', name, value);
     assert.strictEqual(r.code, 0, r.io.err);
     assert.strictEqual(readSettings(layout({COUNTINGHOUSE_HOME: home})).values[name], stored);
   }
   const h = history(home);
   assert.deepStrictEqual(h.map((e) => [e.by, e.setting]), [['cli', 'maxOutputBytes'], ['cli', 'requestTimeout'], ['cli', 'locale'], ['cli', 'upgradeCheck']]);
-  for (const [name, value, code] of [['maxOutputBytes', '512MiB', /outside the allowed range \(1048576 to 268435456\)/], ['requestTimeout', '1s', /outside/], ['nonsense', '1', /there is no setting named nonsense/]]) {
+  for (const [name, value, code] of [['maxOutputBytes', '1024MiB', /outside the allowed range \(1048576 to 268435456\)/], ['requestTimeout', '1s', /outside/], ['nonsense', '1', /there is no setting named nonsense/]]) {
     const r = await cli(home, 'settings', 'set', name, value);
     assert.strictEqual(r.code, 2);
     assert.match(r.io.err, code);
@@ -57,7 +57,7 @@ test('the CLI may loosen a guarding setting (the user at a terminal), and says s
   const r = await cli(home, 'settings', 'set', ...LOOSEN);
   assert.strictEqual(r.code, 0);
   assert.match(r.io.out, /this loosens a guarding setting/);
-  assert.throws(() => setSetting(where, 'maxOutputBytes', '16MiB', {by: 'settings tool'}), {code: 'SETTING_LOOSENS_A_GUARD'});
+  assert.throws(() => setSetting(where, 'maxOutputBytes', '32MiB', {by: 'settings tool'}), {code: 'SETTING_LOOSENS_A_GUARD'});
   assert.strictEqual(setSetting(where, LOOSEN[0], WIN ? 'off' : 'enforce', {by: 'settings tool'}).loosened, false, 'tightening is anyone\'s');
 });
 
@@ -84,7 +84,7 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
   assert.strictEqual((await cli(home, 'settings', 'set', 'pack.other', 'off')).code, 0);
-  assert.strictEqual((await cli(home, 'settings', 'set', 'maxOutputBytes', '16MiB')).code, 0);
+  assert.strictEqual((await cli(home, 'settings', 'set', 'maxOutputBytes', '32MiB')).code, 0);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'o'}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
   const requests = [];
@@ -100,7 +100,7 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   for (let i = 0; end == null && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.ok(!args.some((a) => a.includes(`${path.sep}other${path.sep}`)), 'other is off: not loaded');
   assert.match(f.err, /not loading other: it is turned off/);
-  assert.deepStrictEqual(args.slice(args.indexOf('--maxOutputBytes'), args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(16 * 1024 * 1024)]);
+  assert.deepStrictEqual(args.slice(args.indexOf('--maxOutputBytes'), args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(32 * 1024 * 1024)]);
   assert.strictEqual(args.filter((a) => a === '--locale').length, 1, 'the client\'s own --locale only');
   assert.ok(!args.includes('--requestTimeout'), 'none set');
   assert.strictEqual((await cli(home, 'settings', 'set', 'pack.other', 'on')).code, 0);
