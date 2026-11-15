@@ -125,8 +125,11 @@ contract 2; 2026-11-15, the main branch's release build):
 |---|---|---|
 | ch-shim, idle | 3.1 MB | 1.1 MB |
 | ch-shim, after relaying 20 answers of 1 MiB each | 3.1 MB | 1.1 MB |
-| an idle Node 24 process, for comparison | 43.7 MB | 40.3 MB |
 
+- What it replaces: the per-session Node relay of the design's revision 3,
+  measured then at 13 MB PSS each (countinghouse's
+  `docs/superpowers/specs/2026-11-15-shared-runtime-design.md`). The shim
+  is about a twelfth of that, per session.
 - The shim streams each answer through without holding it, so its memory
   stays flat however large the answers are.
 - The binary is 0.7 MB (693,168 bytes on that build).
