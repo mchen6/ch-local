@@ -250,9 +250,12 @@ test('start: always passes --maxOutputBytes and --requestTimeout, stored or not,
 });
 
 test('the review of P4: no reader on Windows looks where ProgramData really is too; the reader is asked once while nothing changes', () => {
-  assert.deepStrictEqual(fallbackFiles('win32', {ProgramData: 'D:\\mine', SystemDrive: 'C:'}),
+  // the known folder, never the environment (the review of #48): a client's ProgramData or SystemDrive moves nothing
+  assert.deepStrictEqual(fallbackFiles('win32', {ProgramData: 'D:\\evil', SystemDrive: 'E:'}, {programData: () => 'D:\\mine'}),
     ['D:\\mine\\countinghouse\\ceiling.json', 'C:\\ProgramData\\countinghouse\\ceiling.json']);
-  assert.deepStrictEqual(fallbackFiles('win32', {}), ['C:\\ProgramData\\countinghouse\\ceiling.json']);
+  assert.deepStrictEqual(fallbackFiles('win32', {ProgramData: 'D:\\evil'}, {programData: () => null}), ['C:\\ProgramData\\countinghouse\\ceiling.json']);
+  assert.deepStrictEqual(fallbackFiles('win32', {}, {programData: () => 'C:\\ProgramData'}), ['C:\\ProgramData\\countinghouse\\ceiling.json']);
+  assert.doesNotMatch(require('node:fs').readFileSync(require.resolve('../lib/ceiling'), 'utf8').split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n'), /env\.(ProgramData|SystemDrive)/);
   assert.deepStrictEqual(fallbackFiles('linux', {}), ['/etc/countinghouse/ceiling.json']);
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
