@@ -124,9 +124,9 @@ answers anything but a ceiling, fails closed.
 - a ceiling that cannot be trusted refuses a start whose settings or flags
   are looser than the defaults.
 
-On Windows the sandbox is left out until ch-local installs a runtime with
-countinghouse#195: start runs it under audit there, which no setting or flag
-chose.
+On Windows with a runtime older than countinghouse#195 the sandbox is left
+out: start runs audit there, which no setting or flag chose, and says so. A
+runtime with #195 runs enforce on Windows as everywhere (lib/sandbox-support.js).
 
 ## Edits made outside the tools
 

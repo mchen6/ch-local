@@ -122,7 +122,7 @@ test('a runtime without the reader, and a ceiling file present, refuses every lo
 test('start, under the ceiling: values clamped and said; a forbidden audit runs under enforce; one that cannot be trusted refuses a loosening start', () => {
   const s = (values) => ({values});
   const c = trusted({maxOutputBytes: 4 * MiB, requestTimeout: 30000, forbid: ['moduleSandbox', 'autoUpgrade']});
-  const r = startUnderCeiling(s({maxOutputBytes: 16 * MiB, requestTimeout: 60000, moduleSandbox: 'audit', autoUpgrade: true, locale: 'zh'}), c, {platform: 'linux'});
+  const r = startUnderCeiling(s({maxOutputBytes: 16 * MiB, requestTimeout: 60000, moduleSandbox: 'audit', autoUpgrade: true, locale: 'zh'}), c, {});
   assert.deepStrictEqual(r.values, {maxOutputBytes: 4 * MiB, requestTimeout: 30000, moduleSandbox: 'enforce', autoUpgrade: false, locale: 'zh'});
   assert.deepStrictEqual(r.notes, [
     'maxOutputBytes 16MiB is above the operator\'s ceiling: the runtime gets 4MiB',
@@ -130,17 +130,17 @@ test('start, under the ceiling: values clamped and said; a forbidden audit runs 
     'moduleSandbox audit is forbidden by the operator\'s ceiling: the runtime runs under enforce',
     'automatic upgrades are forbidden by the operator\'s ceiling: they stay off'
   ]);
-  assert.match(startUnderCeiling(s({}), c, {platform: 'linux', passedAudit: true}).problem, /--moduleSandbox audit is forbidden by this machine's operator ceiling: not starting/);
-  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 2 * MiB}), c, {platform: 'linux'}), {values: {maxOutputBytes: 2 * MiB}, notes: []});
+  assert.match(startUnderCeiling(s({}), c, {passedAudit: true}).problem, /--moduleSandbox audit is forbidden by this machine's operator ceiling: not starting/);
+  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 2 * MiB}), c, {}), {values: {maxOutputBytes: 2 * MiB}, notes: []});
   // untrusted: defaults or tighter start; anything looser does not
-  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 2 * MiB, locale: 'zh'}), UNTRUSTED, {platform: 'linux'}).notes, []);
-  assert.match(startUnderCeiling(s({maxOutputBytes: 16 * MiB}), UNTRUSTED, {platform: 'linux'}).problem, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting/);
-  assert.match(startUnderCeiling(s({}), UNTRUSTED, {platform: 'linux', passedAudit: true}).problem, /would loosen --moduleSandbox audit/);
-  // Windows: the sandbox is audit there until countinghouse#195 reaches ch-local; not a loosening made
-  assert.strictEqual(startUnderCeiling(s({}), UNTRUSTED, {platform: 'win32', passedAudit: true}).problem, undefined);
-  assert.deepStrictEqual(startUnderCeiling(s({moduleSandbox: 'audit'}), c, {platform: 'win32'}).values, {moduleSandbox: 'audit', maxOutputBytes: 4 * MiB},
+  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 2 * MiB, locale: 'zh'}), UNTRUSTED, {}).notes, []);
+  assert.match(startUnderCeiling(s({maxOutputBytes: 16 * MiB}), UNTRUSTED, {}).problem, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting/);
+  assert.match(startUnderCeiling(s({}), UNTRUSTED, {passedAudit: true}).problem, /would loosen --moduleSandbox audit/);
+  // audit forced by an older runtime (Windows before countinghouse#195): not a loosening made
+  assert.strictEqual(startUnderCeiling(s({}), UNTRUSTED, {forcedAudit: true, passedAudit: true}).problem, undefined);
+  assert.deepStrictEqual(startUnderCeiling(s({moduleSandbox: 'audit'}), c, {forcedAudit: true}).values, {moduleSandbox: 'audit', maxOutputBytes: 4 * MiB},
     'a default above the ceiling is clamped too');
-  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 16 * MiB}), {state: 'none'}, {platform: 'linux'}), {values: {maxOutputBytes: 16 * MiB}, notes: []});
+  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 16 * MiB}), {state: 'none'}, {}), {values: {maxOutputBytes: 16 * MiB}, notes: []});
 });
 
 test('outside edits: a setting changed outside the tools is reported once, and recorded; a change the tools made is not', () => {
