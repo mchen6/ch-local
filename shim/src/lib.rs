@@ -12,6 +12,8 @@
 #![deny(unsafe_code)]
 
 pub mod answer;
+pub mod config;
+pub mod endpoint;
 pub mod frame;
 pub mod handshake;
 pub mod inflight;
