@@ -172,3 +172,12 @@ test('#22 re-check: the unknown-flag rule wherever the client token sits', () =>
   w.lines = [['node', '--max-old-space-size=4096', '/opt/@anthropic-ai/claude-code/cli.js', '--continue']];
   assert.strictEqual(clientConditions(w.args()).mayElicit, true, 'a flag before the client token is the launcher\'s');
 });
+
+test('#22 re-check 2: front matter as broadly as any parser takes it: an opening with trailing white space, a closing mid-line', () => {
+  for (const text of ['--- \nhooks:\n  "Elicit\\x61tion": []\n---\n', '---\t\nhooks:\n  "Elicit\\x61tion": []\n---\n',
+    '---\nhooks:\n  "Elicit\\x61tion": [] ---\nbody\n', '﻿\n  ---\nhooks:\n  "Elicit\\x61tion": []\n', '---\nhooks: "\\u0045licitation"']) {
+    const w = makeWorld();
+    w.write(path.join(w.project, '.claude', 'agents', 'a.md'), text);
+    no(w);
+  }
+});
