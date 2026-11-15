@@ -65,7 +65,10 @@ npm test
 
 Pure JavaScript, no native module. Node 24 or later today (the runtime's
 floor); 22.16 once countinghouse's floor shim lands (design). CI runs on
-Linux, macOS and Windows.
+Linux, macOS and Windows. The one native program is the shim (below), and
+it is never part of `<home>/app`: that tree is built with `npm ci
+--omit=optional --ignore-scripts`, so no optional or native package enters
+it.
 
 **Unreleased installs.** Until the first release this launcher pins nothing,
 so `install` and `add-pack` take `--unreleased-pins <file>`, a JSON file of
@@ -104,10 +107,34 @@ once within two days or it expires.
 countinghouse's shared runtime is in use. It relays the client's stdio to the
 runtime, makes the handshake, reconnects, and replays its session's
 tightenings (countinghouse's
-`docs/superpowers/specs/2026-11-15-shared-runtime-design.md`). It is Rust,
+`docs/superpowers/specs/2026-11-15-shared-runtime-design.md`). It follows
+contract 2 of that spec: it attaches to the daemon's runtime and proves the
+secret, relays every message, reattaches and resumes after a loss, and hands
+the session to a runtime of its own when the shared one asks. It is Rust,
 with no async runtime and a few widely used crates. `cargo audit` and `cargo
-deny` check it in CI. **It is a scaffold**: it follows contract 2 of that
-spec, which is still under review, and is not yet wired to a runtime.
+deny` check it in CI.
+
+### Why Rust
+
+Every client session runs one shim for as long as the session lasts, so its
+footprint is paid once per session. Measured on Linux x64
+(`shim/bench/memory.py`, which runs the shim against a runtime written from
+contract 2; 2026-11-15, the main branch's release build):
+
+| | RSS | PSS |
+|---|---|---|
+| ch-shim, idle | 3.1 MB | 1.1 MB |
+| ch-shim, after relaying 20 answers of 1 MiB each | 3.1 MB | 1.1 MB |
+
+- What it replaces: the per-session Node relay of the design's revision 3,
+  measured then at 13 MB PSS each (countinghouse's
+  `docs/superpowers/specs/2026-11-15-shared-runtime-design.md`). The shim
+  is about a twelfth of that, per session.
+- The shim streams each answer through without holding it, so its memory
+  stays flat however large the answers are.
+- The binary is 0.7 MB (693,168 bytes on that build).
+- A JS launcher would also put Node back in every session's process tree,
+  which is why the wrapper package below has no `bin`.
 
 - **Build and test:** `cd shim && cargo test`. The toolchain is pinned in
   `shim/rust-toolchain.toml`; the conformance vectors are
@@ -119,15 +146,24 @@ spec, which is still under review, and is not yet wired to a runtime.
   point release.
 - **Packages:** `@countinghouse/ch-shim-<os>-<arch>`, one per target, each
   holding its binary, and `@countinghouse/ch-shim`, which has an exact
-  optionalDependency on each, so npm installs only the matching one. The
-  wrapper has no `bin`: a JS launcher would put Node back in every session's
-  process tree. Its `locate()` gives the binary's path, and ch-local
-  writes that path into each client's config. It also says when a
-  supported platform's package is missing (an install with
-  `--omit=optional`, or a lockfile made on another platform), so that is
-  reported, never silently run in the per-session mode. A platform with no
-  ch-shim at all runs the per-session mode. The Linux builds are static
-  (musl), so they need no particular glibc.
+  optionalDependency on each, so npm installs only the matching one. That
+  wrapper is for installing the shim with npm directly. The wrapper has no
+  `bin`: a JS launcher would put Node back in every session's process tree.
+  Its `locate()` gives the binary's path. It also says when a supported
+  platform's package is missing (an install with `--omit=optional`, or a
+  lockfile made on another platform), so that is reported, never silently
+  run in the per-session mode. A platform with no ch-shim at all runs the
+  per-session mode. The Linux builds are static (musl), so they need no
+  particular glibc.
+- **How ch-local installs it (design, not built yet):** not through
+  `<home>/app`'s optional dependencies, which `--omit=optional` drops by
+  design. `install` will fetch only this platform's
+  `@countinghouse/ch-shim-<os>-<arch>`, at a version and sha512 integrity
+  this launcher pins, as it does each pack's tarballs. It unpacks it with
+  the same strict tar reader into `<home>/shim/`, beside the app, and
+  writes that path into each client's config. Until the packages are
+  published, a source checkout finds the binary in `npm-shim/`
+  (`lib/shim-binary.js`).
 
 ### The daemon (`ch-local daemon`)
 
