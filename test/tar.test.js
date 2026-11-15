@@ -171,3 +171,18 @@ test('a pax header that repeats a key is refused', () => {
   const twice = member('PaxHeader/x', {type: 'x', data: '21 path=package/a.js\n21 path=package/b.js\n'});
   refuses(tgz(twice, member('package/x', {data: 'x'})), /repeats/);
 });
+
+// readMember (the upgrade's in-memory read of a new release's
+// lib/release-pins.json): the same strict reading, one file's bytes, nothing
+// written
+test('readMember: one file\'s bytes from a tarball in memory, by the same rules; nothing written', () => {
+  const {readMember} = require('../lib/tar');
+  const {packageTgz, tgz, member} = require('./tgz');
+  const bytes = packageTgz({name: '@countinghouse/ch-local', version: '0.4.0'}, {'lib/release-pins.json': '{"v":1}'});
+  assert.strictEqual(readMember(bytes, 'lib/release-pins.json').toString(), '{"v":1}');
+  assert.strictEqual(readMember(bytes, 'lib/missing.json'), null);
+  // a tarball the strict reader refuses is refused here too
+  assert.throws(() => readMember(tgz(member('package/a', {type: '2', linkname: 'b'})), 'a'), /type/);
+  assert.throws(() => readMember(Buffer.from('not gzip'), 'a'), /not a gzip tarball/);
+  assert.throws(() => readMember(bytes, 'lib/release-pins.json', {maxFileBytes: 3}), /per-file cap/);
+});
