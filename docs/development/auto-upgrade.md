@@ -87,10 +87,17 @@ those are dropped anyway (below).
    - the allowed origins (today's `ALLOWED_ORIGINS`: which origin may
      receive which variable).
 
-   **A release that adds a package to a pack, a credential, or an origin**
-   (or a pack the user hasn't installed) isn't installed automatically. It's
-   announced and left to `ch-local upgrade`, which shows what's new and
-   asks.
+   **What an automatic upgrade won't take.** Each of these is announced and
+   left to `ch-local upgrade`, which shows what's new and asks:
+   - a release that adds a package to an installed pack, a credential for
+     one, an origin, or a variable sent to an existing origin;
+   - a release that changes an identity: self's, or an existing pin's
+     repository, repository or owner ID, or workflow. This covers the
+     runtime, an installed pack's packages and the shim.
+
+   **A pack the user hasn't installed** is never installed by an automatic
+   upgrade. So a change to it, an identity change included, never blocks
+   one: it's named in the announcement, nothing more.
 6. **Every package the new pins name**, the runtime and each installed pack's
    packages, is fetched as in step 2.
    - Its sha512 must equal its pin.
