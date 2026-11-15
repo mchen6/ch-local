@@ -221,6 +221,46 @@ test('no lib/ code names `trust` or `registry` but the three that take them; ins
   ]);
 });
 
+// the re-check of #42: the scan covers bin/ too, and install's test-only
+// arguments are never passed: every install( call has exactly two arguments
+// (a fourth from bin/ or another lib/ file, say from io.env, would choose
+// the registry or the trust)
+const topLevelArgs = (code, open) => {
+  // code[open] is '(' -> the number of top-level arguments to its ')'
+  let depth = 0; let args = 0; let any = false;
+  for (let i = open; i < code.length; i++) {
+    const c = code[i];
+    if (c === '(' || c === '[' || c === '{') { depth++; if (depth > 1) any = true; continue; }
+    if (c === ')' || c === ']' || c === '}') { depth--; if (depth === 0) return any ? args + 1 : 0; continue; }
+    if (depth === 1 && c === ',') { args++; continue; }
+    if (depth >= 1 && !/\s/.test(c)) any = true;
+  }
+  return -1;
+};
+
+test('bin/ and lib/: no code names `trust` or `registry` outside the three, and every install( call has exactly two arguments', () => {
+  const root = path.join(__dirname, '..');
+  const files = [...fs.readdirSync(path.join(root, 'lib')).filter((f) => f.endsWith('.js')).map((f) => `lib/${f}`),
+    ...fs.readdirSync(path.join(root, 'bin')).filter((f) => f.endsWith('.js')).map((f) => `bin/${f}`)];
+  const code = (f) => require('./code-only').codeOnly(fs.readFileSync(path.join(root, f), 'utf8'));
+  const three = new Set(['lib/npm-fetch.js', 'lib/npm-release.js', 'lib/provenance.js']);
+  const named = [];
+  const calls = [];
+  for (const f of files) {
+    const src = code(f);
+    if (!three.has(f)) for (const m of src.matchAll(/\b(trust|registry)\b/g)) named.push(`${f}: ${m[1]}`);
+    for (const m of src.matchAll(/\binstall\s*\(/g)) {
+      if (/\bfunction\s+$/.test(src.slice(Math.max(0, m.index - 20), m.index))) continue;
+      calls.push([f, topLevelArgs(src, m.index + m[0].length - 1)]);
+    }
+  }
+  assert.deepStrictEqual(named, [], `named outside the three: ${named.join(', ')}`);
+  assert.ok(calls.length >= 1, 'bin/ch-local.js calls install');
+  assert.deepStrictEqual(calls.filter(([, n]) => n !== 2), [], 'an install( call with other than two arguments');
+  // the counter itself
+  assert.deepStrictEqual(['f()', 'f(a)', 'f({a, b}, io)', 'f(a, io, undefined, JSON.parse(io.env.X))', 'f({x: [1, 2]}, g(h, i))'].map((s) => topLevelArgs(s, 1)), [0, 1, 2, 4, 2]);
+});
+
 test('install and upgrade reach provenance only through verifyRelease (refs/tags/v<version>): no lib/ code but provenance.js names verifyAttestations', () => {
   const lib = path.join(__dirname, '..', 'lib');
   const callers = fs.readdirSync(lib).filter((f) => f.endsWith('.js') && f !== 'provenance.js')
