@@ -27,7 +27,7 @@ test('shim.json: absolute node and chLocal, and only the allowlisted environment
     const body = shimConfig.shimJsonFor({node: '/usr/local/bin/node', home, env, platform: 'linux'});
     assert.deepStrictEqual(body, {node: '/usr/local/bin/node', chLocal: path.join(home, 'bin', 'ch-local.js'),
       env: {PATH: '/usr/bin:/bin', HOME: '/home/dev', LANG: 'en_US.UTF-8', TMPDIR: '/tmp'}});
-    assert.strictEqual(shimConfig.shimJsonProblem(body), null);
+    assert.strictEqual(shimConfig.shimJsonProblem(body, 'linux'), null);
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
@@ -43,8 +43,9 @@ test('shim.json on Windows takes USERPROFILE and the Windows variables, never HO
 });
 
 test('the shim\'s vectors: every accepted form passes, every refused one fails', () => {
-  for (const ok of VECTORS.shimJson.acceptedPosix.concat(VECTORS.shimJson.acceptedWindows)) assert.strictEqual(shimConfig.shimJsonProblem(ok), null, JSON.stringify(ok));
-  for (const bad of VECTORS.shimJson.refused) assert.notStrictEqual(shimConfig.shimJsonProblem(bad.value), null, bad.why);
+  for (const ok of VECTORS.shimJson.acceptedPosix) assert.strictEqual(shimConfig.shimJsonProblem(ok, 'linux'), null, JSON.stringify(ok));
+  for (const ok of VECTORS.shimJson.acceptedWindows) assert.strictEqual(shimConfig.shimJsonProblem(ok, 'win32'), null, JSON.stringify(ok));
+  for (const bad of VECTORS.shimJson.refused) assert.notStrictEqual(shimConfig.shimJsonProblem(bad.value, 'linux'), null, bad.why);
 });
 
 test('shim.json is written 0600, never through a symlink, and rewritten in place', {skip: process.platform === 'win32'}, () => {
@@ -194,6 +195,67 @@ test('the CLI: ch-local conditions --for <pid> --home <abs>, both required', asy
     const missing = conditionsIo({env: {}});
     assert.strictEqual(await main(['conditions', '--for', '77'], missing), 2, '--home is required');
   } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// ch-local #31's review -------------------------------------------------------
+
+test('conditions: the secret is read with the shim\'s checks: a 0777 directory, a 0666 secret, a symlink or a FIFO is a failure', {skip: process.platform === 'win32'}, async() => {
+  const cases = [
+    ['a 0777 directory', (run) => fs.chmodSync(run, 0o777)],
+    ['a 0666 secret', (run) => fs.chmodSync(path.join(run, 'secret'), 0o666)],
+    ['a symlinked secret', (run) => { const t = path.join(run, 'real'); fs.renameSync(path.join(run, 'secret'), t); fs.symlinkSync(t, path.join(run, 'secret')); }],
+    ['a FIFO at the secret\'s path', (run) => { fs.rmSync(path.join(run, 'secret')); require('node:child_process').execFileSync('mkfifo', ['-m', '600', path.join(run, 'secret')]); }]
+  ];
+  for (const [what, spoil] of cases) {
+    const home = homeWithSecret();
+    try {
+      spoil(path.join(home, 'run', 'daemon'));
+      const io = conditionsIo({env: {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token'}});
+      const started = Date.now();
+      assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0, what);
+      assert.strictEqual(io.out, '', what);
+      assert.ok(Date.now() - started < 2000, `${what}: never blocks`);
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  }
+});
+
+test('conditions: gh runs in the home, never in the client\'s directory', async() => {
+  const home = homeWithSecret();
+  try {
+    const io = conditionsIo({env: {GITHUB_TOKEN: 'example-shell-token'}, cwd: os.tmpdir(), gh: {status: 1, stdout: ''}});
+    await conditions.conditions({pid: 1, home}, io);
+    const gh = io.execs.find((e) => e.cmd === 'gh');
+    assert.strictEqual(gh.cwd, home);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('shim.json is checked per platform, and a .cmd or .bat node is refused', () => {
+  const posix = {node: '/usr/bin/node', chLocal: '/h/bin/ch-local.js', env: {PATH: '/usr/bin', HOME: '/home/u'}};
+  assert.strictEqual(shimConfig.shimJsonProblem(posix, 'linux'), null);
+  assert.match(String(shimConfig.shimJsonProblem({...posix, env: {APPDATA: 'x'}}, 'linux')), /APPDATA/);
+  assert.match(String(shimConfig.shimJsonProblem({...posix, node: 'C:\\node\\node.exe'}, 'linux')), /node is not an absolute/);
+  const win = {node: 'C:\\node\\node.exe', chLocal: 'C:\\h\\bin\\ch-local.js', env: {PATH: 'C:\\Windows', USERPROFILE: 'C:\\Users\\u'}};
+  assert.strictEqual(shimConfig.shimJsonProblem(win, 'win32'), null);
+  assert.match(String(shimConfig.shimJsonProblem({...win, env: {HOME: 'C:\\x'}}, 'win32')), /HOME/);
+  assert.match(String(shimConfig.shimJsonProblem({...win, node: '/usr/bin/node'}, 'win32')), /node is not an absolute/);
+  for (const node of ['C:\\node\\node.CMD', 'C:\\node\\node.bat']) assert.match(String(shimConfig.shimJsonProblem({...win, node}, 'win32')), /\.cmd or \.bat/);
+  assert.match(String(shimConfig.shimJsonProblem({...posix, node: '/opt/node.bat'}, 'linux')), /\.cmd or \.bat/);
+});
+
+test('shim.json is 0600 whatever the umask', {skip: process.platform === 'win32'}, () => {
+  const home = tmpHome();
+  const old = process.umask(0o277);
+  try {
+    shimConfig.writeShimJson(home, {node: '/usr/local/bin/node', env: {PATH: '/usr/bin', HOME: '/home/dev'}, platform: 'linux'});
+    assert.strictEqual(fs.statSync(path.join(home, 'shim.json')).mode & 0o777, 0o600);
+  } finally {
+    process.umask(old);
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
