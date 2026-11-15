@@ -209,9 +209,9 @@ test('a setting changed between start reading the home and watching it is still 
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');
   const s = await running({passThrough: ['--locale', 'en'],
-    duringSpawn: (home) => setSetting(layout({COUNTINGHOUSE_HOME: home}), 'maxOutputBytes', '4MiB', {by: 'cli'})});
+    duringSpawn: (home) => setSetting(layout({COUNTINGHOUSE_HOME: home}), 'maxOutputBytes', '8MiB', {by: 'cli'})});
   await until(() => s.requests.some((m) => m.type === 'set'));
-  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 4 * 1024 * 1024]]);
+  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 8 * 1024 * 1024]]);
   setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'locale', 'zh', {by: 'cli'});
   await until(() => /locale set to zh: your client passes --locale itself/.test(s.f.err));
   assert.ok(!s.requests.some((m) => m.type === 'set' && m.name === 'locale'), 'never sent');
@@ -266,17 +266,17 @@ test('while running: an outside edit is said and recorded once; a raise is sent 
   try {
   const where = layout({COUNTINGHOUSE_HOME: s.home});
   assert.strictEqual(where.app, path.join(s.home, 'app'), 'the reader where the runtime is installed');
-  ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 6 * 1024 * 1024, forbid: [], packs: [], conversation: true}});
-  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 16 * 1024 * 1024, 'pack.ci-failure-triage': false}}));
+  ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 12 * 1024 * 1024, forbid: [], packs: [], conversation: true}});
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024, 'pack.ci-failure-triage': false}}));
   await until(() => s.requests.some((m) => m.type === 'unload'));
   await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'maxOutputBytes'));
-  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 6 * 1024 * 1024]]);
-  assert.match(s.f.err, /maxOutputBytes was changed outside ch-local: 8MiB -> 16MiB \(this loosens a guarding setting\)/);
-  assert.match(s.f.err, /maxOutputBytes 16MiB is above the operator's ceiling: the runtime gets 6MiB/);
+  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 12 * 1024 * 1024]]);
+  assert.match(s.f.err, /maxOutputBytes was changed outside ch-local: 16MiB -> 32MiB \(this loosens a guarding setting\)/);
+  assert.match(s.f.err, /maxOutputBytes 32MiB is above the operator's ceiling: the runtime gets 12MiB/);
   const outside = s.history().filter((h) => h.change === 'changed outside ch-local').map((h) => h.setting).sort();
   assert.deepStrictEqual(outside, ['maxOutputBytes', 'pack.ci-failure-triage']);
   // turned back on by hand: the ceiling forbids turning a pack on, so it stays off
-  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 16 * 1024 * 1024, 'pack.ci-failure-triage': true}}));
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024, 'pack.ci-failure-triage': true}}));
   await until(() => /pack\.ci-failure-triage was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: pack\.ci-failure-triage cannot be changed to on on this machine: its operator's ceiling forbids it/.test(s.f.err));
   assert.ok(!s.requests.some((m) => m.type === 'load'), 'not loaded');
   } finally {
@@ -292,10 +292,10 @@ test('while running, under a ceiling that cannot be trusted: a change that loose
   try {
     ceilingReader(s.home, {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'it is a symbolic link'});
     // a raise and a tightening together: the raise is kept back, the tightening applies (the review of P4)
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {requestTimeout: 120000, maxOutputBytes: 2 * 1024 * 1024}}));
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {requestTimeout: 120000, maxOutputBytes: 4 * 1024 * 1024}}));
     await until(() => /requestTimeout not loosened, the values in effect kept: the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(it is a symbolic link\)/.test(s.f.err));
     await until(() => s.requests.some((m) => m.type === 'set'));
-    assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 2 * 1024 * 1024]]);
+    assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 4 * 1024 * 1024]]);
   } finally {
     s.end();
     await s.done;
@@ -311,13 +311,13 @@ test('never silent: an outside edit found at start reaches the client once the r
   const {layout} = require('../lib/home');
   const s = await running({beforeStart: (home) => {
     const where = layout({COUNTINGHOUSE_HOME: home});
-    setSetting(where, 'maxOutputBytes', '4MiB', {by: 'cli'});
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024}}));
+    setSetting(where, 'maxOutputBytes', '8MiB', {by: 'cli'});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 64 * 1024 * 1024}}));
   }});
   try {
     await until(() => notices(s).length > 0);
-    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes was changed outside ch-local: 4MiB -> 32MiB (this loosens a guarding setting)']]);
-    assert.match(s.f.err, /maxOutputBytes was changed outside ch-local: 4MiB -> 32MiB/, 'and on stderr');
+    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes was changed outside ch-local: 8MiB -> 64MiB (this loosens a guarding setting)']]);
+    assert.match(s.f.err, /maxOutputBytes was changed outside ch-local: 8MiB -> 64MiB/, 'and on stderr');
   } finally {
     s.end();
     await s.done;
@@ -330,16 +330,16 @@ test('never silent: a loosening applied while running is told to the client; a t
   const s = await running();
   try {
     const where = layout({COUNTINGHOUSE_HOME: s.home});
-    setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+    setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
     await until(() => notices(s).length > 0);
-    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes loosened from 8MiB to 16MiB']]);
+    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes loosened from 16MiB to 32MiB']]);
     setSetting(where, 'requestTimeout', '10s', {by: 'cli'});
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
     await until(() => notices(s).length > 1);
     assert.deepStrictEqual(notices(s).slice(1), [[null, 'autoUpgrade loosened from off to on, at the next start']]);
     // an outside edit while running, of any setting: told too (spec section 5)
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 16 * 1024 * 1024, requestTimeout: 10000, autoUpgrade: true, locale: 'zh'}}));
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024, requestTimeout: 10000, autoUpgrade: true, locale: 'zh'}}));
     await until(() => notices(s).some(([, t]) => /locale/.test(t)));
     assert.deepStrictEqual(notices(s).filter(([, t]) => /locale/.test(t)), [[null, 'locale was changed outside ch-local: en -> zh']]);
   } finally {
@@ -352,13 +352,13 @@ test('never silent, told once: a clamp start found is not told again by the appl
   const {layout} = require('../lib/home');
   const s = await running({beforeStart: (home) => {
     const where = layout({COUNTINGHOUSE_HOME: home});
-    ceilingReader(home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 6 * 1024 * 1024, forbid: [], packs: null, conversation: true}});
-    require('../lib/settings').setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+    ceilingReader(home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 12 * 1024 * 1024, forbid: [], packs: null, conversation: true}});
+    require('../lib/settings').setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
   }});
   try {
     await until(() => notices(s).length > 0);
     await new Promise((r) => setTimeout(r, 300));   // the applier's first look has run
-    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes 16MiB is above the operator\'s ceiling: the runtime gets 6MiB']]);
+    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes 32MiB is above the operator\'s ceiling: the runtime gets 12MiB']]);
   } finally {
     s.end();
     await s.done;
@@ -371,8 +371,8 @@ test('never silent: a runtime whose control request fails does not end start; wh
   // the runtime's reply to a notice: a failure
   const s = await running({answer: (m) => (m.type === 'notice' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
   try {
-    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
-    await until(() => /the client was not told: maxOutputBytes loosened from 8MiB to 16MiB \(CONTROL_FAILED\)/.test(s.f.err));
+    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
+    await until(() => /the client was not told: maxOutputBytes loosened from 16MiB to 32MiB \(CONTROL_FAILED\)/.test(s.f.err));
     // start runs on: a later change is still applied
     setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'locale', 'zh', {by: 'cli'});
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
