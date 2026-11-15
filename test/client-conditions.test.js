@@ -236,3 +236,26 @@ test('review: the service answers within its wait while the ancestry is still re
   fs.rmSync(file);
   assert.strictEqual((await svc.check(CC)).why, 'client hook present', 'latched');
 });
+
+test('the real reader on this platform (Windows CI runs PowerShell here): read, never null by default; the client found or unreadable', async () => {
+  const {readClientContext, clientLines, conditionsService} = require('../lib/client-conditions');
+  const c = await readClientContext(process.pid, 3);
+  assert.ok(Array.isArray(c.lines) && c.lines.length >= 1 && c.lines[0].some((a) => /node/i.test(a)), JSON.stringify(c));
+  assert.strictEqual(typeof c.policyPresent, 'boolean');
+  if (process.platform !== 'win32') assert.strictEqual(c.policyPresent, false);
+  // the service reads from start's parent, 8 up, as production does
+  const found = clientLines((await readClientContext(process.ppid)).lines);
+  assert.ok(found === null || /claude/i.test(JSON.stringify(found[found.length - 1])), JSON.stringify(found));
+  // the service over the real reader: an answer, never a default yes
+  const w = world();
+  const svc = conditionsService({home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed}, {waitMs: 60000});
+  await svc.ready;
+  const r = await svc.check(CC);
+  if (found === null) assert.deepStrictEqual(r, {mayElicit: false, why: 'client settings unreadable'});
+  else assert.strictEqual(typeof r.mayElicit, 'boolean', 'run under Claude Code: an answer from its real ancestry');
+});
+
+test('a managed source start cannot read (a Windows policy key): unreadable', () => {
+  const w = world();
+  assert.deepStrictEqual(w.ask({managedPresent: true}), {mayElicit: false, why: 'client settings unreadable'});
+});
