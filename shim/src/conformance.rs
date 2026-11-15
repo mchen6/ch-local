@@ -1,11 +1,13 @@
 //! countinghouse's conformance vectors (contract 2), copied from its
-//! docs/superpowers/specs/shared-runtime-wire/vectors.json.
+//! docs/superpowers/specs/shared-runtime-wire/vectors.json. In the crate, so
+//! the test-only proof (mac::server_proof) and Secret's bytes are reachable.
 
-use ch_shim::{answer, frame, mac, message, secret};
 use serde_json::Value;
 
+use crate::{answer, frame, mac, message, secret};
+
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("vectors/contract-2.json")).expect("the vectors parse")
+    serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).expect("the vectors parse")
 }
 
 fn hex(s: &str) -> Vec<u8> {
@@ -16,9 +18,11 @@ fn b32(s: &str) -> [u8; 32] {
     hex(s).try_into().expect("32 bytes")
 }
 
-fn caps() -> frame::Caps {
-    frame::Caps { message: 1 << 20 }
+fn secret_of(hex_str: &str) -> secret::Secret {
+    secret::parse(hex_str.as_bytes()).expect("the vectors' secret")
 }
+
+const CAPS: frame::Caps = frame::Caps { message: 1 << 20 };
 
 #[test]
 fn the_contract_is_2() {
@@ -30,7 +34,8 @@ fn the_secret_files_accepted_and_refused_forms() {
     let v = vectors();
     let want = b32(v["secretFile"]["secretHex"].as_str().unwrap());
     for ok in v["secretFiles"]["accepted"].as_array().unwrap() {
-        assert_eq!(secret::parse(ok.as_str().unwrap().as_bytes()), Ok(want), "{ok}");
+        let s = secret::parse(ok.as_str().unwrap().as_bytes()).unwrap_or_else(|e| panic!("{ok}: {e}"));
+        assert_eq!(s.bytes(), &want, "{ok}");
     }
     for bad in v["secretFiles"]["refused"].as_array().unwrap() {
         assert!(secret::parse(bad.as_str().unwrap().as_bytes()).is_err(), "{bad}");
@@ -40,8 +45,8 @@ fn the_secret_files_accepted_and_refused_forms() {
 #[test]
 fn ms_and_mc_carry_the_protocol() {
     let h = &vectors()["handshake"];
-    let (s, nc, ns) =
-        (b32(h["secretHex"].as_str().unwrap()), b32(h["ncHex"].as_str().unwrap()), b32(h["nsHex"].as_str().unwrap()));
+    let s = secret_of(h["secretHex"].as_str().unwrap());
+    let (nc, ns) = (b32(h["ncHex"].as_str().unwrap()), b32(h["nsHex"].as_str().unwrap()));
     let p = h["protocol"].as_u64().unwrap() as u8;
     let ms = hex(h["msHex"].as_str().unwrap());
     assert_eq!(mac::server_proof(&s, p, &nc, &ns).to_vec(), ms);
@@ -57,7 +62,7 @@ fn ms_and_mc_carry_the_protocol() {
 fn the_token_mac() {
     use base64::Engine;
     let v = vectors();
-    let s = b32(v["handshake"]["secretHex"].as_str().unwrap());
+    let s = secret_of(v["handshake"]["secretHex"].as_str().unwrap());
     let got = mac::token_mac(&s, v["tokenMac"]["token"].as_str().unwrap());
     assert_eq!(base64::engine::general_purpose::STANDARD.encode(got), v["tokenMac"]["macB64"].as_str().unwrap());
 }
@@ -66,9 +71,9 @@ fn the_token_mac() {
 fn every_handshake_frame_reads_back_as_its_json() {
     for (name, f) in vectors()["handshake"]["frames"].as_object().unwrap() {
         let bytes = hex(f["hex"].as_str().unwrap());
-        let (_, payload) = frame::read_frame(&mut &bytes[..], caps()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let (kind, payload) = frame::read_frame(&mut &bytes[..], CAPS).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(payload, f["json"].as_str().unwrap().as_bytes(), "{name}");
-        assert_eq!(frame::encode(frame::Kind::from_byte(bytes[0]).unwrap(), &payload), bytes, "{name}");
+        assert_eq!(frame::encode(kind, &payload, CAPS).unwrap(), bytes, "{name}");
     }
 }
 
@@ -76,29 +81,53 @@ fn every_handshake_frame_reads_back_as_its_json() {
 fn every_control_frame_reads_back_as_its_json() {
     for (name, f) in vectors()["control"].as_object().unwrap() {
         let bytes = hex(f["hex"].as_str().unwrap());
-        let (kind, payload) = frame::read_frame(&mut &bytes[..], caps()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let (kind, payload) = frame::read_frame(&mut &bytes[..], CAPS).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(kind, frame::Kind::Control, "{name}");
         assert_eq!(payload, f["json"].as_str().unwrap().as_bytes(), "{name}");
     }
 }
 
 #[test]
-fn an_over_cap_frame_and_an_unknown_kind_are_refused_before_their_payload() {
-    let over = frame::encode(frame::Kind::Hello, &[b'x'; 4097]);
-    assert!(matches!(frame::read_frame(&mut &over[..5], caps()), Err(frame::FrameError::OverCap { .. })));
-    let mut z = frame::encode(frame::Kind::Hello, b"{}");
-    z[0] = b'Z';
-    assert!(matches!(frame::read_frame(&mut &z[..], caps()), Err(frame::FrameError::UnknownKind(b'Z'))));
-    let m = frame::encode(frame::Kind::Message, &[b'x'; 17]);
+fn over_cap_unknown_and_whole_m_frames_are_refused_before_their_payload() {
+    let head = |kind: u8, len: u32| {
+        let mut h = vec![kind];
+        h.extend_from_slice(&len.to_be_bytes());
+        h
+    };
     assert!(
-        matches!(frame::read_head(&mut &m[..5], frame::Caps { message: 16 }), Err(frame::FrameError::OverCap { .. })),
-        "an M over WELCOME's cap"
+        matches!(frame::read_frame(&mut &head(b'H', 508)[..], CAPS), Err(frame::FrameError::OverCap { .. })),
+        "HELLO over 507"
     );
+    assert!(matches!(frame::read_frame(&mut &head(b'P', 4097)[..], CAPS), Err(frame::FrameError::OverCap { .. })));
+    assert!(matches!(frame::read_frame(&mut &head(b'C', 65537)[..], CAPS), Err(frame::FrameError::OverCap { .. })));
+    assert!(matches!(frame::read_frame(&mut &head(b'Z', 2)[..], CAPS), Err(frame::FrameError::UnknownKind(b'Z'))));
+    assert!(matches!(
+        frame::read_head(&mut &head(b'M', 17)[..], frame::Caps { message: 16 }),
+        Err(frame::FrameError::OverCap { .. })
+    ));
+    assert!(
+        matches!(frame::read_frame(&mut &head(b'M', 0)[..], CAPS), Err(frame::FrameError::MessageNotWhole)),
+        "an M is streamed"
+    );
+}
+
+#[test]
+fn an_encode_over_cap_is_refused_never_truncated() {
+    assert!(matches!(frame::encode(frame::Kind::Hello, &[b'x'; 508], CAPS), Err(frame::FrameError::OverCap { .. })));
+    assert!(frame::encode(frame::Kind::Hello, &[b'x'; 507], CAPS).is_ok());
+}
+
+#[test]
+fn a_welcomes_grant_is_clamped() {
+    assert_eq!(frame::Caps::message_from(u64::MAX).message, frame::MESSAGE_CAP_CEILING);
+    assert_eq!(frame::Caps::message_from(8_392_704).message, 8_392_704);
 }
 
 fn payload_of(hexed: &str) -> Vec<u8> {
     let bytes = hex(hexed);
-    frame::read_frame(&mut &bytes[..], caps()).expect("a frame").1
+    let (_, len) = frame::read_head(&mut &bytes[..], CAPS).expect("a frame");
+    assert_eq!(bytes.len(), 5 + len as usize);
+    bytes[5..].to_vec()
 }
 
 #[test]
@@ -111,14 +140,17 @@ fn requests_batches_and_notifications_to_the_runtime() {
         ("notificationToRuntime", None),
     ] {
         let line = m[name]["line"].as_str().unwrap().as_bytes();
-        assert_eq!(message::to_runtime(seq, line), payload_of(m[name]["hex"].as_str().unwrap()), "{name}");
+        assert_eq!(
+            message::to_runtime(seq, line, CAPS.message).unwrap(),
+            payload_of(m[name]["hex"].as_str().unwrap()),
+            "{name}"
+        );
         let keep = &m[name]["keep"];
         match message::classify(line) {
             message::Line::Request { id, method } => {
                 assert_eq!(id, keep["idBytes"].as_str().unwrap().as_bytes(), "{name}");
-                assert_eq!(Some(method.as_str()), keep["method"].as_str(), "{name}");
+                assert_eq!(method.as_deref(), keep["method"].as_str(), "{name}");
             }
-            message::Line::Response => panic!("{name}: a request taken for a response"),
             message::Line::Batch { ids } => {
                 let want: Vec<Vec<u8>> = keep["memberIdBytes"]
                     .as_array()
@@ -128,6 +160,7 @@ fn requests_batches_and_notifications_to_the_runtime() {
                     .collect();
                 assert_eq!(ids, want, "{name}");
             }
+            message::Line::Response => panic!("{name}: a request taken for a response"),
             message::Line::Plain => assert!(seq.is_none(), "{name}"),
         }
     }

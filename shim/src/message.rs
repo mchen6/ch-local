@@ -35,8 +35,10 @@ impl Seq {
 #[derive(Debug, PartialEq)]
 pub enum Line {
     /// An object with an `id` and a `method`: its id's original bytes, and
-    /// its method.
-    Request { id: Vec<u8>, method: String },
+    /// its method when that is a string. One whose `method` is not a string
+    /// is still a request (it gets a seq): the runtime answers it as
+    /// invalid, and the shim must be able to crash-answer it meanwhile.
+    Request { id: Vec<u8>, method: Option<String> },
     /// An object with an `id` and no `method`: the client's answer to a
     /// request of the runtime's (a dialog's elicitation, say). The runtime
     /// never answers it, so the shim keeps nothing for it and it gets no
@@ -65,10 +67,9 @@ pub fn classify(line: &[u8]) -> Line {
     match first {
         Some(b'{') => match serde_json::from_slice::<Fields<'_>>(line) {
             Ok(fields) => match (id_of(&fields), fields.get("method")) {
-                (Some(id), Some(method)) => match serde_json::from_str::<String>(method.get()) {
-                    Ok(method) => Line::Request { id, method },
-                    Err(_) => Line::Plain,
-                },
+                (Some(id), Some(method)) => {
+                    Line::Request { id, method: serde_json::from_str::<String>(method.get()).ok() }
+                }
                 (Some(_), None) => Line::Response,
                 (None, _) => Line::Plain,
             },
@@ -87,15 +88,28 @@ pub fn classify(line: &[u8]) -> Line {
     }
 }
 
+/// A line too long for the connection: WELCOME's maxToRuntime, the whole M
+/// payload (header-length bytes, header and line).
+#[derive(Debug, PartialEq)]
+pub struct TooLong {
+    pub payload: usize,
+    pub cap: u32,
+}
+
 /// A client line as an M payload: `{"seq": n}` for a request or a batch, no
-/// header otherwise, then the line's bytes.
-pub fn to_runtime(seq: Option<u64>, line: &[u8]) -> Vec<u8> {
+/// header otherwise, then the line's bytes. Refused, never truncated, when
+/// the payload would be over `cap`.
+pub fn to_runtime(seq: Option<u64>, line: &[u8], cap: u32) -> Result<Vec<u8>, TooLong> {
     let header = seq.map(|n| format!("{{\"seq\":{n}}}")).unwrap_or_default();
-    let mut out = Vec::with_capacity(2 + header.len() + line.len());
+    let payload = 2 + header.len() + line.len();
+    if payload > cap as usize {
+        return Err(TooLong { payload, cap });
+    }
+    let mut out = Vec::with_capacity(payload);
     out.extend_from_slice(&(header.len() as u16).to_be_bytes());
     out.extend_from_slice(header.as_bytes());
     out.extend_from_slice(line);
-    out
+    Ok(out)
 }
 
 /// Why an M payload from the runtime closes the connection.
@@ -152,7 +166,8 @@ pub fn read_header<R: Read>(r: &mut R, length: u32) -> Result<(Option<u64>, u32)
 /// tests, and for small payloads).
 pub fn from_runtime(payload: &[u8]) -> Result<(Option<u64>, &[u8]), Malformed> {
     let mut r = payload;
-    match read_header(&mut r, payload.len() as u32) {
+    let length = u32::try_from(payload.len()).map_err(|_| Malformed::HeaderPastEnd)?;
+    match read_header(&mut r, length) {
         Ok((seq, _)) => Ok((seq, r)),
         Err(HeaderError::Malformed(m)) => Err(m),
         Err(HeaderError::Io(_)) => Err(Malformed::HeaderPastEnd),
@@ -176,6 +191,20 @@ mod tests {
     }
 
     #[test]
+    fn a_method_that_is_not_a_string_is_still_a_request() {
+        assert_eq!(
+            classify(br#"{"jsonrpc":"2.0","id":4,"method":7}"#),
+            Line::Request { id: b"4".to_vec(), method: None }
+        );
+    }
+
+    #[test]
+    fn a_line_too_long_is_refused_never_cut() {
+        assert_eq!(to_runtime(None, &[b'x'; 10], 11), Err(TooLong { payload: 12, cap: 11 }));
+        assert_eq!(to_runtime(None, &[b'x'; 10], 12).map(|p| p.len()), Ok(12));
+    }
+
+    #[test]
     fn a_clients_response_is_not_a_request() {
         assert_eq!(classify(br#"{"jsonrpc":"2.0","id":3,"result":{}}"#), Line::Response);
         assert_eq!(classify(br#"{"jsonrpc":"2.0","id":3,"error":{"code":-1,"message":"no"}}"#), Line::Response);
@@ -183,7 +212,7 @@ mod tests {
 
     #[test]
     fn read_header_leaves_the_line_unread() {
-        let payload = to_runtime(Some(5), b"0123456789");
+        let payload = to_runtime(Some(5), b"0123456789", 64).unwrap();
         let mut r = &payload[..];
         assert_eq!(read_header(&mut r, payload.len() as u32).ok(), Some((Some(5), 10)));
         assert_eq!(r, b"0123456789");

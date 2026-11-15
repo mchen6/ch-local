@@ -13,9 +13,17 @@ const targets = require('./targets');
 const ROOT = path.join(__dirname, '..');
 const exe = (t) => (t.os === 'win32' ? 'ch-shim.exe' : 'ch-shim');
 
-function cargoVersion() {
-  const m = /^version\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(path.join(ROOT, 'shim', 'Cargo.toml'), 'utf8'));
-  return m && m[1];
+// The [package] table's version, never another table's version key.
+function cargoVersion(file = path.join(ROOT, 'shim', 'Cargo.toml')) {
+  const text = fs.readFileSync(file, 'utf8');
+  let table = null;
+  for (const line of text.split(/\r?\n/)) {
+    const header = /^\s*\[([^\]]+)\]\s*(#.*)?$/.exec(line);
+    if (header) { table = header[1].trim(); continue; }
+    const m = /^\s*version\s*=\s*"([^"]+)"\s*(#.*)?$/.exec(line);
+    if (m && table === 'package') return m[1];
+  }
+  return null;
 }
 
 function common(version) {
@@ -27,9 +35,12 @@ function common(version) {
   };
 }
 
-function assemble({version, artifacts, out}) {
+function assemble({version, artifacts, out, cargoToml}) {
   if (!/^\d+\.\d+\.\d+$/.test(String(version))) throw new Error(`version ${version}: a release x.y.z only`);
-  if (cargoVersion() !== version) throw new Error(`the tag says ${version} but shim/Cargo.toml says ${cargoVersion()}`);
+  // 0.0.0 is the scaffold's, which is not wired to a runtime: never published
+  if (version === '0.0.0') throw new Error('version 0.0.0 is the unwired scaffold: not for publishing');
+  const cargo = cargoVersion(cargoToml);
+  if (cargo !== version) throw new Error(`the tag says ${version} but shim/Cargo.toml says ${cargo}`);
   fs.rmSync(out, {recursive: true, force: true});
   for (const t of targets) {
     const from = path.join(artifacts, `ch-shim-${t.key}`, exe(t));

@@ -9,6 +9,14 @@ const {tmp} = require('./fake-io');
 
 const exe = (t) => (t.os === 'win32' ? 'ch-shim.exe' : 'ch-shim');
 
+// A Cargo.toml of the test's own: [package] at `version`, and a decoy
+// version key in another table, which must never be read.
+function cargoToml(dir, version) {
+  const file = path.join(dir, 'Cargo.toml');
+  fs.writeFileSync(file, `[workspace.package]\nversion = "9.9.9"\n\n[package]\nname = "ch-shim"\nversion = "${version}"\n`);
+  return file;
+}
+
 function artifacts(dir, skip) {
   for (const t of targets) {
     if (t.key === skip) continue;
@@ -20,9 +28,11 @@ function artifacts(dir, skip) {
 test('assemble makes six platform packages and a wrapper with an exact optionalDependency on each', () => {
   const dir = tmp('ch-npm-shim-');
   try {
-    const version = cargoVersion();
+    // a version of the test's own, in a copy of the tree: 0.0.0 (the
+    // scaffold's) is refused
+    const version = '1.2.3';
     artifacts(path.join(dir, 'a'));
-    const out = assemble({version, artifacts: path.join(dir, 'a'), out: path.join(dir, 'out')});
+    const out = assemble({version, artifacts: path.join(dir, 'a'), out: path.join(dir, 'out'), cargoToml: cargoToml(dir, version)});
     for (const t of targets) {
       const pkg = JSON.parse(fs.readFileSync(path.join(out, `ch-shim-${t.key}`, 'package.json'), 'utf8'));
       assert.strictEqual(pkg.name, `@countinghouse/ch-shim-${t.key}`);
@@ -41,14 +51,16 @@ test('assemble makes six platform packages and a wrapper with an exact optionalD
   }
 });
 
-test('assemble refuses a missing binary, a version that is not shim/Cargo.toml\'s, and a prerelease', () => {
+test('assemble refuses a missing binary, a version that is not [package]\'s, a prerelease, and the scaffold\'s 0.0.0', () => {
   const dir = tmp('ch-npm-shim-');
   try {
     artifacts(path.join(dir, 'a'), 'win32-arm64');
-    const args = (version) => ({version, artifacts: path.join(dir, 'a'), out: path.join(dir, 'out')});
-    assert.throws(() => assemble(args(cargoVersion())), /no binary for win32-arm64/);
-    assert.throws(() => assemble(args('9.9.9')), /shim\/Cargo.toml says/);
+    const args = (version, cargo = version) => ({version, artifacts: path.join(dir, 'a'), out: path.join(dir, 'out'), cargoToml: cargoToml(dir, cargo)});
+    assert.throws(() => assemble(args('1.2.3')), /no binary for win32-arm64/);
+    assert.throws(() => assemble(args('9.9.9', '1.2.3')), /shim\/Cargo.toml says 1.2.3/, 'the decoy 9.9.9 is not [package]\'s');
     assert.throws(() => assemble(args('1.0.0-rc.1')), /a release x.y.z only/);
+    assert.throws(() => assemble(args('0.0.0')), /unwired scaffold/);
+    assert.strictEqual(cargoVersion(), '0.0.0', 'the scaffold itself is 0.0.0');
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }

@@ -98,7 +98,7 @@ jobs:
           exe=ch-shim; [ "${{ runner.os }}" = Windows ] && exe=ch-shim.exe
           path="target/${{ matrix.target }}/release/$exe"
           ls -l "$path"
-          [ "${{ runner.os }}" = Linux ] && { file "$path"; file "$path" | grep -q 'statically linked' || { echo "::error::not a static binary"; exit 1; }; }
+          [ "${{ runner.os }}" = Linux ] && { file "$path"; file "$path" | grep -Eq 'statically linked|static-pie linked' || { echo "::error::not a static binary"; exit 1; }; }
           echo "path=shim/$path" >> "$GITHUB_OUTPUT"
       # the release binary itself runs (a bad link, a broken ad-hoc
       # signature, a missing library): the scaffold says so and exits 2
