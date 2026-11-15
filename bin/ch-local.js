@@ -119,6 +119,13 @@ async function main(argv, io) {
       if (!isFullPath(a.values['--home'])) { io.stderr.write('ch-local conditions: --home must be an absolute path\n'); return 2; }
       return await require('../lib/conditions-command').conditions({pid: a.values['--for'], home: a.values['--home']}, io);
     }
+    if (command === 'daemon') {
+      const a = parse(rest, {values: ['--home']});
+      if (a == null || a.positional.length > 0 || a.values['--home'] === undefined) return usage();
+      const {isFullPath} = require('../lib/home');
+      if (!isFullPath(a.values['--home'])) { io.stderr.write('ch-local daemon: --home must be an absolute path\n'); return 2; }
+      return await require('../lib/daemon').daemon({home: a.values['--home']}, io);
+    }
     if (command === 'start') {
       if (rest[0] !== '--stdio') return usage();
       return await require('../lib/start').start({passThrough: rest.slice(1)}, io);
@@ -179,6 +186,9 @@ function realIo() {
     alive: (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
     hostname: os.hostname(),
     exit: (code) => process.exit(code),
+    // a signal this process takes and does nothing with (ch-local daemon:
+    // SIGHUP, so it outlives the shim's parent ending)
+    ignoreSignal: (name) => process.on(name, () => {}),
     // SIGINT, SIGTERM and SIGHUP go to handler(name) until the returned
     // function is called; start decides what each means.
     trapSignals: (handler) => {

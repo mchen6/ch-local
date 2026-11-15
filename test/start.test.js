@@ -577,3 +577,18 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
 });
+
+// C4b: ch-local daemon's runtime, start in session mode (countinghouse #236)
+test('start in session mode: framework.js on --sessionSocket, never --stdio, and the same profile otherwise', async () => {
+  const home = installedHome();
+  const f = io(home);
+  const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
+  assert.strictEqual(await start({passThrough: [], session: {socket}}, f), 0, f.err);
+  const {args} = f.spawned[0];
+  assert.strictEqual(args[0], path.join(home, 'app', 'node_modules', 'countinghouse', 'framework.js'));
+  assert.strictEqual(valueOf(args, '--sessionSocket'), socket);
+  assert.ok(!args.includes('--stdio') && !args.some((a) => /countinghouse-stdio/.test(a)), 'no stdio');
+  assert.strictEqual(valueOf(args, '--store'), 'local');
+  assert.strictEqual(valueOf(args, '--controlChannel'), 'ipc');
+  assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'));
+});
