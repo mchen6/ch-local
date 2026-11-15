@@ -15,6 +15,7 @@ pub mod answer;
 pub mod frame;
 pub mod handshake;
 pub mod inflight;
+pub mod lock;
 pub mod mac;
 pub mod message;
 pub mod secret;
