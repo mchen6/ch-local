@@ -102,18 +102,22 @@ pub unsafe fn startup_sweep() -> io::Result<usize> {
 mod tests {
     use std::process::Command;
 
-    // The child half: this test binary re-run with CH_SHIM_FD set, holding
-    // that descriptor without FD_CLOEXEC (inherited from the parent half).
-    // It sweeps (unless told not to), then spawns a shell that probes what it
-    // was given.
+    // The child half: this test binary re-run alone (one test, one thread)
+    // with CH_SHIM_SWEEP set. It leaks a descriptor itself (no FD_CLOEXEC, as
+    // a careless client leaves one), sweeps or not, then spawns a shell that
+    // probes what it was given. All of it in a fresh process, where no other
+    // test can open, close or re-flag a descriptor meanwhile.
     #[test]
     fn child_half() {
-        let Ok(fd) = std::env::var("CH_SHIM_FD") else { return };
-        match std::env::var("CH_SHIM_SWEEP").as_deref() {
-            Ok("listing") => {
+        let Ok(mode) = std::env::var("CH_SHIM_SWEEP") else { return };
+        let f = std::fs::File::open("/dev/null").unwrap();
+        rustix::io::fcntl_setfd(&f, rustix::io::FdFlags::empty()).unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
+        match mode.as_str() {
+            "listing" => {
                 super::by_listing().unwrap();
             }
-            Ok("range") => {
+            "range" => {
                 super::by_range().unwrap();
             }
             _ => {}
@@ -124,46 +128,30 @@ mod tests {
         let out = Command::new("/bin/sh").arg("-c").arg(probe).output().unwrap();
         let listed = String::from_utf8_lossy(&out.stdout);
         println!("CH_SHIM_CHILD_SAW[{}] fd={fd}", listed.split_whitespace().collect::<Vec<_>>().join(","));
+        drop(f);
     }
 
-    fn run_child(sweep: &str) -> (i32, Vec<i32>) {
-        let f = std::fs::File::open("/dev/null").unwrap();
-        // inheritable, as a careless client would leave it
-        rustix::io::fcntl_setfd(&f, rustix::io::FdFlags::empty()).unwrap();
-        let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
+    fn run_child(mode: &str) -> (i32, Vec<i32>) {
         let out = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "unix_ffi::tests::child_half", "--nocapture", "--test-threads=1"])
-            .env("CH_SHIM_FD", fd.to_string())
-            .env("CH_SHIM_SWEEP", sweep)
+            .env("CH_SHIM_SWEEP", mode)
             .output()
             .unwrap();
-        drop(f);
         let text = String::from_utf8_lossy(&out.stdout);
         // the harness prints "test … " before the child's own output
         const TAG: &str = "CH_SHIM_CHILD_SAW[";
         let at = text.find(TAG).unwrap_or_else(|| panic!("no child line: {text}")) + TAG.len();
-        let list = &text[at..at + text[at..].find(']').unwrap()];
-        (fd, list.split(',').filter_map(|n| n.parse().ok()).collect())
+        let close = at + text[at..].find(']').unwrap();
+        let saw = text[at..close].split(',').filter_map(|n| n.parse().ok()).collect();
+        let fd = text[close..].trim_start_matches("] fd=").split_whitespace().next().unwrap().parse().unwrap();
+        (fd, saw)
     }
 
     #[test]
-    fn a_descriptor_the_client_leaked_never_reaches_what_the_shim_spawns() {
-        let (fd, saw) = run_child("listing");
-        assert!(!saw.contains(&fd), "fd {fd} reached the spawned process: {saw:?}");
-    }
-
-    #[test]
-    fn the_fallback_over_the_descriptor_range_does_the_same() {
-        let (fd, saw) = run_child("range");
-        assert!(!saw.contains(&fd), "fd {fd} reached the spawned process: {saw:?}");
-    }
-
-    #[test]
-    fn without_the_sweep_it_would() {
-        let (fd, saw) = run_child("none");
-        assert!(
-            saw.contains(&fd),
-            "the test's leaked fd {fd} should reach the spawned process without the sweep: {saw:?}"
-        );
+    fn a_leaked_descriptor_reaches_a_spawned_process_only_without_the_sweep() {
+        for (mode, reaches) in [("none", true), ("listing", false), ("range", false)] {
+            let (fd, saw) = run_child(mode);
+            assert_eq!(saw.contains(&fd), reaches, "{mode}: fd {fd}, the spawned process saw {saw:?}");
+        }
     }
 }
