@@ -155,6 +155,43 @@ test('the review of #48: a 0.x minor is a major here, announced and never instal
   }
 });
 
+test('the re-check of #48: a major is never installed here, nothing of it fetched but the packument', async() => {
+  const now = Date.now();
+  const w = await world({version: '1.0.0', at: new Date(now - 200 * H)});
+  try {
+    const h = home();
+    writeStampFile(h, {firstSeen: {'1.0.0': now - 200 * H}});
+    const r = await run(h, w, {now, exec: npm('1.0.0')});
+    assert.strictEqual(r.outcome, 'major');
+    assert.match(r.line, /ch-local 1\.0\.0 is a major upgrade: run ch-local upgrade to install it/);
+    assert.deepStrictEqual(r.io.execs, []);
+    assert.ok(!w.reg.requests.some((u) => u.endsWith('.tgz')));
+  } finally {
+    await w.close();
+  }
+});
+
+test('the re-check of #48: with shim.json missing or invalid, an automatic install still never writes it; it says to repair it, and records that', async() => {
+  const now = Date.now();
+  for (const state of ['missing', 'invalid']) {
+    const w = await world({at: new Date(now - 200 * H)});
+    try {
+      const h = home();
+      writeStampFile(h, {firstSeen: {[TO]: now - 200 * H}});
+      if (state === 'invalid') fs.writeFileSync(path.join(h, 'shim.json'), '{"node": "relative"}', {mode: 0o600});
+      const before = fs.existsSync(path.join(h, 'shim.json')) ? fs.readFileSync(path.join(h, 'shim.json'), 'utf8') : null;
+      const r = await run(h, w, {now, env: {PATH: '/a/client/config/path', HOME: '/a/client/home'}});
+      assert.strictEqual(r.outcome, 'installed', r.line);
+      assert.match(r.line, /run ch-local install to repair the relay's settings/, state);
+      const after = fs.existsSync(path.join(h, 'shim.json')) ? fs.readFileSync(path.join(h, 'shim.json'), 'utf8') : null;
+      assert.strictEqual(after, before, `${state}: never written`);
+      assert.ok(historyOf(h).some((e) => e.change === 'shim.json' && /run ch-local install to repair/.test(e.notice)), state);
+    } finally {
+      await w.close();
+    }
+  }
+});
+
 test('the review of #48: a version a rollback left is never installed again here', async() => {
   const now = Date.now();
   const w = await world({at: new Date(now - 200 * H)});
