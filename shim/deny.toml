@@ -1,5 +1,12 @@
 # cargo deny check: licences, bans, advisories and sources for the shim's
 # dependency tree. Run in CI (shim.yml) beside cargo audit.
+#
+# The approved crates and features (the reviewer, 2026-11-14): getrandom;
+# rustix with only std, process, fs and system (Unix); windows-sys with only
+# Win32_Foundation, Win32_Security (+ Authorization), Win32_System_Threading
+# and Win32_System_SystemInformation (Windows; the last for
+# GetComputerNameExW, so start.lock's host matches Node's os.hostname()).
+# Only win_ffi.rs calls into windows-sys.
 
 [graph]
 targets = [
