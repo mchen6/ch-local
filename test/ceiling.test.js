@@ -44,15 +44,15 @@ const UNTRUSTED = {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', 
 
 test('a loosening is asked at a terminal, recorded as confirmed there; no is no; tightening is not asked', async () => {
   const home = tmp('ch-home-');
-  const no = await run(home, ['settings', 'set', 'maxOutputBytes', '16MiB'], {answers: ['n']});
+  const no = await run(home, ['settings', 'set', 'maxOutputBytes', '32MiB'], {answers: ['n']});
   assert.strictEqual(no.code, 1);
-  assert.match(no.io.asked[0], /^Loosen maxOutputBytes from 8MiB to 16MiB\? This is kept until you change it back\. \[y\/N\] $/);
+  assert.match(no.io.asked[0], /^Loosen maxOutputBytes from 16MiB to 32MiB\? This is kept until you change it back\. \[y\/N\] $/);
   assert.match(no.io.err, /maxOutputBytes was not changed/);
   assert.strictEqual(readSettings(layout({COUNTINGHOUSE_HOME: home})).values.maxOutputBytes, undefined);
-  const yes = await run(home, ['settings', 'set', 'maxOutputBytes', '16MiB'], {answers: ['y']});
+  const yes = await run(home, ['settings', 'set', 'maxOutputBytes', '32MiB'], {answers: ['y']});
   assert.strictEqual(yes.code, 0, yes.io.err);
-  assert.deepStrictEqual(history(home).map((h) => [h.setting, h.new, h.loosened, h.confirmed]), [['maxOutputBytes', 16 * MiB, true, 'cli']]);
-  const down = await run(home, ['settings', 'set', 'maxOutputBytes', '4MiB'], {interactive: false});
+  assert.deepStrictEqual(history(home).map((h) => [h.setting, h.new, h.loosened, h.confirmed]), [['maxOutputBytes', 32 * MiB, true, 'cli']]);
+  const down = await run(home, ['settings', 'set', 'maxOutputBytes', '8MiB'], {interactive: false});
   assert.strictEqual(down.code, 0, down.io.err);
   assert.deepStrictEqual(down.io.asked, [], 'tightening is anyone\'s, unasked');
   assert.strictEqual(history(home)[1].confirmed, undefined);
@@ -75,18 +75,18 @@ test('a value changed while the user was asked is not overwritten', async () => 
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
   const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {interactive: true});
-  io.ask = async () => { setSetting(where, 'maxOutputBytes', '2MiB', {by: 'settings tool'}); return 'y'; };
-  assert.strictEqual(await main(['settings', 'set', 'maxOutputBytes', '16MiB'], io), 1);
+  io.ask = async () => { setSetting(where, 'maxOutputBytes', '4MiB', {by: 'settings tool'}); return 'y'; };
+  assert.strictEqual(await main(['settings', 'set', 'maxOutputBytes', '32MiB'], io), 1);
   assert.match(io.err, /maxOutputBytes was changed by another writer meanwhile; nothing was changed; run it again/);
-  assert.strictEqual(readSettings(where).values.maxOutputBytes, 2 * MiB);
+  assert.strictEqual(readSettings(where).values.maxOutputBytes, 4 * MiB);
 });
 
 test('the operator\'s ceiling, from the installed runtime\'s reader: above it, forbidden, or untrusted, refused before anything is asked', async () => {
   const home = tmp('ch-home-');
-  reader(home, trusted({maxOutputBytes: 4 * MiB, forbid: ['autoUpgrade'], packs: ['ci-failure-triage']}));
-  const above = await run(home, ['settings', 'set', 'maxOutputBytes', '16MiB']);
+  reader(home, trusted({maxOutputBytes: 8 * MiB, forbid: ['autoUpgrade'], packs: ['ci-failure-triage']}));
+  const above = await run(home, ['settings', 'set', 'maxOutputBytes', '32MiB']);
   assert.strictEqual(above.code, 2);
-  assert.match(above.io.err, /maxOutputBytes 16MiB is above the ceiling this machine's operator set \(at most 4MiB\); nothing was changed/);
+  assert.match(above.io.err, /maxOutputBytes 32MiB is above the ceiling this machine's operator set \(at most 8MiB\); nothing was changed/);
   assert.deepStrictEqual(above.io.asked, []);
   const auto = await run(home, ['upgrade', '--auto', 'on']);
   assert.match(auto.io.err, /autoUpgrade cannot be changed to on on this machine: its operator's ceiling forbids it/);
@@ -94,13 +94,13 @@ test('the operator\'s ceiling, from the installed runtime\'s reader: above it, f
   const pack = await run(home, ['settings', 'set', 'pack.other', 'on']);
   assert.match(pack.io.err, /pack\.other cannot be changed to on on this machine/);
   // within it: asked, and made
-  const within = await run(home, ['settings', 'set', 'maxOutputBytes', '4MiB'], {answers: ['y']});
+  const within = await run(home, ['settings', 'set', 'maxOutputBytes', '8MiB'], {answers: ['y']});
   assert.strictEqual(within.code, 0, within.io.err);
   reader(home, UNTRUSTED);
   const untrusted = await run(home, ['settings', 'set', 'requestTimeout', '60s']);
   assert.match(untrusted.io.err, /the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(\/etc\/countinghouse is not owned by root\), so no setting is loosened/);
   // tightening is never refused by it
-  assert.strictEqual((await run(home, ['settings', 'set', 'maxOutputBytes', '2MiB'], {interactive: false})).code, 0);
+  assert.strictEqual((await run(home, ['settings', 'set', 'maxOutputBytes', '4MiB'], {interactive: false})).code, 0);
 });
 
 test('a runtime without the reader, and a ceiling file present, refuses every loosening; no file is the hard bounds', () => {
@@ -112,7 +112,7 @@ test('a runtime without the reader, and a ceiling file present, refuses every lo
   const c = ceilingFor(where, {file});
   assert.strictEqual(c.state, 'untrusted');
   assert.match(c.problem, /the installed countinghouse cannot read it: it is older than this ch-local; `ch-local upgrade` installs one that can/);
-  assert.strictEqual(ceilingRefusal(c, 'maxOutputBytes', 16 * MiB).code, 'SETTING_CEILING_UNTRUSTED');
+  assert.strictEqual(ceilingRefusal(c, 'maxOutputBytes', 32 * MiB).code, 'SETTING_CEILING_UNTRUSTED');
   // a reader that throws fails closed too
   reader(home, null);
   fs.writeFileSync(path.join(where.app, 'node_modules', 'countinghouse', 'lib', 'settings-ceiling.js'), 'module.exports = {readCeiling: () => { throw new Error("boom"); }};\n');
@@ -121,32 +121,39 @@ test('a runtime without the reader, and a ceiling file present, refuses every lo
 
 test('start, under the ceiling: values clamped and said; a forbidden audit runs under enforce; one that cannot be trusted refuses a loosening start', () => {
   const s = (values) => ({values});
-  const c = trusted({maxOutputBytes: 4 * MiB, requestTimeout: 30000, forbid: ['moduleSandbox', 'autoUpgrade']});
-  const r = startUnderCeiling(s({maxOutputBytes: 16 * MiB, requestTimeout: 60000, moduleSandbox: 'audit', autoUpgrade: true, locale: 'zh'}), c, {});
-  assert.deepStrictEqual(r.values, {maxOutputBytes: 4 * MiB, requestTimeout: 30000, moduleSandbox: 'enforce', autoUpgrade: false, locale: 'zh'});
+  const c = trusted({maxOutputBytes: 8 * MiB, requestTimeout: 30000, forbid: ['moduleSandbox', 'autoUpgrade']});
+  const r = startUnderCeiling(s({maxOutputBytes: 32 * MiB, requestTimeout: 60000, moduleSandbox: 'audit', autoUpgrade: true, locale: 'zh'}), c, {});
+  assert.deepStrictEqual(r.values, {maxOutputBytes: 8 * MiB, requestTimeout: 30000, moduleSandbox: 'enforce', autoUpgrade: false, locale: 'zh'});
   assert.deepStrictEqual(r.notes, [
-    'maxOutputBytes 16MiB is above the operator\'s ceiling: the runtime gets 4MiB',
+    'maxOutputBytes 32MiB is above the operator\'s ceiling: the runtime gets 8MiB',
     'requestTimeout 60s is above the operator\'s ceiling: the runtime gets 30s',
     'moduleSandbox audit is forbidden by the operator\'s ceiling: the runtime runs under enforce',
     'automatic upgrades are forbidden by the operator\'s ceiling: they stay off'
   ]);
   assert.match(startUnderCeiling(s({}), c, {passedAudit: true}).problem, /--moduleSandbox audit is forbidden by this machine's operator ceiling: not starting/);
-  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 2 * MiB}), c, {}), {values: {maxOutputBytes: 2 * MiB}, notes: []});
+  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 4 * MiB}), c, {}), {values: {maxOutputBytes: 4 * MiB}, notes: []});
   // untrusted: defaults or tighter start; anything looser does not
-  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 2 * MiB, locale: 'zh'}), UNTRUSTED, {}).notes, []);
-  assert.match(startUnderCeiling(s({maxOutputBytes: 16 * MiB}), UNTRUSTED, {}).problem, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting/);
+  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 4 * MiB, locale: 'zh'}), UNTRUSTED, {}).notes, []);
+  assert.match(startUnderCeiling(s({maxOutputBytes: 32 * MiB}), UNTRUSTED, {}).problem, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting/);
   assert.match(startUnderCeiling(s({}), UNTRUSTED, {passedAudit: true}).problem, /would loosen --moduleSandbox audit/);
   // audit forced by an older runtime (Windows before countinghouse#195): not a loosening made
   assert.strictEqual(startUnderCeiling(s({}), UNTRUSTED, {forcedAudit: true, passedAudit: true}).problem, undefined);
-  assert.deepStrictEqual(startUnderCeiling(s({moduleSandbox: 'audit'}), c, {forcedAudit: true}).values, {moduleSandbox: 'audit', maxOutputBytes: 4 * MiB},
+  assert.deepStrictEqual(startUnderCeiling(s({moduleSandbox: 'audit'}), c, {forcedAudit: true}).values, {moduleSandbox: 'audit', maxOutputBytes: 8 * MiB},
     'a default above the ceiling is clamped too');
-  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 16 * MiB}), {state: 'none'}, {}), {values: {maxOutputBytes: 16 * MiB}, notes: []});
+  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 32 * MiB}), {state: 'none'}, {}), {values: {maxOutputBytes: 32 * MiB}, notes: []});
+  // no value in the file: the runtime would start on its own default (16 MiB,
+  // countinghouse's lib/cli-options.js), so a ceiling below that must reach
+  // it as a flag. ch-local's default is the runtime's, or a ceiling between
+  // the two would bound nothing (it did, at 12 MiB, while this said 8 MiB).
+  assert.deepStrictEqual(startUnderCeiling(s({}), trusted({maxOutputBytes: 12 * MiB}), {}).values, {maxOutputBytes: 12 * MiB},
+    'a ceiling under the runtime\'s default is passed even with nothing stored');
+  assert.strictEqual(require('../lib/settings').ALLOWLIST.maxOutputBytes.default, 16 * MiB, 'the runtime\'s default');
 });
 
 test('outside edits: a setting changed outside the tools is reported once, and recorded; a change the tools made is not', () => {
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
-  setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+  setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
   setSetting(where, 'locale', 'zh', {by: 'settings tool'});
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
   // a request not confirmed and a this-start change set nothing
@@ -154,11 +161,11 @@ test('outside edits: a setting changed outside the tools is reported once, and r
     JSON.stringify({by: 'settings tool', setting: 'requestTimeout', old: 30000, new: 120000, change: 'this start'}) + '\n');
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
   // edited by hand: a raise, and a pack turned on that was never recorded
-  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * MiB, locale: 'zh', 'pack.other': false}}));
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 64 * MiB, locale: 'zh', 'pack.other': false}}));
   const said = [];
   const edits = reportOutsideEdits(where, readSettings(where), {say: (s) => said.push(s), host: 'box', pid: 1});
-  assert.deepStrictEqual(edits.map((e) => [e.setting, e.old, e.new, e.loosened]), [['maxOutputBytes', 16 * MiB, 32 * MiB, true], ['pack.other', true, false, false]]);
-  assert.deepStrictEqual(said, ['maxOutputBytes was changed outside ch-local: 16MiB -> 32MiB (this loosens a guarding setting)', 'pack.other was changed outside ch-local: on -> off']);
+  assert.deepStrictEqual(edits.map((e) => [e.setting, e.old, e.new, e.loosened]), [['maxOutputBytes', 32 * MiB, 64 * MiB, true], ['pack.other', true, false, false]]);
+  assert.deepStrictEqual(said, ['maxOutputBytes was changed outside ch-local: 32MiB -> 64MiB (this loosens a guarding setting)', 'pack.other was changed outside ch-local: on -> off']);
   const last = history(home).slice(-2);
   assert.deepStrictEqual(last.map((h) => [h.by, h.setting, h.change, h.loosened]), [['start', 'maxOutputBytes', 'changed outside ch-local', true], ['start', 'pack.other', 'changed outside ch-local', undefined]]);
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'reported once');
@@ -175,7 +182,7 @@ test('start: says an outside edit and the ceiling\'s clamps, passes the clamped 
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   const where = layout({COUNTINGHOUSE_HOME: home});
-  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 16 * MiB}}));
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * MiB}}));
   const go = async () => {
     const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret'}, homedir: '/nowhere'});
     Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
@@ -190,17 +197,56 @@ test('start: says an outside edit and the ceiling\'s clamps, passes the clamped 
     if (end != null) end(0);
     return {code: await done, args, err: f.err};
   };
-  reader(home, trusted({maxOutputBytes: 4 * MiB}));
+  reader(home, trusted({maxOutputBytes: 8 * MiB}));
   const clamped = await go();
-  assert.match(clamped.err, /maxOutputBytes was changed outside ch-local: 8MiB -> 16MiB \(this loosens a guarding setting\)/);
-  assert.match(clamped.err, /maxOutputBytes 16MiB is above the operator's ceiling: the runtime gets 4MiB/);
-  assert.deepStrictEqual(clamped.args.slice(clamped.args.indexOf('--maxOutputBytes'), clamped.args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(4 * MiB)]);
-  assert.strictEqual(readSettings(where).values.maxOutputBytes, 16 * MiB, 'the file is the user\'s: clamped, not rewritten');
+  assert.match(clamped.err, /maxOutputBytes was changed outside ch-local: 16MiB -> 32MiB \(this loosens a guarding setting\)/);
+  assert.match(clamped.err, /maxOutputBytes 32MiB is above the operator's ceiling: the runtime gets 8MiB/);
+  assert.deepStrictEqual(clamped.args.slice(clamped.args.indexOf('--maxOutputBytes'), clamped.args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(8 * MiB)]);
+  assert.strictEqual(readSettings(where).values.maxOutputBytes, 32 * MiB, 'the file is the user\'s: clamped, not rewritten');
   reader(home, UNTRUSTED);
   const refused = await go();
   assert.strictEqual(refused.code, 1, refused.err);
   assert.strictEqual(refused.args, null, 'nothing spawned');
   assert.match(refused.err, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting; the operator fixes the file, or the settings are tightened back/);
+});
+
+// The runtime's own default never governs under ch-local: start passes the
+// two caps always (the stored value, or ch-local's default, after the
+// ceiling), so the two repositories' defaults cannot drift into a ceiling
+// that bounds nothing (countinghouse #283).
+test('start: always passes --maxOutputBytes and --requestTimeout, stored or not, as the ceiling leaves them', async () => {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  assert.ok(!fs.existsSync(where.settings) || readSettings(where).values.maxOutputBytes === undefined, 'nothing stored');
+  const go = async () => {
+    const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret'}, homedir: '/nowhere'});
+    Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
+    let args = null;
+    let end = null;
+    f.spawn = (c, a) => { args = a; return {kill: () => {}, exited: new Promise((resolve) => { end = resolve; }), send: () => {}, onMessage: (fn) => setImmediate(() => fn({type: 'ready'}))}; };
+    const done = start({passThrough: []}, f);
+    for (let i = 0; end == null && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+    if (end != null) end(0);
+    return {code: await done, args, err: f.err};
+  };
+  const after = (args, flag) => args.filter((a, i) => args[i - 1] === flag);
+  // no ceiling, nothing stored: ch-local's defaults, in the runtime's units
+  reader(home, {state: 'none'});
+  const plain = await go();
+  assert.deepStrictEqual(after(plain.args, '--maxOutputBytes'), [String(16 * MiB)], plain.err);
+  assert.deepStrictEqual(after(plain.args, '--requestTimeout'), ['30']);
+  // a ceiling under the default, nothing stored: the runtime runs at the ceiling
+  reader(home, trusted({maxOutputBytes: 12 * MiB, requestTimeout: 20000}));
+  const bounded = await go();
+  assert.deepStrictEqual(after(bounded.args, '--maxOutputBytes'), [String(12 * MiB)], bounded.err);
+  assert.deepStrictEqual(after(bounded.args, '--requestTimeout'), ['20']);
+  // a stored value under the ceiling is the one passed
+  assert.strictEqual((await run(home, ['settings', 'set', 'maxOutputBytes', '4MiB'], {interactive: false})).code, 0);
+  assert.deepStrictEqual(after((await go()).args, '--maxOutputBytes'), [String(4 * MiB)]);
+  // (neither can be passed through to ch-local start, so no client's flag competes)
 });
 
 test('the review of P4: no reader on Windows looks where ProgramData really is too; the reader is asked once while nothing changes', () => {
@@ -259,20 +305,20 @@ test('the review of #18: the operator\'s allowlist of packs: an unlisted pack ne
 test('the review of #18: settings reset is the loosenings it implies: bound by the ceiling, asked once at a terminal; one that only tightens is made at once', async () => {
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
-  setSetting(where, 'maxOutputBytes', '4MiB', {by: 'cli'});
+  setSetting(where, 'maxOutputBytes', '8MiB', {by: 'cli'});
   setSetting(where, 'pack.other', 'off', {by: 'cli'});
   const headless = await run(home, ['settings', 'reset'], {interactive: false});
   assert.strictEqual(headless.code, 2);
   assert.match(headless.io.err, /a reset that loosens a guarding setting is confirmed at a terminal/);
-  assert.strictEqual(readSettings(where).values.maxOutputBytes, 4 * MiB, 'nothing changed');
+  assert.strictEqual(readSettings(where).values.maxOutputBytes, 8 * MiB, 'nothing changed');
   const no = await run(home, ['settings', 'reset'], {answers: ['n']});
   assert.strictEqual(no.code, 1);
-  assert.deepStrictEqual(no.io.asked, ['Reset every setting to its default? This loosens: maxOutputBytes 4MiB -> 8MiB, pack.other off -> on. [y/N] ']);
+  assert.deepStrictEqual(no.io.asked, ['Reset every setting to its default? This loosens: maxOutputBytes 8MiB -> 16MiB, pack.other off -> on. [y/N] ']);
   // the ceiling first: a loosening it refuses refuses the reset, unasked
-  reader(home, trusted({maxOutputBytes: 6 * MiB}));
+  reader(home, trusted({maxOutputBytes: 12 * MiB}));
   const above = await run(home, ['settings', 'reset']);
   assert.strictEqual(above.code, 2);
-  assert.match(above.io.err, /the reset is not made: maxOutputBytes 8MiB is above the ceiling this machine's operator set \(at most 6MiB\)/);
+  assert.match(above.io.err, /the reset is not made: maxOutputBytes 16MiB is above the ceiling this machine's operator set \(at most 12MiB\)/);
   assert.deepStrictEqual(above.io.asked, []);
   reader(home, {state: 'none'});
   const yes = await run(home, ['settings', 'reset'], {answers: ['y']});
@@ -280,7 +326,7 @@ test('the review of #18: settings reset is the loosenings it implies: bound by t
   assert.ok(!fs.existsSync(where.settings));
   assert.deepStrictEqual(history(home).slice(-1).map((h) => [h.setting, h.change, h.confirmed]), [['*', 'reset', 'cli']]);
   // only tightenings (a raised cap back down): unasked, even without a terminal
-  setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+  setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
   const down = await run(home, ['settings', 'reset'], {interactive: false});
   assert.strictEqual(down.code, 0, down.io.err);
   assert.deepStrictEqual(down.io.asked, []);
@@ -292,13 +338,13 @@ test('the review of #18: a held settings lock never turns the checks off: at sta
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   const where = layout({COUNTINGHOUSE_HOME: home});
-  setSetting(where, 'maxOutputBytes', '4MiB', {by: 'cli'});
-  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 64 * MiB}}));
+  setSetting(where, 'maxOutputBytes', '8MiB', {by: 'cli'});
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 128 * MiB}}));
   // kept fresh, so never stale
   fs.writeFileSync(path.join(home, 'settings.lock'), JSON.stringify({pid: process.pid, at: Date.now()}));
   const s = await startOnce(home);
   assert.match(s.err, /could not compare the settings with their history \(SETTINGS_BUSY\): maxOutputBytes not loosened this start/);
-  assert.deepStrictEqual(s.args.slice(s.args.indexOf('--maxOutputBytes'), s.args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(4 * MiB)]);
+  assert.deepStrictEqual(s.args.slice(s.args.indexOf('--maxOutputBytes'), s.args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(8 * MiB)]);
 });
 
 test('the review of P4: an outside loosening the ceiling forbids is not applied at start, and is said at every start', async () => {
@@ -328,7 +374,7 @@ test('the review of P4: an outside loosening the ceiling forbids is not applied 
 test('the review of P4: a settings file that cannot be read is no outside edit; start\'s event loop never waits on the lock', () => {
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
-  setSetting(where, 'maxOutputBytes', '16MiB', {by: 'cli', mayLoosen: true});
+  setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
   assert.deepStrictEqual(reportOutsideEdits(where, {values: {}, error: 'x'}, {say: () => assert.fail('nothing said')}), []);
   assert.strictEqual(history(home).length, 1);
   fs.writeFileSync(path.join(home, 'settings.lock'), JSON.stringify({pid: process.pid, at: Date.now()}));
@@ -343,10 +389,10 @@ test('the review of #18: uninstall --keep-data keeps settings.json with the hist
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   const where = layout({COUNTINGHOUSE_HOME: home});
-  setSetting(where, 'maxOutputBytes', '2MiB', {by: 'cli'});
+  setSetting(where, 'maxOutputBytes', '4MiB', {by: 'cli'});
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, answers: ['yes'], homedir: '/nowhere'});
   assert.strictEqual(await uninstall({keepData: true}, io), 0, io.err);
-  assert.strictEqual(readSettings(where).values.maxOutputBytes, 2 * MiB);
+  assert.strictEqual(readSettings(where).values.maxOutputBytes, 4 * MiB);
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'the history and the file still agree');
 });
 
