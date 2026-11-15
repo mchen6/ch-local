@@ -203,6 +203,25 @@ changes nothing that's installed.
 - **One check at a time:** `upgrade-check.lock` as today, so two starts never
   upgrade at once. The install itself holds `packs.lock`.
 
+## Development overrides never reach a real upgrade
+
+A client's config can set any environment variable, `CH_LOCAL_DEV=1`
+included (as the acceptance run's security review showed). So:
+
+- **No variable, argument or file selects the trusted root.** The bundled
+  root and npm's keys are the only ones the verifier ever uses, outside a
+  test. A test root reaches it only as a function argument passed by the
+  test's own code. That parameter isn't reachable from the environment,
+  argv, `settings.json` or any other file.
+- **While any development override is active, the automatic upgrade doesn't
+  run at all**, and says why once per start: `automatic upgrades are off
+  while a development override is set (<which>)`. The overrides are
+  `CH_LOCAL_DEV=1`, a registry other than `registry.npmjs.org`, and
+  `--unreleased-pins`, and the history record names the one in force.
+- **Only `ch-local upgrade`, run at a terminal, may use a development
+  registry**, and even then against the bundled root. So a fake registry's
+  bundle signed under a test root is refused, as from anyone else.
+
 ## Dependencies
 
 - Runtime dependencies:
@@ -217,8 +236,9 @@ changes nothing that's installed.
 
 - **A fake registry:** an HTTP server on `127.0.0.1` serving packuments,
   tarballs and attestations.
-  - The registry URL can be pointed at it only under `CH_LOCAL_DEV=1` and a
-    test-only option, as acceptance's stand-in is gated.
+  - The registry URL can be pointed at it only under `CH_LOCAL_DEV=1`, and
+    only at a loopback `http://127.0.0.1:<port>/` (`lib/npm-fetch.js`
+    `registryFor`).
   - `registry.npmjs.org` is named in tests only where nothing is called.
   - Tarballs come from `npm pack` of fixture packages.
 - **A test trusted root**, generated per run by a test helper:
@@ -227,9 +247,10 @@ changes nothing that's installed.
   - a Rekor key whose log has the test's entries, with real inclusion proofs
     (a small Merkle tree) and a signed checkpoint;
   - an npm-registry key pair for the publish attestation.
-  - The verifier takes this root in place of the bundled one, through the
-    same gated option. It's the same `@sigstore/verify` code path, run for
-    real, offline.
+  - The verifier takes this root in place of the bundled one only as a
+    function argument from the test (above: never from the environment, argv
+    or a file). It's the same `@sigstore/verify` code path, run for real,
+    offline.
 - **Cases:**
   - a good upgrade, installed and announced, and `rollback` undoing it;
   - each table row above;
@@ -243,7 +264,12 @@ changes nothing that's installed.
   - a declined version not retried;
   - the daemon path: the request written, and the fake daemon's restart;
   - a root rotation: a bundle signed by a CA the root lacks is "can't verify
-    yet".
+    yet";
+  - `CH_LOCAL_DEV=1`, a fake registry, and a bundle validly signed under the
+    test root, with the bundled root in force (no test argument): refused,
+    as a chain failure;
+  - the automatic upgrade under each development override: it doesn't run,
+    the announcement names the override, and nothing is fetched.
 
 ## The pieces
 
