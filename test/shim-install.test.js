@@ -280,3 +280,16 @@ test('the re-check of #49: a planted, loose or linked versions.json chooses noth
   }
 });
 
+
+test('a shim installShim placed passes shimFor\'s checks (A\'s #44): it is the one a client config names', {skip: process.platform === 'win32'}, async() => {
+  const {shimFor} = require('../lib/shim-binary');
+  const w = await world();
+  const home = tmp('ch-shimfor-');
+  try {
+    const r = await put(home, w);
+    assert.deepStrictEqual(shimFor({home, locate: () => ({status: 'found', path: '/elsewhere/ch-shim'})}), {shim: r.path, note: null});
+  } finally {
+    await w.reg.close();
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
