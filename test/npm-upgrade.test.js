@@ -92,11 +92,20 @@ test('the new release\'s provenance, against the installed release\'s own identi
   }
 });
 
-test('the new release\'s pins: refused if invalid, if missing, or if its own identity changed', async() => {
+test('the new release\'s pins: refused if invalid; its own identity changing is listed as blocking, not refused', async() => {
   const changed = shipped();
   changed.self.repositoryId += 1;
+  const reg = await registryWith('0.4.0', {pins: changed});
+  try {
+    const r = await find(reg);
+    assert.strictEqual(r.kind, 'available');
+    assert.deepStrictEqual(r.identity, [`self's repositoryId: ${current.self.repositoryId} -> ${current.self.repositoryId + 1}`]);
+    assert.deepStrictEqual(r.named, []);
+  } finally {
+    await reg.close();
+  }
   const missingPins = await fakeRegistry();
-  for (const [pins, code] of [['{not json', 'RELEASE_PINS'], [Object.assign(shipped(), {v: 2}), 'RELEASE_PINS'], [changed, 'SELF_CHANGED']]) {
+  for (const [pins, code] of [['{not json', 'RELEASE_PINS'], [Object.assign(shipped(), {v: 2}), 'RELEASE_PINS']]) {
     const reg = await registryWith('0.4.0', {pins});
     try {
       assert.strictEqual(await codeOf(find(reg)), code, JSON.stringify(pins).slice(0, 40));

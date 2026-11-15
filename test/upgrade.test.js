@@ -124,6 +124,22 @@ test('a yes installs the new release from npm through install, recorded in histo
   }
 });
 
+test('identity changes are shown before the question, marked as never taken automatically', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const installed = require('../lib/allowlist').ALLOWLIST.self;
+  // the new release names another owner ID for itself; its certificate is
+  // still the installed identity's, so it verifies
+  const w = await npmWorld(release(), {edit: (doc) => { doc.self.ownerId += 1; }, signedAs: installed});
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, new RegExp(`its identity changes \\(an automatic upgrade never takes these\\):\\n  self's ownerId: ${installed.ownerId} -> ${installed.ownerId + 1}`));
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
 test('what the new release adds is shown before the question', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const w = await npmWorld(release(), {edit: (doc) => { doc.allowedOrigins['https://api.example.invalid'] = ['NEW_TOKEN']; }});

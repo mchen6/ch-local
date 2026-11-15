@@ -21,7 +21,9 @@ const shipped = () => JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib
 // r: install-helpers' release(). version: ch-local's. -> {reg, pinsDoc,
 // fromNpm, close}. edit(doc): changes the release-pins document ch-local
 // carries before it is packed.
-async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = null, at = new Date(Date.now() - 100 * 3600e3)} = {}) {
+// signedAs: the identity ch-local's certificate names (the installed self, by
+// default the document's)
+async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = null, signedAs = null, at = new Date(Date.now() - 100 * 3600e3)} = {}) {
   const reg = await fakeRegistry();
   const root = testRoot();
   const doc = shipped();
@@ -49,7 +51,7 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
   if (edit != null) edit(doc);
   const selfBytes = packageTgz({name: SELF, version}, {'lib/release-pins.json': JSON.stringify(doc)});
   reg.publish(SELF, version, selfBytes, {latest: true});
-  attest(SELF, version, selfBytes, Object.assign({}, doc.self, {tag: `v${version}`}));
+  attest(SELF, version, selfBytes, Object.assign({}, signedAs || doc.self, {tag: `v${version}`}));
   return {reg, pinsDoc: doc, selfIntegrity: sri(selfBytes),
     fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}, close: () => reg.close()};
 }
