@@ -21,6 +21,15 @@ The exit code is `0` for a pass, `1` for a fail, and `2` when the diff could not
   - `hookTerms`: identifiers that mention hooks, plugins, marketplaces, elicitation, managed sources or policy.
 - **Fails** the version when a *new* item touches hooks, plugins, settings, managed sources, policy, marketplaces or elicitation, and on any new file path. The one-line report names the items. Other new items are listed. Removed items are listed too, since they may mean ch-local's location list (`lib/client-conditions.js`) is stale.
 
+## Expect flags, and review them
+
+The surface is large: 2.1.325 has about 2,500 flags and 1,750 terms, many from bundled libraries. So most Claude Code releases will flag something new. The honest default is **off until reviewed**, which is safe because it fails closed. A flag doesn't keep a version off for good.
+
+**The review step for a flagged version:**
+1. A person (Matt, or the reviewer) reads the diff's `failing` items in the JSON detail. Each one either reaches a place Claude Code reads hooks, plugins or settings from, or it doesn't.
+2. If none does, they approve the snapshot: `node tools/cc-retest/surface.js <version> --approve`, committed in a PR the reviewer merges with the allowlist change.
+3. If one does, ch-local's location list (`lib/client-conditions.js`) learns the new place first, in its own PR with a test, and then the version is approved as in step 2.
+
 ## Snapshots
 
 `approved/<version>.json` holds only the extracted identifiers (names, flags and paths), never a code excerpt, plus each package's version and integrity and the extractor's version. A snapshot from another extractor version has to be taken again before a diff will run.
