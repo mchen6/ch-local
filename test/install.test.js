@@ -206,7 +206,7 @@ test('no --from: a release with no identity to install from npm with says so; --
 // docs/development/auto-upgrade.md: no --from installs from npm, every
 // package checked against its pin and its provenance (a fake registry and the
 // test root, passed only as install's test-only argument)
-async function npmRelease(r, {lie = null} = {}) {
+async function npmRelease(r, {lie = null, shim = false} = {}) {
   const {fakeRegistry} = require('./fake-registry');
   const {testRoot} = require('./sigstore-fixture');
   const provenance = require('../lib/provenance');
@@ -229,7 +229,22 @@ async function npmRelease(r, {lie = null} = {}) {
   }
   const lockfile = JSON.parse(JSON.stringify(r.lockfile));
   lockfile.packages['node_modules/countinghouse'].integrity = r.pins.countinghouse.integrity;
-  const allow = Object.assign({}, r.allow, {pins, self, release: {version: r.pins['@countinghouse/ch-local'].version, security: null},
+  // this platform's native shim, pinned and published, when asked for
+  const targets = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
+  const shimSection = {packages: Object.fromEntries(targets.map((t) => [t, `@countinghouse/ch-shim-${t}`]))};
+  if (shim) {
+    const key = `${process.platform}-${process.arch}`;
+    const name = `@countinghouse/ch-shim-${key}`;
+    const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+    const bytes = require('./tgz').packageTgz({name, version: '0.5.0'}, {[`bin/${exe}`]: 'the shim'});
+    reg.publish(name, '0.5.0', bytes);
+    const identity = Object.assign({}, self, {workflow: '.github/workflows/shim.yml', tag: 'shim-v0.5.0'});
+    const hex = crypto.createHash('sha512').update(bytes).digest('hex');
+    reg.attest(name, '0.5.0', {attestations: [{predicateType: provenance.PROVENANCE, bundle: root.provenance(name, '0.5.0', hex, identity, at)},
+      {predicateType: provenance.PUBLISH, bundle: root.publish(name, '0.5.0', hex, at)}]});
+    pins[name] = Object.assign({version: '0.5.0', integrity: `sha512-${crypto.createHash('sha512').update(bytes).digest('base64')}`}, identity);
+  }
+  const allow = Object.assign({}, r.allow, {pins, self, shim: shimSection, release: {version: r.pins['@countinghouse/ch-local'].version, security: null},
     runtime: Object.assign({}, r.allow.runtime, {lockfile})});
   return {reg, allow, fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}};
 }
@@ -261,6 +276,31 @@ test('no --from: a release lower than the installed ch-local is refused, nothing
     assert.deepStrictEqual(io.fetches, []);
   } finally {
     await n.reg.close();
+  }
+});
+
+test('no --from: this platform\'s native shim is installed too, and recorded; with none pinned, said as the per-session mode', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+    assert.strictEqual(fs.readFileSync(path.join(h, 'shim', exe), 'utf8'), 'the shim');
+    assert.deepStrictEqual(record(h).shim, {package: `@countinghouse/ch-shim-${process.platform}-${process.arch}`, version: '0.5.0'});
+    assert.match(io.out, /the shared runtime's shim 0\.5\.0 is at /);
+  } finally {
+    await n.reg.close();
+  }
+  const r2 = release(); const h2 = home();
+  const n2 = await npmRelease(r2);
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n2.allow, n2.fromNpm), 0, io.err);
+    assert.strictEqual(record(h2).shim, undefined);
+    assert.match(io.out, /no shared-runtime shim is pinned for this platform in this release: each session runs its own runtime/);
+  } finally {
+    await n2.reg.close();
   }
 });
 
