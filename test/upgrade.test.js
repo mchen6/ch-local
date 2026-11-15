@@ -116,6 +116,8 @@ test('a yes installs the new release from npm through install, recorded in histo
     const h = historyOf(s.home).filter((e) => e.kind === 'upgrade');
     assert.deepStrictEqual(h.map((e) => [e.how, e.outcome, e.from, e.to]), [['cli', 'installed', '0.1.0', '0.2.0']]);
     assert.ok(io.fetches.every((u) => u.startsWith(w.reg.url)), 'the fake registry only');
+    // the bytes whose pins were read are the bytes installed: fetched once
+    assert.strictEqual(w.reg.requests.filter((u) => /ch-local-0\.2\.0\.tgz$/.test(u)).length, 1);
   } finally {
     await w.close();
     s.done();
