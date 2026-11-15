@@ -167,7 +167,9 @@ function testRoot({start = new Date(Date.now() - 365 * 864e5), end = new Date(Da
     return {key, der: full.der};
   };
 
-  const statement = (predicateType, subjectName, sha512Hex, predicate) => ({_type: 'https://in-toto.io/Statement/v1',
+  // npm writes its SLSA provenance as Statement/v1 and its publish
+  // attestation as Statement/v0.1 (as their live attestations show)
+  const statement = (predicateType, subjectName, sha512Hex, predicate, type = 'https://in-toto.io/Statement/v1') => ({_type: type,
     subject: [{name: subjectName, digest: {sha512: sha512Hex}}], predicateType, predicate});
 
   return {
@@ -190,10 +192,16 @@ function testRoot({start = new Date(Date.now() - 365 * 864e5), end = new Date(Da
       return bundle(st, cert.key.privateKey, {certificate: cert.der}, Object.assign({integratedTime: at}, opts));
     },
     // npm's publish attestation for name@version, signed by the npm key (or
-    // another, for a test)
-    publish(name, version, sha512Hex, at, {key = npm, keyId = npmKeyId, predicate, bundle: opts = {}} = {}) {
+    // another, for a test). withCertificate: a Fulcio-style certificate for
+    // `withCertificate` (an identity) signs it instead, as anyone could mint
+    // one; type: the statement's _type.
+    publish(name, version, sha512Hex, at, {key = npm, keyId = npmKeyId, predicate, withCertificate = null, type = 'https://in-toto.io/Statement/v0.1', bundle: opts = {}} = {}) {
       const st = statement('https://github.com/npm/attestation/tree/main/specs/publish/v0.1', purl(name, version), sha512Hex,
-        predicate || {name, version, registry: 'https://registry.npmjs.org'});
+        predicate || {name, version, registry: 'https://registry.npmjs.org'}, type);
+      if (withCertificate != null) {
+        const cert = leaf(withCertificate, at);
+        return bundle(st, cert.key.privateKey, {certificate: cert.der}, Object.assign({integratedTime: at}, opts));
+      }
       return bundle(st, key.privateKey, {publicKey: keyId, publicKeyObject: key.publicKey}, Object.assign({integratedTime: at}, opts));
     },
     otherKey: keyPair
