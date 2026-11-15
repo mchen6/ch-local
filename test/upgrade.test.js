@@ -187,3 +187,55 @@ test('upgrade refuses over an unreleased install until a clean install from a re
     s.done();
   }
 });
+
+// docs/development/auto-upgrade.md, "Turning it on": after an install,
+// asked once, at a terminal only; off with none, said so
+test('offerAuto: at a terminal, asked once (cliSet\'s own question); a yes turns it on; no terminal leaves it off, said', async () => {
+  const {offerAuto} = require('../lib/upgrade');
+  const {readSettings} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = setup({'@countinghouse/ch-local': '0.2.0'});
+  try {
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    const quiet = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
+    quiet.interactive = false;
+    await offerAuto(quiet);
+    assert.match(quiet.out, /automatic upgrades are off \(no terminal to ask\); ch-local upgrade --auto on turns them on/);
+    assert.deepStrictEqual(quiet.asked, []);
+    assert.strictEqual(readSettings(where).values.autoUpgrade, undefined);
+    const yes = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes']});
+    yes.interactive = true;
+    await offerAuto(yes);
+    assert.strictEqual(yes.asked.length, 1, 'one question');
+    assert.match(yes.out, /72 hours after each is published/);
+    assert.strictEqual(readSettings(where).values.autoUpgrade, true);
+    // set: never asked again
+    const again = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes']});
+    again.interactive = true;
+    await offerAuto(again);
+    assert.deepStrictEqual(again.asked, []);
+  } finally {
+    s.done();
+  }
+});
+
+test('offerAuto: a no leaves it off, and still unset is asked at the next install; never asked when already off by choice', async () => {
+  const {offerAuto} = require('../lib/upgrade');
+  const {readSettings, setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = setup({'@countinghouse/ch-local': '0.2.0'});
+  try {
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    const no = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no']});
+    no.interactive = true;
+    await offerAuto(no);
+    assert.notStrictEqual(readSettings(where).values.autoUpgrade, true);
+    setSetting(where, 'autoUpgrade', 'off', {by: 'cli'});
+    const later = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes']});
+    later.interactive = true;
+    await offerAuto(later);
+    assert.deepStrictEqual(later.asked, [], 'an answer is kept');
+  } finally {
+    s.done();
+  }
+});

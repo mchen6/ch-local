@@ -83,7 +83,10 @@ async function main(argv, io) {
     if (command === 'install') {
       const a = parse(rest, {values: ['--pack', '--from', '--unreleased-pins']});
       if (a == null || a.positional.length > 0 || a.values['--pack'] === undefined) return usage();
-      return await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+      const code = await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+      // asked once whether to turn automatic upgrades on (off with no terminal)
+      if (code === 0) await require('../lib/upgrade').offerAuto(io);
+      return code;
     }
     if (command === 'add-pack') {
       const a = parse(rest, {values: ['--from', '--unreleased-pins']});
