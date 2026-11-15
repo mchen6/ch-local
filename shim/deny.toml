@@ -6,8 +6,12 @@
 # Win32_Foundation, Win32_Security (+ Authorization), Win32_System_Threading,
 # Win32_System_SystemInformation (GetComputerNameExW, so start.lock's host
 # matches Node's os.hostname()) and Win32_System_Console (GetStdHandle, the
-# shim's stdio made non-inheritable). Only win_ffi.rs calls into windows-sys;
-# unix_ffi.rs is the POSIX counterpart (the fd sweep).
+# shim's stdio made non-inheritable); libc (Unix: fcntl over bare descriptor
+# numbers in the sweep's fallback). Only win_ffi.rs calls into windows-sys,
+# only unix_ffi.rs into libc.
+#
+# unsafe: win_ffi.rs 28 blocks (one test-only), unix_ffi.rs 2, and main.rs's
+# one call to unix_ffi::startup_sweep. #![deny(unsafe_code)] everywhere else.
 
 [graph]
 targets = [

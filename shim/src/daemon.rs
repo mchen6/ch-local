@@ -182,9 +182,15 @@ mod windows_tests {
         );
         for k in v["env"].as_array().unwrap() {
             let k = k.as_str().unwrap();
-            // Windows adds a few of its own to every process
+            // Windows adds a few names to a process whatever its parent passes:
+            // SYSTEMROOT's spelling, the =C: drive entries, and, for a process
+            // running emulated (an x64 node on the arm64 runner),
+            // PROCESSOR_ARCHITECTURE and PROCESSOR_ARCHITEW6432. None comes
+            // from the shim's environment, which held only shim.json's two.
             assert!(
-                ["SystemRoot", "USERPROFILE", "SYSTEMROOT"].contains(&k) || k.starts_with('='),
+                ["SystemRoot", "USERPROFILE", "SYSTEMROOT", "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432"]
+                    .contains(&k)
+                    || k.starts_with('='),
                 "the daemon was given {k}"
             );
         }
