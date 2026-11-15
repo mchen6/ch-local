@@ -362,7 +362,8 @@ test('rollback swaps the shim with the release: the restored record\'s shim come
   fs.writeFileSync(path.join(dir, exe), 'new');
   fs.writeFileSync(path.join(dir, prev), 'old');
   const sha = (t) => require('node:crypto').createHash('sha512').update(t).digest('hex');
-  fs.writeFileSync(path.join(dir, 'versions.json'), JSON.stringify({[sha('new')]: '0.6.0', [sha('old')]: '0.5.0'}));
+  fs.writeFileSync(path.join(dir, 'versions.json'), JSON.stringify({[sha('new')]: '0.6.0', [sha('old')]: '0.5.0'}), {mode: 0o600});
+  if (process.platform !== 'win32') fs.chmodSync(path.join(dir, 'versions.json'), 0o600);
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
   assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'old');
   assert.strictEqual(record(s.home).shim.version, '0.5.0');

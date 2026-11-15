@@ -211,11 +211,12 @@ test('POSIX: <home>/shim is checked, not only set: a link is refused, nothing wr
 
 test('Windows (lib/win-acl.js stubbed): ch-shim.exe in a directory made private and checked; a DACL that fails the check places nothing; .previous is not launchable', async() => {
   const winAcl = require('../lib/win-acl');
-  const saved = {makePrivateDirs: winAcl.makePrivateDirs, privateProblem: winAcl.privateProblem};
+  const saved = {makePrivateDirs: winAcl.makePrivateDirs, privateProblem: winAcl.privateProblem, fileAcl: winAcl.fileAcl};
+  winAcl.fileAcl = () => ({user: 'S-1-5-21-1', owner: 'S-1-5-21-1', otherAces: false, rules: []});
   const calls = [];
   let problem = null;
   winAcl.makePrivateDirs = (dirs, readBack) => { calls.push(['makePrivateDirs', dirs, readBack]); return [{user: 'S-1-5-21-1', owner: 'S-1-5-21-1', otherAces: false, rules: []}]; };
-  winAcl.privateProblem = (what, acl, opts) => { calls.push(['privateProblem', what, opts]); return problem; };
+  winAcl.privateProblem = (what, acl, opts) => { if (opts != null) calls.push(['privateProblem', what, opts]); return opts != null ? problem : null; };
   const a = await world({version: '0.5.0', body: 'w1', platform: 'win32'});
   const b = await world({version: '0.6.0', body: 'w2', platform: 'win32'});
   const home = tmp('ch-shim-win-');
@@ -224,7 +225,7 @@ test('Windows (lib/win-acl.js stubbed): ch-shim.exe in a directory made private 
     assert.strictEqual(r.status, 'installed');
     assert.strictEqual(r.path, path.join(home, 'shim', 'ch-shim.exe'));
     const dir = path.join(home, 'shim');
-    assert.deepStrictEqual(calls, [['makePrivateDirs', [dir], [dir]], ['privateProblem', dir, {directory: true}]]);
+    assert.deepStrictEqual(calls.slice(0, 2), [['makePrivateDirs', [dir], [dir]], ['privateProblem', dir, {directory: true}]]);
     await put(home, b);
     assert.deepStrictEqual([read(home, 'ch-shim.exe'), read(home, 'ch-shim.previous')], ['w2', 'w1'], 'ch-shim.previous, no .exe');
     assert.strictEqual(alignShim(home, {restored: {version: '0.5.0'}, platform: 'win32'}), 'swapped');
@@ -242,3 +243,40 @@ test('Windows (lib/win-acl.js stubbed): ch-shim.exe in a directory made private 
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+test('the re-check of #49: a planted, loose or linked versions.json chooses nothing; alignShim and setAside check the directory first', {skip: process.platform === 'win32'}, async() => {
+  const a = await world({version: '0.5.0', body: 'v1'});
+  const b = await world({version: '0.6.0', body: 'v2'});
+  try {
+    for (const plant of ['loose', 'link']) {
+      const home = tmp('ch-plant-');
+      await put(home, a);
+      await put(home, b);
+      const file = path.join(home, 'shim', 'versions.json');
+      const doc = fs.readFileSync(file, 'utf8');
+      fs.rmSync(file);
+      if (plant === 'loose') { fs.writeFileSync(file, doc, {mode: 0o666}); fs.chmodSync(file, 0o666); }
+      else { const elsewhere = path.join(tmp('ch-elsewhere-'), 'v.json'); fs.writeFileSync(elsewhere, doc, {mode: 0o600}); fs.symlinkSync(elsewhere, file); }
+      // not this user's own: no version is known, so v1 is not put in place by it
+      assert.strictEqual(alignShim(home, {restored: {version: '0.5.0'}, platform: 'linux'}), 'set aside', plant);
+      assert.strictEqual(read(home, 'ch-shim'), null, plant);
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+    // a <home>/shim that is a link: alignShim and setAside refuse it, moving nothing
+    const home = tmp('ch-plant-');
+    const real = tmp('ch-real-');
+    await put(real, a);
+    fs.symlinkSync(path.join(real, 'shim'), path.join(home, 'shim'));
+    assert.throws(() => alignShim(home, {restored: null, platform: 'linux'}), (e) => e.code === 'SHIM_DIR');
+    assert.throws(() => setAside(home, {platform: 'linux'}), (e) => e.code === 'SHIM_DIR');
+    assert.strictEqual(fs.readFileSync(path.join(real, 'shim', 'ch-shim'), 'utf8'), 'v1');
+    // an interrupted swap's leftover is cleared
+    fs.writeFileSync(path.join(real, 'shim', '.swap-1-2'), 'orphan');
+    alignShim(real, {restored: {version: '0.5.0'}, platform: 'linux'});
+    assert.ok(!fs.existsSync(path.join(real, 'shim', '.swap-1-2')));
+  } finally {
+    await a.reg.close();
+    await b.reg.close();
+  }
+});
+
