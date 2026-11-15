@@ -210,7 +210,10 @@ test('no lib/ code names `trust` or `registry` but the three that take them; ins
   const lines = install.split('\n').filter((l) => /fromNpm/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim());
   assert.deepStrictEqual(lines, [
     'async function install({pack, from, unreleasedPins}, io, release = ALLOWLIST, fromNpm = {}) {',
-    'version: allow.release.version, names, dir: path.join(fetched, \'release\'), io, verifiedSelf: allow.verifiedSelf || null, ...fromNpm});'
+    'version: allow.release.version, names, dir: path.join(fetched, \'release\'), io, verifiedSelf: allow.verifiedSelf || null, ...fromNpm});',
+    'if (fetched != null && allow.shim != null) await placeShim(allow, io, {say, fail}, fromNpm);',
+    'async function placeShim(allow, io, {say, fail}, fromNpm) {',
+    'r = await require(\'./shim-install\').installShim({home: where.home, data: {shim: allow.shim, pins: allow.pins}, io, ...fromNpm});'
   ]);
   // upgrade: likewise, its signature and its two pass-ons
   const upgrade = fs.readFileSync(path.join(lib, 'upgrade.js'), 'utf8');
@@ -255,7 +258,7 @@ test('bin/ and lib/: no code names `trust` or `registry` outside the three, and 
       calls.push([f, m[1], topLevelArgs(src, m.index + m[0].length - 1), line]);
     }
     // (lib/npm.js's fromNpm is npm's own path, npm_execpath: another thing)
-    if (!['lib/install.js', 'lib/upgrade.js', 'lib/auto-apply.js', 'lib/npm.js'].includes(f)) assert.doesNotMatch(src, /\bfromNpm\b/, `${f} names fromNpm`);
+    if (!['lib/install.js', 'lib/upgrade.js', 'lib/auto-apply.js', 'lib/shim-install.js', 'lib/npm.js'].includes(f)) assert.doesNotMatch(src, /\bfromNpm\b/, `${f} names fromNpm`);
   }
   assert.deepStrictEqual(named, [], `named outside the three: ${named.join(', ')}`);
   assert.ok(calls.some(([f, fn]) => f === 'bin/ch-local.js' && fn === 'install'), 'bin/ch-local.js calls install');
