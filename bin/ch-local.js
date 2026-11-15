@@ -53,7 +53,10 @@ function snippetCommand(client, io) {
     io.stderr.write(USAGE);
     return 2;
   }
-  const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir)});
+  const {home} = require('../lib/home');
+  const found = require('../lib/shim-binary').shimFor(io.locateShim != null ? {locate: io.locateShim} : {});
+  if (found.shim == null) io.stderr.write(found.note);
+  const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir), shim: found.shim, home: home(io.env, io.homedir)});
   io.stdout.write(text);
   if (note != null) {
     io.stderr.write(note);
@@ -108,6 +111,13 @@ async function main(argv, io) {
       const a = parse(rest, {flags: ['--keep-data']});
       if (a == null || a.positional.length > 0) return usage();
       return await require('../lib/uninstall').uninstall({keepData: a.flags['--keep-data'] === true}, io);
+    }
+    if (command === 'conditions') {
+      const a = parse(rest, {values: ['--for', '--home']});
+      if (a == null || a.positional.length > 0 || a.values['--for'] === undefined || a.values['--home'] === undefined) return usage();
+      const {isFullPath} = require('../lib/home');
+      if (!isFullPath(a.values['--home'])) { io.stderr.write('ch-local conditions: --home must be an absolute path\n'); return 2; }
+      return await require('../lib/conditions-command').conditions({pid: a.values['--for'], home: a.values['--home']}, io);
     }
     if (command === 'start') {
       if (rest[0] !== '--stdio') return usage();
