@@ -238,6 +238,20 @@ mod tests {
     }
 
     #[test]
+    fn shim_json_s_vectors_accepted_and_refused() {
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let sj = &v["shimJson"];
+        let accepted = if cfg!(windows) { &sj["acceptedWindows"] } else { &sj["acceptedPosix"] };
+        for ok in accepted.as_array().unwrap() {
+            let s = parse_shim(&p(), ok.to_string().as_bytes()).unwrap_or_else(|e| panic!("{ok}: {e}"));
+            assert_eq!(s.env.len(), ok["env"].as_object().unwrap().len(), "{ok}");
+        }
+        for bad in sj["refused"].as_array().unwrap() {
+            assert!(parse_shim(&p(), bad["value"].to_string().as_bytes()).is_err(), "{}", bad["why"]);
+        }
+    }
+
+    #[test]
     fn shim_json_s_accepted_form() {
         let s = parse_shim(&p(), br#"{"node":"/usr/bin/node","chLocal":"/h/app/bin/ch-local.js","env":{"PATH":"/usr/bin","HOME":"/home/u"}}"#).unwrap();
         assert_eq!(s.node, PathBuf::from("/usr/bin/node"));

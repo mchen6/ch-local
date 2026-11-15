@@ -107,7 +107,7 @@ fn host_name() -> String {
 }
 
 #[cfg(unix)]
-fn alive(pid: i64) -> bool {
+pub(crate) fn alive(pid: i64) -> bool {
     let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else {
         return false;
     };
@@ -120,7 +120,7 @@ fn alive(pid: i64) -> bool {
 // win_ffi's OpenProcess check comes with it; until then a Windows holder is
 // never judged dead by its pid, only by its heartbeat.
 #[cfg(windows)]
-fn alive(_pid: i64) -> bool {
+pub(crate) fn alive(_pid: i64) -> bool {
     true
 }
 

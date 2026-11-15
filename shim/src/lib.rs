@@ -12,7 +12,9 @@
 #![deny(unsafe_code)]
 
 pub mod answer;
+pub mod attach;
 pub mod config;
+pub mod daemon;
 pub mod endpoint;
 pub mod frame;
 pub mod handshake;
