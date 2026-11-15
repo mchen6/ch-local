@@ -202,9 +202,10 @@ test('runtimeValue: requestTimeout in whole seconds rounded down, at least 1; lo
   assert.deepStrictEqual(['en', 'zh'].map((l) => runtimeValue('locale', l)), ['en-US', 'zh-CN']);
 });
 
-test('on Windows the sandbox setting has only audit, its default; elsewhere enforce and audit, enforce the default (countinghouse#195)', () => {
+test('the sandbox setting is enforce and audit, enforce the default, on every platform (countinghouse#195: enforce on Windows)', () => {
   const {sandboxEntry} = require('../lib/settings');
-  assert.deepStrictEqual([sandboxEntry('win32').values, sandboxEntry('win32').default], [['audit'], 'audit']);
-  assert.strictEqual(sandboxEntry('win32').tighter('audit', 'audit'), true);
-  for (const p of ['linux', 'darwin']) assert.deepStrictEqual([sandboxEntry(p).values, sandboxEntry(p).default], [['enforce', 'audit'], 'enforce']);
+  for (const p of ['linux', 'darwin', 'win32']) {
+    assert.deepStrictEqual([sandboxEntry(p).values, sandboxEntry(p).default], [['enforce', 'audit'], 'enforce'], p);
+    assert.strictEqual(sandboxEntry(p).tighter('enforce', 'audit'), false, 'audit loosens');
+  }
 });
