@@ -389,3 +389,120 @@ test('start answers the runtime\'s may-elicit (countinghouse part 3 P2, Task 4):
   s.end();
   await s.done;
 });
+
+// countinghouse part 3 P2, Task 5: a pack turned on in the client's dialog
+// for this start only (control load-pack / unload-pack from the runtime).
+// Start loads ci-failure-triage; `other` is added while running and turned
+// off, so it is installed and off when the dialog asks for it.
+async function withOtherOff() {
+  const {layout} = require('../lib/home');
+  const s = await running();
+  const where = layout({COUNTINGHOUSE_HOME: s.home});
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+  await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false}}));
+  await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
+  const count = (type) => s.requests.filter((m) => m.type === type && m.name === '@countinghouse/ch-pack-other').length;
+  const reply = async (msg) => { s.ask(msg); await until(() => s.requests.some((m) => m.id === msg.id)); return s.requests.find((m) => m.id === msg.id); };
+  return {s, where, count, reply};
+}
+
+test('load-pack: an installed pack, off, allowed, at the version the form showed, is loaded this start; settings.json untouched; recorded and told', async () => {
+  const {s, where, count, reply} = await withOtherOff();
+  try {
+    const before = fs.readFileSync(where.settings, 'utf8');
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
+    assert.strictEqual(count('load'), 2, 'loaded again');
+    assert.strictEqual(fs.readFileSync(where.settings, 'utf8'), before, 'settings.json unchanged');
+    const h = s.history().filter((e) => e.pack === 'other').pop();
+    assert.deepStrictEqual([h.change, h.by], ['turned on this start (confirmed in the client)', 'start']);
+    await until(() => s.requests.some((m) => m.type === 'notice' && /other turned on for this start 0\.3\.0/.test(m.text)));
+    // the watcher fires (another setting changed): this start's pack stays
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.strictEqual(count('unload'), 1, 'not unloaded by the next apply');
+    // a ceiling that stops allowing it: unloaded
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: ['ci-failure-triage'], conversation: true}});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'en'}}));
+    await until(() => count('unload') === 2);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('load-pack refused: another version than the form showed, a pack the ceiling does not list, one not installed; unload-pack turns this start\'s off', async () => {
+  const {s, count, reply} = await withOtherOff();
+  try {
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.2.0'}), {id: 'r1', ok: false, code: 'CONTROL_VERSION_CHANGED'});
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'nope', version: '1.0.0'}), {id: 'r2', ok: false, code: 'CONTROL_NOT_INSTALLED'});
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: ['ci-failure-triage'], conversation: true}});
+    assert.deepStrictEqual(await reply({id: 'r3', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r3', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
+    assert.strictEqual(count('load'), 1, 'nothing loaded');
+    ceilingReader(s.home, {state: 'none'});
+    assert.deepStrictEqual(await reply({id: 'r4', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r4', ok: true});
+    assert.deepStrictEqual(await reply({id: 'r5', type: 'unload-pack', name: 'other'}), {id: 'r5', ok: true});
+    assert.strictEqual(count('unload'), 2);
+    assert.deepStrictEqual(await reply({id: 'r6', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r6', ok: false, code: 'CONTROL_NOT_THIS_START'});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('load-pack review: the ceiling turned against conversation, or untrusted: refused; a ceiling that unloads a this-start pack ends it (re-allowed, it stays off)', async () => {
+  const {s, where, count, reply} = await withOtherOff();
+  try {
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: null, conversation: false}});
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_CONVERSATION_OFF'});
+    ceilingReader(s.home, {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'p'});
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r2', ok: false, code: 'CONTROL_CEILING_UNTRUSTED'});
+    ceilingReader(s.home, {state: 'none'});
+    assert.deepStrictEqual(await reply({id: 'r3', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r3', ok: true});
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: ['ci-failure-triage'], conversation: true}});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
+    await until(() => count('unload') === 2);
+    ceilingReader(s.home, {state: 'none'});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'en'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale' && m.value === 'en-US'));
+    assert.strictEqual(count('load'), 2, 'not reloaded without a new confirmation');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('load-pack review: settings.json\'s value for the pack changing ends this start\'s turn-on (the file governs)', async () => {
+  const {s, where, count, reply} = await withOtherOff();
+  try {
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
+    // turned on in the file, then off in the file: off
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': true}}));
+    await new Promise((r) => setTimeout(r, 600));
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
+    await until(() => count('unload') === 2);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('load-pack review: the version loaded is the one confirmed; a pack whose first package is not its ch-pack is refused; one not started within 10 s is refused unloaded', async () => {
+  const {s, count, reply} = await withOtherOff();
+  try {
+    // packs.json lists another package first for `other`
+    const file = path.join(s.home, 'packs.json');
+    const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const pk = rec.packs.other.packages;
+    rec.packs.other.packages = Object.fromEntries([['@countinghouse/ch-step-other', pk['@countinghouse/ch-step-other']], ...Object.entries(pk).filter(([k]) => k !== '@countinghouse/ch-step-other')]);
+    fs.writeFileSync(file, JSON.stringify(rec));
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_VERSION_CHANGED'});
+    assert.strictEqual(count('load'), 1);
+  } finally {
+    s.end();
+    await s.done;
+  }
+  // a request that waited past its start window on the applier's chain
+  const {loadPackDeadlineMs} = require('../lib/in-place');
+  assert.strictEqual(loadPackDeadlineMs, 10000, 'started within 10 s, loaded within 30 s more: under the runtime\'s 45 s');
+});

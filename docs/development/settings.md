@@ -156,6 +156,59 @@ runtime puts on the next result of any tool and sends as an MCP
 it says it is ready; one the runtime does not take is said on stderr. The notices reach the user through the model; stderr and the
 history are the record it cannot edit.
 
+## Confirmed in the client's dialog
+
+The runtime may ask the user to confirm a loosening in their client's own
+dialog (countinghouse's `docs/security-model.md`, "Confirming a loosening in
+the client's dialog"). Before every dialog it asks start, over the control
+channel (`may-elicit`), whether the client's own configuration could answer
+the dialog for the user. `lib/client-conditions.js` answers. For Claude Code
+the answer is yes only when:
+
+- the session says it is an interactive CLI one (`CLAUDE_CODE_ENTRYPOINT=cli`
+  and `CLAUDECODE=1`), and `CLAUDE_PROJECT_DIR` is an absolute directory that
+  exists;
+- no Elicitation or ElicitationResult hook, whatever its matcher, is in the
+  user's settings (`settings.json`, `settings.local.json` and
+  `remote-settings.json` under `CLAUDE_CONFIG_DIR` or `~/.claude`), the
+  managed settings and `managed-settings.d/`, any project, cwd or `--add-dir`
+  directory's `.claude` settings (with their ancestors), or a `--settings` or
+  `--managed-settings` the client was started with;
+- no project or local settings file enables a plugin or adds a marketplace;
+- no installed plugin has such a hook: the plugin cache, every
+  `--plugin-dir` and `--plugin-dir-no-mcp` (a plugin, or a folder of them),
+  and `CLAUDE_CODE_PLUGIN_DIRS` and `CLAUDE_CODE_PLUGIN_SEED_DIR`;
+- no skill, agent or command markdown (the user's, any project's, any
+  plugin's whole tree) mentions those events, or holds anything that could
+  spell one without the plain word;
+- every flag on the client's command line is one known not to touch hooks
+  or plugins (`SAFE_FLAGS`), and no `CLAUDE_*` variable names a plugin,
+  settings, hook, managed, policy, skill, marketplace, mods or config-dir
+  source the scan does not read;
+- everything it reads could be read. A file that is not JSON or is over
+  1 MiB, a relative `--settings`, `--plugin-dir` or `--add-dir`, a client
+  not found among start's ancestors, or a managed source it cannot read
+  (the Windows policy key, the macOS managed-preferences profile) means no.
+
+A plugin developer who runs Claude Code with a relative `--plugin-dir` gets
+no dialog, and uses the terminal command instead.
+
+Start reads the client's command line once, in the background (on Windows
+through PowerShell, which takes seconds), and scans at once. A hook seen
+holds for the whole start, though it is removed; every `may-elicit` scans
+again. A check waits at most 3 s, under the runtime's 5 s. The scan follows
+the Claude Code version tested; what a later one adds is covered by the
+runtime's exact-version tested list and the automated re-test.
+`lib/client-conditions-fixtures.js` (`LOCATIONS`, `plant()`) holds one
+fixture per source, for these tests and for that re-test.
+
+A pack confirmed in the dialog is loaded for this start only (`load-pack`):
+start checks that it is installed at the version the dialog showed, that
+the operator's ceiling allows it and that it is off, then loads it without
+writing `settings.json`, and records `turned on this start (confirmed in the
+client)` in the history. A later change to `settings.json` does not unload
+it; a ceiling that stops allowing it does. `unload-pack` turns it off again.
+
 ## Limits
 
 - `history.jsonl` is a record for the user, not a security boundary: the user
