@@ -87,6 +87,110 @@ test('a client\'s entry names the shim with --home where there is a binary', () 
   assert.deepStrictEqual(own, {command: '/n', args: ['/l', 'start', '--stdio']});
 });
 
+test('the shim install puts in <home>/shim wins over any other lookup; a link there is not trusted', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const {shimFor} = require('../lib/shim-binary');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-shimfor-'));
+  try {
+    const elsewhere = () => ({status: 'found', path: '/x/ch-shim'});
+    assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: '/x/ch-shim', note: null}, 'no <home>/shim yet: the lookup');
+    const bin = path.join(home, 'shim', process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim');
+    fs.mkdirSync(path.dirname(bin), {mode: 0o700});
+    fs.writeFileSync(bin, 'binary', {mode: 0o755});
+    if (process.platform !== 'win32') fs.chmodSync(bin, 0o755);
+    assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: bin, note: null}, '<home>/shim/ch-shim first');
+    if (process.platform !== 'win32') {
+      // each passed over for the lookup, and said
+      const passedOver = (why, re) => {
+        const r = shimFor({home, locate: elsewhere});
+        assert.strictEqual(r.shim, '/x/ch-shim', why);
+        assert.match(r.note, re, why);
+      };
+      fs.chmodSync(bin, 0o644);
+      passedOver('a file that is not executable', /installed shim is not used: .*ch-shim: it is not executable by its owner/);
+      fs.chmodSync(bin, 0o775);
+      passedOver('a file group can write', /ch-shim: it is writable by group or others \(mode 0775\)/);
+      fs.chmodSync(bin, 0o757);
+      passedOver('a file others can write', /ch-shim: it is writable by group or others \(mode 0757\)/);
+      fs.chmodSync(bin, 0o4755);
+      passedOver('a setuid file', /ch-shim: it is setuid or setgid \(mode 4755\)/);
+      fs.chmodSync(bin, 0o2755);
+      passedOver('a setgid file', /ch-shim: it is setuid or setgid \(mode 2755\)/);
+      fs.chmodSync(bin, 0o755);
+      for (const mode of [0o750, 0o705, 0o770, 0o755, 0o2700, 0o1700, 0o500]) {
+        fs.chmodSync(path.dirname(bin), mode);
+        const shown = mode.toString(8).padStart(4, '0');
+        passedOver(`a directory of mode ${shown}`, new RegExp(`shim: its mode is ${shown}, not 0700`));
+      }
+      fs.chmodSync(path.dirname(bin), 0o700);
+      const other = shimFor({home, locate: elsewhere, geteuid: () => process.geteuid() + 1});
+      assert.strictEqual(other.shim, '/x/ch-shim');
+      assert.match(other.note, /shim: it is owned by uid \d+, not this user/, 'the directory (then the file) must be this user\'s, by effective uid');
+      fs.chmodSync(home, 0o770);
+      passedOver('a home its group can write', /: it is group- or world-writable \(mode 0770\)/);
+      fs.chmodSync(home, 0o700);
+      assert.deepStrictEqual(shimFor({home, locate: elsewhere}), {shim: bin, note: null}, 'back to 700 and 755: used');
+      const usedOverMissing = shimFor({home, locate: () => ({status: 'missing', package: 'p'})});
+      fs.chmodSync(bin, 0o777);
+      const both = shimFor({home, locate: () => ({status: 'missing', package: 'p'})});
+      assert.strictEqual(both.shim, null);
+      assert.match(both.note, /installed shim is not used: [\s\S]*\(p\) is not installed/, 'the reason, then the fallback\'s line');
+      assert.deepStrictEqual(usedOverMissing, {shim: bin, note: null}, 'a sound install is used whatever the lookup says');
+      fs.rmSync(bin);
+      fs.symlinkSync('/x/ch-shim', bin);
+      passedOver('a link in <home>/shim', /ch-shim: it is not a regular file \(or is a link\)/);
+      fs.rmSync(bin);
+      fs.writeFileSync(bin, 'binary', {mode: 0o755});
+      const real = path.join(home, 'shim-real');
+      fs.renameSync(path.dirname(bin), real);
+      fs.symlinkSync(real, path.join(home, 'shim'));
+      passedOver('<home>/shim a link', /shim: it is a symbolic link/);
+      fs.rmSync(path.join(home, 'shim'));
+      fs.writeFileSync(path.join(home, 'shim'), 'not a directory');
+      passedOver('<home>/shim a file (lstat of ch-shim: ENOTDIR), said, not taken for "none there"', /ch-shim could not be read \(ENOTDIR\)/);
+    }
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('on Windows the installed shim is used only when its directory and file pass privateProblem (owner and DACL)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const {shimFor} = require('../lib/shim-binary');
+  const {privateProblem} = require('../lib/win-acl');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-shimfor-win-'));
+  try {
+    const bin = path.join(home, 'shim', 'ch-shim.exe');
+    fs.mkdirSync(path.dirname(bin), {mode: 0o700});
+    fs.writeFileSync(bin, 'binary');
+    const me = 'S-1-5-21-1-2-3-1001';
+    const mine = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-18', type: 'Allow', rights: 2032127}]};
+    const open = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-32-545', type: 'Allow', rights: 1179817}]};
+    const run = (acls) => shimFor({home, platform: 'win32', locate: () => ({status: 'found', path: 'C:\\x\\ch-shim.exe'}), acl: {privateProblem, fileAcl: (p) => {
+      const a = acls[p === bin ? 'file' : 'dir'];
+      if (a instanceof Error) throw a;
+      return a;
+    }}});
+    assert.deepStrictEqual(run({dir: mine, file: mine}), {shim: bin, note: null}, 'both private: used');
+    let r = run({dir: open, file: mine});
+    assert.strictEqual(r.shim, 'C:\\x\\ch-shim.exe');
+    assert.match(r.note, /installed shim is not used: .*shim: .*is accessible by S-1-5-32-545/, 'a directory Users can read and execute (Windows refuses any rule beyond HARMLESS, as private-file does)');
+    r = run({dir: mine, file: open});
+    assert.match(r.note, /ch-shim\.exe: .*is accessible by S-1-5-32-545/, 'a file Users can read and execute');
+    r = run({dir: mine, file: Object.assign({}, mine, {owner: 'S-1-5-21-9-9-9-1002'})});
+    assert.match(r.note, /ch-shim\.exe: .*is owned by S-1-5-21-9-9-9-1002/, 'a file another user owns');
+    r = run({dir: new Error('powershell failed'), file: mine});
+    assert.match(r.note, /shim could not be checked \(powershell failed\)/, 'an unreadable DACL fails closed');
+    assert.strictEqual(r.shim, 'C:\\x\\ch-shim.exe');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('the shim\'s binary: found, missing (say reinstall), or unsupported (the per-session mode)', () => {
   const {shimFor} = require('../lib/shim-binary');
   assert.deepStrictEqual(shimFor({locate: () => ({status: 'found', path: '/x/ch-shim'})}), {shim: '/x/ch-shim', note: null});

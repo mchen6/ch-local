@@ -17,6 +17,7 @@ pub mod child;
 pub mod config;
 pub mod daemon;
 pub mod endpoint;
+pub mod failed;
 pub mod frame;
 pub mod handshake;
 pub mod held;

@@ -41,6 +41,8 @@ pub enum StartError {
     Spawn(std::io::Error),
     /// Starting a daemon now could hand it what it must never hold.
     Unsafe(String),
+    /// A daemon gave up (a fresh, valid failed.json): none is started.
+    Failed(crate::failed::Reason),
 }
 
 impl fmt::Display for StartError {
@@ -54,6 +56,7 @@ impl fmt::Display for StartError {
             StartError::Lock(LockError::Io(e)) => write!(f, "start.lock: {e}"),
             StartError::Spawn(e) => write!(f, "the daemon could not be started: {e}"),
             StartError::Unsafe(why) => write!(f, "the daemon was not started: {why}"),
+            StartError::Failed(r) => write!(f, "the shared runtime failed ({r})"),
         }
     }
 }
@@ -84,6 +87,14 @@ pub fn ensure_started(home: &Home, deadline: Instant) -> Result<bool, StartError
     }
     let held = lock::acquire(&home.start_lock(), deadline).map_err(StartError::Lock)?;
     let running = config::read_daemon(home).map_err(StartError::Config)?.is_some_and(|d| running(home, &d));
+    // read again under the lock, just before a spawn (#236 section 6): a
+    // daemon that gave up since the first look never gets one behind it
+    if !running {
+        if let Some(r) = crate::failed::read(home) {
+            drop(held);
+            return Err(StartError::Failed(r));
+        }
+    }
     let spawned = if running { false } else { spawn(home).map(|()| true)? };
     drop(held);
     Ok(spawned)
