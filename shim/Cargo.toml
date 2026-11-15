@@ -1,0 +1,26 @@
+[package]
+name = "ch-shim"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "countinghouse's per-session shim: relays one MCP client's stdio to the user's shared runtime"
+repository = "https://github.com/mchen6/ch-local"
+publish = false
+
+# Few, widely used crates, and no async runtime: the shim is two relays and
+# a handshake, which threads and blocking I/O do in a few hundred KB.
+[dependencies]
+hmac = "0.12"
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+base64 = "0.22"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

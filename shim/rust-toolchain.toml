@@ -1,0 +1,5 @@
+# The toolchain the shim is built and tested with, locally and in CI.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
