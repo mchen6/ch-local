@@ -171,9 +171,68 @@ test('the latch: a hook seen once holds for the whole start, though it is remove
   assert.strictEqual(w.ask().mayElicit, true, 'a fresh scan, unlatched, says yes');
 });
 
-test('the real ancestry reader: this process\'s own command line, first', () => {
+test('the real ancestry reader: this process\'s own command line, first', async () => {
   const {readAncestry} = require('../lib/client-conditions');
-  const lines = readAncestry(process.pid, 2);
+  const lines = await readAncestry(process.pid, 2);
   assert.ok(Array.isArray(lines) && lines.length >= 1, String(lines));
   assert.ok(lines[0].some((a) => /node/i.test(a)), JSON.stringify(lines[0]));
+});
+
+test('review: a symlinked marketplace, plugin or version directory is read', () => {
+  const w = world();
+  const real = path.join(w.root, 'dev-plugin');
+  w.write(path.join(real, 'hooks', 'hooks.json'), HOOK('Elicitation'));
+  const p = path.join(w.home, '.claude', 'plugins', 'cache', 'mkt', 'p');
+  fs.mkdirSync(p, {recursive: true});
+  fs.symlinkSync(real, path.join(p, '1.0.0'), 'dir');
+  assert.strictEqual(w.ask().why, 'plugin hook present');
+});
+
+test('review: the user\'s own settings.local.json is read (the project is the home)', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-cond-'));
+  const home = path.join(root, 'home');
+  fs.mkdirSync(path.join(home, '.claude'), {recursive: true});
+  fs.writeFileSync(path.join(home, '.claude', 'settings.local.json'), JSON.stringify(HOOK('Elicitation')));
+  const env = {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: home};
+  assert.strictEqual(clientConditions({client: CC, home, cwd: home, env, managedFile: path.join(root, 'none.json'), parentCommandLines: () => [['claude']]}).why, 'client hook present');
+});
+
+test('review: a relative --settings or --plugin-dir is unreadable (the client\'s own directory is not known for certain)', () => {
+  const w = world();
+  w.write(path.join(w.cwd, 's.json'), {});
+  fs.mkdirSync(path.join(w.cwd, 'p'), {recursive: true});
+  assert.strictEqual(w.ask({parentCommandLines: () => [['claude', '--settings', 's.json']]}).why, 'client settings unreadable');
+  assert.strictEqual(w.ask({parentCommandLines: () => [['claude', '--plugin-dir', './p']]}).why, 'client settings unreadable');
+});
+
+test('review: the client must be found among the ancestors; an empty command line on the way is unread', () => {
+  const {clientLines} = require('../lib/client-conditions');
+  assert.deepStrictEqual(clientLines([['node', 'x.js'], ['sh'], ['claude', '--resume', 'a']]), [['node', 'x.js'], ['sh'], ['claude', '--resume', 'a']]);
+  assert.strictEqual(clientLines([['node', 'x.js'], ['bash']]), null);
+  assert.strictEqual(clientLines([['node', 'x.js'], [], ['claude']]), null);
+  assert.ok(clientLines([['C:\\Users\\u\\.local\\bin\\claude.exe']]));
+  assert.ok(clientLines([['node', '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js', '--settings', '/s.json']]));
+  assert.strictEqual(clientLines(null), null);
+});
+
+test('review: no cwd (removed), or anything unexpected, is unreadable, never a throw', () => {
+  const w = world();
+  assert.deepStrictEqual(w.ask({cwd: null}), {mayElicit: false, why: 'client settings unreadable'});
+  assert.deepStrictEqual(w.ask({parentCommandLines: () => [[42]]}), {mayElicit: false, why: 'client settings unreadable'});
+});
+
+test('review: the service answers within its wait while the ancestry is still read, then from it, latching', async () => {
+  const {conditionsService} = require('../lib/client-conditions');
+  const w = world();
+  let resolve;
+  const svc = conditionsService({home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed}, {ancestry: new Promise((r) => { resolve = r; }), waitMs: 30});
+  assert.deepStrictEqual(await svc.check(CC), {mayElicit: false, why: 'client settings unreadable'});
+  resolve([['claude']]);
+  await svc.ready;
+  assert.deepStrictEqual(await svc.check(CC), {mayElicit: true, why: null});
+  const file = path.join(w.project, '.claude', 'settings.json');
+  w.write(file, HOOK('Elicitation'));
+  assert.strictEqual((await svc.check(CC)).why, 'client hook present');
+  fs.rmSync(file);
+  assert.strictEqual((await svc.check(CC)).why, 'client hook present', 'latched');
 });
