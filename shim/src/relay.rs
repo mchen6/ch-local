@@ -2162,10 +2162,16 @@ mod tests {
     #[test]
     fn a_grandchild_holding_the_runtimes_stdout_doesnt_hold_the_shim() {
         let (home, _sock) = home();
-        // the runtime starts a long-lived process that inherits its stdout
+        // the runtime starts a process that inherits its stdout and outlives
+        // the test by far (120 s), and writes its pid so the test ends it
+        let pid_file = home.root().join("grandchild.pid");
+        let pid_path = serde_json::to_string(&pid_file.to_string_lossy()).unwrap();
+        let _grandchild = KillOnDrop(pid_file.clone());
         if !echo_runtime(
             &home,
-            "require('child_process').spawn('sleep', ['8'], {stdio: ['ignore', 'inherit', 'ignore'], detached: true}).unref(); setTimeout(() => process.exit(0), 300);",
+            &format!(
+                "const g = require('child_process').spawn('sleep', ['120'], {{stdio: ['ignore', 'inherit', 'ignore'], detached: true}}); require('fs').writeFileSync({pid_path}, String(g.pid)); g.unref(); setTimeout(() => process.exit(0), 300);"
+            ),
         ) {
             return eprintln!("no node on PATH: skipped");
         }
@@ -2182,7 +2188,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(code, 0);
-        assert!(started.elapsed() < Duration::from_secs(5), "held for {:?}", started.elapsed());
+        // the shim leaves within PUMP_DRAIN of the runtime's exit, so long
+        // before the grandchild's 120 s; the bound leaves node's start-up on
+        // a loaded runner (seen at ~3.7 s on the musl leg) out of the question
+        assert!(started.elapsed() < Duration::from_secs(60), "held for {:?}", started.elapsed());
+        assert!(pid_file.exists(), "the grandchild was started");
+    }
+
+    // ends the process whose pid is in the file, when the test ends (a
+    // panic included), so no grandchild outlives its test
+    struct KillOnDrop(std::path::PathBuf);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            if let Ok(pid) = fs::read_to_string(&self.0) {
+                if let Ok(pid) = pid.trim().parse::<u32>() {
+                    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                }
+            }
+        }
     }
 
     #[test]
