@@ -592,3 +592,17 @@ test('start in session mode: framework.js on --sessionSocket, never --stdio, and
   assert.strictEqual(valueOf(args, '--controlChannel'), 'ipc');
   assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'));
 });
+
+test('start in session mode refuses a path it would pass that resolves outside the home, and starts nothing', {skip: process.platform === 'win32'}, async () => {
+  const home = installedHome();
+  const outside = tmp('ch-local-outside-');
+  // the app's countinghouse is a link out of the home
+  const at = path.join(home, 'app', 'node_modules', 'countinghouse');
+  fs.renameSync(at, path.join(outside, 'countinghouse'));
+  fs.symlinkSync(path.join(outside, 'countinghouse'), at);
+  const f = io(home);
+  const code = await start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock')}}, f);
+  assert.notStrictEqual(code, 0);
+  assert.strictEqual(f.spawned.length, 0);
+  assert.match(f.err, /outside the home/);
+});
