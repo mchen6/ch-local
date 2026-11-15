@@ -189,18 +189,20 @@ function realIo() {
     // a signal this process takes and does nothing with (ch-local daemon:
     // SIGHUP, so it outlives the shim's parent ending)
     ignoreSignal: (name) => process.on(name, () => {}),
-    // SIGINT, SIGTERM and SIGHUP go to handler(name) until the returned
-    // function is called; start decides what each means.
-    trapSignals: (handler) => {
-      const on = Object.fromEntries(['SIGINT', 'SIGTERM', 'SIGHUP'].map((s) => [s, () => handler(s)]));
+    // SIGINT, SIGTERM and SIGHUP (or the signals named) go to handler(name)
+    // until the returned function is called; start decides what each means.
+    trapSignals: (handler, signals = ['SIGINT', 'SIGTERM', 'SIGHUP']) => {
+      const on = Object.fromEntries(signals.map((s) => [s, () => handler(s)]));
       for (const [s, fn] of Object.entries(on)) process.on(s, fn);
       return () => { for (const [s, fn] of Object.entries(on)) process.removeListener(s, fn); };
     },
     // The runtime, on this process's own stdin, stdout and stderr: the client's
     // MCP channel goes straight through. -> {kill(signal), exited: Promise<exit code>}.
     // control: an IPC fd for the runtime's control channel (packs in place)
-    spawn: (cmd, args, {env, control = false} = {}) => {
-      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env});
+    // detached: in its own process group (a session runtime: a terminal's
+    // hang-up never reaches it)
+    spawn: (cmd, args, {env, control = false, detached = false} = {}) => {
+      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env, detached});
       const exited = new Promise((resolve) => {
         child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
         child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));

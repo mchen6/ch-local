@@ -52,13 +52,14 @@ function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/
   f.killed = [];
   f.exits = [];
   f.signal = null;
-  f.trapSignals = (handler) => { f.signal = handler; return () => { f.signal = null; }; };
+  f.trapSignals = (handler, signals) => { f.signal = handler; f.trapped = signals; return () => { f.signal = null; }; };
   f.exit = (code) => { f.exits.push(code); };
   f.alive = (pid) => pid === 4242 || pid === 7;
   void path;
   // What the runtime would see when it starts: its args, its environment, the
   // config directory's files (by relative path) and the remote credentials.
-  f.spawn = (cmd, args, {env: childEnv} = {}) => {
+  f.spawn = (cmd, args, {env: childEnv, detached} = {}) => {
+    f.detached = detached;
     const dir = args[args.indexOf('--deviceConfigPath') + 1];
     const config = {};
     const walk = (d, rel) => { for (const e of fs.readdirSync(d, {withFileTypes: true})) { const r = rel ? `${rel}/${e.name}` : e.name; if (e.isDirectory()) walk(path.join(d, e.name), r); else config[r] = JSON.parse(fs.readFileSync(path.join(d, e.name), 'utf8')); } };
@@ -384,6 +385,9 @@ const filesUnder = (dir) => {
   if (fs.existsSync(dir)) walk(dir);
   return out;
 };
+// a session runtime's environment is the allowlist only (no GITHUB_TOKEN):
+// its token comes from gh, here logged in
+const ghLoggedIn = (f) => { f.exec = async(cmd) => (cmd === 'gh' ? {status: 0, stdout: 'gho_exampleexampleexample\n'} : {status: 0, stdout: ''}); return f; };
 const withExec = (f, exec) => { f.exec = async (cmd, args, opts) => { f.execs.push({cmd, args, opts}); return exec(cmd, args, opts); }; return f; };
 
 test('start asks gh for the GitHub token and gives it to the runtime in its environment only, never in a file or a line', async () => {
@@ -583,7 +587,7 @@ test('start in session mode: framework.js on --sessionSocket, never --stdio, and
   const home = installedHome();
   const f = io(home);
   const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
-  assert.strictEqual(await start({passThrough: [], session: {socket}}, f), 0, f.err);
+  assert.strictEqual(await start({passThrough: [], session: {socket, home}}, ghLoggedIn(f)), 0, f.err);
   const {args} = f.spawned[0];
   assert.strictEqual(args[0], path.join(home, 'app', 'node_modules', 'countinghouse', 'framework.js'));
   assert.strictEqual(valueOf(args, '--sessionSocket'), socket);
@@ -601,8 +605,63 @@ test('start in session mode refuses a path it would pass that resolves outside t
   fs.renameSync(at, path.join(outside, 'countinghouse'));
   fs.symlinkSync(path.join(outside, 'countinghouse'), at);
   const f = io(home);
-  const code = await start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock')}}, f);
+  const code = await start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home}}, ghLoggedIn(f));
   assert.notStrictEqual(code, 0);
   assert.strictEqual(f.spawned.length, 0);
   assert.match(f.err, /outside the home/);
+});
+
+// C4b's review: the session runtime's home, signals, group and environment
+test('start in session mode takes its home from session.home, not the environment, which holds only the allowlist', async () => {
+  const home = installedHome();
+  const f = io(home, {env: {PATH: '/usr/bin', HOME: '/home/dev', NODE_OPTIONS: '--require /tmp/x.js', GITHUB_TOKEN: 'example-shell-token'}});
+  delete f.env.COUNTINGHOUSE_HOME;   // the shim's cleared environment never carries it
+  f.exec = async(cmd) => (cmd === 'gh' ? {status: 0, stdout: 'gho_exampleexampleexample\n'} : {status: 0, stdout: ''});
+  const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
+  assert.strictEqual(await start({passThrough: [], session: {socket, home}}, f), 0, f.err);
+  const {args, env} = f.spawned[0];
+  assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'), 'the home named, not ~/.countinghouse');
+  assert.strictEqual(args[0], path.join(home, 'app', 'node_modules', 'countinghouse', 'framework.js'));
+  // the runtime's environment: the allowlist, and the one token start adds
+  assert.deepStrictEqual(Object.keys(env).sort(), ['COUNTINGHOUSE_GITHUB_TOKEN', 'HOME', 'PATH']);
+  assert.strictEqual(env.COUNTINGHOUSE_GITHUB_TOKEN, 'gho_exampleexampleexample');
+});
+
+test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime in its own process group', async () => {
+  const home = installedHome();
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home}}, ghLoggedIn(f)), 0, f.err);
+  assert.deepStrictEqual(f.trapped, ['SIGINT', 'SIGTERM']);
+  assert.strictEqual(f.detached, true);
+  const g = io(installedHome());
+  await start({passThrough: []}, g);
+  assert.strictEqual(g.trapped, undefined, 'a stdio start traps as before');
+  assert.notStrictEqual(g.detached, true);
+});
+
+test('start in session mode: an aborted signal kills the runtime, and the start ends', async () => {
+  const home = installedHome();
+  const f = io(home);
+  let finish = null;
+  f.spawn = (cmd, args) => { f.spawned.push({cmd, args}); return {kill: (sig) => { f.killed.push(sig); finish(143); }, exited: new Promise((r) => { finish = r; })}; };
+  const ac = new AbortController();
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, signal: ac.signal}}, ghLoggedIn(f));
+  await new Promise((r) => setTimeout(r, 50));
+  ac.abort();
+  assert.strictEqual(await done, 143);
+  assert.deepStrictEqual(f.killed, ['SIGTERM']);
+});
+
+test('start in session mode passes on the runtime\'s listening message', async () => {
+  const home = installedHome();
+  const f = io(home);
+  let deliver = null;
+  f.spawn = (cmd, args) => { f.spawned.push({cmd, args}); return {kill: () => {}, exited: new Promise(() => {}), send: () => {}, onMessage: (fn) => { deliver = fn; }}; };
+  const heard = [];
+  const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
+  start({passThrough: [], session: {socket, home, onListening: (m) => heard.push(m)}}, ghLoggedIn(f));
+  for (let i = 0; i < 50 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
+  deliver({type: 'listening', socket});
+  deliver({type: 'listening', socket, id: 3});   // with an id it is a reply, not this
+  assert.deepStrictEqual(heard, [{type: 'listening', socket}]);
 });

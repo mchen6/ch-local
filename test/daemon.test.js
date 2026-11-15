@@ -48,8 +48,10 @@ async function fakeRuntime(runDir, socket, {wrongSecret = false} = {}) {
   return {secret, close: () => new Promise((r) => server.close(r))};
 }
 
+// the shim's cleared environment: only shim.json's allowlist, never
+// COUNTINGHOUSE_HOME
 function daemonIo(home) {
-  const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, homedir: os.tmpdir});
+  const io = fakeIo({env: {PATH: '/usr/bin:/bin', HOME: os.tmpdir()}, homedir: os.tmpdir});
   io.cwd = home;
   io.pid = process.pid;
   io.alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
@@ -67,8 +69,11 @@ test('no daemon yet: it starts the runtime, writes daemon.json once the socket p
   let runtime = null;
   let finish = null;
   let lockWhileRunning = null;
-  const run = async({socket}) => {
-    runtime = await fakeRuntime(runDirOf(home), socket);
+  let given = null;
+  const run = async(opts) => {
+    given = opts;
+    runtime = await fakeRuntime(runDirOf(home), opts.socket);
+    opts.onListening({type: 'listening', socket: opts.socket});
     return new Promise((resolve) => { finish = resolve; });
   };
   try {
@@ -86,6 +91,8 @@ test('no daemon yet: it starts the runtime, writes daemon.json once the socket p
     lockWhileRunning = fs.existsSync(path.join(runDirOf(home), 'start.lock'));
     assert.strictEqual(lockWhileRunning, false, 'start.lock is released while the runtime runs');
     assert.deepStrictEqual(io.ignored, ['SIGHUP']);
+    assert.strictEqual(given.home, home, 'the runtime is given the home');
+    assert.ok(given.signal != null, 'and a signal to stop it');
     await runtime.close();
     finish(0);
     assert.strictEqual(await done, 0);
@@ -140,11 +147,11 @@ test('a runtime that never proves the secret within the bound: exit 1, no daemon
   try {
     const io = daemonIo(home);
     io.daemonReadyMs = 300;
-    let stop = null;
-    const code = await daemon({home}, io, {run: () => new Promise((resolve) => { stop = resolve; })});
+    let aborted = false;
+    const code = await daemon({home}, io, {run: (opts) => new Promise((resolve) => { opts.signal.addEventListener('abort', () => { aborted = true; resolve(143); }); })});
     assert.strictEqual(code, 1);
     assert.ok(!fs.existsSync(path.join(runDirOf(home), 'daemon.json')));
-    assert.ok(stop != null);
+    assert.strictEqual(aborted, true, 'the runtime that never listened is stopped, and awaited');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
@@ -179,6 +186,76 @@ test('probe: true only for a socket that proves the secret', {skip: process.plat
     assert.strictEqual(await probe(path.join(runDir, 'nothing'), good.secret, 1000), false);
   } finally {
     await good.close();
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// C4b's review ---------------------------------------------------------------
+
+test('ready needs both the runtime\'s own listening tell and a PROVE on that socket: a proving socket alone is never adopted', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  let aborted = false;
+  let other = null;
+  try {
+    const io = daemonIo(home);
+    io.daemonReadyMs = 600;
+    // another, older runtime proves on the expected socket, but ours never tells
+    const code = await daemon({home}, io, {run: async(opts) => {
+      other = await fakeRuntime(runDirOf(home), opts.socket);
+      return new Promise((resolve) => { opts.signal.addEventListener('abort', () => { aborted = true; resolve(143); }); });
+    }});
+    assert.strictEqual(code, 1);
+    assert.strictEqual(aborted, true, 'the runtime that never told is stopped');
+    assert.ok(!fs.existsSync(path.join(runDirOf(home), 'daemon.json')), 'nothing adopted');
+  } finally {
+    if (other != null) await other.close();
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('a listening tell naming another socket is not ours', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  try {
+    const io = daemonIo(home);
+    io.daemonReadyMs = 400;
+    const code = await daemon({home}, io, {run: async(opts) => {
+      opts.onListening({type: 'listening', socket: path.join(home, 'elsewhere.sock')});
+      return new Promise((resolve) => opts.signal.addEventListener('abort', () => resolve(143)));
+    }});
+    assert.strictEqual(code, 1);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('a daemon.json naming another socket is stale, whatever answers there', {skip: process.platform === 'win32'}, async() => {
+  const home = tmpHome();
+  const runDir = runDirOf(home);
+  fs.mkdirSync(runDir, {recursive: true, mode: 0o700});
+  fs.chmodSync(path.join(home, 'run'), 0o700);
+  const elsewhere = path.join(runDir, 'other.sock');
+  const live = await fakeRuntime(runDir, elsewhere);
+  fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({pid: process.pid, socket: elsewhere, runtimeVersion: 'x', daemonVersion: 'y', started: 'z'}), {mode: 0o600});
+  let started = false;
+  try {
+    const io = daemonIo(home);
+    io.daemonReadyMs = 300;
+    await daemon({home}, io, {run: async(opts) => { started = true; return new Promise((resolve) => opts.signal.addEventListener('abort', () => resolve(143))); }});
+    assert.strictEqual(started, true);
+  } finally {
+    await live.close();
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('on Windows the daemon is refused for now (the shim then runs one runtime per session)', async() => {
+  const home = tmpHome();
+  try {
+    const io = daemonIo(home);
+    io.platform = 'win32';
+    assert.strictEqual(await daemon({home}, io, {run: async() => 0}), 2);
+    assert.match(io.err, /Windows/);
+  } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
