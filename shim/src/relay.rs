@@ -263,11 +263,30 @@ impl Relay {
             }
             State::Closing(_) => {}
             State::Attaching | State::Unsettled | State::Draining => {
+                // a line this connection could never carry is refused as too
+                // large at once, whatever the state: never held, so never
+                // answered as a held line that "did not run" instead
+                if Self::never_fits(&line, self.to_runtime.message) {
+                    let limit = (self.to_runtime.message as usize).saturating_sub(4096);
+                    match Self::ids_of(&message::classify(&line)) {
+                        Some((ids, batch)) => self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit)),
+                        None => self.say(&answer::too_long(limit)),
+                    }
+                    return;
+                }
                 if let Err(over) = self.held.hold(line, self.to_runtime.message as usize) {
                     self.overflow(over);
                 }
             }
         }
+    }
+
+    /// Whether `line`, with the longest seq header, is over the
+    /// connection's M cap: 2 length bytes, `{"seq":9007199254740991}`, then
+    /// the line.
+    fn never_fits(line: &[u8], cap: u32) -> bool {
+        const HEADER_MAX: usize = 2 + r#"{"seq":9007199254740991}"#.len();
+        HEADER_MAX + line.len() > cap as usize
     }
 
     fn overflow(&self, over: Overflow) {
@@ -1160,5 +1179,33 @@ mod tests {
         let lines = sink.lines();
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("RUNTIME_RESTARTED"));
+    }
+
+    // The ordering CI hit: the line too large for this connection arrives
+    // after WELCOME, while unsettled. It is refused as too large (-32600,
+    // its own id), never held and answered as a held line that "did not run".
+    #[test]
+    fn a_line_too_large_for_the_connection_arriving_unsettled_is_refused_as_too_large() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1"); // maxToRuntime 65536
+        until_op(&mut s, "client");
+        let big = format!("{{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"a\",\"params\":\"{}\"}}\n", "x".repeat(70_000));
+        client_in.write_all(big.as_bytes()).unwrap();
+        for _ in 0..200 {
+            if !sink.lines().is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let a: Value = serde_json::from_str(&sink.lines()[0]).unwrap();
+        assert_eq!((a["id"].as_u64(), a["error"]["code"].as_i64()), (Some(9), Some(-32600)), "{a}");
+        settled(&mut s);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
     }
 }
