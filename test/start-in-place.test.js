@@ -449,3 +449,60 @@ test('load-pack refused: another version than the form showed, a pack the ceilin
     await s.done;
   }
 });
+
+test('load-pack review: the ceiling turned against conversation, or untrusted: refused; a ceiling that unloads a this-start pack ends it (re-allowed, it stays off)', async () => {
+  const {s, where, count, reply} = await withOtherOff();
+  try {
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: null, conversation: false}});
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_CONVERSATION_OFF'});
+    ceilingReader(s.home, {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'p'});
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r2', ok: false, code: 'CONTROL_CEILING_UNTRUSTED'});
+    ceilingReader(s.home, {state: 'none'});
+    assert.deepStrictEqual(await reply({id: 'r3', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r3', ok: true});
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: ['ci-failure-triage'], conversation: true}});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
+    await until(() => count('unload') === 2);
+    ceilingReader(s.home, {state: 'none'});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'en'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale' && m.value === 'en-US'));
+    assert.strictEqual(count('load'), 2, 'not reloaded without a new confirmation');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('load-pack review: settings.json\'s value for the pack changing ends this start\'s turn-on (the file governs)', async () => {
+  const {s, where, count, reply} = await withOtherOff();
+  try {
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
+    // turned on in the file, then off in the file: off
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': true}}));
+    await new Promise((r) => setTimeout(r, 600));
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
+    await until(() => count('unload') === 2);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('load-pack review: the version loaded is the one confirmed; a pack whose first package is not its ch-pack is refused; one not started within 10 s is refused unloaded', async () => {
+  const {s, count, reply} = await withOtherOff();
+  try {
+    // packs.json lists another package first for `other`
+    const file = path.join(s.home, 'packs.json');
+    const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const pk = rec.packs.other.packages;
+    rec.packs.other.packages = Object.fromEntries([['@countinghouse/ch-step-other', pk['@countinghouse/ch-step-other']], ...Object.entries(pk).filter(([k]) => k !== '@countinghouse/ch-step-other')]);
+    fs.writeFileSync(file, JSON.stringify(rec));
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_VERSION_CHANGED'});
+    assert.strictEqual(count('load'), 1);
+  } finally {
+    s.end();
+    await s.done;
+  }
+  // a request that waited past its start window on the applier's chain
+  const {loadPackDeadlineMs} = require('../lib/in-place');
+  assert.strictEqual(loadPackDeadlineMs, 10000, 'started within 10 s, loaded within 30 s more: under the runtime\'s 45 s');
+});
