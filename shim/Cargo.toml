@@ -11,13 +11,11 @@ publish = false
 # Few, widely used crates, and no async runtime: the shim is two relays and
 # a handshake, which threads and blocking I/O do in a few hundred KB.
 [dependencies]
+base64 = "0.22"
 hmac = "0.12"
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
 zeroize = "1"
-
-[dev-dependencies]
-base64 = "0.22"
 
 [profile.release]
 codegen-units = 1

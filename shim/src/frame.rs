@@ -60,7 +60,7 @@ impl Kind {
 /// arrive at all (no M or C before WELCOME, no second HELLO or AUTH) is the
 /// connection's state, checked by its caller, never a cap: a zero-length
 /// frame passes any cap.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caps {
     pub message: u32,
 }

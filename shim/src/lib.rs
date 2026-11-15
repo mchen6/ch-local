@@ -7,10 +7,13 @@
 //! that need no I/O; the I/O (the trust checks, the handshake, the relay)
 //! comes next, under its own security review.
 
-#![forbid(unsafe_code)]
+// unsafe is denied everywhere; the one exception (reviewer, 2026-11-14) is
+// the Windows FFI module, win_ffi, which allows it block by block.
+#![deny(unsafe_code)]
 
 pub mod answer;
 pub mod frame;
+pub mod handshake;
 pub mod inflight;
 pub mod mac;
 pub mod message;
