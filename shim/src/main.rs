@@ -6,7 +6,7 @@
 // allowed where it is made, with its SAFETY note.
 #![deny(unsafe_code)]
 
-use std::io::{self, BufRead};
+use std::io;
 use std::process::ExitCode;
 
 use ch_shim::config::Home;
@@ -42,7 +42,13 @@ fn main() -> ExitCode {
     if !rest.is_empty() {
         let shown: Vec<String> = rest.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         eprintln!("ch-shim: runtime flags given ({}): this session runs its own runtime", shown.join(" "));
-        return own(&home, &rest, Vec::new(), stdin_lines());
+        return match relay::own_runtime_inherited(&home, &rest) {
+            Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+            Err(e) => {
+                eprintln!("ch-shim: the per-session runtime could not be started ({e})");
+                ExitCode::from(1)
+            }
+        };
     }
     let client_env = std::env::vars_os().collect();
     let relay = Relay::new(
@@ -56,10 +62,6 @@ fn main() -> ExitCode {
             own(&home, &[], held, lines)
         }
     }
-}
-
-fn stdin_lines() -> impl Iterator<Item = Vec<u8>> + Send + 'static {
-    io::BufReader::new(io::stdin()).split(b'\n').map_while(Result::ok)
 }
 
 fn own(

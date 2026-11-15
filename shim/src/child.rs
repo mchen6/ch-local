@@ -29,8 +29,12 @@ const STDOUT_MAX: u64 = 4096;
 pub fn child_env(env: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
     env.into_iter()
         .filter(|(k, _)| {
+            // Windows' environment names are case-insensitive: node_options
+            // is NODE_OPTIONS there
             let k = k.to_string_lossy();
-            !k.starts_with("NODE_") && !k.starts_with("npm_config_")
+            let k = if cfg!(windows) { k.to_ascii_uppercase() } else { k.into_owned() };
+            let npm = if cfg!(windows) { "NPM_CONFIG_" } else { "npm_config_" };
+            !k.starts_with("NODE_") && !k.starts_with(npm)
         })
         .collect()
 }
@@ -106,10 +110,13 @@ pub fn run(
         .spawn()
         .map_err(|e| format!("the conditions child could not be started ({e})"))?;
     let mut stdout = child.stdout.take().expect("piped");
-    let reader = std::thread::spawn(move || {
+    // read on a thread that sends what it read: joined with a deadline, so
+    // a grandchild that holds the pipe open can't hold the shim
+    let (rtx, rrx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         let _ = (&mut stdout).take(STDOUT_MAX + 1).read_to_end(&mut out);
-        out
+        let _ = rtx.send(out);
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -124,7 +131,10 @@ pub fn run(
             Err(e) => return Err(format!("the conditions child could not be waited for ({e})")),
         }
     };
-    let out = reader.join().unwrap_or_default();
+    let out = match rrx.recv_timeout(Duration::from_secs(2)) {
+        Ok(out) => out,
+        Err(_) => return Err("the conditions child's output never ended (a process it started holds it open)".into()),
+    };
     if !status.success() {
         return Err(format!("the conditions child exited with {status}"));
     }
@@ -173,6 +183,30 @@ mod tests {
         let f = client_frame(Some(2), Ok(b"{}\n".to_vec()));
         assert_eq!(f, br#"{"op":"client","seq":2}"#);
         serde_json::from_slice::<Value>(&f).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_the_env_filter_ignores_case() {
+        let env = child_env(
+            [("node_options", "x"), ("Npm_Config_Prefix", "y"), ("Path", "z")].map(|(k, v)| (k.into(), v.into())),
+        );
+        let names: Vec<String> = env.iter().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["Path"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_grandchild_holding_the_childs_stdout_doesnt_hold_the_shim() {
+        let p = std::env::temp_dir().join(format!("ch-shim-grandchild-{}.sh", std::process::id()));
+        // prints a line, exits, but leaves a grandchild with stdout open
+        std::fs::write(&p, "(sleep 30 &) ; echo '{\"status\":\"ok\"}'\n").unwrap();
+        let shim = ShimInfo { node: "/bin/sh".into(), ch_local: p.clone(), env: vec![] };
+        let started = Instant::now();
+        let r = run(&shim, std::path::Path::new("/h"), 1, vec![], TIMEOUT);
+        assert!(started.elapsed() < Duration::from_secs(5), "held for {:?}", started.elapsed());
+        assert!(r.is_err_and(|w| w.contains("never ended")));
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

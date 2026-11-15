@@ -20,15 +20,25 @@ use serde_json::{Map, Value};
 use crate::frame::{self, Caps, Kind};
 use crate::inflight::InFlight;
 use crate::message::{self, HeaderError};
-use crate::out::Out;
+use crate::out::{Out, StreamError};
 
 #[derive(Debug)]
 pub enum Event {
     /// An M frame was written to the client (or dropped): its seq, if any.
     Answered(Option<u64>),
-    Control(Map<String, Value>),
+    /// A control frame: its op parsed, and its payload as received (a
+    /// record's entry is kept byte for byte from it).
+    Control(Map<String, Value>, Vec<u8>),
     /// The connection is over: why.
     Lost(String),
+    /// stdout failed: the client is gone, and the shim ends.
+    StdoutGone(String),
+}
+
+/// Why the reader stopped.
+enum Ended {
+    Lost(String),
+    Stdout(String),
 }
 
 /// What the reader shares with the relay.
@@ -46,55 +56,73 @@ pub struct Shared {
 
 /// Reads frames until the connection ends; the last event is always Lost.
 pub fn run<R: Read>(mut conn: R, from_runtime: Caps, shared: Shared, tx: SyncSender<Event>) {
-    let why = loop {
+    let last = loop {
         match one(&mut conn, from_runtime, &shared) {
             Ok(e) => {
                 if tx.send(e).is_err() {
                     return;
                 }
             }
-            Err(why) => break why,
+            Err(Ended::Lost(why)) => break Event::Lost(why),
+            Err(Ended::Stdout(why)) => break Event::StdoutGone(why),
         }
     };
-    let _ = tx.send(Event::Lost(why));
+    let _ = tx.send(last);
 }
 
-fn one<R: Read>(conn: &mut R, caps: Caps, shared: &Shared) -> Result<Event, String> {
-    let (kind, len) = frame::read_head(conn, caps).map_err(|e| e.to_string())?;
+fn one<R: Read>(conn: &mut R, caps: Caps, shared: &Shared) -> Result<Event, Ended> {
+    let (kind, len) = frame::read_head(conn, caps).map_err(|e| Ended::Lost(e.to_string()))?;
     match kind {
         Kind::Message => {
             let (seq, rest) = message::read_header(conn, len).map_err(|e| match e {
-                HeaderError::Io(e) => e.to_string(),
-                HeaderError::Malformed(m) => format!("a malformed message frame ({m:?})"),
+                HeaderError::Io(e) => Ended::Lost(e.to_string()),
+                HeaderError::Malformed(m) => Ended::Lost(format!("a malformed message frame ({m:?})")),
             })?;
-            // settled first, and the relay's closed flag read, under the
-            // in-flight mutex: either the relay's crash answers already ran
-            // (closed: this answer is discarded) or they will find this seq
-            // gone (it is written here). Never both.
-            let closed = {
+            // Under the in-flight mutex: the relay's closed flag is read, the
+            // request's entry taken (no crash answer can be made for it now;
+            // this reader owns its answer), and stdout's lock taken BEFORE the
+            // in-flight lock is released, so the relay's finish(), which takes
+            // stdout's lock after the in-flight one, waits for this answer.
+            let stdout = {
                 let mut t = shared.inflight.lock().expect("the in-flight table's lock");
-                if let Some(seq) = seq {
-                    t.settle(seq);
+                let closed = shared.closed.load(Ordering::SeqCst);
+                let dropped = seq.is_some_and(|n| shared.dropped.lock().expect("the dropped set's lock").remove(&n));
+                if closed || dropped {
+                    if let Some(n) = seq {
+                        t.settle(n);
+                    }
+                    None
+                } else {
+                    let pending = seq.and_then(|n| t.take(n));
+                    Some((pending, shared.out.lock()))
                 }
-                shared.closed.load(Ordering::SeqCst)
             };
-            let dropped = seq.is_some_and(|n| shared.dropped.lock().expect("the dropped set's lock").remove(&n));
-            if closed || dropped {
-                io::copy(&mut conn.take(u64::from(rest)), &mut io::sink()).map_err(|e| e.to_string())?;
+            let Some((pending, mut held)) = stdout else {
+                io::copy(&mut conn.take(u64::from(rest)), &mut io::sink()).map_err(|e| Ended::Lost(e.to_string()))?;
                 return Ok(Event::Answered(seq));
+            };
+            match held.stream(conn, u64::from(rest)) {
+                Ok(()) => Ok(Event::Answered(seq)),
+                // cut short: the half line is ended; the request it answered
+                // gets its crash answer on the next line
+                Err(StreamError::Source(e)) => {
+                    if let Some(answer) = pending.and_then(|p| p.crash_answer()) {
+                        held.message(&answer).map_err(|e| Ended::Stdout(e.to_string()))?;
+                    }
+                    Err(Ended::Lost(e.to_string()))
+                }
+                Err(StreamError::Sink(e)) => Err(Ended::Stdout(e.to_string())),
             }
-            shared.out.stream(conn, u64::from(rest)).map_err(|e| e.to_string())?;
-            Ok(Event::Answered(seq))
         }
         Kind::Control => {
             let mut payload = vec![0u8; len as usize];
-            conn.read_exact(&mut payload).map_err(|e| e.to_string())?;
+            conn.read_exact(&mut payload).map_err(|e| Ended::Lost(e.to_string()))?;
             match serde_json::from_slice::<Value>(&payload) {
-                Ok(Value::Object(o)) if o.get("op").is_some_and(Value::is_string) => Ok(Event::Control(o)),
-                _ => Err("a malformed control frame".into()),
+                Ok(Value::Object(o)) if o.get("op").is_some_and(Value::is_string) => Ok(Event::Control(o, payload)),
+                _ => Err(Ended::Lost("a malformed control frame".into())),
             }
         }
-        other => Err(format!("the runtime sent a {other:?} frame after WELCOME")),
+        other => Err(Ended::Lost(format!("the runtime sent a {other:?} frame after WELCOME"))),
     }
 }
 
@@ -188,7 +216,7 @@ mod tests {
         ]
         .concat();
         let (events, _, _) = read_all(frames, InFlight::default(), &[]);
-        assert!(matches!(&events[0], Event::Control(o) if o["op"] == "drain"));
+        assert!(matches!(&events[0], Event::Control(o, _) if o["op"] == "drain"));
         assert!(matches!(&events[1], Event::Lost(w) if w.contains("malformed control")));
     }
 

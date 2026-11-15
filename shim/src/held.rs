@@ -9,6 +9,9 @@ use std::collections::VecDeque;
 use crate::message::{self, Line};
 
 pub const MAX_REQUESTS: usize = 64;
+/// What each held line is charged beyond its bytes (its Vec and the
+/// queue's slot), so many tiny lines are bounded too.
+pub const LINE_OVERHEAD: usize = 64;
 
 #[derive(Debug, Default)]
 pub struct Held {
@@ -30,7 +33,8 @@ impl Held {
     pub fn hold(&mut self, line: Vec<u8>, max_bytes: usize) -> Result<(), Overflow> {
         let class = message::classify(&line);
         let is_request = matches!(class, Line::Request { .. } | Line::Batch { .. });
-        if self.bytes + line.len() > max_bytes || (is_request && self.requests >= MAX_REQUESTS) {
+        let cost = line.len() + LINE_OVERHEAD;
+        if self.bytes + cost > max_bytes || (is_request && self.requests >= MAX_REQUESTS) {
             return Err(match class {
                 Line::Request { id, .. } => Overflow { ids: vec![id], batch: false },
                 Line::Batch { ids } => Overflow { ids, batch: true },
@@ -38,7 +42,7 @@ impl Held {
             });
         }
         self.requests += usize::from(is_request);
-        self.bytes += line.len();
+        self.bytes += cost;
         self.lines.push_back(line);
         Ok(())
     }
@@ -85,8 +89,12 @@ mod tests {
         // notifications don't count toward the 64, only toward the bytes
         h.hold(br#"{"jsonrpc":"2.0","method":"n"}"#.to_vec(), 1 << 20).unwrap();
         let mut small = Held::default();
-        small.hold(req(1), 40).unwrap();
+        small.hold(req(1), 40 + LINE_OVERHEAD).unwrap();
         let batch = br#"[{"jsonrpc":"2.0","id":"a","method":"x"}]"#.to_vec();
-        assert_eq!(small.hold(batch, 40), Err(Overflow { ids: vec![b"\"a\"".to_vec()], batch: true }));
+        assert_eq!(small.hold(batch, 40 + LINE_OVERHEAD), Err(Overflow { ids: vec![b"\"a\"".to_vec()], batch: true }));
+        // many empty-ish lines are bounded by the overhead alone
+        let mut tiny = Held::default();
+        let n = (0..10_000).take_while(|_| tiny.hold(b"{}".to_vec(), 64 * 1024).is_ok()).count();
+        assert!(n < 1100, "{n} tiny lines held in 64 KiB");
     }
 }

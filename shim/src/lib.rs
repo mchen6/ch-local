@@ -37,7 +37,7 @@ pub mod trust;
 pub mod unix_ffi;
 #[cfg(windows)]
 #[allow(unsafe_code)]
-mod win_ffi;
+pub(crate) mod win_ffi;
 
 #[cfg(test)]
 mod conformance;

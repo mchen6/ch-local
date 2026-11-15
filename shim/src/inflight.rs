@@ -10,6 +10,9 @@ use crate::message::Line;
 
 /// The most requests (a batch counts once) in flight at a time.
 pub const MAX_IN_FLIGHT: usize = 4096;
+/// The most id bytes kept for them in all: a request's id is kept as
+/// sent, so a few huge ids must not hold memory without bound.
+pub const MAX_ID_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, PartialEq)]
 enum Entry {
@@ -20,9 +23,31 @@ enum Entry {
 #[derive(Debug, PartialEq)]
 pub struct Full;
 
+/// A request whose answer is being written by the reader.
+#[derive(Debug)]
+pub struct Pending(Entry);
+
+impl Pending {
+    /// Its crash answer (a batch's array), or None for nothing to answer.
+    pub fn crash_answer(&self) -> Option<Vec<u8>> {
+        match &self.0 {
+            Entry::Request(id) => Some(answer::crash(id, true)),
+            Entry::Batch(ids) => answer::crash_batch(ids, true),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct InFlight {
     entries: BTreeMap<u64, Entry>,
+    id_bytes: usize,
+}
+
+fn id_bytes(e: &Entry) -> usize {
+    match e {
+        Entry::Request(id) => id.len(),
+        Entry::Batch(ids) => ids.iter().map(Vec::len).sum(),
+    }
 }
 
 impl InFlight {
@@ -37,18 +62,30 @@ impl InFlight {
             Line::Batch { ids } if !ids.is_empty() => Entry::Batch(ids.clone()),
             _ => return Ok(()),
         };
-        if self.entries.len() >= MAX_IN_FLIGHT {
+        let bytes = id_bytes(&entry);
+        if self.entries.len() >= MAX_IN_FLIGHT || self.id_bytes + bytes > MAX_ID_BYTES {
             return Err(Full);
         }
+        self.id_bytes += bytes;
         self.entries.insert(seq, entry);
         Ok(())
+    }
+
+    /// The answer for `seq` is about to be written: its entry, taken out of
+    /// the table, so no crash answer is made for it here; the reader that
+    /// took it owns its answer from now (the whole body, or its crash answer
+    /// if the body is cut short).
+    pub fn take(&mut self, seq: u64) -> Option<Pending> {
+        let e = self.entries.remove(&seq)?;
+        self.id_bytes -= id_bytes(&e);
+        Some(Pending(e))
     }
 
     /// The answer for `seq` arrived: forgotten. False for a seq not held
     /// (answered already, or an earlier connection's), whose answer is still
     /// written to the client.
     pub fn settle(&mut self, seq: u64) -> bool {
-        self.entries.remove(&seq).is_some()
+        self.take(seq).is_some()
     }
 
     pub fn len(&self) -> usize {
@@ -62,6 +99,7 @@ impl InFlight {
     /// The connection was lost without a drain: the crash answers for
     /// everything held, in seq order, and the table is emptied.
     pub fn crash_answers(&mut self) -> Vec<Vec<u8>> {
+        self.id_bytes = 0;
         std::mem::take(&mut self.entries)
             .into_values()
             .filter_map(|e| match e {
@@ -102,6 +140,17 @@ mod tests {
         assert_eq!(answers.len(), 2);
         assert!(answers[0].starts_with(b"[{"), "the batch first, by seq");
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn the_ids_kept_are_bounded_in_bytes() {
+        let mut t = InFlight::default();
+        let big = vec![b'7'; 100 * 1024];
+        t.track(1, &request(&big)).unwrap();
+        t.track(2, &request(&big)).unwrap();
+        assert_eq!(t.track(3, &request(&big)), Err(Full), "over 256 KiB of ids");
+        assert!(t.settle(1));
+        t.track(3, &request(&big)).unwrap();
     }
 
     #[test]

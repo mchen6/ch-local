@@ -7,12 +7,13 @@
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::ptr;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_SUCCESS, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, LocalFree,
-    STILL_ACTIVE, SetHandleInformation,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED,
+    ERROR_PIPE_NOT_CONNECTED, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, HANDLE_FLAG_INHERIT,
+    INVALID_HANDLE_VALUE, LocalFree, STILL_ACTIVE, SetHandleInformation, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
 use windows_sys::Win32::Security::{
@@ -20,13 +21,19 @@ use windows_sys::Win32::Security::{
     GetLengthSid, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY,
     TOKEN_USER, TokenUser,
 };
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+    WriteFile,
+};
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    CreateEventW, GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcess, OpenProcessToken,
+    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, WaitForSingleObject,
 };
 
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
@@ -130,6 +137,11 @@ pub fn current_user_sid() -> io::Result<Vec<u8>> {
 /// The owner and DACL of an open file or directory (read from the handle,
 /// so what was opened is what is checked).
 pub fn file_acl(file: &File) -> io::Result<Acl> {
+    acl_of(file.as_raw_handle() as HANDLE)
+}
+
+/// The owner and DACL of any open handle (a file, a directory, a pipe).
+fn acl_of(handle: HANDLE) -> io::Result<Acl> {
     let mut owner: PSID = ptr::null_mut();
     let mut dacl: *mut ACL = ptr::null_mut();
     let mut sd: PSECURITY_DESCRIPTOR = ptr::null_mut();
@@ -138,7 +150,7 @@ pub fn file_acl(file: &File) -> io::Result<Acl> {
     // dacl point inside it.
     let rc = unsafe {
         GetSecurityInfo(
-            file.as_raw_handle() as HANDLE,
+            handle,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
@@ -334,6 +346,193 @@ pub fn parent_pid() -> Option<u32> {
     // SAFETY: snap was opened above and is closed once, whatever was found.
     unsafe { CloseHandle(snap) };
     found
+}
+
+/// A named-pipe client handle opened for overlapped I/O, so a read pending
+/// on one thread never holds back a write on another (Windows serializes
+/// I/O on a synchronous file object: the relay deadlocked on one). Each
+/// clone shares the handle and has its own events, one per direction, so
+/// one read and one write can be in flight at once. Every operation is
+/// waited to completion before it returns (a timed-out read is cancelled,
+/// then waited), so the kernel never touches a buffer after its call.
+pub struct Pipe {
+    handle: std::sync::Arc<OwnedHandle>,
+    read_event: OwnedHandle,
+    write_event: OwnedHandle,
+    read_timeout: std::sync::Mutex<Option<std::time::Duration>>,
+}
+
+fn event() -> io::Result<OwnedHandle> {
+    // SAFETY: a manual-reset, initially unset, unnamed event; the handle is
+    // owned by the OwnedHandle from here.
+    let h = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+    if h.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: h is a fresh, valid handle that nothing else owns.
+    Ok(unsafe { OwnedHandle::from_raw_handle(h as _) })
+}
+
+impl Pipe {
+    /// Opens `name` (already checked against the pipe-name rule) with
+    /// SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, and checks the
+    /// pipe's owner on the open handle: this user, SYSTEM or Administrators.
+    /// The handshake's HMAC has no channel binding, so a relaying squatter
+    /// is stopped here as well as by the real pipe's DACL.
+    pub fn open(name: &str) -> io::Result<Pipe> {
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: wide is NUL-terminated and lives across the call; no
+        // security attributes or template; the handle, if valid, is owned
+        // by an OwnedHandle at once.
+        let h = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                ptr::null_mut(),
+            )
+        };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: h is the valid handle CreateFileW just returned, owned
+        // nowhere else.
+        let handle = unsafe { OwnedHandle::from_raw_handle(h as _) };
+        let owner = acl_of(handle.as_raw_handle() as HANDLE)?.owner;
+        let user = current_user_sid()?;
+        if owner != user && owner != crate::trust::SYSTEM && owner != crate::trust::ADMINISTRATORS {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "the pipe is owned by {}, not this user, SYSTEM or Administrators",
+                    crate::trust::sid_string(&owner)
+                ),
+            ));
+        }
+        Ok(Pipe {
+            handle: std::sync::Arc::new(handle),
+            read_event: event()?,
+            write_event: event()?,
+            read_timeout: std::sync::Mutex::new(None),
+        })
+    }
+
+    pub fn try_clone(&self) -> io::Result<Pipe> {
+        Ok(Pipe {
+            handle: self.handle.clone(),
+            read_event: event()?,
+            write_event: event()?,
+            read_timeout: std::sync::Mutex::new(None),
+        })
+    }
+
+    pub fn set_read_timeout(&self, t: Option<std::time::Duration>) {
+        *self.read_timeout.lock().expect("the timeout's lock") = t;
+    }
+
+    /// Cancels every operation pending on the pipe (both directions, every
+    /// clone's): a reader blocked on it returns.
+    pub fn shutdown(&self) -> io::Result<()> {
+        // SAFETY: the handle is valid while self holds it; a null OVERLAPPED
+        // cancels all of this process's I/O on it.
+        if unsafe { CancelIoEx(self.raw(), ptr::null()) } == 0 {
+            let e = io::Error::last_os_error();
+            // nothing pending is not an error
+            if e.raw_os_error() != Some(ERROR_NOT_FOUND as i32) {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn raw(&self) -> HANDLE {
+        self.handle.as_raw_handle() as HANDLE
+    }
+
+    /// One overlapped operation, waited to completion (or, past `timeout`,
+    /// cancelled and then waited), so `buf` is never used after it returns.
+    fn op(
+        &self,
+        event: &OwnedHandle,
+        timeout: Option<std::time::Duration>,
+        start: impl FnOnce(*mut OVERLAPPED) -> i32,
+    ) -> io::Result<usize> {
+        // SAFETY: OVERLAPPED is plain data; zero is its documented start.
+        let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+        ov.hEvent = event.as_raw_handle() as HANDLE;
+        // SAFETY: the event is valid; reset before the operation reuses it.
+        unsafe { ResetEvent(ov.hEvent) };
+        if start(&mut ov) == 0 {
+            // SAFETY: reads the calling thread's last error.
+            let err = unsafe { GetLastError() };
+            if err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED {
+                return Ok(0);
+            }
+            if err != ERROR_IO_PENDING {
+                return Err(io::Error::from_raw_os_error(err as i32));
+            }
+            let ms = timeout.map_or(INFINITE, |t| u32::try_from(t.as_millis()).unwrap_or(INFINITE - 1).max(1));
+            // SAFETY: the event is valid; waiting reads nothing of ours.
+            if unsafe { WaitForSingleObject(ov.hEvent, ms) } == WAIT_TIMEOUT {
+                // SAFETY: cancels this one operation; ov is still alive.
+                unsafe { CancelIoEx(self.raw(), &ov) };
+                let mut n = 0u32;
+                // SAFETY: waits (bWait = 1) for the cancelled operation to
+                // complete, so the kernel is done with ov and the buffer.
+                unsafe { GetOverlappedResult(self.raw(), &ov, &mut n, 1) };
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "the pipe gave no answer in time"));
+            }
+        }
+        let mut n = 0u32;
+        // SAFETY: the operation has completed (or completes now, bWait = 1);
+        // ov and the buffer are alive until this returns.
+        if unsafe { GetOverlappedResult(self.raw(), &ov, &mut n, 1) } == 0 {
+            // SAFETY: reads the calling thread's last error.
+            let err = unsafe { GetLastError() };
+            if err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED {
+                return Ok(0);
+            }
+            if err == ERROR_OPERATION_ABORTED {
+                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "the pipe was shut down"));
+            }
+            return Err(io::Error::from_raw_os_error(err as i32));
+        }
+        Ok(n as usize)
+    }
+}
+
+impl io::Read for Pipe {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        let timeout = *self.read_timeout.lock().expect("the timeout's lock");
+        let (raw, ptr) = (self.raw(), buf.as_mut_ptr());
+        self.op(&self.read_event, timeout, |ov| {
+            // SAFETY: buf (len bytes) and ov outlive the operation: op waits
+            // for it to complete before returning.
+            unsafe { ReadFile(raw, ptr, len, ptr::null_mut(), ov) }
+        })
+    }
+}
+
+impl io::Write for Pipe {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        let (raw, ptr) = (self.raw(), buf.as_ptr());
+        let n = self.op(&self.write_event, None, |ov| {
+            // SAFETY: as in read: buf and ov outlive the operation.
+            unsafe { WriteFile(raw, ptr, len, ptr::null_mut(), ov) }
+        })?;
+        if n == 0 && !buf.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "the pipe was closed"));
+        }
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

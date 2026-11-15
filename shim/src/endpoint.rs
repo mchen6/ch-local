@@ -31,6 +31,8 @@ impl fmt::Display for EndpointError {
 pub trait Conn: Read + Write + Send {
     fn try_clone_conn(&self) -> io::Result<Box<dyn Conn>>;
     fn set_read_timeout(&self, t: Option<Duration>) -> io::Result<()>;
+    /// Ends the connection both ways, so a reader blocked on it returns.
+    fn shutdown(&self) -> io::Result<()>;
 }
 
 /// The pipe-name rule, on every platform (so it is tested everywhere).
@@ -84,6 +86,9 @@ mod imp {
         fn set_read_timeout(&self, t: Option<Duration>) -> io::Result<()> {
             UnixStream::set_read_timeout(self, t)
         }
+        fn shutdown(&self) -> io::Result<()> {
+            UnixStream::shutdown(self, std::net::Shutdown::Both)
+        }
     }
 
     pub fn connect(e: &Endpoint) -> io::Result<Box<dyn Conn>> {
@@ -93,15 +98,8 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    use std::fs::{File, OpenOptions};
-    use std::os::windows::fs::OpenOptionsExt;
-
     use super::*;
-
-    /// SecurityIdentification (1) in the impersonation-level bits (<< 16):
-    /// the server may learn who the shim is, and may not act as it. std's
-    /// security_qos_flags sets SECURITY_SQOS_PRESENT with it.
-    const SECURITY_IDENTIFICATION: u32 = 1 << 16;
+    use crate::win_ffi::Pipe;
 
     pub struct Endpoint(String);
 
@@ -113,20 +111,23 @@ mod imp {
         }
     }
 
-    impl Conn for File {
+    impl Conn for Pipe {
         fn try_clone_conn(&self) -> io::Result<Box<dyn Conn>> {
-            Ok(Box::new(self.try_clone()?))
+            Ok(Box::new(Pipe::try_clone(self)?))
         }
-        // a pipe opened as a file has no read timeout; the handshake's bound
-        // is kept by the caller's deadline thread on Windows
-        fn set_read_timeout(&self, _t: Option<Duration>) -> io::Result<()> {
+        fn set_read_timeout(&self, t: Option<Duration>) -> io::Result<()> {
+            Pipe::set_read_timeout(self, t);
             Ok(())
+        }
+        fn shutdown(&self) -> io::Result<()> {
+            Pipe::shutdown(self)
         }
     }
 
+    /// Overlapped, SQOS at identification level, and its owner checked
+    /// (win_ffi::Pipe::open).
     pub fn connect(e: &Endpoint) -> io::Result<Box<dyn Conn>> {
-        let f = OpenOptions::new().read(true).write(true).security_qos_flags(SECURITY_IDENTIFICATION).open(&e.0)?;
-        Ok(Box::new(f))
+        Ok(Box::new(Pipe::open(&e.0)?))
     }
 }
 

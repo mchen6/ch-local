@@ -31,6 +31,20 @@ use crate::{answer, child};
 
 /// After the client's stdin ends: answers are relayed this long at most.
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
+/// How long a welcomed connection waits for `settled` before it is
+/// closed and attached again (the runtime's own conditions? wait is 12 s).
+const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
+/// A connection lost this soon after its WELCOME counts as a quick loss:
+/// the next attach waits, doubling, so a runtime that closes at once is
+/// never hammered.
+const QUICK_LOSS: Duration = Duration::from_secs(10);
+/// The most conditions? asks waiting for the child.
+const CHILD_QUEUE: usize = 8;
+/// After the hand-over, lines go to the per-session runtime, which bounds
+/// them itself.
+const OWN_LIMIT: usize = 1 << 30;
+/// How long finish() waits for an answer still streaming to stdout.
+const STDOUT_BARRIER: Duration = Duration::from_secs(5);
 /// The relay's event queue: bounded, so the stdin thread (and the reader)
 /// wait while main is busy (back-pressure), never queueing without limit.
 const QUEUE: usize = 64;
@@ -56,20 +70,39 @@ pub struct Timing {
     pub retry_unit: Duration,
     /// After stdin's EOF, how long answers are still relayed.
     pub closing: Duration,
+    /// How long a welcomed connection may wait for `settled`.
+    pub settle: Duration,
 }
 
 impl Default for Timing {
     fn default() -> Timing {
-        Timing { attach: attach::BUDGET, retry_unit: Duration::from_secs(1), closing: CLOSING_GRACE }
+        Timing {
+            attach: attach::BUDGET,
+            retry_unit: Duration::from_secs(1),
+            closing: CLOSING_GRACE,
+            settle: SETTLE_DEADLINE,
+        }
     }
 }
 
 enum Ev {
     Stdin(lines::Read),
-    Reader { generation: u64, event: reader::Event },
+    Reader {
+        generation: u64,
+        event: reader::Event,
+    },
     Attached(Result<Attached, AttachError>),
-    Client { generation: u64, frame: Vec<u8> },
+    Client {
+        generation: u64,
+        frame: Vec<u8>,
+    },
     Retry,
+    /// A backoff after a quick loss has passed: attach again.
+    Reattach,
+    /// The deadline for `settled` on this connection has passed.
+    SettleDeadline {
+        generation: u64,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -105,6 +138,15 @@ pub struct Relay {
     reconnecting: bool,
     retries: usize,
     stdin_done: bool,
+    /// When this connection was welcomed, and how many connections in a
+    /// row were lost soon after: the backoff before attaching again.
+    attached_at: Option<Instant>,
+    quick_losses: u32,
+    /// The conditions child runs one at a time; what waits for it.
+    child_running: bool,
+    child_queue: std::collections::VecDeque<Option<u64>>,
+    /// stdout failed: the client is gone, and the shim ends.
+    stdout_gone: bool,
 }
 
 /// How the relay ended.
@@ -172,6 +214,11 @@ impl Relay {
             reconnecting: false,
             retries: 0,
             stdin_done: false,
+            attached_at: None,
+            quick_losses: 0,
+            child_running: false,
+            child_queue: std::collections::VecDeque::new(),
+            stdout_gone: false,
         }
     }
 
@@ -228,23 +275,51 @@ impl Relay {
                     self.attach();
                 }
             }
-            Ev::Client { generation, frame } if generation == self.generation => self.control(&frame),
-            Ev::Client { .. } => {}
+            Ev::Reattach => {
+                if self.state == State::Attaching && self.writer.is_none() {
+                    self.attach();
+                }
+            }
+            Ev::SettleDeadline { generation } => {
+                if generation == self.generation && self.state == State::Unsettled {
+                    let _ = writeln!(io::stderr(), "ch-shim: the runtime never settled this session; attaching again");
+                    if let Some(w) = self.writer.as_ref() {
+                        // the reader then ends, and its Lost reattaches
+                        let _ = w.shutdown();
+                    }
+                }
+            }
+            Ev::Client { generation, frame } => {
+                self.child_running = false;
+                if generation == self.generation {
+                    self.control(&frame);
+                }
+                self.next_child();
+            }
             Ev::Reader { generation, .. } if generation != self.generation => {}
             Ev::Reader { event: reader::Event::Answered(_), .. } => {
                 if matches!(self.state, State::Closing(_)) && self.inflight.lock().expect("in-flight lock").is_empty() {
                     return Some(self.finish());
                 }
             }
-            Ev::Reader { event: reader::Event::Control(op), .. } => return self.op(op),
+            Ev::Reader { event: reader::Event::Control(op, raw), .. } => return self.op(op, &raw),
             Ev::Reader { event: reader::Event::Lost(why), .. } => return self.lost(why),
+            Ev::Reader { event: reader::Event::StdoutGone(_), .. } => self.stdout_gone = true,
+        }
+        if self.stdout_gone {
+            // the client is gone: nothing can be answered, so end at once
+            self.close_and_crash_answer();
+            return Some(Exit::Done);
         }
         None
     }
 
-    /// One whole message of the shim's own to the client.
-    fn say(&self, bytes: &[u8]) {
-        let _ = self.out.message(bytes);
+    /// One whole message of the shim's own to the client; a failed write
+    /// means the client is gone, and the shim ends.
+    fn say(&mut self, bytes: &[u8]) {
+        if self.out.message(bytes).is_err() {
+            self.stdout_gone = true;
+        }
     }
 
     fn control(&mut self, payload: &[u8]) {
@@ -255,6 +330,10 @@ impl Relay {
     }
 
     fn line(&mut self, line: Vec<u8>) {
+        // an empty (or blank) line is no message: never forwarded or held
+        if line.iter().all(|b| matches!(b, b' ' | b'\t' | b'\r')) {
+            return;
+        }
         match &self.state {
             State::Live => self.forward(line),
             State::Unreachable(why) => {
@@ -268,9 +347,8 @@ impl Relay {
                 // answered as a held line that "did not run" instead
                 if Self::never_fits(&line, self.to_runtime.message) {
                     let limit = (self.to_runtime.message as usize).saturating_sub(4096);
-                    match Self::ids_of(&message::classify(&line)) {
-                        Some((ids, batch)) => self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit)),
-                        None => self.say(&answer::too_long(limit)),
+                    if let Some((ids, batch)) = Self::ids_of(&message::classify(&line)) {
+                        self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit));
                     }
                     return;
                 }
@@ -289,7 +367,7 @@ impl Relay {
         HEADER_MAX + line.len() > cap as usize
     }
 
-    fn overflow(&self, over: Overflow) {
+    fn overflow(&mut self, over: Overflow) {
         if over.ids.is_empty() {
             return;
         }
@@ -308,7 +386,7 @@ impl Relay {
         }
     }
 
-    fn answer_unreachable(&self, line: &[u8], why: &str) {
+    fn answer_unreachable(&mut self, line: &[u8], why: &str) {
         match message::classify(line) {
             Line::Request { id, .. } => self.say(&answer::unreachable(&id, why)),
             Line::Batch { ids } if !ids.is_empty() => {
@@ -336,7 +414,7 @@ impl Relay {
     }
 
     /// One answer per id: the request's own, or a batch's array.
-    fn answer_each(&self, ids: &[Vec<u8>], batch: bool, one: impl Fn(&[u8]) -> Vec<u8>) {
+    fn answer_each(&mut self, ids: &[Vec<u8>], batch: bool, one: impl Fn(&[u8]) -> Vec<u8>) {
         if !batch {
             return self.say(&one(&ids[0]));
         }
@@ -378,9 +456,10 @@ impl Relay {
         };
         let Ok(payload) = message::to_runtime(seq, &line, self.to_runtime.message) else {
             let limit = (self.to_runtime.message as usize).saturating_sub(4096);
-            match Self::ids_of(&class) {
-                Some((ids, batch)) => self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit)),
-                None => self.say(&answer::too_long(limit)),
+            // a notification (or a response) too large is dropped: nothing
+            // answers a notification
+            if let Some((ids, batch)) = Self::ids_of(&class) {
+                self.answer_each(&ids, batch, |id| answer::too_long_for(id, limit));
             }
             return;
         };
@@ -425,6 +504,17 @@ impl Relay {
             }
         });
         self.writer = Some(a.conn);
+        self.attached_at = Some(Instant::now());
+        {
+            let (tx, wait) = (self.tx.clone(), self.setup.timing.settle);
+            thread::spawn(move || {
+                thread::sleep(wait);
+                let _ = tx.send(Ev::SettleDeadline { generation });
+            });
+        }
+        // a new connection's first client frame comes first; asks queued
+        // for an older connection are its, and gone with it
+        self.child_queue.clear();
         if a.new_session && !self.records.is_empty() {
             let frame = self.records.replay_frame();
             self.control(&frame);
@@ -433,9 +523,24 @@ impl Relay {
         self.conditions(None);
     }
 
-    /// Runs the conditions child; its `client` frame goes to this
-    /// connection (stale ones are dropped by generation).
-    fn conditions(&self, seq: Option<u64>) {
+    /// Asks for a run of the conditions child: one runs at a time, at most
+    /// CHILD_QUEUE wait (an ask past that is dropped; the runtime counts no
+    /// answer in 12 s as "no").
+    fn conditions(&mut self, seq: Option<u64>) {
+        if self.child_queue.len() < CHILD_QUEUE {
+            self.child_queue.push_back(seq);
+        }
+        self.next_child();
+    }
+
+    /// Runs the next queued child, if none is running; its `client` frame
+    /// goes to this connection (stale ones are dropped by generation).
+    fn next_child(&mut self) {
+        if self.child_running {
+            return;
+        }
+        let Some(seq) = self.child_queue.pop_front() else { return };
+        self.child_running = true;
         let (tx, generation, home, parent) =
             (self.tx.clone(), self.generation, self.setup.home.clone(), self.setup.parent);
         let env = child::child_env(self.setup.client_env.clone());
@@ -448,7 +553,7 @@ impl Relay {
         });
     }
 
-    fn op(&mut self, op: Map<String, Value>) -> Option<Exit> {
+    fn op(&mut self, op: Map<String, Value>, raw: &[u8]) -> Option<Exit> {
         match op["op"].as_str().unwrap_or("") {
             "settled" if self.state == State::Unsettled => {
                 self.state = State::Live;
@@ -468,10 +573,11 @@ impl Relay {
                 }
             }
             "record" => {
-                if let Some(entry) = op.get("entry") {
-                    if let Ok(raw) = serde_json::value::to_raw_value(entry) {
-                        self.records.record(raw);
-                    }
+                // the entry's bytes as the runtime sent them, never
+                // re-serialized: replay hands them back exactly
+                type Fields = std::collections::BTreeMap<String, Box<serde_json::value::RawValue>>;
+                if let Some(entry) = serde_json::from_slice::<Fields>(raw).ok().and_then(|mut f| f.remove("entry")) {
+                    self.records.record(entry);
                 }
             }
             "forget" => self.records.forget(),
@@ -490,7 +596,10 @@ impl Relay {
                 // stops writing (closed), so the per-session runtime's
                 // output is the only thing on stdout from here
                 self.close_and_crash_answer();
-                self.writer = None;
+                if let Some(w) = self.writer.take() {
+                    let _ = w.shutdown();
+                }
+                self.limit.set(OWN_LIMIT);
                 let (_, dead) = mpsc::sync_channel(1);
                 let rx = std::mem::replace(&mut self.rx, dead);
                 let rest = Rest { rx, out: self.out.clone(), limit: self.limit.clone() };
@@ -528,14 +637,31 @@ impl Relay {
     /// Crash answers for everything still in flight, taken under the
     /// in-flight mutex with `closed` set, so the reader (if still running)
     /// discards any later answer for them instead of writing a second one.
-    fn close_and_crash_answer(&self) {
+    fn close_and_crash_answer(&mut self) {
         let answers = {
             let mut t = self.inflight.lock().expect("in-flight lock");
             self.closed.store(true, Ordering::SeqCst);
             t.crash_answers()
         };
-        for a in answers {
-            self.say(&a);
+        // a bounded barrier: an answer the reader is still streaming ends
+        // first (it holds stdout's lock); one stalled past STDOUT_BARRIER is
+        // left, and the crash answers aren't written after half of it
+        match self.out.lock_within(STDOUT_BARRIER) {
+            Some(mut held) => {
+                for a in answers {
+                    if held.message(&a).is_err() {
+                        self.stdout_gone = true;
+                        return;
+                    }
+                }
+            }
+            None => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "ch-shim: an answer was still being written after {} s; ending",
+                    STDOUT_BARRIER.as_secs()
+                );
+            }
         }
     }
 
@@ -548,11 +674,27 @@ impl Relay {
         // runtime should have answered all of it; if it crashed instead,
         // these are its crash answers); the reader is gone, so nothing more
         // can come for them
-        for a in self.inflight.lock().expect("in-flight lock").crash_answers() {
+        let answers = self.inflight.lock().expect("in-flight lock").crash_answers();
+        for a in answers {
             self.say(&a);
         }
         self.reconnecting = self.initialize.is_some();
-        self.attach();
+        // a connection that died soon after its WELCOME (and not by a
+        // drain) waits before the next attach, doubling up to 30 units
+        let drained = self.state == State::Draining;
+        let quick = !drained && self.attached_at.is_some_and(|t| t.elapsed() < QUICK_LOSS);
+        self.quick_losses = if quick { self.quick_losses + 1 } else { 0 };
+        self.state = State::Attaching;
+        if self.quick_losses == 0 {
+            self.attach();
+        } else {
+            let wait = self.setup.timing.retry_unit * 2u32.saturating_pow(self.quick_losses).min(30);
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                thread::sleep(wait);
+                let _ = tx.send(Ev::Reattach);
+            });
+        }
         None
     }
 
@@ -607,6 +749,16 @@ impl Relay {
         self.close_and_crash_answer();
         Exit::Done
     }
+}
+
+/// The per-session runtime with the shim's own stdin, unread by the shim:
+/// for pass-through flags, before anything was held (section 5). No pump,
+/// no line bound of the shim's.
+pub fn own_runtime_inherited(home: &Home, args: &[OsString]) -> io::Result<i32> {
+    let shim = config::read_shim(home).map_err(|e| io::Error::other(e.to_string()))?;
+    let mut child =
+        Command::new(&shim.node).arg(&shim.ch_local).args(["start", "--stdio", "--own-runtime"]).args(args).spawn()?;
+    Ok(child.wait()?.code().unwrap_or(1))
 }
 
 /// The per-session runtime (section 5): `<node> <chLocal> start --stdio
@@ -1038,6 +1190,7 @@ mod tests {
             attach: Duration::from_millis(400),
             retry_unit: Duration::from_millis(100),
             closing: CLOSING_GRACE,
+            settle: SETTLE_DEADLINE,
         };
         let relay = Relay::new(
             Setup { home, rest: vec![], client_env: vec![], parent: 1, timing },
@@ -1112,8 +1265,10 @@ mod tests {
         let (seq, _) = read_m(&mut s);
         frame::write_frame(&mut s, Kind::Control, br#"{"op":"own-runtime","reason":"token"}"#, BIG).unwrap();
         assert!(matches!(done.join().unwrap(), Exit::OwnRuntime { .. }));
-        // the runtime answers late, on the old connection: never written
-        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":3,"result":{}}"#);
+        // the runtime answers late, on the old connection, which the shim
+        // has shut down (the write may fail): never written to the client
+        let late = message::to_runtime(seq, br#"{"jsonrpc":"2.0","id":3,"result":{}}"#, 1 << 20).unwrap();
+        let _ = frame::write_frame(&mut s, Kind::Message, &late, BIG);
         thread::sleep(Duration::from_millis(200));
         let lines = sink.lines();
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -1206,6 +1361,154 @@ mod tests {
         drop(client_in);
         until_op(&mut s, "bye");
         drop(s);
+        done.join().unwrap();
+    }
+
+    /// An M frame's head and header for `seq`, with a body of `len` bytes to
+    /// follow, written by the test in pieces.
+    fn m_head(seq: u64, len: usize) -> Vec<u8> {
+        let header = format!("{{\"seq\":{seq}}}");
+        let payload = 2 + header.len() + len;
+        let mut out = vec![b'M'];
+        out.extend_from_slice(&(payload as u32).to_be_bytes());
+        out.extend_from_slice(&(header.len() as u16).to_be_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out
+    }
+
+    #[test]
+    fn a_body_cut_mid_answer_ends_its_line_and_the_request_gets_its_crash_answer() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"a\"}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        let body = br#"{"jsonrpc":"2.0","id":6,"result":{"text":"a long answer"}}"#;
+        s.write_all(&m_head(seq.unwrap(), body.len())).unwrap();
+        s.write_all(&body[..20]).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(s); // the connection dies mid-answer
+        let (mut s2, _) = listener.accept().unwrap();
+        welcome(&mut s2, "rt2");
+        until_op(&mut s2, "client");
+        settled(&mut s2);
+        drop(client_in);
+        until_op(&mut s2, "bye");
+        drop(s2);
+        done.join().unwrap();
+        let lines = sink.lines();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0].as_bytes(), &body[..20], "the half line, ended");
+        let crash: Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(
+            (crash["id"].as_u64(), crash["error"]["data"]["countinghouse/code"].as_str()),
+            (Some(6), Some("RUNTIME_RESTARTED"))
+        );
+    }
+
+    #[test]
+    fn an_answer_still_streaming_at_the_closing_grace_is_written_whole_with_no_crash_answer() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { closing: Duration::from_millis(200), ..Timing::default() };
+        let (mut client_in, sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"a\"}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        let body = br#"{"jsonrpc":"2.0","id":7,"result":{"text":"streamed slowly"}}"#;
+        s.write_all(&m_head(seq.unwrap(), body.len())).unwrap();
+        s.write_all(&body[..10]).unwrap();
+        drop(client_in); // EOF: bye, and the 200 ms grace starts
+        thread::sleep(Duration::from_millis(600)); // the grace runs out mid-stream
+        s.write_all(&body[10..]).unwrap();
+        done.join().unwrap();
+        assert_eq!(sink.lines(), [String::from_utf8(body.to_vec()).unwrap()], "whole, and no crash answer after it");
+    }
+
+    #[test]
+    fn a_runtime_that_closes_right_after_welcome_is_attached_to_with_backoff_not_a_storm() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { retry_unit: Duration::from_millis(100), ..Timing::default() };
+        let (client_in, _sink, done) = start_with(home, timing);
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let accepted = accepted.clone();
+            thread::spawn(move || {
+                for c in listener.incoming() {
+                    let Ok(mut s) = c else { return };
+                    accepted.fetch_add(1, Ordering::SeqCst);
+                    welcome(&mut s, "rt");
+                    drop(s); // closed at once
+                }
+            });
+        }
+        thread::sleep(Duration::from_millis(1500));
+        let n = accepted.load(Ordering::SeqCst);
+        // backoff 200, 400, 800 ms: about 4 attaches in 1.5 s; without it, dozens
+        assert!((2..=5).contains(&n), "{n} attaches in 1.5 s");
+        drop(client_in);
+        let _ = done;
+    }
+
+    #[test]
+    fn a_runtime_that_never_settles_is_left_at_the_deadline_and_attached_to_again() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { settle: Duration::from_millis(300), ..Timing::default() };
+        let (client_in, _sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        // no settled; after the deadline the shim leaves this connection
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+        let (mut s2, _) = listener.accept().unwrap();
+        assert_eq!(welcome(&mut s2, "rt2").as_deref(), Some("rt1"), "attached again, resuming");
+        until_op(&mut s2, "client");
+        settled(&mut s2);
+        drop(client_in);
+        until_op(&mut s2, "bye");
+        drop(s2);
+        done.join().unwrap();
+    }
+
+    #[test]
+    fn a_records_entry_is_replayed_byte_for_byte() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        // spacing and key order a re-serialization would change
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{ "z": 1,  "a" : [ 1.0, 2e0 ] }}"#, BIG)
+            .unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        refuse_resume(&mut s2);
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        let (kind, len) = frame::read_head(&mut s3, BIG).unwrap();
+        let mut p = vec![0u8; len as usize];
+        s3.read_exact(&mut p).unwrap();
+        assert_eq!(kind, Kind::Control);
+        assert_eq!(String::from_utf8(p).unwrap(), r#"{"op":"replay","entries":[{ "z": 1,  "a" : [ 1.0, 2e0 ] }]}"#);
+        until_op(&mut s3, "client");
+        settled(&mut s3);
+        drop(client_in);
+        until_op(&mut s3, "bye");
+        drop(s3);
         done.join().unwrap();
     }
 }
