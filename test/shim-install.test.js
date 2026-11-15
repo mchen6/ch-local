@@ -112,3 +112,32 @@ test('refused, with nothing placed: a provenance that fails, a tarball with no b
     }
   }
 });
+
+test('alignShim (rollback): the shim follows the restored release, whether either had one', () => {
+  const {alignShim} = require('../lib/shim-install');
+  const home = tmp('ch-align-');
+  const dir = path.join(home, 'shim');
+  const put = (name, body) => { fs.mkdirSync(dir, {recursive: true}); fs.writeFileSync(path.join(dir, name), body); };
+  const read = (name) => (fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8') : null);
+  try {
+    put('ch-shim', 'new'); put('ch-shim.previous', 'old');
+    // both had a shim, of other versions: swapped
+    alignShim(home, {kept: {version: '0.6.0'}, restored: {version: '0.5.0'}, platform: 'linux'});
+    assert.deepStrictEqual([read('ch-shim'), read('ch-shim.previous')], ['old', 'new']);
+    // the same version: nothing moves
+    alignShim(home, {kept: {version: '0.5.0'}, restored: {version: '0.5.0'}, platform: 'linux'});
+    assert.deepStrictEqual([read('ch-shim'), read('ch-shim.previous')], ['old', 'new']);
+    // the restored release had none: the shim is set aside, so it runs per session
+    fs.rmSync(path.join(dir, 'ch-shim.previous'));
+    alignShim(home, {kept: {version: '0.5.0'}, restored: null, platform: 'linux'});
+    assert.deepStrictEqual([read('ch-shim'), read('ch-shim.previous')], [null, 'old']);
+    // and rolling forward brings it back
+    alignShim(home, {kept: null, restored: {version: '0.5.0'}, platform: 'linux'});
+    assert.deepStrictEqual([read('ch-shim'), read('ch-shim.previous')], ['old', null]);
+    // neither: nothing
+    alignShim(home, {kept: null, restored: null, platform: 'linux'});
+    assert.deepStrictEqual([read('ch-shim'), read('ch-shim.previous')], ['old', null]);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

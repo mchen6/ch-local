@@ -63,9 +63,14 @@ test('on yes everything under the home goes, and the credentials to revoke are n
 test('--keep-data keeps the data and removes the program, the identity secret and the key', async () => {
   const s = setup();
   try {
+    // the native shim, as install places it (lib/shim-install.js): program
+    fs.mkdirSync(path.join(s.home, 'shim'));
+    fs.writeFileSync(path.join(s.home, 'shim', 'ch-shim'), 'x');
+    fs.writeFileSync(path.join(s.home, 'shim', 'ch-shim.previous'), 'y');
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({keepData: true}, u), 0, u.err);
     const has = (f) => fs.existsSync(path.join(s.home, f));
+    assert.ok(!has('shim'), 'the shim goes with the program');
     for (const kept of ['store/kv.json', 'module_data/ch-access-github/x', 'usage/1.jsonl', 'data/pack-ci-failure-triage/r/fingerprints.json']) assert.ok(has(kept), kept);
     // run/ holds each start's own files: program, not data. settings.json is
     // the user's (with its history): kept, so a reinstall keeps their tightenings.

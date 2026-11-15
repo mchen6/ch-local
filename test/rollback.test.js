@@ -346,3 +346,23 @@ test('a security confirmation answered other than yes says that only yes confirm
   assert.match(io.out, /nothing changed: only "yes" confirms/);
   assert.strictEqual(versionOf(s.home, REDACT), '0.2.0');
 });
+
+// the native shim (lib/shim-install.js): rollback brings it in line with the
+// release it restores, by the two records' shim versions
+test('rollback swaps the shim with the release: the restored record\'s shim comes back, and again forward', async () => {
+  const s = await upgraded();
+  const patch = (file, shim) => { const rec = JSON.parse(fs.readFileSync(file, 'utf8')); if (shim == null) delete rec.shim; else rec.shim = shim; fs.writeFileSync(file, JSON.stringify(rec)); };
+  patch(path.join(s.home, 'packs.json'), {package: '@countinghouse/ch-shim-linux-x64', version: '0.6.0'});
+  patch(path.join(s.home, 'previous', 'packs.json'), {package: '@countinghouse/ch-shim-linux-x64', version: '0.5.0'});
+  const dir = path.join(s.home, 'shim');
+  fs.mkdirSync(dir);
+  const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+  const prev = process.platform === 'win32' ? 'ch-shim.previous.exe' : 'ch-shim.previous';
+  fs.writeFileSync(path.join(dir, exe), 'new');
+  fs.writeFileSync(path.join(dir, prev), 'old');
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'old');
+  assert.strictEqual(record(s.home).shim.version, '0.5.0');
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'new');
+});
