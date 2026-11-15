@@ -537,7 +537,7 @@ test('on Windows with a runtime older than countinghouse#195: audit, said; an ex
   const f = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
-  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; `ch-local upgrade` installs one that can/);
+  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; audit watches what a pack reads and never lets it change files outside its own area; `ch-local upgrade` installs one that can/);
   for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
     const g = io(home, {platform: 'win32'});
     assert.notStrictEqual(await start({passThrough}, g), 0);
@@ -576,4 +576,28 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
   const f = io(home, {platform: 'linux'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
+});
+
+// Matt's decision (DECISIONS.md): under audit, countinghouse refuses a pack's
+// writes outside its own area; reads are allowed and logged. Start says so,
+// once, whenever the runtime runs under audit.
+const AUDIT_TEXT = /audit watches what a pack reads and never lets it change files outside its own area/g;
+test('audit, passed, stored or forced on Windows, says what it watches and that it refuses writes outside the pack\'s area, once', async () => {
+  const count = (f) => (f.err.match(AUDIT_TEXT) || []).length;
+  const home = installedHome();
+  const passed = io(home, {platform: 'linux'});
+  assert.strictEqual(await start({passThrough: ['--moduleSandbox', 'audit']}, passed), 0, passed.err);
+  assert.strictEqual(count(passed), 1, passed.err);
+  assert.match(passed.err, /--moduleSandbox audit: audit watches/);
+  const enforce = io(home, {platform: 'linux'});
+  assert.strictEqual(await start({passThrough: []}, enforce), 0, enforce.err);
+  assert.strictEqual(count(enforce), 0, 'never under enforce');
+  const windows = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: []}, windows), 0, windows.err);
+  assert.strictEqual(count(windows), 1, `in WINDOWS_AUDIT, and not twice: ${windows.err}`);
+  assert.match(windows.err, /running audit; audit watches what a pack reads/);
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+  const stored = io(home, {platform: 'linux'});
+  assert.strictEqual(await start({passThrough: []}, stored), 0, stored.err);
+  assert.strictEqual(count(stored), 1, stored.err);
 });
