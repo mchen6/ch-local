@@ -5,6 +5,12 @@
       "fixes": "loosening a guarding setting is confirmed at a terminal and bound by the operator's ceiling (countinghouse part 3)"
     }
   },
+  "self": {
+    "repository": "mchen6/ch-local",
+    "repositoryId": 1454656051,
+    "ownerId": 1168741,
+    "workflow": ".github/workflows/publish.yml"
+  },
   "runtime": {
     "packages": [
       "@countinghouse/ch-local",

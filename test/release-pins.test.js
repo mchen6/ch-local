@@ -30,6 +30,17 @@ test('the shipped file parses, and lib/allowlist.js reads its packs, origins and
   assert.ok(Object.isFrozen(ALLOWED_ORIGINS) && Object.isFrozen(ALLOWLIST.packs['ci-failure-triage']), 'read-only');
 });
 
+test('self: ch-local\'s own identity, which its provenance must carry (a release cannot pin its own digest)', () => {
+  const r = parseReleasePins(shipped());
+  assert.deepStrictEqual(r.pins.self, {repository: 'mchen6/ch-local', repositoryId: 1454656051, ownerId: 1168741, workflow: '.github/workflows/publish.yml'});
+  for (const mutate of [(d) => { delete d.self; }, (d) => { d.self.repositoryId = '1454656051'; }, (d) => { d.self.tag = 'v1'; }, (d) => { d.self.workflow = 'x'; },
+    (d) => { d.pins['@countinghouse/ch-local'] = pin(); }]) {
+    const d = shipped();
+    mutate(d);
+    assert.ok(problemOf(d) != null, String(mutate));
+  }
+});
+
 test('from bytes, as a new release\'s verified tarball gives them: JSON only, bounded', () => {
   assert.strictEqual(parseReleasePins(Buffer.from(JSON.stringify(shipped()))).problem, undefined);
   assert.match(String(problemOf(Buffer.from('module.exports = {}'))), /not JSON/);
