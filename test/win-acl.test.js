@@ -29,9 +29,12 @@ test('privateProblem: a directory\'s inherit-only allow rule for anyone else fai
   const own = priv();
   own.rules.push(ace(USER, FULL, {inheritOnly: true}), ace('S-1-1-0', 0x100000 | 0x20000 | 0x80, {inheritOnly: true}));
   assert.strictEqual(winAcl.privateProblem('a directory', own, {directory: true}), null, 'its own people, and harmless rights, pass');
-  const creators = priv();
-  creators.rules.push(ace('S-1-3-0', FULL, {inheritOnly: true}), ace('S-1-3-1', FULL, {inheritOnly: true}));
-  assert.strictEqual(winAcl.privateProblem('a directory', creators, {directory: true}), null, 'CREATOR OWNER and GROUP, inherit-only');
+  const creator = priv();
+  creator.rules.push(ace('S-1-3-0', FULL, {inheritOnly: true}));
+  assert.strictEqual(winAcl.privateProblem('a directory', creator, {directory: true}), null, 'CREATOR OWNER, inherit-only');
+  const group = priv();
+  group.rules.push(ace('S-1-3-1', FULL, {inheritOnly: true}));
+  assert.match(String(winAcl.privateProblem('a directory', group, {directory: true})), /inherit-only rule for S-1-3-1/, 'CREATOR GROUP: the primary group, every local user');
   const creatorOn = priv();
   creatorOn.rules.push(ace('S-1-3-0', FULL));
   assert.match(String(winAcl.privateProblem('a directory', creatorOn, {directory: true})), /accessible by S-1-3-0/, 'not as a rule on the directory itself');

@@ -325,13 +325,15 @@ test('the home on Windows (injected): its owner and DACL as a directory, an unre
     const flows = PRIVATE();
     flows.rules.push({sid: 'S-1-1-0', rights: 2032127, type: 'Allow', inheritOnly: true});
     assert.match(String(homeOwnershipProblem(home, 'win32', {fileAcl: () => flows})), /inherit-only rule for S-1-1-0/);
-    // a profile's usual "CREATOR OWNER (IO) Full" (and CREATOR GROUP's) is
-    // admitted; another user's inherit-only rule still fails (the Reviewer)
-    for (const creator of ['S-1-3-0', 'S-1-3-1']) {
-      const profile = PRIVATE();
-      profile.rules.push({sid: creator, rights: 2032127, type: 'Allow', inheritOnly: true});
-      assert.strictEqual(homeOwnershipProblem(home, 'win32', {fileAcl: () => profile}), null, creator);
-    }
+    // a profile's usual "CREATOR OWNER (IO) Full" is admitted; CREATOR
+    // GROUP's, a grant to the creator's primary group, and another user's
+    // inherit-only rule still fail (the Reviewer)
+    const profile = PRIVATE();
+    profile.rules.push({sid: 'S-1-3-0', rights: 2032127, type: 'Allow', inheritOnly: true});
+    assert.strictEqual(homeOwnershipProblem(home, 'win32', {fileAcl: () => profile}), null);
+    const group = PRIVATE();
+    group.rules.push({sid: 'S-1-3-1', rights: 2032127, type: 'Allow', inheritOnly: true});
+    assert.match(String(homeOwnershipProblem(home, 'win32', {fileAcl: () => group})), /inherit-only rule for S-1-3-1/);
     const another = PRIVATE();
     another.rules.push({sid: 'S-1-5-21-1-2-3-1002', rights: 2032127, type: 'Allow', inheritOnly: true});
     assert.match(String(homeOwnershipProblem(home, 'win32', {fileAcl: () => another})), /inherit-only rule for S-1-5-21-1-2-3-1002/);
