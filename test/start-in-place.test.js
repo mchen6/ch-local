@@ -20,14 +20,14 @@ const until = async (cond, ms = 10000) => {
 
 // A running start over an installed home, with a runtime that answers each
 // control request with `answer(msg)` (default ok) and runs until end().
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null} = {}) {
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs} = {}) {
   const home = tmp('ch-home-');
   const r = release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, homedir: '/nowhere'});
-  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs});
   const requests = [];
   let end = null;
   let listener = null;
@@ -41,7 +41,11 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
       send: (msg) => {
         requests.push(msg);
         const reply = answer(msg);
-        if (reply != null) setImmediate(() => listener({id: msg.id, ...reply}));
+        // delayMs: the runtime answers that much later
+        if (reply != null) {
+          const {delayMs, ...fields} = reply;
+          setTimeout(() => listener({id: msg.id, ...fields}), delayMs || 0);
+        }
       },
       // as the runtime does once it listens (countinghouse #210)
       onMessage: (fn) => { listener = fn; setImmediate(() => fn({type: 'ready'})); }
@@ -394,9 +398,9 @@ test('start answers the runtime\'s may-elicit (countinghouse part 3 P2, Task 4):
 // for this start only (control load-pack / unload-pack from the runtime).
 // Start loads ci-failure-triage; `other` is added while running and turned
 // off, so it is installed and off when the dialog asks for it.
-async function withOtherOff() {
+async function withOtherOff(opts = {}) {
   const {layout} = require('../lib/home');
-  const s = await running();
+  const s = await running(opts);
   const where = layout({COUNTINGHOUSE_HOME: s.home});
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
   await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
@@ -505,4 +509,34 @@ test('load-pack review: the version loaded is the one confirmed; a pack whose fi
   // a request that waited past its start window on the applier's chain
   const {loadPackDeadlineMs} = require('../lib/in-place');
   assert.strictEqual(loadPackDeadlineMs, 10000, 'started within 10 s, loaded within 30 s more: under the runtime\'s 45 s');
+});
+
+test('load-pack follow-ups: a this-start pack upgraded in place is turned off, not reloaded at a version nobody confirmed', async () => {
+  const {s, count, reply} = await withOtherOff();
+  try {
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
+    const r2 = release({versions: {'@countinghouse/ch-pack-other': '0.4.0'}});
+    assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => count('unload') === 2);
+    assert.strictEqual(s.requests.filter((m) => m.type === 'reload' && m.name === '@countinghouse/ch-pack-other').length, 0, 'never reloaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('load-pack follow-ups: a confirmed load answered past the runtime\'s wait is unloaded and refused, never told as turned on', async () => {
+  // the runtime's load answer arrives 300 ms late; the answer window is 200 ms
+  const {s, count, reply} = await withOtherOff({loadPackAnswerMs: 200, answer: (m) => (m.type === 'load' && m.name === '@countinghouse/ch-pack-other' ? {ok: true, delayMs: 300} : m.type === undefined ? null : {ok: true})});
+  try {
+    const before = count('load');
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_BUSY'});
+    assert.strictEqual(count('load'), before + 1);
+    await until(() => count('unload') === 2);
+    assert.ok(!s.requests.some((m) => m.type === 'notice' && /other turned on for this start/.test(m.text)), 'never told as turned on');
+    assert.ok(s.history().some((h) => h.pack === 'other' && h.change === 'not turned on (answered too late)'));
+  } finally {
+    s.end();
+    await s.done;
+  }
 });
