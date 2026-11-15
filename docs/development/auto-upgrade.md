@@ -96,8 +96,12 @@ those are dropped anyway (below).
    - Its sha512 must equal its pin.
    - Its own provenance is verified against its own pinned repository,
      workflow and tag.
-   - Every entry of the runtime lockfile must carry a sha512 integrity, the
-     runtime's own included. One without it fails the release.
+   - **The runtime lockfile:**
+     - ch-local's own entry can't carry its digest, since the lockfile is
+       inside its tarball. It's filled in from the in-memory verified digest
+       (step 4) before `npm ci`.
+     - Every other entry must carry a sha512 integrity. One without it
+       fails the release.
 7. **Installed through today's install step.** The checked tarballs are
    written to a release directory. `loadTarballs` re-reads them, and each
    re-read must match the in-memory digest (the bytes can't change between
@@ -124,15 +128,20 @@ trusted root. All of these must hold:
 - **The signature chain:**
   - the signing certificate chains to one of the root's Fulcio CAs;
   - the DSSE envelope's signature verifies under the certificate;
-  - **the transparency log:** threshold 1. The bundle's Rekor entry must
-    verify against a Rekor key in the root, with its inclusion proof and
-    signed checkpoint;
+  - **the transparency log:** exactly **one** Rekor entry per attestation,
+    verifying against a Rekor key in the root, and carrying an **inclusion
+    promise** (the signed entry timestamp). The promise is what covers the
+    integrated time; an inclusion proof alone doesn't, so a bundle with only
+    a proof is refused, and so is one with two entries;
   - **certificate transparency:** threshold 1. The certificate must carry
     an SCT from a CT log in the root;
-  - **the time source** is the Rekor entry's integrated time, from the
-    verified entry. The certificate must be valid at that time. The local
-    clock is used only for the 72-hour wait and the root's expiry, never to
-    decide whether a signature was valid.
+  - **the time source** is the Rekor entry's integrated time. The
+    certificate must be valid at that time.
+    - The time is read from the bundle **only after `verify()` has passed**.
+      `@sigstore/verify` 3.1.1's `verify()` returns the signer, not the
+      time.
+    - The local clock is used only for the 72-hour wait and the root's
+      expiry, never to decide whether a signature was valid.
 - **The certificate's identity** (its Fulcio extensions), which is what the
   signature vouches for. The predicate's text isn't trusted on its own:
   - the issuer (OID 1.3.6.1.4.1.57264.1.8) is
@@ -172,10 +181,17 @@ A pin without all five is refused.
 
 ## The 72-hour wait (automatic only)
 
-- An automatic upgrade installs a version only once
-  `now - integratedTime >= 72 h`, where `integratedTime` is the Rekor
-  integrated time from the verified bundle, never the registry's publish
-  time.
+- An automatic upgrade installs a version only 72 hours after the **later**
+  of two times:
+  - **its publish time:** the integrated time of npm's publish attestation's
+    Rekor entry, read from the verified bundle. npm signs that attestation
+    at publish, never the registry's own `time` field. The build confirms
+    that this bundle carries a Rekor entry with an inclusion promise;
+  - **when this install first saw the version:** recorded locally in
+    `upgrade-check.json` at the first check that found it.
+- **Why both:** an attacker can sign early and publish late, pre-ageing the
+  log time. The first-seen floor still gives 72 hours from when users could
+  see the version.
 - A younger version is announced once ("<v> is available; it installs
   automatically after <time>"), and checked again later.
 - It's a soak against a compromised account. A bad release published in an
@@ -293,6 +309,8 @@ included (as the acceptance run's security review showed). So:
     is looked up in the Windows known folder
     (`[Environment]::GetFolderPath('CommonApplicationData')`, read through
     `lib/win-acl.js`'s PowerShell), never from the environment.
+  - That lookup's `powershell.exe` is found under `SystemRoot`, which is on
+    the allowlist and a client's config can set. That's a residual, below.
 
 ## Turning it on
 
@@ -366,6 +384,15 @@ included (as the acceptance run's security review showed). So:
 - **A compromised maintainer account** that tags on `main` and publishes
   through the workflow passes every check. The tag ruleset narrows who can
   tag, and the 72-hour wait gives time to notice. Neither removes it.
+- **The Windows ceiling lookup trusts `SystemRoot`.** It's on the allowlist,
+  and a same-user client config could set it, pointing the known-folder
+  lookup's `powershell.exe` elsewhere. That's within the local same-user
+  residual already recorded for the ACL checks (#169 section 3), and
+  accepted.
+- **The verifier is the last of its majors.** `@sigstore/verify` 3.1.1 and
+  `@sigstore/core` 3.2.1 end their major lines, with no advisories today. A
+  future fix may land only on 4.x, which needs Node `^22.22.2 || ^24.15.0
+  || >=26`. Raising ch-local's Node floor then is the maintainer's call.
 
 ## Tests (no network)
 
@@ -397,9 +424,16 @@ included (as the acceptance run's security review showed). So:
   - a release adding a credential, an origin, or a package to a pack: not
     installed automatically, announced;
   - a version not strict semver, a lower one, a prerelease, a major;
-  - **the wait:** with the integrated time 71 hours ago, the automatic
-    upgrade doesn't install; at 73 hours it does; `ch-local upgrade`
-    installs at 1 hour;
+  - **the wait:**
+    - with the publish attestation's time 71 hours ago, the automatic
+      upgrade doesn't install; at 73 hours it does; `ch-local upgrade`
+      installs at 1 hour;
+    - a version signed 100 hours ago but first seen 1 hour ago isn't
+      installed automatically until 72 hours after it was first seen;
+  - **backdating:** a bundle with an inclusion proof but no promise, with no
+    entry, or with two entries, is refused;
+  - a lockfile whose ch-local entry is filled from the verified digest, and
+    one whose other entry lacks integrity;
   - no TTY at install;
   - a declined version not retried, and retried under a new root;
   - a transport failure never remembered, and the seven-day notice;
