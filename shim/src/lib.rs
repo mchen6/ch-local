@@ -26,6 +26,7 @@ pub mod mac;
 pub mod message;
 pub mod out;
 pub mod process;
+pub mod reader;
 pub mod records;
 pub mod secret;
 pub mod trust;
