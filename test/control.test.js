@@ -81,3 +81,21 @@ test('the teller: a control whose request rejects, or throws, is said on stderr;
     process.off('unhandledRejection', onUnhandled);
   }
 });
+
+test('the runtime asks start (may-elicit): answered by its r-id, with no type; unknown and throwing requests answer ok: false', async () => {
+  let listener = null;
+  const sent = [];
+  const c = controlClient({send: (m) => sent.push(m), onMessage: (fn) => { listener = fn; }}, {readyMs: 0});
+  c.onRequest('may-elicit', async (m) => ({mayElicit: false, why: `asked for ${m.client.name}`}));
+  c.onRequest('boom', async () => { const e = new Error('no'); e.code = 'CONDITIONS_FAILED'; throw e; });
+  listener({id: 'r1', type: 'may-elicit', client: {name: 'claude-code', version: '2.1.323'}});
+  listener({id: 'r2', type: 'nope'});
+  listener({id: 'r3', type: 'boom'});
+  listener({id: 7, type: 'may-elicit', client: {name: 'x'}});   // not a runtime request id: ignored
+  await tick();
+  assert.deepStrictEqual([...sent].sort((a, b) => a.id.localeCompare(b.id)), [
+    {id: 'r1', ok: true, mayElicit: false, why: 'asked for claude-code'},
+    {id: 'r2', ok: false, code: 'CONTROL_UNKNOWN'},
+    {id: 'r3', ok: false, code: 'CONDITIONS_FAILED'}
+  ]);
+});
