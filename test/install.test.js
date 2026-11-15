@@ -306,6 +306,35 @@ test('no --from: this platform\'s native shim is installed too, and recorded; wi
   }
 });
 
+test('a shim from before is set aside by an install that brings none: from --from, or from npm with none pinned', async () => {
+  const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+  const plant = (h) => { fs.mkdirSync(path.join(h, 'shim'), {recursive: true}); fs.writeFileSync(path.join(h, 'shim', exe), 'stale'); };
+  const r = release(); const h = home();
+  plant(h);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  assert.ok(!fs.existsSync(path.join(h, 'shim', exe)), 'never the one used');
+  assert.strictEqual(fs.readFileSync(path.join(h, 'shim', 'ch-shim.previous'), 'utf8'), 'stale');
+  assert.match(io.out, /the shared runtime's shim from before is set aside: each session runs its own runtime/);
+  const r2 = release(); const h2 = home();
+  plant(h2);
+  const n2 = await npmRelease(r2);
+  try {
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io2, n2.allow, n2.fromNpm), 0, io2.err);
+    assert.ok(!fs.existsSync(path.join(h2, 'shim', exe)));
+    assert.strictEqual(record(h2).shim, undefined);
+  } finally {
+    await n2.reg.close();
+  }
+  // a failed install leaves it be: the install it belongs to is still in place
+  const h3 = home();
+  plant(h3);
+  const io3 = fakeIo({env: {COUNTINGHOUSE_HOME: h3}, exec: () => ({status: 1, stdout: '', stderr: 'npm broke'})});
+  assert.strictEqual(await run(release(), io3), 1);
+  assert.strictEqual(fs.readFileSync(path.join(h3, 'shim', exe), 'utf8'), 'stale');
+});
+
 test('no --from: one package whose provenance fails stops the install, naming it, with nothing installed', async () => {
   const r = release(); const h = home();
   const n = await npmRelease(r, {lie: '@countinghouse/ch-step-redact'});

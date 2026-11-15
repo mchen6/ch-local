@@ -348,7 +348,8 @@ test('a security confirmation answered other than yes says that only yes confirm
 });
 
 // the native shim (lib/shim-install.js): rollback brings it in line with the
-// release it restores, by the two records' shim versions
+// release it restores, by the restored record's shim version and which
+// binary on disk is that version (versions.json, by content)
 test('rollback swaps the shim with the release: the restored record\'s shim comes back, and again forward', async () => {
   const s = await upgraded();
   const patch = (file, shim) => { const rec = JSON.parse(fs.readFileSync(file, 'utf8')); if (shim == null) delete rec.shim; else rec.shim = shim; fs.writeFileSync(file, JSON.stringify(rec)); };
@@ -357,12 +358,19 @@ test('rollback swaps the shim with the release: the restored record\'s shim come
   const dir = path.join(s.home, 'shim');
   fs.mkdirSync(dir);
   const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
-  const prev = process.platform === 'win32' ? 'ch-shim.previous.exe' : 'ch-shim.previous';
+  const prev = 'ch-shim.previous';
   fs.writeFileSync(path.join(dir, exe), 'new');
   fs.writeFileSync(path.join(dir, prev), 'old');
+  const sha = (t) => require('node:crypto').createHash('sha512').update(t).digest('hex');
+  fs.writeFileSync(path.join(dir, 'versions.json'), JSON.stringify({[sha('new')]: '0.6.0', [sha('old')]: '0.5.0'}));
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
   assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'old');
   assert.strictEqual(record(s.home).shim.version, '0.5.0');
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'new');
+  // a rollback finished twice (interrupted, then resumed) aligns by what is
+  // there: the second pass moves nothing
+  const {alignShim} = require('../lib/shim-install');
+  assert.strictEqual(alignShim(s.home, {restored: record(s.home).shim}), 'nothing');
   assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'new');
 });
