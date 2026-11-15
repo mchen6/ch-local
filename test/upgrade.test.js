@@ -29,12 +29,14 @@ const {release, npm} = require('./install-helpers');
 const recordOf = (home) => JSON.parse(fs.readFileSync(path.join(home, 'packs.json'), 'utf8'));
 const historyOf = (home) => { try { return fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (e) { return []; } };
 const realFetch = (url, opts) => globalThis.fetch(url, opts);
+// at a terminal: the yes is a person's (the review of #48)
+const tty = (opts) => Object.assign(fakeIo(opts), {interactive: true});
 
 test('upgrade shows the installed and the newer ch-local, checked; a no changes nothing', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const w = await npmWorld(release());
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     const before = fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8');
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.match(io.out, /ch-local 0\.1\.0 -> 0\.2\.0, its provenance checked/);
@@ -92,7 +94,7 @@ test('a release whose provenance fails is never offered: said, recorded, nothing
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const w = await npmWorld(release(), {lie: '@countinghouse/ch-local'});
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], fetch: realFetch});
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 1);
     assert.match(io.err, /@countinghouse\/ch-local@0\.2\.0 .*not installed \(PROVENANCE_IDENTITY\)/);
     assert.deepStrictEqual(io.asked, []);
@@ -109,7 +111,7 @@ test('a yes installs the new release from npm through install, recorded in histo
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const w = await npmWorld(release());
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.strictEqual(recordOf(s.home).runtime.versions['@countinghouse/ch-local'], '0.2.0');
     assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0; ch-local rollback undoes it/);
@@ -131,7 +133,7 @@ test('identity changes are shown before the question, marked as never taken auto
   // still the installed identity's, so it verifies
   const w = await npmWorld(release(), {edit: (doc) => { doc.self.ownerId += 1; }, signedAs: installed});
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.match(io.out, new RegExp(`its identity changes \\(an automatic upgrade never takes these\\):\\n  self's ownerId: ${installed.ownerId} -> ${installed.ownerId + 1}`));
   } finally {
@@ -144,7 +146,7 @@ test('what the new release adds is shown before the question', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const w = await npmWorld(release(), {edit: (doc) => { doc.allowedOrigins['https://api.example.invalid'] = ['NEW_TOKEN']; }});
   try {
-    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.match(io.out, /it adds:\n  an origin: https:\/\/api\.example\.invalid/);
   } finally {
@@ -167,7 +169,7 @@ test('the automatic-upgrade setting is off by default, stored on request, and as
     assert.strictEqual(await upgrade({auto: 'on'}, on), 0);
     assert.match(on.asked[0], /Loosen autoUpgrade from off to on\?/);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: true}});
-    assert.match(on.out, /announces them; installing them automatically arrives with the first release, and will run new code with your keys/);
+    assert.match(on.out, /installs automatically 72 hours after it is published, and runs new code with your keys; ch-local rollback undoes one/);
     assert.strictEqual(await upgrade({auto: 'off'}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}})), 0);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: false}});
     assert.deepStrictEqual(on.fetches, []);
@@ -239,3 +241,33 @@ test('offerAuto: a no leaves it off, and still unset is asked at the next instal
     s.done();
   }
 });
+
+// the review of #48 --------------------------------------------------------
+
+test('the yes is a person\'s at a terminal: a piped answer installs nothing; a no, an override and several packs are recorded too', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release());
+  try {
+    const piped = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, piped, w.fromNpm), 2);
+    assert.match(piped.err, /installing 0\.2\.0 is confirmed at a terminal: run ch-local upgrade in one; nothing changed/);
+    assert.deepStrictEqual([piped.asked.length, piped.execs.length], [0, 0]);
+    const no = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, no, w.fromNpm), 0);
+    // a 0.x minor: shown as one that may break, still asked
+    assert.match(no.out, /under semver a 0\.x minor or 0\.0\.x patch may break what works now/);
+    const over = tty({env: {COUNTINGHOUSE_HOME: s.home, CH_LOCAL_DEV: '1'}, answers: ['yes'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, over, w.fromNpm), 1);
+    const rec = recordOf(s.home);
+    rec.packs.other = {packages: {}, credentials: []};
+    fs.writeFileSync(path.join(s.home, 'packs.json'), JSON.stringify(rec));
+    const several = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, several, w.fromNpm), 1);
+    assert.deepStrictEqual(historyOf(s.home).map((e) => [e.outcome, e.reason || null]),
+      [['no-terminal', null], ['declined', null], ['override', 'CH_LOCAL_DEV'], ['several-packs', null]]);
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+

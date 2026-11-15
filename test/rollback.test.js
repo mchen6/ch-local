@@ -374,3 +374,15 @@ test('rollback swaps the shim with the release: the restored record\'s shim come
   assert.strictEqual(alignShim(s.home, {restored: record(s.home).shim}), 'nothing');
   assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'new');
 });
+
+test('the review of #48: the version rolled back from is declined, so the automatic upgrade never installs it again', async () => {
+  const s = await upgraded();
+  const left = record(s.home).runtime.versions['@countinghouse/ch-local'];
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  const {stamp, problem} = require('../lib/upgrade-stamp').readStamp(s.home);
+  assert.strictEqual(problem, null);
+  assert.deepStrictEqual(stamp.declined, [left]);
+  // rolling back again keeps it once
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.deepStrictEqual(require('../lib/upgrade-stamp').readStamp(s.home).stamp.declined, [left]);
+});

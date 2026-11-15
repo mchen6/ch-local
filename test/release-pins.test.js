@@ -175,3 +175,20 @@ test('identityChanges: self, or a pin of the runtime, an installed pack or the s
   ].sort());
   assert.deepStrictEqual(r.named, ['@countinghouse/ch-pack-other\'s repositoryId: 1000001 -> 1000002 (the pack other, not installed)']);
 });
+
+test('the review of #48: a first pin for a name this install uses (the runtime, an installed pack, the shim) blocks; one for another pack does not', () => {
+  const {identityChanges} = require('../lib/release-pins');
+  const d = shipped();
+  d.packs.other = {packages: ['@countinghouse/ch-pack-other'], credentials: []};
+  const now = parseReleasePins(d).pins;
+  d.pins = {countinghouse: Object.assign(pin(), {repository: 'mchen6/countinghouse'}), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}),
+    '@countinghouse/ch-shim-linux-x64': Object.assign(pin(), {repository: 'mchen6/ch-local', workflow: '.github/workflows/shim.yml', tag: `shim-v${pin().version}`})};
+  const parsed = parseReleasePins(d);
+  assert.strictEqual(parsed.problem, undefined, parsed.problem);
+  const r = identityChanges(now, parsed.pins, ['ci-failure-triage']);
+  assert.deepStrictEqual(r.blocking.sort(), [
+    '@countinghouse/ch-shim-linux-x64: pinned for the first time (mchen6/ch-local, .github/workflows/shim.yml)',
+    'countinghouse: pinned for the first time (mchen6/countinghouse, .github/workflows/publish.yml)'
+  ]);
+  assert.deepStrictEqual(r.named, []);
+});

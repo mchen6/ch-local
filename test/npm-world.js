@@ -58,4 +58,21 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
     fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}, close: () => reg.close()};
 }
 
-module.exports = {npmWorld, SELF};
+// fn run with the INSTALLED release's pins as `pins` (lib/allowlist.js's
+// exports swapped for the run): the shipped file pins nothing yet, so without
+// this every pin of a new release is a first pin, which blocks an automatic
+// upgrade (the review of #48)
+async function asInstalled(pins, fn) {
+  const id = require.resolve('../lib/allowlist');
+  require(id);
+  const mod = require.cache[id];
+  const saved = mod.exports;
+  mod.exports = {ALLOWLIST: Object.assign({}, saved.ALLOWLIST, {pins}), ALLOWED_ORIGINS: saved.ALLOWED_ORIGINS};
+  try {
+    return await fn();
+  } finally {
+    mod.exports = saved;
+  }
+}
+
+module.exports = {npmWorld, asInstalled, SELF};

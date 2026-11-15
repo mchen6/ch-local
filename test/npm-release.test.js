@@ -266,9 +266,11 @@ test('bin/ and lib/: no code names `trust` or `registry` outside the three, and 
   // upgrade's own calls, verbatim: the verified release's allow, and their
   // own test-only fromNpm (pinned by the scan above); upgrade( with two, and
   // autoApply( with {io} alone, so nothing passes theirs on
-  const passOn = 'const code = await require(\'\').install({pack: packs[0]}, io, allow, fromNpm);';
+  // (the automatic upgrade's install says nothing of its own: its io is a quiet copy)
+  const passOn = {'lib/upgrade.js': 'const code = await require(\'\').install({pack: packs[0]}, io, allow, fromNpm);',
+    'lib/auto-apply.js': 'const code = await require(\'\').install({pack: packs[0]}, quiet, allow, fromNpm);'};
   const odd = calls.filter(([f, fn, n, line]) => {
-    if (fn === 'install') return !(n === 2 || ((f === 'lib/upgrade.js' || f === 'lib/auto-apply.js') && line === passOn));
+    if (fn === 'install') return !(n === 2 || passOn[f] === line);
     if (fn === 'upgrade') return n !== 2;
     return !/autoApply\(\{io\}\)/.test(line);
   });

@@ -61,11 +61,11 @@ test('on: the child runs as `ch-local upgrade --apply-auto`, with the allowliste
 test('the stamp keeps what the child wrote: lastCheck is merged in, never written over', async () => {
   const {where} = await home();
   setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
-  fs.writeFileSync(path.join(where.home, 'upgrade-check.json'), JSON.stringify({firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], lastSuccess: 7}));
+  fs.writeFileSync(path.join(where.home, 'upgrade-check.json'), JSON.stringify({firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], declined: ['0.2.8'], lastSuccess: 7}), {mode: 0o600});
   const now = Date.now();
   await run(where, {status: 0, stdout: ''}, now);
   const stamp = JSON.parse(fs.readFileSync(path.join(where.home, 'upgrade-check.json'), 'utf8'));
-  assert.deepStrictEqual(stamp, {firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], lastSuccess: 7, lastCheck: now});
+  assert.deepStrictEqual(stamp, {firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], declined: ['0.2.8'], lastSuccess: 7, lastCheck: now});
 });
 
 test('weekly waits a week; never never checks; a child that fails is said, and tried again an hour later; one start checks at a time', async () => {
@@ -86,4 +86,44 @@ test('weekly waits a week; never never checks; a child that fails is said, and t
   assert.strictEqual((await run(where, {status: 0, stdout: ''}, t + 61 * 60 * 1000)).r.checked, true, 'an hour later');
   fs.writeFileSync(path.join(where.home, 'upgrade-check.lock'), String(t + 2 * 24 * 60 * 60 * 1000));
   assert.strictEqual((await run(where, undefined, t + 2 * 24 * 60 * 60 * 1000 + 1000)).r.why, 'another start is checking');
+});
+
+// the review of #48 --------------------------------------------------------
+
+test('a development override is checked before the child (the allowlist drops its variables): announced, recorded, no child', async () => {
+  for (const [env, why] of [[{CH_LOCAL_DEV: '1'}, 'CH_LOCAL_DEV'], [{CH_LOCAL_REMOTE_MAP: 'https://x.invalid=http://y.invalid'}, 'CH_LOCAL_REMOTE_MAP']]) {
+    const {h, where} = await home();
+    setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+    const said = [];
+    const c = child({status: 0, stdout: 'installed\n'});
+    const io = Object.assign(fakeIo({env: Object.assign({}, shell, env), exec: c.exec}), {pid: 1, platform: 'linux'});
+    const r = await autoCheck({where, io, say: (x) => said.push(x), host: 'box', now: Date.now()});
+    assert.deepStrictEqual([r.checked, r.why, c.runs.length], [false, 'override', 0], why);
+    assert.deepStrictEqual(said, [`automatic upgrades are off while a development override is set (${why})`]);
+    const history = fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8');
+    assert.match(history, new RegExp(`"reason":"${why}"`));
+    assert.ok(!fs.existsSync(path.join(h, 'upgrade-check.lock')), 'the lock is released');
+  }
+  // an unreleased install, by its record
+  const {h, where} = await home();
+  setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+  const rec = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'));
+  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify(Object.assign(rec, {unreleased: true})));
+  const out = await run(where, {status: 0, stdout: 'installed\n'}, Date.now());
+  assert.deepStrictEqual([out.r.why, out.runs.length], ['override', 0]);
+});
+
+test('only the child\'s one line is said; a check still running (under its 15-minute timeout) is never taken for a stale lock', async () => {
+  const {where} = await home();
+  setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+  const now = Date.now();
+  const r = await run(where, {status: 0, stdout: 'fetching 3 package(s)\nGITHUB_TOKEN is set\nupgraded ch-local 0.1.0 -> 0.1.1; ch-local rollback undoes it\n'}, now);
+  assert.deepStrictEqual(r.said, ['upgraded ch-local 0.1.0 -> 0.1.1; ch-local rollback undoes it']);
+  // a lock taken 14 minutes ago: that check may still be running
+  const later = now + 2 * 24 * 60 * 60 * 1000;
+  fs.writeFileSync(path.join(where.home, 'upgrade-check.lock'), String(later - 14 * 60 * 1000));
+  assert.strictEqual((await run(where, undefined, later)).r.why, 'another start is checking');
+  // one older than the timeout and its margin: stale, taken over
+  fs.writeFileSync(path.join(where.home, 'upgrade-check.lock'), String(later - 21 * 60 * 1000));
+  assert.strictEqual((await run(where, {status: 0, stdout: ''}, later)).r.checked, true);
 });

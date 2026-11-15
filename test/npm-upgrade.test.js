@@ -49,6 +49,14 @@ test('newer: strict MAJOR.MINOR.PATCH by precedence; anything else is never newe
   for (const v of ['0.4.0-rc.1', '0.4', '0.4.0+b', '00.4.0', 'v0.4.0', '', null]) assert.strictEqual(newer(v, '0.3.0'), false, String(v));
 });
 
+test('the review of #48: a 0.x minor or a 0.0.x patch is breaking; a 0.x patch or a 1.x minor is not', () => {
+  const {breaking} = require('../lib/npm-upgrade');
+  for (const [to, from, want] of [['0.2.0', '0.1.0', true], ['0.9.0', '0.1.5', true], ['0.0.2', '0.0.1', true], ['0.1.0', '0.0.9', true],
+    ['0.1.1', '0.1.0', false], ['0.1.9', '0.1.2', false], ['1.1.0', '1.0.0', false], ['1.0.1', '1.0.0', false]]) {
+    assert.strictEqual(breaking(to, from), want, `${from} -> ${to}`);
+  }
+});
+
 test('a newer ch-local of the same major: available, its pins read from its verified tarball, nothing new to agree to', async() => {
   const reg = await registryWith('0.4.0');
   try {
