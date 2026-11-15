@@ -112,6 +112,43 @@ test('stopTree ends the launcher and what it started, which holds the same pipes
   assert.ok(!alive(grandchild), 'what it started ended too');
 });
 
+// The report is uploaded (an artifact of the run): the run's token is in no
+// line the runtime or the launcher wrote, and in nothing the report holds.
+test('reportText: a token in a log fails the run, and is never written', () => {
+  const token = 'chacc_00000000000000000000000000000000fake';
+  const clean = {checks: [{name: 'a', ok: true}], ok: true};
+  const text = acceptance.reportText(clean, token, ['no secret here']);
+  assert.strictEqual(JSON.parse(text).ok, true);
+  assert.ok(JSON.parse(text).checks.some((c) => c.name === 'the run\'s token is in no log line' && c.ok === true));
+
+  const leaked = {checks: [{name: 'a', ok: true, detail: `saw Bearer ${token}`}], ok: true, runtimeLog: `x ${token} y`};
+  const out = acceptance.reportText(leaked, token, [`x ${token} y`]);
+  assert.ok(!out.includes(token), 'the token is never in the report text');
+  const r = JSON.parse(out);
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.checks.some((c) => c.name === 'the run\'s token is in no log line' && c.ok === false));
+  assert.ok(r.checks.some((c) => c.name === 'the run\'s token is in nothing the report holds' && c.ok === false));
+});
+
+test('trapSignals: SIGINT and SIGTERM run the cleanup once, then exit 130 and 143; untrapped, nothing runs', async () => {
+  for (const [signal, want] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+    let cleaned = 0;
+    let exited = null;
+    const untrap = acceptance.trapSignals(async () => { cleaned += 1; }, (code) => { exited = code; });
+    process.emit(signal, signal);
+    process.emit(signal, signal);
+    for (const until = Date.now() + 2000; exited == null && Date.now() < until;) await new Promise((r) => setTimeout(r, 10));
+    assert.strictEqual(cleaned, 1, `${signal}: cleaned once`);
+    assert.strictEqual(exited, want, signal);
+    untrap();
+  }
+  let ran = false;
+  const before = process.listenerCount('SIGTERM');
+  acceptance.trapSignals(async () => { ran = true; }, () => {})();
+  assert.strictEqual(process.listenerCount('SIGTERM'), before, 'untrap removes its handlers');
+  assert.strictEqual(ran, false);
+});
+
 const SRC = process.env.CH_ACCEPTANCE_SRC;
 test('the whole acceptance run', {timeout: 1200000, skip: SRC == null && 'CH_ACCEPTANCE_SRC is not set (a directory of clones)'}, async () => {
   const pairs = (v, flag) => (v || '').split(',').filter(Boolean).flatMap((p) => [flag, p]);

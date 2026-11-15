@@ -34,14 +34,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # The job holds no token: checkout keeps none in .git/config, and none is
+      # put in the environment; the stand-in takes only the run's own,
+      # generated per run.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
-      # The job holds no token (none is put in its environment): the stand-in
-      # takes only the run's own, generated per run.
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Acceptance run
         shell: bash
         run: |
@@ -53,7 +56,7 @@ jobs:
           grep -q '^ℹ skipped 0$' acceptance.log && grep -q '^ℹ fail 0$' acceptance.log || { echo 'the acceptance run did not pass (skipped or failed)'; exit 1; }
       - name: Keep the report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: acceptance-report-${{ matrix.os }}
           path: ${{ runner.temp }}/acceptance-report.json

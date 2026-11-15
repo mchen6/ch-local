@@ -175,10 +175,47 @@ async function stopTree(child, ms = 5000) {
   group('SIGKILL');
 }
 
+// The report's text, once the run's token is checked for: in no line the
+// launcher or the runtime wrote (`logs`), and in nothing the report holds. The
+// report is uploaded (CI keeps it as an artifact), so a token in it fails the
+// run and is replaced, never written.
+function reportText(report, token, logs) {
+  const inLogs = logs.some((l) => typeof l === 'string' && l.includes(token));
+  report.checks.push({name: 'the run\'s token is in no log line', ok: !inLogs});
+  report.ok = report.checks.length > 0 && report.checks.every((c) => c.ok);
+  let text = JSON.stringify(report, null, 2) + '\n';
+  if (text.includes(token)) {
+    report.checks.push({name: 'the run\'s token is in nothing the report holds', ok: false});
+    report.ok = false;
+    text = (JSON.stringify(report, null, 2) + '\n').split(token).join('[the run\'s token]');
+  }
+  return text;
+}
+
+// An interrupted run (Ctrl-C, a cancelled job) still ends what it started and
+// removes its work directory: on SIGINT or SIGTERM, cleanup() once, then
+// exit(130 or 143). -> untrap(), which removes the handlers.
+function trapSignals(cleanup, exit = (code) => process.exit(code)) {
+  let caught = false;
+  const handlers = {};
+  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+    handlers[signal] = () => {
+      if (caught) return;
+      caught = true;
+      Promise.resolve().then(cleanup).catch(() => {}).then(() => exit(code));
+    };
+    process.on(signal, handlers[signal]);
+  }
+  return () => { for (const [signal, h] of Object.entries(handlers)) process.removeListener(signal, h); };
+}
+
 async function main(argv, io = {stdout: process.stdout, stderr: process.stderr}) {
   const say = (s) => io.stdout.write(s + '\n');
+  // generated per run, never a real one; redacted from every check's detail
+  const token = `chacc_${crypto.randomBytes(24).toString('hex')}`;
+  const redact = (v) => String(v).split(token).join('[the run\'s token]');
   const report = {startedAt: new Date().toISOString(), platform: `${process.platform}-${process.arch}`, node: process.version, sources: [], checks: [], timings: {}, ok: false};
-  const check = (name, ok, detail) => { report.checks.push({name, ok: ok === true, ...(detail != null ? {detail: String(detail).slice(0, 2000)} : {})}); say(`${ok ? 'ok  ' : 'FAIL'} ${name}${!ok && detail != null ? `: ${String(detail).slice(0, 500)}` : ''}`); return ok; };
+  const check = (name, ok, detail) => { report.checks.push({name, ok: ok === true, ...(detail != null ? {detail: redact(detail).slice(0, 2000)} : {})}); say(`${ok ? 'ok  ' : 'FAIL'} ${name}${!ok && detail != null ? `: ${redact(detail).slice(0, 500)}` : ''}`); return ok; };
   const t0 = Date.now();
   const mark = (name) => { report.timings[name] = Date.now() - t0; };
   let reportFile = path.resolve('acceptance-report.json');
@@ -196,14 +233,34 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
 
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-acceptance-'));
   const home = path.join(work, 'home');
-  const token = `chacc_${crypto.randomBytes(24).toString('hex')}`;
   const node = process.execPath;
   const launcher = path.join(home, 'bin', 'ch-local.js');
   let standIn = null;
   let child = null;
   let stderr = '';
+  let offStderr = '';
   report.work = work;
-  try {
+  // Ends what the run started, writes the report and removes the work
+  // directory: once, whether the run ends, throws or is interrupted.
+  let finished = null;
+  const finish = (interrupted) => finished || (finished = (async () => {
+    if (interrupted != null) check('the run was not interrupted', false, interrupted);
+    // Whether or not the server exited on its own (a timeout leaves it running).
+    if (child != null) await stopTree(child);
+    if (standIn != null) await standIn.close();
+    report.finishedAt = new Date().toISOString();
+    report.ok = report.checks.length > 0 && report.checks.every((c) => c.ok);
+    // The runtime's log on any failure, an early one included.
+    if (!report.ok && stderr !== '') report.runtimeLog = stderr.split('\n').slice(-400).join('\n');
+    try {
+      fs.writeFileSync(reportFile, reportText(report, token, [stderr, offStderr]));
+      say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'})`);
+    } finally {
+      fs.rmSync(work, {recursive: true, force: true});
+    }
+  })());
+  const untrap = trapSignals(() => finish('interrupted by a signal'));
+  const run = async () => {
     const built = await dogfood.buildRelease(planned.sources, work, say);
     if (built.problem != null) { check('build from tarballs', false, built.problem); return 1; }
     report.sources = planned.sources.map((s) => ({repo: s.repo, ref: s.ref, commit: s.commit}));
@@ -219,6 +276,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     if (!check('install into a clean home', code === 0, `exit ${code}`)) return 1;
 
     const off = spawnSync(node, [launcher, 'start', '--stdio', '--moduleSandbox', 'off'], {env: launcherEnv(home, {COUNTINGHOUSE_GITHUB_TOKEN: token}), input: '', encoding: 'utf8', timeout: 30000});
+    offStderr = String(off.stderr);
     check('start --moduleSandbox off is refused and starts no runtime', off.status === 2 && /--moduleSandbox off is not allowed/.test(off.stderr) && !/countinghouse serves MCP/.test(off.stderr), off.stderr);
 
     // Before the pack starts: the installed runtime must know --remoteOriginMap
@@ -295,24 +353,20 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const un = spawnSync(node, [launcher, 'uninstall'], {env: launcherEnv(home), input: 'yes\n', encoding: 'utf8', timeout: 60000});
     mark('uninstalled');
     check('uninstall leaves nothing', un.status === 0 && !fs.existsSync(home), `${un.status} ${un.stderr.slice(-500)}`);
-    report.ok = report.checks.every((c) => c.ok);
-    return report.ok ? 0 : 1;
+    return report.checks.every((c) => c.ok) ? 0 : 1;
+  };
+  let code = 1;
+  try {
+    code = await run();
   } catch (err) {
     check('the run completed', false, err.stack || err.message);
-    return 1;
+    code = 1;
   } finally {
-    // Whether or not the server exited on its own (a timeout leaves it running).
-    if (child != null) await stopTree(child);
-    if (standIn != null) await standIn.close();
-    report.finishedAt = new Date().toISOString();
-    report.ok = report.checks.length > 0 && report.checks.every((c) => c.ok);
-    // The runtime's log on any failure, an early one included (it holds no
-    // token: the run's own is checked to be in no file under the home).
-    if (!report.ok && stderr !== '') report.runtimeLog = stderr.split('\n').slice(-400).join('\n');
-    fs.writeFileSync(reportFile, JSON.stringify(report, null, 2) + '\n');
-    say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'})`);
-    fs.rmSync(work, {recursive: true, force: true});
+    untrap();
+    await finish();
   }
+  // the token checks run in finish(): a leak there fails the run too
+  return code === 0 && !report.ok ? 1 : code;
 }
 
 // Run only when executed, never when required: test/acceptance.test.js requires it.
@@ -320,4 +374,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`acceptance: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, startStandIn, recordedAnswer, filesContaining, launcherEnv, waitForText, stopTree, RECEIPT};
+module.exports = {main, reportText, trapSignals, startStandIn, recordedAnswer, filesContaining, launcherEnv, waitForText, stopTree, RECEIPT};
