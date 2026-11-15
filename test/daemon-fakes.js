@@ -1,0 +1,56 @@
+'use strict';
+// The daemon tests' fakes (test/daemon.test.js, test/daemon-lifecycle.test.js):
+// a runtime that proves its secret, and the shim's cleared environment.
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
+const {fakeIo} = require('./fake-io');
+
+const tmpHome = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-d-')));
+const hmac = (secret, ...parts) => crypto.createHmac('sha256', secret).update(Buffer.concat(parts.map((p) => Buffer.from(p)))).digest();
+const frame = (kind, obj) => { const b = Buffer.from(JSON.stringify(obj)); const h = Buffer.alloc(5); h.write(kind, 0, 'ascii'); h.writeUInt32BE(b.length, 1); return Buffer.concat([h, b]); };
+
+// a fake runtime: writes the secret (0600) in run/daemon, listens on socket,
+// answers each HELLO with a PROVE under that secret -> {close, secret}
+async function fakeRuntime(runDir, socket, {wrongSecret = false} = {}) {
+  const secret = crypto.randomBytes(32);
+  fs.writeFileSync(path.join(runDir, 'secret'), `${secret.toString('hex')}\n`, {mode: 0o600});
+  const key = wrongSecret ? crypto.randomBytes(32) : secret;
+  const server = net.createServer((c) => {
+    let buf = Buffer.alloc(0);
+    c.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      if (buf.length < 5) return;
+      const n = buf.readUInt32BE(1);
+      if (buf.length < 5 + n) return;
+      const hello = JSON.parse(buf.subarray(5, 5 + n).toString('utf8'));
+      const nc = Buffer.from(hello.nc, 'base64');
+      const ns = crypto.randomBytes(32);
+      c.write(frame('P', {ns: ns.toString('base64'), ms: hmac(key, 'ch-server', Buffer.from([1]), nc, ns).toString('base64')}));
+    });
+    c.on('error', () => {});
+  });
+  await new Promise((r) => server.listen(socket, r));
+  return {secret, close: () => new Promise((r) => server.close(r))};
+}
+
+// the shim's cleared environment: only shim.json's allowlist, never
+// COUNTINGHOUSE_HOME
+function daemonIo(home) {
+  const io = fakeIo({env: {PATH: '/usr/bin:/bin', HOME: os.tmpdir()}, homedir: os.tmpdir});
+  io.cwd = home;
+  io.pid = process.pid;
+  io.alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+  io.hostname = os.hostname();
+  io.ignored = [];
+  io.ignoreSignal = (s) => io.ignored.push(s);
+  // the daemon's own SIGINT/SIGTERM trap: io.signal('SIGTERM') delivers one
+  io.trapSignals = (handler, signals) => { io.trapped = signals; io.signal = handler; return () => { io.signal = null; }; };
+  io.daemonReadyMs = 3000;
+  return io;
+}
+const runDirOf = (home) => path.join(home, 'run', 'daemon');
+
+module.exports = {fakeRuntime, daemonIo, tmpHome, runDirOf, hmac, frame};

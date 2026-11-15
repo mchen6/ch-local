@@ -747,3 +747,56 @@ test('start\'s own runtime (--home) is given only paths under the home, as sessi
   assert.strictEqual(f.spawned.length, 0);
   assert.match(f.err, /outside the home/);
 });
+
+// C3a: the daemon's table and requests, through start's session mode
+test('start in session mode sends the daemon\'s restore first, passes the table\'s tells on, and hands the daemon a request sender', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = ghLoggedIn(io(home));
+  const sent = [];
+  let deliver = null;
+  f.spawn = (cmd, args) => {
+    f.spawned.push({cmd, args});
+    return {kill: () => {}, exited: new Promise(() => {}), send: (m) => { sent.push(m); if (m.type === 'restore' || m.type === 'idle-stop') deliver({id: m.id, ok: true}); }, onMessage: (fn) => { deliver = fn; }};
+  };
+  const told = [];
+  let request = null;
+  const table = {type: 'restore', sessions: [], declines: []};
+  start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, restore: () => table, onTold: (m) => told.push(m), onControl: (fn) => { request = fn; }}}, f);
+  for (let i = 0; i < 100 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
+  deliver({type: 'ready'});
+  for (let i = 0; i < 100 && sent.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.strictEqual(sent[0].type, 'restore', 'the restore is the first request');
+  assert.deepStrictEqual(Object.assign({}, sent[0], {id: undefined}), Object.assign({}, table, {id: undefined}));
+  for (const m of [{type: 'session-resume', session: 'a'.repeat(32), hash: 'f'.repeat(64)}, {type: 'session-state', session: 'a'.repeat(32), state: {}}, {type: 'session-gone', session: 'a'.repeat(32)}, {type: 'decline', kind: 'pack', at: 1}, {type: 'idle'}, {type: 'busy'}]) deliver(m);
+  assert.deepStrictEqual(told.map((m) => m.type), ['session-resume', 'session-state', 'session-gone', 'decline', 'idle', 'busy']);
+  assert.strictEqual(typeof request, 'function');
+  const answer = await request({type: 'idle-stop'});
+  assert.strictEqual(answer.ok, true);
+});
+
+test('start in session mode: a runtime that ends during its restore never reports a refusal; only an explicit one does (the review of #34)', {skip: POSIX_ONLY}, async () => {
+  const runWith = async(answer) => {
+    const home = installedHome();
+    const f = ghLoggedIn(io(home));
+    let deliver = null;
+    let end = null;
+    f.spawn = (cmd, args) => {
+      f.spawned.push({cmd, args});
+      return {kill: () => {}, exited: new Promise((r) => { end = r; }), onMessage: (fn) => { deliver = fn; },
+        send: (m) => { if (m.type === 'restore') setTimeout(() => answer(m, deliver, end), 10); }};
+    };
+    let refused = 0;
+    const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, restore: () => ({type: 'restore', sessions: [], declines: []}), onRestoreRefused: () => { refused += 1; }}}, f);
+    for (let i = 0; i < 100 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
+    deliver({type: 'ready'});
+    await new Promise((r) => setTimeout(r, 200));
+    if (end != null) end(0);
+    await done;
+    await new Promise((r) => setTimeout(r, 50));
+    return refused;
+  };
+  assert.strictEqual(await runWith((m, deliver, end) => end(1)), 0, 'a crash mid-restore is no refusal');
+  assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_NO_ANSWER'})), 0, 'nor is no answer');
+  assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_BAD_RESTORE'})), 1, 'an explicit refusal is');
+  assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_RESTORE_DONE'})), 1);
+});
