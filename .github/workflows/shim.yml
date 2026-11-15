@@ -144,6 +144,17 @@ jobs:
         run: |
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_SHA is not on main"; exit 1; }
+      # Before anything is assembled: the tag is shim-v<x.y.z> exactly (no
+      # prerelease: one published without --tag would become npm's
+      # "latest") and names shim/Cargo.toml's version. assemble.js checks
+      # both again.
+      - name: The tag names shim/Cargo.toml's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$TAG" =~ ^shim-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag $TAG is not shim-v<x.y.z>"; exit 1; }
+          cargo_version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' shim/Cargo.toml | head -1)"
+          [ "${TAG#shim-v}" = "$cargo_version" ] || { echo "::error::tag $TAG but shim/Cargo.toml says $cargo_version"; exit 1; }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
@@ -159,7 +170,9 @@ jobs:
           pattern: ch-shim-*
           path: artifacts
       - name: Assemble the packages (the tag names the version)
-        run: node npm-shim/assemble.js --version "${GITHUB_REF_NAME#shim-v}" --artifacts artifacts --out dist/npm-shim
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node npm-shim/assemble.js --version "${TAG#shim-v}" --artifacts artifacts --out dist/npm-shim
       - name: What each tarball holds
         run: for d in dist/npm-shim/*/; do (cd "$d" && npm pack --dry-run); done
       # the platform packages first, so the wrapper never names a version
