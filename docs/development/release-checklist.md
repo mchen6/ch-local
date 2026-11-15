@@ -119,9 +119,43 @@ The checks are grouped. Within a group, the order doesn't matter.
       provenance.
     - Evidence: the two commands' output, saved with the checklist.
 
+## Reviews, Windows and the notes
+
+16. **The pre-release trust-boundary review is done, and its findings are
+    closed.**
+    - How: the review of every trust boundary release 1 has: the shim and
+      the session socket, the daemon, the sandbox, the settings dialog,
+      upgrades from npm and the shim install. It includes the back-sweep
+      over the 28 pull requests already merged.
+    - Check: every finding is fixed, or ruled a residual and recorded in
+      the specs.
+    - Evidence: the review's report, with each finding's pull request or
+      ruling.
+17. **Windows is green, and hand-tested.**
+    - How: once countinghouse #272 lands, the acceptance run's and the stdio
+      job's Windows legs, then the maintainer's hand test of the Windows
+      items.
+    - Check:
+      - both legs pass, and now gate;
+      - the hand test covers the daemon on its named pipe, two sessions,
+        rollback with the shim (`ch-shim.exe`), and uninstall.
+    - Evidence: those CI runs, and the hand-test notes.
+18. **The release notes' residuals match the specs'.**
+    - How: compare the notes' residuals section with the residuals recorded
+      in the specs and the design notes.
+    - Check: the same residuals, each stated as precisely as the spec
+      states it. They include at least:
+      - audit mode lets a pack read outside its area, logged;
+      - on Windows, another user can hold the pipe's pre-auth slots
+        (availability only);
+      - the same-user local residual, a client's configuration choosing
+        the environment;
+      - the Sigstore verifier is the last of its major version.
+    - Evidence: the release notes, and the specs' residual sections.
+
 ## After the tag
 
-15. **The released packages verify as an upgrade would.**
+19. **The released packages verify as an upgrade would.**
     - How: a clean `ch-local install` from npm, with no `--from`.
     - Check: every package is fetched by its pin, and its provenance
       verifies under the shipped Sigstore root. That includes the native
