@@ -100,6 +100,8 @@ test('a pin without its whole identity, or for another version, is refused befor
     assert.strictEqual(codeOf(() => verify(good(), {pin: p})), 'PIN_INCOMPLETE', field);
   }
   assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {version: '0.2.0'})})), 'PIN_INCOMPLETE');
+  // the tag is v<version>, for every pin, ch-local's in-memory one included
+  assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {tag: 'v0.3.1'})})), 'PIN_INCOMPLETE', 'a tag not v<version>');
   assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {repositoryId: '1000001'})})), 'PIN_INCOMPLETE', 'a numeric ID as a number');
 });
 
@@ -160,4 +162,13 @@ test('(5) a known npm key used outside its window is a chain failure, not "can\'
   expired.keys[0].expires = new Date(at.getTime() - 3600e3).toISOString();
   const t = provenance.trustMaterial(root.trustedRoot, expired);
   assert.strictEqual(codeOf(() => verify(good(), {trust: t})), 'PROVENANCE_CHAIN');
+});
+
+test('a pin\'s tag is exactly its workflow\'s prefix and its version: v for publish.yml, shim-v for shim.yml; any other workflow is refused', () => {
+  assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {tag: `shim-v${V}`})})), 'PIN_INCOMPLETE', 'publish.yml with shim-v');
+  assert.strictEqual(codeOf(() => verify(good(), {pin: Object.assign({}, pin, {workflow: '.github/workflows/release.yml'})})), 'PIN_INCOMPLETE');
+  // a shim pin, signed as shim.yml at shim-v<version>, verifies
+  const shimPin = Object.assign({}, pin, {workflow: '.github/workflows/shim.yml', tag: `shim-v${V}`});
+  const shim = att(root.provenance(NAME, V, sha512Hex, shimPin, at), root.publish(NAME, V, sha512Hex, at));
+  assert.strictEqual(codeOf(() => verify(shim, {pin: shimPin})), 'passed');
 });
