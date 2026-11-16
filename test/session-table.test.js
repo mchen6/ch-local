@@ -12,7 +12,7 @@ const HASH = 'f'.repeat(64);
 const STATE = {overrides: [{name: 'requestTimeout', value: 120000, loosening: true, over: 30000, version: null}], locks: ['pack'], formsLeft: 2};
 
 test('a fresh table restores empty', () => {
-  assert.deepStrictEqual(createSessionTable().restore(), {type: 'restore', sessions: [], declines: []});
+  assert.deepStrictEqual(createSessionTable().restore(), {type: 'restore', sessions: [], declines: [], reset: []});
 });
 
 test('a session is restored once it has a resume hash: its latest hash and state; its end drops it', () => {
@@ -55,7 +55,9 @@ test('a state the runtime would refuse is never kept, and drops that session\'s 
 test('a state with unanswered is kept; a bad unanswered, or an unknown key beside it, drops the row', () => {
   const t = createSessionTable({warn: () => {}});
   t.told({type: 'session-resume', session: ID(1), hash: HASH});
-  const withIt = Object.assign({}, STATE, {unanswered: ['pack', 'maxOutputBytes']});
+  // a kind not locked (STATE locks pack), with a form spent (formsLeft 2),
+  // as the runtime requires
+  const withIt = Object.assign({}, STATE, {unanswered: ['maxOutputBytes', 'requestTimeout']});
   assert.strictEqual(t.told({type: 'session-state', session: ID(1), state: withIt}), true);
   assert.deepStrictEqual(t.restore().sessions, [{session: ID(1), resume: HASH, state: withIt}]);
   for (const unanswered of [['other'], ['pack', 'pack'], 'pack', [1], ['pack', 'maxOutputBytes', 'requestTimeout', 'pack']]) {
@@ -117,5 +119,5 @@ test('clear() empties the table (a restore the runtime refused, #34 review)', ()
   t.told({type: 'session-resume', session: ID(1), hash: HASH});
   t.told({type: 'decline', kind: 'pack', at: Date.now()});
   t.clear();
-  assert.deepStrictEqual(t.restore(), {type: 'restore', sessions: [], declines: []});
+  assert.deepStrictEqual(t.restore(), {type: 'restore', sessions: [], declines: [], reset: []});
 });
