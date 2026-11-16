@@ -176,7 +176,9 @@ running. The daemon holds the runtime for every session of this user.
 - **Its GitHub token comes from `gh auth token` only**, held in memory as
   `COUNTINGHOUSE_GITHUB_TOKEN`. A `GITHUB_TOKEN` in a shell doesn't reach
   it. With no `gh` login, the shared runtime has no token, so a pack that
-  needs one isn't loaded there. A session whose client chooses a token of
+  needs one isn't loaded there. The runtime still starts, with ch-local's
+  own tools, and tells each session which pack isn't loaded and why (run
+  `gh auth login`), so the agent can say so. A session whose client chooses a token of
   its own (`COUNTINGHOUSE_GITHUB_TOKEN`, or `GITHUB_TOKEN` with no `gh`
   login) then differs from the daemon's, and runs its own runtime. That
   fails safe: no session gets another's token, or none silently.
