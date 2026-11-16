@@ -14,7 +14,9 @@
 //     fallback can never pass for the shared path;
 //   - (b) settings through the shim: a loosening, with no tested client on
 //     countinghouse's list yet, refused with the terminal command; a
-//     tightening applied to this session.
+//     tightening applied to this session;
+//   - (d) a paged list (countinghouse M1): one page with no nextCursor, a
+//     cursor the client sends carried and answered, a bad one -32602.
 // On win32 the daemon is not yet available (C4c): the shim runs the
 // per-session runtime, and that fallback is what is checked.
 //
@@ -31,7 +33,6 @@
 //     is in countinghouse's lib/elicitation-clients.json (the maintainer's
 //     hand test before release): until then no client gets a form.
 //   - (b2) ctx.ask through the shim, once M13 is on countinghouse's master.
-//   - (d) a paged list, once M1 is.
 //
 // Every child has a hard timeout, and the run's end stops the shim's tree and
 // the daemon (which outlives the shim by design), awaiting the daemon's exit
@@ -338,14 +339,37 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const call = (a, extra = {}) => mcp.request('tools/call', Object.assign({_meta: META, name: 'countinghouse_settings', arguments: a}, extra));
     const loosen = await call({action: 'set', name: 'requestTimeout', value: '60s'});
     const loosenCode = loosen.result != null && loosen.result._meta != null ? loosen.result._meta['countinghouse/code'] : null;
+    // refused either way, naming the terminal command: SETTING_NEEDS_CONFIRMATION,
+    // or (countinghouse master since 9d93943) SETTING_DECLINED_THIS_SESSION
+    // for a client that gets no form
     check('(b) a loosening, with no tested client yet, is refused with the terminal command', loosen.result != null && loosen.result.isError === true &&
-      loosenCode === 'SETTING_NEEDS_CONFIRMATION' && /ch-local settings set requestTimeout 60s/.test(JSON.stringify(loosen.result.content)), JSON.stringify(loosen).slice(0, 1000));
+      ['SETTING_NEEDS_CONFIRMATION', 'SETTING_DECLINED_THIS_SESSION'].includes(loosenCode) && /ch-local settings set requestTimeout 60s/.test(JSON.stringify(loosen.result.content)),
+      JSON.stringify(loosen).slice(0, 1000));
     const tighten = await call({action: 'set', name: 'requestTimeout', value: '10s'});
     const t = tighten.result != null ? tighten.result.structuredContent : null;
     check('(b) a tightening applies to this session', t != null && t.new === 10000 && t.applies === 'this session', JSON.stringify(tighten).slice(0, 1000));
     const got = await call({action: 'get'});
     const value = got.result != null && got.result.structuredContent != null ? (got.result.structuredContent.settings || []).find((x) => x.name === 'requestTimeout') : null;
     check('(b) settings shows it', value != null && value.value === 10000, JSON.stringify(got).slice(0, 1000));
+
+    // (d) a paged list through the shim (countinghouse M1). The runtime pages
+    // tools/list at --listPageSize (250, never under 10), more than this
+    // shared runtime lists, so the list is one page with no nextCursor. What
+    // the shim must carry both ways is checked with a cursor the client
+    // sends: one positioned after the list's first tool is answered with the
+    // rest; one that names nothing is -32602. The cursor is built here as
+    // the runtime builds one (base64url of {v, k, a}: lib/mcp/pages.js), the
+    // one place this test leans on a format the client never needs.
+    const whole = await mcp.request('tools/list', {_meta: META});
+    const names = whole.result != null && Array.isArray(whole.result.tools) ? whole.result.tools.map((x) => x.name) : [];
+    check('(d) the whole list is one page, with no nextCursor', whole.result != null && names.length > 0 && whole.result.nextCursor === undefined, JSON.stringify(whole).slice(0, 1000));
+    const after = Buffer.from(JSON.stringify({v: 1, k: 'tools', a: names[0]})).toString('base64url');
+    const rest = await mcp.request('tools/list', {_meta: META, cursor: after});
+    const restNames = rest.result != null && Array.isArray(rest.result.tools) ? rest.result.tools.map((x) => x.name) : null;
+    check('(d) a cursor after the first tool is answered with the rest of the list', restNames != null && JSON.stringify(restNames) === JSON.stringify(names.slice(1)),
+      JSON.stringify(rest).slice(0, 1000));
+    const bad = await mcp.request('tools/list', {_meta: META, cursor: 'not-a-cursor'});
+    check('(d) a cursor that names nothing is -32602', bad.error != null && bad.error.code === -32602, JSON.stringify(bad).slice(0, 1000));
     return 0;
   };
   let code = 1;
