@@ -80,7 +80,7 @@ test('no pack has its credential: the runtime starts with no pack, and the clien
   const s = await running({env: {}});
   try {
     assert.ok(!s.args().includes('--loadModule'), `no pack loaded: ${s.args().join(' ')}`);
-    await until(() => notices(s).some(([, t]) => /not loading ci-failure-triage/.test(t)));
+    await until(() => [/not loading ci-failure-triage/, /no pack is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
     const told = notices(s).map(([, t]) => t);
     const why = told.find((t) => /not loading ci-failure-triage/.test(t));
     assert.match(why, /needs the GitHub token: run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
