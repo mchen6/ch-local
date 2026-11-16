@@ -44,6 +44,7 @@ function copied({sub, checkout = false, pins = null, at = 'parent'}) {
   const root = tmp('ch-shimfor-');
   const lib = path.join(root, sub, 'lib');
   fs.cpSync(LIB, lib, {recursive: true});
+  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(root, sub, 'package.json'));
   if (checkout) fs.cpSync(path.join(ROOT, 'npm-shim'), path.join(root, sub, 'npm-shim'), {recursive: true});
   if (pins != null) {
     const file = path.join(lib, 'release-pins.json');
@@ -55,9 +56,19 @@ function copied({sub, checkout = false, pins = null, at = 'parent'}) {
   return {root, lib, nodePath: path.join(np, 'node_modules')};
 }
 
-// an installed home: <root>/h, with app/lib the copy
+// where install puts ch-local in an app directory (lib/install.js)
+const PACKAGE = path.join('node_modules', ...require('../package.json').name.split('/'));
+// an installed home: <root>/h, with the copy where install puts it, under
+// app/ (or previous/app/). npm-shim/ is beside it too, and a built shim at
+// a checkout's own path (shim/target/release), so the copy would count as a
+// checkout and defaultLocate would find that shim: only its being the home's
+// own ch-local keeps it to the installed binary.
 function installedHome(opts = {}) {
-  const s = copied(Object.assign({sub: path.join('h', 'app')}, opts));
+  const sub = path.join('h', opts.previous ? path.join('previous', 'app') : 'app', PACKAGE);
+  const s = copied(Object.assign({sub, checkout: true}, opts));
+  const built = path.join(s.root, sub, 'shim', 'target', 'release');
+  fs.mkdirSync(built, {recursive: true});
+  fs.writeFileSync(path.join(built, EXE), '#!/bin/sh\n', {mode: 0o755});
   s.home = path.join(s.root, 'h');
   fs.chmodSync(s.home, 0o700);
   return s;
@@ -86,18 +97,23 @@ function looseShim(home) {
   fs.chmodSync(path.join(dir, EXE), 0o777);
 }
 
-test('runsFromHome: by realpath, <home>/app/lib is this code or not; a home or app not there is not', () => {
+test('runsFromHome: by realpath, the home\'s installed ch-local (under app/ or previous/app/) or not; a home or app not there is not', () => {
   const root = tmp('ch-runs-');
   const home = path.join(root, 'h');
-  const lib = path.join(home, 'app', 'lib');
+  const lib = path.join(home, 'app', PACKAGE, 'lib');
+  const previous = path.join(home, 'previous', 'app', PACKAGE, 'lib');
   fs.mkdirSync(lib, {recursive: true});
+  fs.mkdirSync(previous, {recursive: true});
+  fs.mkdirSync(path.join(home, 'app', 'lib'));
   const {runsFromHome} = require('../lib/shim-binary');
   assert.strictEqual(runsFromHome(home, {libDir: lib}), true);
-  assert.strictEqual(runsFromHome(home, {libDir: LIB}), false, 'a source checkout is not the home\'s app');
+  assert.strictEqual(runsFromHome(home, {libDir: previous}), true, 'a rollback\'s previous app');
+  assert.strictEqual(runsFromHome(home, {libDir: path.join(home, 'app', 'lib')}), false, 'no install runs from <app>/lib');
+  assert.strictEqual(runsFromHome(home, {libDir: LIB}), false, 'a source checkout is not the home\'s');
   assert.strictEqual(runsFromHome(home), false, 'nor is this file, by default');
   assert.strictEqual(runsFromHome(path.join(root, 'none'), {libDir: LIB}), false);
   assert.strictEqual(runsFromHome(null), false);
-  // the home's app a link to the code that runs: the same realpath
+  // the home's app a link to the one the code runs from: the same realpath
   const linked = path.join(root, 'linked');
   fs.mkdirSync(linked);
   linkDir(path.join(home, 'app'), path.join(linked, 'app'));
@@ -132,13 +148,16 @@ for (const at of ['parent', 'NODE_PATH']) {
     assert.match(r.note, /each session runs its own runtime/);
   });
 
-  test(`code that is neither a checkout nor the home's app (a home elsewhere, a rollback's previous/app): a ch-shim planted on ${at} is not chosen`, () => {
-    const s = copied({sub: path.join('h', 'previous', 'app'), at});
-    const elsewhere = path.join(tmp('ch-elsewhere-'), 'h');
-    for (const home of [path.join(s.root, 'h'), elsewhere]) {
-      const r = shimForIn(s, home);
-      assert.strictEqual(r.shim, null, JSON.stringify(r));
-    }
+  test(`a rollback's previous/app, a checkout too: a ch-shim planted on ${at} is not chosen`, () => {
+    const s = installedHome({at, previous: true});
+    const r = shimForIn(s);
+    assert.strictEqual(r.shim, null, JSON.stringify(r));
+  });
+
+  test(`code that is not a checkout, under a home that is not its own: a ch-shim planted on ${at} is not chosen`, () => {
+    const s = copied({sub: path.join('elsewhere', 'app', PACKAGE), at});
+    const r = shimForIn(s, path.join(tmp('ch-elsewhere-'), 'h'));
+    assert.strictEqual(r.shim, null, JSON.stringify(r));
   });
 
   test(`a checkout's defaultLocate looks only inside the checkout: a ch-shim planted on ${at} is not found; one in its own node_modules is`, () => {
@@ -180,8 +199,10 @@ test('a source checkout (not the home\'s app) still asks its locate, for dev and
   assert.strictEqual(r.shim, '/built/ch-shim');
 });
 
-test('no published ch-local is a checkout: npm-shim/ is not in its files', () => {
-  const files = require('../package.json').files;
-  assert.ok(!files.some((f) => f.startsWith('npm-shim')), files.join(', '));
-  assert.strictEqual(require('../lib/shim-binary').isCheckout(), true, 'this one is');
+test('no published ch-local is a checkout: npm pack ships nothing under npm-shim/', () => {
+  const out = execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32'});
+  const files = JSON.parse(out)[0].files.map((f) => f.path.replace(/\\/g, '/'));
+  assert.ok(files.some((f) => f === 'lib/shim-binary.js'), 'the list is the package\'s');
+  assert.deepStrictEqual(files.filter((f) => f.startsWith('npm-shim/')), []);
+  assert.strictEqual(require('../lib/shim-binary').isCheckout(), true, 'this checkout is one');
 });
