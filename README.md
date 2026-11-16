@@ -44,7 +44,7 @@ One install page per client is in [docs/install](docs/install/README.md).
 | `ch-local snippet <client>` | the client's config entry, on stdout alone |
 | `ch-local add <cursor\|vscode\|codex>` | writes that entry into the client's file and records it in `<home>/installed-clients.json`; run again after a Node upgrade, it rewrites its own entry. It never writes over, or claims, an entry it did not write, and keeps a file's permissions and symlink |
 | `ch-local uninstall [--keep-data]` | takes back exactly the recorded entries, lists `<home>` and asks once, and removes only the names ch-local owns there; `--keep-data` keeps the store, module data, usage and caches but removes the program, the identity secret and `auth.json`; ends by naming the credentials to revoke |
-| `ch-local start --stdio [options]` | what a client's entry runs: the installed runtime over stdio with every installed pack whose credential is set (it names the variable, never the value), in one per-user store under `<home>/store`, the sandbox enforced (on Windows too, with a runtime that has [countinghouse#195](https://github.com/mchen6/countinghouse/issues/195); with an older one, `audit`, said, until `ch-local upgrade`), no port. Only `--moduleSandbox enforce` or `audit` (to diagnose) and `--locale` may be passed; every other option is refused. It refuses to start if a pack declares a remote at an origin, or a variable for it, that the launcher does not allow, and sends each allowed origin one variable, the first one set, which it names. A pack gets the GitHub `origin` of the repository it runs in as its default repository, read from the repository's config (no git process runs). What one start writes is in `<home>/run/`, removed when it ends |
+| `ch-local start --stdio [options]` | what a client's entry runs: the installed runtime over stdio with every installed pack whose credential is set (it names the variable, never the value), in one per-user store under `<home>/store`, the sandbox enforced (on Windows too, with a runtime that has [countinghouse#195](https://github.com/mchen6/countinghouse/issues/195); with an older one, `audit`, said, until `ch-local upgrade`), no port. Only `--moduleSandbox enforce` or `audit` (to diagnose: audit watches what a pack reads and never lets it change files outside its own area, and start says so) and `--locale` may be passed; every other option is refused. It refuses to start if a pack declares a remote at an origin, or a variable for it, that the launcher does not allow, and sends each allowed origin one variable, the first one set, which it names. A pack gets the GitHub `origin` of the repository it runs in as its default repository, read from the repository's config (no git process runs). What one start writes is in `<home>/run/`, removed when it ends |
 | `ch-local rollback [--yes]` | returns, in one step, to the release the last install replaced, which install keeps in `<home>/previous`: the runtime, packs and parts only; caches, usage records, settings, the identity secret and client entries are untouched. Running it again returns to the newer release. A pack the older release lacks stays recorded but is not loaded, and `status` says it needs the newer release. Undoing a release marked as a security fix names it, says what it fixed and asks, and without a terminal needs `--yes`. If one pack got worse, `remove-pack` it on the current release instead |
 | `ch-local upgrade [--auto on\|off]` | shows installed and available versions from the npm registry, the only network call besides install, and asks once; `--auto` stores the opt-in automatic-upgrade setting, off by default |
 
@@ -65,7 +65,10 @@ npm test
 
 Pure JavaScript, no native module. Node 24 or later today (the runtime's
 floor); 22.16 once countinghouse's floor shim lands (design). CI runs on
-Linux, macOS and Windows.
+Linux, macOS and Windows. The one native program is the shim (below), and
+it is never part of `<home>/app`: that tree is built with `npm ci
+--omit=optional --ignore-scripts`, so no optional or native package enters
+it.
 
 **Unreleased installs.** Until the first release this launcher pins nothing,
 so `install` and `add-pack` take `--unreleased-pins <file>`, a JSON file of
@@ -104,10 +107,34 @@ once within two days or it expires.
 countinghouse's shared runtime is in use. It relays the client's stdio to the
 runtime, makes the handshake, reconnects, and replays its session's
 tightenings (countinghouse's
-`docs/superpowers/specs/2026-11-15-shared-runtime-design.md`). It is Rust,
+`docs/superpowers/specs/2026-11-15-shared-runtime-design.md`). It follows
+contract 2 of that spec: it attaches to the daemon's runtime and proves the
+secret, relays every message, reattaches and resumes after a loss, and hands
+the session to a runtime of its own when the shared one asks. It is Rust,
 with no async runtime and a few widely used crates. `cargo audit` and `cargo
-deny` check it in CI. **It is a scaffold**: it follows contract 2 of that
-spec, which is still under review, and is not yet wired to a runtime.
+deny` check it in CI.
+
+### Why Rust
+
+Every client session runs one shim for as long as the session lasts, so its
+footprint is paid once per session. Measured on Linux x64
+(`shim/bench/memory.py`, which runs the shim against a runtime written from
+contract 2; 2026-11-15, the main branch's release build):
+
+| | RSS | PSS |
+|---|---|---|
+| ch-shim, idle | 3.1 MB | 1.1 MB |
+| ch-shim, after relaying 20 answers of 1 MiB each | 3.1 MB | 1.1 MB |
+
+- What it replaces: the per-session Node relay of the design's revision 3,
+  measured then at 13 MB PSS each (countinghouse's
+  `docs/superpowers/specs/2026-11-15-shared-runtime-design.md`). The shim
+  is about a twelfth of that, per session.
+- The shim streams each answer through without holding it, so its memory
+  stays flat however large the answers are.
+- The binary is 0.7 MB (693,168 bytes on that build).
+- A JS launcher would also put Node back in every session's process tree,
+  which is why the wrapper package below has no `bin`.
 
 - **Build and test:** `cd shim && cargo test`. The toolchain is pinned in
   `shim/rust-toolchain.toml`; the conformance vectors are
@@ -119,15 +146,24 @@ spec, which is still under review, and is not yet wired to a runtime.
   point release.
 - **Packages:** `@countinghouse/ch-shim-<os>-<arch>`, one per target, each
   holding its binary, and `@countinghouse/ch-shim`, which has an exact
-  optionalDependency on each, so npm installs only the matching one. The
-  wrapper has no `bin`: a JS launcher would put Node back in every session's
-  process tree. Its `locate()` gives the binary's path, and ch-local
-  writes that path into each client's config. It also says when a
-  supported platform's package is missing (an install with
-  `--omit=optional`, or a lockfile made on another platform), so that is
-  reported, never silently run in the per-session mode. A platform with no
-  ch-shim at all runs the per-session mode. The Linux builds are static
-  (musl), so they need no particular glibc.
+  optionalDependency on each, so npm installs only the matching one. That
+  wrapper is for installing the shim with npm directly. The wrapper has no
+  `bin`: a JS launcher would put Node back in every session's process tree.
+  Its `locate()` gives the binary's path. It also says when a supported
+  platform's package is missing (an install with `--omit=optional`, or a
+  lockfile made on another platform), so that is reported, never silently
+  run in the per-session mode. A platform with no ch-shim at all runs the
+  per-session mode. The Linux builds are static (musl), so they need no
+  particular glibc.
+- **How ch-local installs it (design, not built yet):** not through
+  `<home>/app`'s optional dependencies, which `--omit=optional` drops by
+  design. `install` will fetch only this platform's
+  `@countinghouse/ch-shim-<os>-<arch>`, at a version and sha512 integrity
+  this launcher pins, as it does each pack's tarballs. It unpacks it with
+  the same strict tar reader into `<home>/shim/`, beside the app, and
+  writes that path into each client's config. Until the packages are
+  published, a source checkout finds the binary in `npm-shim/`
+  (`lib/shim-binary.js`).
 
 ### The daemon (`ch-local daemon`)
 
@@ -140,7 +176,9 @@ running. The daemon holds the runtime for every session of this user.
 - **Its GitHub token comes from `gh auth token` only**, held in memory as
   `COUNTINGHOUSE_GITHUB_TOKEN`. A `GITHUB_TOKEN` in a shell doesn't reach
   it. With no `gh` login, the shared runtime has no token, so a pack that
-  needs one isn't loaded there. A session whose client chooses a token of
+  needs one isn't loaded there. The runtime still starts, with ch-local's
+  own tools, and tells each session which pack isn't loaded and why (run
+  `gh auth login`), so the agent can say so. A session whose client chooses a token of
   its own (`COUNTINGHOUSE_GITHUB_TOKEN`, or `GITHUB_TOKEN` with no `gh`
   login) then differs from the daemon's, and runs its own runtime. That
   fails safe: no session gets another's token, or none silently.

@@ -22,6 +22,13 @@ pub enum StreamError {
 }
 
 impl Held<'_> {
+    /// Bytes as they are (a relayed runtime's output, a line at a time
+    /// under this lock), flushed.
+    pub fn raw(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.0.write_all(bytes)?;
+        self.0.flush()
+    }
+
     /// One whole message the shim made, and its newline.
     pub fn message(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.0.write_all(bytes)?;

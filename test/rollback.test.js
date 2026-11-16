@@ -365,3 +365,44 @@ test('a running daemon is told: a rollback appends an upgrade request, after the
   assert.notStrictEqual(await rollback({}, none), 0);
   assert.ok(!fs.existsSync(path.join(dir, 'requests')));
 });
+
+// the native shim (lib/shim-install.js): rollback brings it in line with the
+// release it restores, by the restored record's shim version and which
+// binary on disk is that version (versions.json, by content)
+test('rollback swaps the shim with the release: the restored record\'s shim comes back, and again forward', async () => {
+  const s = await upgraded();
+  const patch = (file, shim) => { const rec = JSON.parse(fs.readFileSync(file, 'utf8')); if (shim == null) delete rec.shim; else rec.shim = shim; fs.writeFileSync(file, JSON.stringify(rec)); };
+  patch(path.join(s.home, 'packs.json'), {package: '@countinghouse/ch-shim-linux-x64', version: '0.6.0'});
+  patch(path.join(s.home, 'previous', 'packs.json'), {package: '@countinghouse/ch-shim-linux-x64', version: '0.5.0'});
+  const dir = path.join(s.home, 'shim');
+  fs.mkdirSync(dir);
+  const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+  const prev = 'ch-shim.previous';
+  fs.writeFileSync(path.join(dir, exe), 'new');
+  fs.writeFileSync(path.join(dir, prev), 'old');
+  const sha = (t) => require('node:crypto').createHash('sha512').update(t).digest('hex');
+  fs.writeFileSync(path.join(dir, 'versions.json'), JSON.stringify({[sha('new')]: '0.6.0', [sha('old')]: '0.5.0'}), {mode: 0o600});
+  if (process.platform !== 'win32') fs.chmodSync(path.join(dir, 'versions.json'), 0o600);
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'old');
+  assert.strictEqual(record(s.home).shim.version, '0.5.0');
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'new');
+  // a rollback finished twice (interrupted, then resumed) aligns by what is
+  // there: the second pass moves nothing
+  const {alignShim} = require('../lib/shim-install');
+  assert.strictEqual(alignShim(s.home, {restored: record(s.home).shim}), 'nothing');
+  assert.strictEqual(fs.readFileSync(path.join(dir, exe), 'utf8'), 'new');
+});
+
+test('the review of #48: the version rolled back from is declined, so the automatic upgrade never installs it again', async () => {
+  const s = await upgraded();
+  const left = record(s.home).runtime.versions['@countinghouse/ch-local'];
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  const {stamp, problem} = require('../lib/upgrade-stamp').readStamp(s.home);
+  assert.strictEqual(problem, null);
+  assert.deepStrictEqual(stamp.declined, [left]);
+  // rolling back again keeps it once
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.deepStrictEqual(require('../lib/upgrade-stamp').readStamp(s.home).stamp.declined, [left]);
+});

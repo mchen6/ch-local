@@ -294,8 +294,9 @@ test('start names the credential variable and never prints a value; with none pr
   assert.ok(!(f.out + f.err).includes('secret'));
   assert.strictEqual(f.out, '', 'stdout is the MCP channel: start writes nothing there');
   const none = io(home, {env: {}});
-  assert.strictEqual(await start({passThrough: []}, none), 1);
-  assert.strictEqual(none.spawned.length, 0);
+  assert.strictEqual(await start({passThrough: []}, none), 0, none.err);
+  assert.strictEqual(none.spawned.length, 1);
+  assert.ok(!none.spawned[0].args.includes('--loadModule'), 'the runtime starts with no pack');
   // why: gh gave no token and the environment has none (gh auth login, or the plaintext fallback)
   assert.match(none.err, /run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
   assert.match(none.err, /not loading ci-failure-triage: it needs the GitHub token/);
@@ -375,6 +376,55 @@ test('the CLI takes add-pack, remove-pack, status and install --unreleased-pins'
   for (const bad of [['add-pack'], ['remove-pack'], ['status', 'x'], ['add-pack', 'a', 'b']]) assert.strictEqual((await run(bad)).code, 2, bad.join(' '));
 });
 
+// Acceptance (reviewer, 2026-11-12): start passes --remoteOriginMap only under
+// CH_LOCAL_DEV=1, from CH_LOCAL_REMOTE_MAP, never from a client's options. The
+// runtime's own gate, COUNTINGHOUSE_ACCEPTANCE=1, is the caller's to set:
+// start passes the environment through and never sets it.
+// An acceptance run's own token, generated per run (scripts/acceptance.js).
+const ACCEPTANCE_TOKEN = 'chacc_' + 'a'.repeat(48);
+
+test('CH_LOCAL_REMOTE_MAP under CH_LOCAL_DEV=1 becomes --remoteOriginMap: an allowed origin to a loopback http target', async () => {
+  const f = io(installedHome(), {env: {GITHUB_TOKEN: ACCEPTANCE_TOKEN, CH_LOCAL_DEV: '1', CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://127.0.0.1:9745'}});
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const args = f.spawned[0].args;
+  assert.strictEqual(valueOf(args, '--remoteOriginMap'), 'https://api.githubcopilot.com=http://127.0.0.1:9745');
+  assert.match(f.err, /acceptance: https:\/\/api\.githubcopilot\.com is sent to http:\/\/127\.0\.0\.1:9745/);
+  assert.strictEqual(f.spawned[0].env.COUNTINGHOUSE_ACCEPTANCE, undefined, 'start never sets the runtime\'s own gate');
+  const g = io(installedHome(), {env: {GITHUB_TOKEN: 'a'}});
+  await start({passThrough: []}, g);
+  assert.ok(!g.spawned[0].args.includes('--remoteOriginMap'), 'nothing without it');
+});
+
+test('CH_LOCAL_REMOTE_MAP is refused without CH_LOCAL_DEV=1, for an origin the launcher does not allow, or a target that is not loopback http', async () => {
+  for (const [env, why] of [
+    [{CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://127.0.0.1:9'}, /CH_LOCAL_REMOTE_MAP needs CH_LOCAL_DEV=1/],
+    [{CH_LOCAL_DEV: '1', CH_LOCAL_REMOTE_MAP: 'https://collector.example=http://127.0.0.1:9'}, /not an origin this launcher allows/],
+    [{CH_LOCAL_DEV: '1', CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://10.0.0.1:9'}, /http:\/\/127\.0\.0\.1:<port> or http:\/\/\[::1\]:<port>/],
+    [{CH_LOCAL_DEV: '1', CH_LOCAL_REMOTE_MAP: 'nonsense'}, /CH_LOCAL_REMOTE_MAP/]
+  ]) {
+    const f = io(installedHome(), {env: {GITHUB_TOKEN: 'a', ...env}});
+    assert.strictEqual(await start({passThrough: []}, f), 2, JSON.stringify(env));
+    assert.match(f.err, why);
+    assert.strictEqual(f.spawned.length, 0);
+  }
+  const p = io(installedHome(), {env: {GITHUB_TOKEN: 'a', CH_LOCAL_DEV: '1'}});
+  assert.strictEqual(await start({passThrough: ['--remoteOriginMap', 'https://api.githubcopilot.com=http://127.0.0.1:9']}, p), 2, 'never from a client\'s options');
+});
+
+// The gates are environment variables, which a client's config can set too
+// (review of the acceptance branch): under a map, only an acceptance run's own
+// generated token is sent, so a real one never reaches whatever listens there.
+test('under CH_LOCAL_REMOTE_MAP a credential that is not an acceptance token is refused, and nothing starts', async () => {
+  const real = 'ghp_' + 'B'.repeat(36);
+  for (const name of ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']) {
+    const f = io(installedHome(), {env: {[name]: real, CH_LOCAL_DEV: '1', COUNTINGHOUSE_ACCEPTANCE: '1', CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://127.0.0.1:9745'}});
+    assert.strictEqual(await start({passThrough: []}, f), 2, name);
+    assert.match(f.err, /CH_LOCAL_REMOTE_MAP sends only an acceptance run's own token \(chacc_\.\.\.\)/);
+    assert.ok(!f.err.includes(real), 'the token is never printed');
+    assert.strictEqual(f.spawned.length, 0, name);
+  }
+});
+
 // The GitHub token from `gh auth token` (Matt, 2026-11-13): read at start,
 // held in memory, given to the runtime in its environment only; a plaintext
 // environment value is the fallback for headless and CI use. No token value
@@ -417,10 +467,11 @@ test('start asks gh for the GitHub token and gives it to the runtime in its envi
   }
 });
 
-test('gh not installed and no token in the environment: nothing starts, and the message names gh auth login and the plaintext fallback', async () => {
+test('gh not installed and no token in the environment: no pack loads, and the message names gh auth login and the plaintext fallback', async () => {
   const f = withExec(io(installedHome(), {env: {}}), ghAnswers({status: null, stdout: '', stderr: 'spawn gh ENOENT'}));
-  assert.strictEqual(await start({passThrough: []}, f), 1);
-  assert.strictEqual(f.spawned.length, 0);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(f.spawned.length, 1);
+  assert.ok(!f.spawned[0].args.includes('--loadModule'), 'the runtime starts with no pack');
   assert.match(f.err, /gh, the GitHub CLI, was not found or did not answer/);
   assert.match(f.err, /`gh auth login`/);
   assert.match(f.err, /plaintext in that client's config/);
@@ -429,7 +480,7 @@ test('gh not installed and no token in the environment: nothing starts, and the 
 test('gh not logged in: a plain message naming gh auth login, and gh\'s own output is never repeated', async () => {
   const leaked = madeToken();
   const f = withExec(io(installedHome(), {env: {}}), ghAnswers({status: 1, stdout: '', stderr: `no oauth token found for github.com ${leaked}`}));
-  assert.strictEqual(await start({passThrough: []}, f), 1);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.match(f.err, /gh is not logged in to github\.com: run `gh auth login`/);
   assert.ok(!f.err.includes(leaked) && !f.err.includes('no oauth token'), f.err);
 });
@@ -466,8 +517,8 @@ test('a pack that takes only GITHUB_TOKEN gets gh\'s token too, and with none it
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.ok(Object.values(f.spawned[0].env).includes(token));
   const g = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
-  assert.strictEqual(await start({passThrough: []}, g), 1);
-  assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token \(above\)/);
+  assert.strictEqual(await start({passThrough: []}, g), 0, g.err);
+  assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token: run `gh auth login`/);
   assert.doesNotMatch(g.err, /set GITHUB_TOKEN in the environment your client starts from/);
 });
 
@@ -545,7 +596,7 @@ test('on Windows with a runtime older than countinghouse#195: audit, said; an ex
   const f = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
-  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; `ch-local upgrade` installs one that can/);
+  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; audit watches what a pack reads and never lets it change files outside its own area; `ch-local upgrade` installs one that can/);
   for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
     const g = io(home, {platform: 'win32'});
     assert.notStrictEqual(await start({passThrough}, g), 0);
@@ -584,6 +635,30 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
   const f = io(home, {platform: 'linux'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
+});
+
+// The maintainer's decision: under audit, countinghouse refuses a pack's
+// writes outside its own area; reads are allowed and logged. Start says so,
+// once, whenever the runtime runs under audit.
+const AUDIT_TEXT = /audit watches what a pack reads and never lets it change files outside its own area/g;
+test('audit, passed, stored or forced on Windows, says what it watches and that it refuses writes outside the pack\'s area, once', async () => {
+  const count = (f) => (f.err.match(AUDIT_TEXT) || []).length;
+  const home = installedHome();
+  const passed = io(home, {platform: 'linux'});
+  assert.strictEqual(await start({passThrough: ['--moduleSandbox', 'audit']}, passed), 0, passed.err);
+  assert.strictEqual(count(passed), 1, passed.err);
+  assert.match(passed.err, /--moduleSandbox audit: audit watches/);
+  const enforce = io(home, {platform: 'linux'});
+  assert.strictEqual(await start({passThrough: []}, enforce), 0, enforce.err);
+  assert.strictEqual(count(enforce), 0, 'never under enforce');
+  const windows = io(home, {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: []}, windows), 0, windows.err);
+  assert.strictEqual(count(windows), 1, `in WINDOWS_AUDIT, and not twice: ${windows.err}`);
+  assert.match(windows.err, /running audit; audit watches what a pack reads/);
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+  const stored = io(home, {platform: 'linux'});
+  assert.strictEqual(await start({passThrough: []}, stored), 0, stored.err);
+  assert.strictEqual(count(stored), 1, stored.err);
 });
 
 // C4b: ch-local daemon's runtime, start in session mode (countinghouse #236)
@@ -820,6 +895,35 @@ test('start in session mode sends the daemon\'s restore first, passes the table\
   assert.strictEqual(typeof request, 'function');
   const answer = await request({type: 'idle-stop'});
   assert.strictEqual(answer.ok, true);
+});
+
+// #54's diagnosis: with gh not logged in and no token, the daemon's shared
+// runtime ended before it listened, and every client got only "no answer".
+// Now it starts with no pack (ch-local's own tools), its restore first as
+// ever, and the sessions are told which pack is not loaded and why.
+test('start in session mode with no pack loadable: the shared runtime starts with no pack, and tells why', {skip: process.platform === 'win32' && 'a socket path: Windows names a pipe'}, async () => {
+  const home = installedHome();
+  const f = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
+  const sent = [];
+  let deliver = null;
+  let end = null;
+  f.spawn = (cmd, args) => {
+    f.spawned.push({cmd, args});
+    return {kill: () => {}, exited: new Promise((r) => { end = r; }), onMessage: (fn) => { deliver = fn; },
+      send: (m) => { sent.push(m); if (deliver != null) deliver({id: m.id, ok: true}); }};
+  };
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, restore: () => ({type: 'restore', sessions: [], declines: [], reset: []})}}, f);
+  for (let i = 0; i < 100 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(deliver != null, `the shared runtime was spawned: ${f.err}`);
+  assert.ok(!f.spawned[0].args.includes('--loadModule'), 'with no pack');
+  deliver({type: 'ready'});
+  for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /no pack is loaded/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.strictEqual(sent[0].type, 'restore', 'the restore is still the first request');
+  const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
+  assert.ok(told.some((t) => /^not loading ci-failure-triage: it needs the GitHub token: run `gh auth login`/.test(t)), told.join(' | '));
+  assert.ok(told.some((t) => /no pack is loaded this start/.test(t)), told.join(' | '));
+  end(0);
+  await done;
 });
 
 test('start in session mode: a runtime that ends during its restore never reports a refusal; only an explicit one does (the review of #34)', async () => {
