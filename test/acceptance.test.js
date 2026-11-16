@@ -207,7 +207,9 @@ test('shared: daemonDiagnosis starts the daemon as shim.json says and shows its 
   try {
     assert.match(await shared.daemonDiagnosis(home), /no shim\.json/);
     const fake = path.join(home, 'fake-ch-local.js');
-    fs.writeFileSync(fake, "console.log('args', process.argv.slice(2).join(' '), 'cwd', process.cwd() === process.env.HOME_WANTED, 'env', process.env.CH_DIAG_X);\n" +
+    // real paths: on macOS the temporary directory is a link (/var ->
+    // /private/var), and a child's cwd is where it leads (#54's macOS leg)
+    fs.writeFileSync(fake, "console.log('args', process.argv.slice(2).join(' '), 'cwd', process.cwd() === require('fs').realpathSync(process.env.HOME_WANTED), 'env', process.env.CH_DIAG_X);\n" +
       // never process.exit(): on macOS a pipe is written asynchronously, and
       // an exit can drop what was written (#54's macOS run); exitCode lets the
       // output drain first
