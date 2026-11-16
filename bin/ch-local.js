@@ -54,9 +54,10 @@ function snippetCommand(client, io) {
     return 2;
   }
   const {home} = require('../lib/home');
-  const found = require('../lib/shim-binary').shimFor(io.locateShim != null ? {locate: io.locateShim} : {});
-  if (found.shim == null) io.stderr.write(found.note);
-  const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir), shim: found.shim, home: home(io.env, io.homedir)});
+  const h = home(io.env, io.homedir);
+  const found = require('../lib/shim-binary').shimFor({home: h, locate: io.locateShim ?? undefined});
+  if (found.note != null) io.stderr.write(found.note);
+  const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir), shim: found.shim, home: h});
   io.stdout.write(text);
   if (note != null) {
     io.stderr.write(note);
@@ -83,7 +84,10 @@ async function main(argv, io) {
     if (command === 'install') {
       const a = parse(rest, {values: ['--pack', '--from', '--unreleased-pins']});
       if (a == null || a.positional.length > 0 || a.values['--pack'] === undefined) return usage();
-      return await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+      const code = await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+      // asked once whether to turn automatic upgrades on (off with no terminal)
+      if (code === 0) await require('../lib/upgrade').offerAuto(io);
+      return code;
     }
     if (command === 'add-pack') {
       const a = parse(rest, {values: ['--from', '--unreleased-pins']});
@@ -163,8 +167,16 @@ async function main(argv, io) {
       return usage();
     }
     if (command === 'upgrade') {
-      const a = parse(rest, {values: ['--auto']});
+      const a = parse(rest, {values: ['--auto'], flags: ['--apply-auto']});
       if (a == null || a.positional.length > 0) return usage();
+      // start's background check runs this, in a child with the allowlisted
+      // environment (lib/auto-upgrade.js); it re-checks everything itself
+      if (a.flags['--apply-auto']) {
+        if (a.values['--auto'] !== undefined) return usage();
+        const r = await require('../lib/auto-apply').autoApply({io});
+        if (r.line != null) io.stdout.write(`${r.line}\n`);
+        return 0;
+      }
       return await require('../lib/upgrade').upgrade({auto: a.values['--auto']}, io);
     }
   } catch (err) {
