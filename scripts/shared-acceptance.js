@@ -151,6 +151,37 @@ async function stopDaemon(home, ms = 10000) {
     for (const until = Date.now() + 5000; Date.now() < until && alive(pid);) await new Promise((r) => setTimeout(r, 100));
   }
 }
+// A failed run explains itself (#54): the shim discards its daemon's output,
+// so with no live daemon one is started exactly as the shim would start it
+// (shim.json's node, ch-local and environment, the home its working
+// directory), for at most ms, and what it said is returned. POSIX.
+function daemonDiagnosis(home, ms = 10000) {
+  let sj;
+  try { sj = JSON.parse(fs.readFileSync(path.join(home, 'shim.json'), 'utf8')); } catch (e) { return Promise.resolve(`no shim.json: ${e.message}`); }
+  return new Promise((resolve) => {
+    let out = '';
+    let ended = false;
+    const add = (b) => { out = (out + b).slice(-20000); };
+    let d;
+    try {
+      d = spawn(sj.node, [sj.chLocal, 'daemon', '--home', home], {cwd: home, env: sj.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true});
+    } catch (e) {
+      return resolve(`the daemon could not be started: ${e.message}`);
+    }
+    d.stdout.on('data', add);
+    d.stderr.on('data', add);
+    const timer = setTimeout(() => {
+      ended = true;
+      try { process.kill(-d.pid, 'SIGTERM'); } catch (e) { /* gone */ }
+      setTimeout(() => { try { process.kill(-d.pid, 'SIGKILL'); } catch (e) { /* gone */ } }, 3000).unref();
+    }, ms);
+    d.on('error', (e) => { clearTimeout(timer); resolve(`${out}\n(the daemon could not be started: ${e.message})`); });
+    d.on('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve(`${out}\n(${ended ? `still running after ${ms} ms; ended` : `exit ${code}${signal != null ? ` ${signal}` : ''}`})`);
+    });
+  });
+}
 // The command lines of `root` and every descendant (POSIX ps).
 function treeOf(root) {
   const r = spawnSync('ps', ['-eo', 'pid=,ppid=,args='], {encoding: 'utf8', timeout: 10000});
@@ -168,7 +199,14 @@ function treeOf(root) {
 async function main(argv, io = {stdout: process.stdout, stderr: process.stderr}) {
   const say = (s) => io.stdout.write(`${s}\n`);
   const report = {startedAt: new Date().toISOString(), platform: `${process.platform}-${process.arch}`, node: process.version, checks: [], ok: false};
-  const check = (name, ok, detail) => { report.checks.push({name, ok: ok === true, ...(detail != null ? {detail: String(detail).slice(0, 2000)} : {})}); say(`${ok ? 'ok  ' : 'FAIL'} ${name}`); return ok === true; };
+  const indent = (t) => String(t).split('\n').map((l) => `    ${l}`).join('\n');
+  const check = (name, ok, detail) => {
+    report.checks.push({name, ok: ok === true, ...(detail != null ? {detail: String(detail).slice(0, 2000)} : {})});
+    say(`${ok ? 'ok  ' : 'FAIL'} ${name}`);
+    // the report file isn't kept by CI: a failure's detail is said here too
+    if (ok !== true && detail != null) say(indent(String(detail).slice(0, 2000)));
+    return ok === true;
+  };
   let reportFile = path.resolve('shared-acceptance-report.json');
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
@@ -190,6 +228,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   const finish = (interrupted) => finished || (finished = (async () => {
     if (interrupted != null) check('the run was not interrupted', false, interrupted);
     if (client != null) await stopTree(client);
+    if (report.checks.some((c) => !c.ok)) await diagnose();
     await stopDaemon(home);
     const left = daemonPid(home);
     if (left != null) check('the daemon is stopped at the end', !alive(left), `pid ${left}`);
@@ -204,6 +243,28 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       fs.rmSync(work, {recursive: true, force: true});
     }
   })());
+  // A failed run's diagnosis, said into the output (CI keeps no report
+  // file): the shim's stderr, the daemon's files, shim.json with its
+  // environment's values withheld, the debug aid's daemon log, and, with no
+  // live daemon, what one started as the shim would start it says.
+  const diagnose = async () => {
+    const tail = (t, n) => String(t).split('\n').slice(-n).join('\n');
+    const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return `(${e.code || e.message})`; } };
+    say('--- diagnosis of the failed run ---');
+    say(`the shim's stderr (its last 80 lines):\n${indent(stderr !== '' ? tail(stderr, 80) : '(none)')}`);
+    for (const f of ['failed.json', 'daemon.json']) say(`run/daemon/${f}:\n${indent(read(path.join(home, 'run', 'daemon', f)))}`);
+    try {
+      const sj = JSON.parse(fs.readFileSync(path.join(home, 'shim.json'), 'utf8'));
+      say(`shim.json: node ${sj.node}, chLocal ${sj.chLocal}, environment keys ${Object.keys(sj.env || {}).sort().join(' ')}`);
+    } catch (e) {
+      say(`shim.json: (${e.code || e.message})`);
+    }
+    if (fs.existsSync(path.join(work, 'daemon.log'))) say(`the daemon's log (its last 120 lines):\n${indent(tail(read(path.join(work, 'daemon.log')), 120))}`);
+    const pid = daemonPid(home);
+    if (pid != null && alive(pid)) say(`a daemon is running (pid ${pid})`);
+    else if (process.platform !== 'win32' && fs.existsSync(home)) say(`no live daemon; one started as the shim would start it says:\n${indent(tail(await daemonDiagnosis(home), 80))}`);
+    say('--- end of the diagnosis ---');
+  };
   const untrap = trapSignals(() => finish('interrupted by a signal'));
   const run = async () => {
     // the home private, as a user's is (ch-local refuses a group- or
@@ -301,4 +362,4 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code));
 
-module.exports = {main, buildShim, installShim, claudeHarness, daemonPid, stopDaemon, treeOf, session};
+module.exports = {main, buildShim, installShim, claudeHarness, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session};

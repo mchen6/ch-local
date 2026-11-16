@@ -200,6 +200,31 @@ test('shared: daemonPid reads daemon.json\'s pid, and null for none or a bad one
   fs.rmSync(home, {recursive: true, force: true});
 });
 
+// A failed run explains itself in CI (#54): with no live daemon, one is
+// started exactly as the shim would start it, and what it says is shown.
+test('shared: daemonDiagnosis starts the daemon as shim.json says and shows its output, ended within its bound', {skip: process.platform === 'win32' && 'POSIX'}, async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-shared-diag-'));
+  try {
+    assert.match(await shared.daemonDiagnosis(home), /no shim\.json/);
+    const fake = path.join(home, 'fake-ch-local.js');
+    fs.writeFileSync(fake, "console.log('args', process.argv.slice(2).join(' '), 'cwd', process.cwd() === process.env.HOME_WANTED, 'env', process.env.CH_DIAG_X);\n" +
+      "console.error('refusing: something'); if (process.env.CH_DIAG_STAY === '1') setInterval(() => {}, 1000); else process.exit(3);\n");
+    const shimJson = (env) => fs.writeFileSync(path.join(home, 'shim.json'), JSON.stringify({node: process.execPath, chLocal: fake, env: Object.assign({PATH: process.env.PATH, HOME_WANTED: home}, env)}));
+    shimJson({CH_DIAG_X: 'seen'});
+    const out = await shared.daemonDiagnosis(home);
+    assert.match(out, /args daemon --home .* cwd true env seen/);
+    assert.match(out, /refusing: something/);
+    assert.match(out, /exit 3/);
+    shimJson({CH_DIAG_STAY: '1'});
+    const started = Date.now();
+    const stayed = await shared.daemonDiagnosis(home, 1500);
+    assert.ok(Date.now() - started < 8000, 'ended at its bound');
+    assert.match(stayed, /still running after 1500 ms; ended/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('shared: treeOf lists a process and its descendants, and nothing else', {skip: process.platform === 'win32' && 'POSIX ps'}, async () => {
   const {spawn} = require('node:child_process');
   const parent = spawn(process.execPath, ['-e', "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 5000)'], {stdio: 'ignore'}); setTimeout(()=>{}, 5000)"], {stdio: 'ignore'});
