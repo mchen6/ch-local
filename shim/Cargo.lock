@@ -38,6 +38,7 @@ dependencies = [
  "hmac",
  "libc",
  "rustix",
+ "serde",
  "serde_json",
  "sha2",
  "windows-sys",

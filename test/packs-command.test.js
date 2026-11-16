@@ -176,7 +176,7 @@ test('add-pack refuses pins whose runtime is not the installed one', async () =>
   const runtimePins = {...other.pins, countinghouse: {...other.pins.countinghouse, version: '9.0.0'}};
   // A consistent pins file for a newer runtime: its lockfile resolves countinghouse 9.0.0 too.
   const lockfile = JSON.parse(JSON.stringify(other.lockfile));
-  lockfile.packages['node_modules/countinghouse'] = {version: '9.0.0', resolved: 'file:tarballs/countinghouse-9.0.0.tgz'};
+  lockfile.packages['node_modules/countinghouse'] = {version: '9.0.0', resolved: 'file:tarballs/countinghouse-9.0.0.tgz', integrity: other.pins.countinghouse.integrity};
   fs.writeFileSync(pins, JSON.stringify({pins: runtimePins, runtimeLockfile: lockfile}));
   const io = s.io({CH_LOCAL_DEV: '1'});
   assert.strictEqual(await addPack({pack: 'other', from: other.from, unreleasedPins: pins}, io, other.allow), 1);
