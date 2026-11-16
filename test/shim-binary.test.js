@@ -20,7 +20,9 @@ const POSIX = {skip: process.platform === 'win32' && 'POSIX modes'};
 
 const roots = [];
 test.after(() => { for (const r of roots) fs.rmSync(r, {recursive: true, force: true}); });
-const tmp = (prefix) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); roots.push(d); return d; };
+// by realpath: a module loaded from a temp copy knows its directory by it
+// (macOS: /var is a link to /private/var)
+const tmp = (prefix) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); roots.push(d); return d; };
 const linkDir = (target, at) => fs.symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
 
 // a ch-shim wrapper and its platform package under <dir>/node_modules, as a
