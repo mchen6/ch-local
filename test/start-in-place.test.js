@@ -20,13 +20,15 @@ const until = async (cond, ms = 10000) => {
 
 // A running start over an installed home, with a runtime that answers each
 // control request with `answer(msg)` (default ok) and runs until end().
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs} = {}) {
+// env: start's credentials (a GitHub token and another by default)
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs,
+  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}} = {}) {
   const home = tmp('ch-home-');
   const r = release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   if (beforeStart != null) beforeStart(home);
-  const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, homedir: '/nowhere'});
+  const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs});
   const requests = [];
   let end = null;
@@ -67,6 +69,27 @@ test('start spawns its runtime with the control channel', async () => {
   assert.deepStrictEqual(roots, [path.join(s.home, 'packs')]);
   s.end();
   assert.strictEqual(await s.done, 0);
+});
+
+// No pack can load (no GitHub token: gh not logged in, none in the
+// environment): the runtime still starts, serving ch-local's own tools, and
+// the session is told which packs are not loaded and why, so the agent can
+// say what to do. Per-session start and the daemon's runtime alike (#54's
+// diagnosis: the daemon's runtime ended before it listened).
+test('no pack has its credential: the runtime starts with no pack, and the client is told which and why', async () => {
+  const s = await running({env: {}});
+  try {
+    assert.ok(!s.args().includes('--loadModule'), `no pack loaded: ${s.args().join(' ')}`);
+    await until(() => notices(s).some(([, t]) => /not loading ci-failure-triage/.test(t)));
+    const told = notices(s).map(([, t]) => t);
+    const why = told.find((t) => /not loading ci-failure-triage/.test(t));
+    assert.match(why, /needs the GitHub token: run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
+    assert.doesNotMatch(why, /\(above\)/, 'self-contained: the client never saw a line above');
+    assert.ok(told.some((t) => /no pack is loaded this start/.test(t)), told.join(' | '));
+  } finally {
+    s.end();
+    assert.strictEqual(await s.done, 0);
+  }
 });
 
 test('add-pack while running: one load request with the pack\'s own tree, credentials file and notice; history and run.json follow', async () => {

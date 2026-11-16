@@ -292,8 +292,9 @@ test('start names the credential variable and never prints a value; with none pr
   assert.ok(!(f.out + f.err).includes('secret'));
   assert.strictEqual(f.out, '', 'stdout is the MCP channel: start writes nothing there');
   const none = io(home, {env: {}});
-  assert.strictEqual(await start({passThrough: []}, none), 1);
-  assert.strictEqual(none.spawned.length, 0);
+  assert.strictEqual(await start({passThrough: []}, none), 0, none.err);
+  assert.strictEqual(none.spawned.length, 1);
+  assert.ok(!none.spawned[0].args.includes('--loadModule'), 'the runtime starts with no pack');
   // why: gh gave no token and the environment has none (gh auth login, or the plaintext fallback)
   assert.match(none.err, /run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
   assert.match(none.err, /not loading ci-failure-triage: it needs the GitHub token/);
@@ -464,10 +465,11 @@ test('start asks gh for the GitHub token and gives it to the runtime in its envi
   }
 });
 
-test('gh not installed and no token in the environment: nothing starts, and the message names gh auth login and the plaintext fallback', async () => {
+test('gh not installed and no token in the environment: no pack loads, and the message names gh auth login and the plaintext fallback', async () => {
   const f = withExec(io(installedHome(), {env: {}}), ghAnswers({status: null, stdout: '', stderr: 'spawn gh ENOENT'}));
-  assert.strictEqual(await start({passThrough: []}, f), 1);
-  assert.strictEqual(f.spawned.length, 0);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(f.spawned.length, 1);
+  assert.ok(!f.spawned[0].args.includes('--loadModule'), 'the runtime starts with no pack');
   assert.match(f.err, /gh, the GitHub CLI, was not found or did not answer/);
   assert.match(f.err, /`gh auth login`/);
   assert.match(f.err, /plaintext in that client's config/);
@@ -476,7 +478,7 @@ test('gh not installed and no token in the environment: nothing starts, and the 
 test('gh not logged in: a plain message naming gh auth login, and gh\'s own output is never repeated', async () => {
   const leaked = madeToken();
   const f = withExec(io(installedHome(), {env: {}}), ghAnswers({status: 1, stdout: '', stderr: `no oauth token found for github.com ${leaked}`}));
-  assert.strictEqual(await start({passThrough: []}, f), 1);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.match(f.err, /gh is not logged in to github\.com: run `gh auth login`/);
   assert.ok(!f.err.includes(leaked) && !f.err.includes('no oauth token'), f.err);
 });
@@ -513,8 +515,8 @@ test('a pack that takes only GITHUB_TOKEN gets gh\'s token too, and with none it
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.ok(Object.values(f.spawned[0].env).includes(token));
   const g = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
-  assert.strictEqual(await start({passThrough: []}, g), 1);
-  assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token \(above\)/);
+  assert.strictEqual(await start({passThrough: []}, g), 0, g.err);
+  assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token: run `gh auth login`/);
   assert.doesNotMatch(g.err, /set GITHUB_TOKEN in the environment your client starts from/);
 });
 
@@ -845,6 +847,35 @@ test('start in session mode sends the daemon\'s restore first, passes the table\
   assert.strictEqual(typeof request, 'function');
   const answer = await request({type: 'idle-stop'});
   assert.strictEqual(answer.ok, true);
+});
+
+// #54's diagnosis: with gh not logged in and no token, the daemon's shared
+// runtime ended before it listened, and every client got only "no answer".
+// Now it starts with no pack (ch-local's own tools), its restore first as
+// ever, and the sessions are told which pack is not loaded and why.
+test('start in session mode with no pack loadable: the shared runtime starts with no pack, and tells why', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome();
+  const f = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
+  const sent = [];
+  let deliver = null;
+  let end = null;
+  f.spawn = (cmd, args) => {
+    f.spawned.push({cmd, args});
+    return {kill: () => {}, exited: new Promise((r) => { end = r; }), onMessage: (fn) => { deliver = fn; },
+      send: (m) => { sent.push(m); if (deliver != null) deliver({id: m.id, ok: true}); }};
+  };
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, restore: () => ({type: 'restore', sessions: [], declines: [], reset: []})}}, f);
+  for (let i = 0; i < 100 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(deliver != null, `the shared runtime was spawned: ${f.err}`);
+  assert.ok(!f.spawned[0].args.includes('--loadModule'), 'with no pack');
+  deliver({type: 'ready'});
+  for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /no pack is loaded/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.strictEqual(sent[0].type, 'restore', 'the restore is still the first request');
+  const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
+  assert.ok(told.some((t) => /^not loading ci-failure-triage: it needs the GitHub token: run `gh auth login`/.test(t)), told.join(' | '));
+  assert.ok(told.some((t) => /no pack is loaded this start/.test(t)), told.join(' | '));
+  end(0);
+  await done;
 });
 
 test('start in session mode: a runtime that ends during its restore never reports a refusal; only an explicit one does (the review of #34)', {skip: POSIX_ONLY}, async () => {
