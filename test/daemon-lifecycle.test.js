@@ -71,7 +71,7 @@ test('each runtime is handed the table: empty first, then what the crashed one t
     const done = daemon({home}, io, {run: s.run});
     const one = await s.nth(0);
     await adopted(home);
-    assert.deepStrictEqual(one.restore, {type: 'restore', sessions: [], declines: []});
+    assert.deepStrictEqual(one.restore, {type: 'restore', sessions: [], declines: [], reset: []});
     one.tell({type: 'session-resume', session: ID(1), hash: HASH});
     one.tell({type: 'decline', kind: 'pack', at: Date.now()});
     await one.exit(1);   // a crash
