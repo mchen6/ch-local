@@ -193,6 +193,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     report.finishedAt = new Date().toISOString();
     report.ok = report.checks.length > 0 && report.checks.every((c) => c.ok);
     if (!report.ok && stderr !== '') report.shimLog = stderr.split('\n').slice(-200).join('\n');
+    try { if (!report.ok && fs.existsSync(path.join(work, 'daemon.log'))) report.daemonLog = fs.readFileSync(path.join(work, 'daemon.log'), 'utf8').split('\n').slice(-300).join('\n'); } catch (e) { /* none */ }
     try {
       fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
       say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'})`);
@@ -227,6 +228,19 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     fs.mkdirSync(path.join(repo, '.git'), {recursive: true});
     fs.writeFileSync(path.join(repo, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/example/shared-acceptance.git\n');
     const h = claudeHarness(path.join(work, 'client'));
+    // A debugging aid (CH_SHARED_ACCEPTANCE_DAEMON_LOG=1): the daemon started
+    // here as the shim would start it (shim.json's environment, the home its
+    // working directory), its output kept in the report, and the shim attaches
+    // to it. Off, the shim starts the daemon, whose output it discards.
+    let daemonLog = null;
+    if (process.env.CH_SHARED_ACCEPTANCE_DAEMON_LOG === '1' && process.platform !== 'win32') {
+      const sj = JSON.parse(fs.readFileSync(path.join(home, 'shim.json'), 'utf8'));
+      daemonLog = path.join(work, 'daemon.log');
+      const fd = fs.openSync(daemonLog, 'a');
+      const d = spawn(sj.node, [sj.chLocal, 'daemon', '--home', home], {cwd: home, env: sj.env, stdio: ['ignore', fd, fd], detached: true});
+      d.unref();
+      for (const until = Date.now() + 30000; daemonPid(home) == null && Date.now() < until;) await new Promise((r) => setTimeout(r, 200));
+    }
     client = spawn(h.claude, [h.script, installed, home], {cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
       env: launcherEnv(home, {CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CONFIG_DIR: h.config, CLAUDE_PROJECT_DIR: repo})});
     client.stderr.setEncoding('utf8');
