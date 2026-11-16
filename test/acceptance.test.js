@@ -208,7 +208,10 @@ test('shared: daemonDiagnosis starts the daemon as shim.json says and shows its 
     assert.match(await shared.daemonDiagnosis(home), /no shim\.json/);
     const fake = path.join(home, 'fake-ch-local.js');
     fs.writeFileSync(fake, "console.log('args', process.argv.slice(2).join(' '), 'cwd', process.cwd() === process.env.HOME_WANTED, 'env', process.env.CH_DIAG_X);\n" +
-      "console.error('refusing: something'); if (process.env.CH_DIAG_STAY === '1') setInterval(() => {}, 1000); else process.exit(3);\n");
+      // never process.exit(): on macOS a pipe is written asynchronously, and
+      // an exit can drop what was written (#54's macOS run); exitCode lets the
+      // output drain first
+      "console.error('refusing: something'); if (process.env.CH_DIAG_STAY === '1') setInterval(() => {}, 1000); else process.exitCode = 3;\n");
     const shimJson = (env) => fs.writeFileSync(path.join(home, 'shim.json'), JSON.stringify({node: process.execPath, chLocal: fake, env: Object.assign({PATH: process.env.PATH, HOME_WANTED: home}, env)}));
     shimJson({CH_DIAG_X: 'seen'});
     const out = await shared.daemonDiagnosis(home);
