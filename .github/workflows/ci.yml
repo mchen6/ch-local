@@ -63,6 +63,9 @@ jobs:
           (cd countinghouse-src && npm pack --pack-destination "$RUNNER_TEMP/runtime")
           echo "CH_SMOKE_RUNTIME_TGZ=$(ls "$RUNNER_TEMP"/runtime/countinghouse-*.tgz)" >> "$GITHUB_ENV"
           rm -rf countinghouse-src
+      - name: Install ch-local's dependencies (as a release build does)
+        shell: bash
+        run: npm ci --ignore-scripts
       - name: Smoke test
         shell: bash
         run: |
