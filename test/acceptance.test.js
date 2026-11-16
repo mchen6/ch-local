@@ -164,3 +164,77 @@ test('the whole acceptance run', {timeout: 1200000, skip: SRC == null && 'CH_ACC
   assert.ok(Number.isInteger(report.timings.firstResult));
   assert.ok(typeof report.work === 'string' && !fs.existsSync(report.work), `this run's work directory is removed: ${report.work}`);
 });
+
+// The shared runtime through the native shim (MCP completeness M17;
+// scripts/shared-acceptance.js has what it covers and what it does not yet).
+const shared = require('../scripts/shared-acceptance');
+
+test('shared: the client harness is a `claude` beside a script and an empty configuration, all in the run\'s directory', () => {
+  const dir = path.join(tmp('ch-shared-h-'), 'client');
+  const h = shared.claudeHarness(dir);
+  assert.strictEqual(path.basename(h.claude).replace(/\.exe$/, ''), 'claude');
+  for (const p of [h.claude, h.script, h.config]) assert.ok(p.startsWith(dir + path.sep), p);
+  assert.deepStrictEqual(fs.readdirSync(h.config), []);
+  fs.rmSync(path.dirname(dir), {recursive: true, force: true});
+});
+
+test('shared: the shim goes in a private <home>/shim, executable by its owner only', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const home = tmp('ch-shared-home-');
+  const bin = path.join(home, 'built');
+  fs.writeFileSync(bin, '#!/bin/sh\n');
+  const to = shared.installShim(home, bin);
+  assert.strictEqual(to, path.join(home, 'shim', 'ch-shim'));
+  assert.strictEqual(fs.statSync(path.join(home, 'shim')).mode & 0o777, 0o700);
+  assert.strictEqual(fs.statSync(to).mode & 0o777, 0o700);
+  fs.rmSync(home, {recursive: true, force: true});
+});
+
+test('shared: daemonPid reads daemon.json\'s pid, and null for none or a bad one', () => {
+  const home = tmp('ch-shared-d-');
+  assert.strictEqual(shared.daemonPid(home), null);
+  fs.mkdirSync(path.join(home, 'run', 'daemon'), {recursive: true});
+  fs.writeFileSync(path.join(home, 'run', 'daemon', 'daemon.json'), '{"pid": "7"}');
+  assert.strictEqual(shared.daemonPid(home), null);
+  fs.writeFileSync(path.join(home, 'run', 'daemon', 'daemon.json'), '{"pid": 4242}');
+  assert.strictEqual(shared.daemonPid(home), 4242);
+  fs.rmSync(home, {recursive: true, force: true});
+});
+
+test('shared: treeOf lists a process and its descendants, and nothing else', {skip: process.platform === 'win32' && 'POSIX ps'}, async () => {
+  const {spawn} = require('node:child_process');
+  const parent = spawn(process.execPath, ['-e', "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 5000)'], {stdio: 'ignore'}); setTimeout(()=>{}, 5000)"], {stdio: 'ignore'});
+  try {
+    let tree = [];
+    for (const until = Date.now() + 5000; Date.now() < until && tree.length < 2;) {
+      tree = shared.treeOf(parent.pid) || [];
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.strictEqual(tree.length, 2, JSON.stringify(tree));
+    assert.ok(tree.some((p) => p.pid === parent.pid));
+    assert.ok(!tree.some((p) => p.pid === process.pid), 'not its parent');
+  } finally {
+    for (const p of shared.treeOf(parent.pid) || []) { try { process.kill(p.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+  }
+});
+
+// Gated as the whole run is. The windows acceptance leg is still the known
+// non-gating red: there the daemon is not yet available (C4c), and what this
+// checks is the per-session fallback, so its result there is informational.
+test('the shared runtime through the native shim', {timeout: 2400000, skip: SRC == null && 'CH_ACCEPTANCE_SRC is not set (a directory of clones)'}, async () => {
+  const pairs = (v, flag) => (v || '').split(',').filter(Boolean).flatMap((p) => [flag, p]);
+  const reportFile = path.join(tmp('ch-shared-report-'), 'report.json');
+  const out = {text: '', write(s) { this.text += s; }};
+  const code = await shared.main(['--src', SRC, ...pairs(process.env.CH_ACCEPTANCE_CLONES, '--clone'), ...pairs(process.env.CH_ACCEPTANCE_REFS, '--ref'), '--report', reportFile],
+    {stdout: out, stderr: out});
+  assert.strictEqual(code, 0, out.text.slice(-4000));
+  const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
+  assert.strictEqual(report.ok, true, JSON.stringify(report.checks.filter((c) => !c.ok)));
+});
+
+// Not yet through the real shim (scripts/shared-acceptance.js says where each
+// is covered meanwhile): todos, never skips, so the acceptance workflow's
+// "skipped 0" still holds.
+test('shared: (a) progress frames before an answer, through the shim', {todo: 'needs a hopping pack in the shared runtime: per-session packs (B3/B5)'});
+test('shared: (c) a cancelled call leaves no in-flight entry, through the shim', {todo: 'needs a hopping pack in the shared runtime: per-session packs (B3/B5)'});
+test('shared: (b2) ctx.ask through the shim', {todo: 'once M13 (ctx.ask) is on countinghouse master'});
+test('shared: (d) a paged list through the shim', {todo: 'once M1 (pagination) is on countinghouse master'});
