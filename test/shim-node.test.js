@@ -311,6 +311,25 @@ test('conditions: no pack credential chosen, or no packs: no credentials key, an
   }
 });
 
+test('conditions: start\'s precedence: a pack whose choice is a GitHub variable is token\'s, not a credential; a name the runtime would refuse fails the check', async() => {
+  const home = homeWithSecret();
+  try {
+    withPacks(home, {mixed: ['COUNTINGHOUSE_GITHUB_TOKEN', 'OTHER_TOKEN']});
+    let io = conditionsIo({env: {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token', OTHER_TOKEN: 'example-other'}});
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+    assert.ok(!('credentials' in JSON.parse(io.out)), 'start would load it with the GitHub token');
+    io = conditionsIo({env: {OTHER_TOKEN: 'example-other'}});
+    await conditions.conditions({pid: 1, home}, io);
+    assert.deepStrictEqual(Object.keys(JSON.parse(io.out).credentials), ['OTHER_TOKEN'], 'with no GitHub token set, the other');
+    withPacks(home, {odd: ['MY-API-KEY']});
+    io = conditionsIo({env: {'MY-API-KEY': 'example-odd'}});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('conditions: more than 32 chosen pack credentials, or packs.json that cannot be read, is a failure: no line, a non-zero exit', async() => {
   const home = homeWithSecret();
   try {

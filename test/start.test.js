@@ -783,10 +783,10 @@ async function toldBy(argv, f) {
 test('start --own-runtime tells why the session runs its own runtime: token, credential (per pack and variable), conditions-failed (with its why), or none given', async () => {
   const value = `example-${require('node:crypto').randomBytes(6).toString('hex')}`;
   const cases = [
-    [['--own-runtime-reason', 'token'], /^this session's GitHub token differs from the shared runtime's, so it runs its own runtime$/],
+    [['--own-runtime-reason', 'token'], /^this session chooses a GitHub token the shared runtime doesn't hold, so it runs its own runtime$/],
     [['--own-runtime-reason', 'credential'], /^this session runs its own runtime: other's OTHER_TOKEN comes from this session's environment, which the shared runtime doesn't hold$/],
-    [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'the conditions check timed out after 10 s\u202e\n'], /^the client checks could not run \(the conditions check timed out after 10 s  \), so this session runs its own runtime$/],
-    [[], /^this session can't share the runtime, so it runs its own$/],
+    [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'the conditions check timed out after 10 s\u202e\n\u2028'], /^the client checks could not run \(the conditions check timed out after 10 s   \), so this session runs its own runtime$/],
+    [['--own-runtime-reason', 'later-reason'], /^this session can't share the runtime \(later-reason\), so it runs its own$/],
     [['--own-runtime-reason', 'Bad Reason!'], /^this session can't share the runtime, so it runs its own$/]
   ];
   for (const [extra, want] of cases) {
@@ -797,6 +797,22 @@ test('start --own-runtime tells why the session runs its own runtime: token, cre
     assert.ok(!told.some((t) => t.includes(value)) && !f.err.includes(value), 'never the value');
     const {args} = f.spawned[0];
     assert.ok(!args.some((a) => /own-runtime/.test(a)), 'none of it reaches the runtime');
+  }
+});
+
+test('start --own-runtime with no reason (an older shim, or the startup and failed.json fallbacks) tells nothing of sharing', async () => {
+  const home = installedHome({other: true});
+  const told = await toldBy(['start', '--stdio', '--own-runtime', '--home', home], io(home, {env: {GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: 'example-other'}}));
+  assert.ok(!told.some((t) => /share the runtime|runs its own runtime/.test(t)), told.join(' | '));
+});
+
+test('--own-runtime-reason and --own-runtime-why only after --own-runtime, and never take an option as their value', async () => {
+  const {main} = require('../bin/ch-local');
+  const home = installedHome();
+  for (const bad of [['--own-runtime-reason', 'token', '--home', home], ['--own-runtime', '--own-runtime-why', '--home', home], ['--own-runtime', '--own-runtime-reason']]) {
+    const f = io(home);
+    assert.strictEqual(await main(['start', '--stdio', ...bad], f), 2, `${bad.join(' ')}: ${f.err}`);
+    assert.strictEqual(f.spawned.length, 0);
   }
 });
 

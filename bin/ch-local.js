@@ -150,11 +150,12 @@ async function main(argv, io) {
         if (rest[i] === '--own-runtime') { i += 1; ownRuntime = ownRuntime || {}; continue; }
         if (rest[i] === '--own-runtime-reason' || rest[i] === '--own-runtime-why') {
           const v = rest[i + 1];
-          if (typeof v !== 'string') { io.stderr.write(`ch-local start: ${rest[i]} needs a value\n`); return 2; }
-          ownRuntime = ownRuntime || {};
+          // only on the shim's hand-over, after --own-runtime, and never an option as its value
+          if (ownRuntime == null || typeof v !== 'string' || v.startsWith('--')) { io.stderr.write(`ch-local start: ${rest[i]} needs --own-runtime before it and a value\n`); return 2; }
           if (rest[i] === '--own-runtime-reason') ownRuntime.reason = /^[a-z][a-z-]{0,31}$/.test(v) ? v : 'unknown';
-          // cut and cleaned at the source: no control or bidi characters
-          else ownRuntime.why = v.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').slice(0, 200);
+          // cut and cleaned at the source: no control, line-separator, bidi or
+          // zero-width characters, and cut by code point (never half a pair)
+          else ownRuntime.why = Array.from(v.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, ' ')).slice(0, 200).join('');
           i += 2;
           continue;
         }
