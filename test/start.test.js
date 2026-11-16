@@ -758,6 +758,54 @@ test('start --home names the home, over COUNTINGHOUSE_HOME; --own-runtime is tak
   assert.ok(args.includes('--locale'), 'the pass-through still does');
 });
 
+// what a start tells the client (notices over the control channel, which the
+// runtime adds to the first result), with a runtime that answers every request
+async function toldBy(argv, f) {
+  const {main} = require('../bin/ch-local');
+  const sent = [];
+  let deliver = null;
+  let end = null;
+  f.spawn = (cmd, args) => {
+    f.spawned.push({cmd, args});
+    return {kill: () => {}, exited: new Promise((r) => { end = r; }), onMessage: (fn) => { deliver = fn; setImmediate(() => fn({type: 'ready'})); },
+      send: (m) => { sent.push(m); if (deliver != null) deliver({id: m.id, ok: true}); }};
+  };
+  const done = main(argv, f);
+  for (let i = 0; i < 200 && (end == null || !sent.some((m) => m.type === 'notice')); i++) await new Promise((r) => setTimeout(r, 10));
+  await new Promise((r) => setTimeout(r, 50));
+  if (end != null) end(0);
+  assert.strictEqual(await done, 0, f.err);
+  return sent.filter((m) => m.type === 'notice').map((m) => m.text);
+}
+
+// #236 section 5: a session the shim runs per-session says why, in its first
+// result's notice; a credential is named, never its value
+test('start --own-runtime tells why the session runs its own runtime: token, credential (per pack and variable), conditions-failed (with its why), or none given', async () => {
+  const value = `example-${require('node:crypto').randomBytes(6).toString('hex')}`;
+  const cases = [
+    [['--own-runtime-reason', 'token'], /^this session's GitHub token differs from the shared runtime's, so it runs its own runtime$/],
+    [['--own-runtime-reason', 'credential'], /^this session runs its own runtime: other's OTHER_TOKEN comes from this session's environment, which the shared runtime doesn't hold$/],
+    [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'the conditions check timed out after 10 s\u202e\n'], /^the client checks could not run \(the conditions check timed out after 10 s  \), so this session runs its own runtime$/],
+    [[], /^this session can't share the runtime, so it runs its own$/],
+    [['--own-runtime-reason', 'Bad Reason!'], /^this session can't share the runtime, so it runs its own$/]
+  ];
+  for (const [extra, want] of cases) {
+    const home = installedHome({other: true});
+    const f = io(home, {env: {GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: value}});
+    const told = await toldBy(['start', '--stdio', '--own-runtime', ...extra, '--home', home], f);
+    assert.ok(told.some((t) => want.test(t)), `${extra.join(' ')}: ${told.join(' | ')}`);
+    assert.ok(!told.some((t) => t.includes(value)) && !f.err.includes(value), 'never the value');
+    const {args} = f.spawned[0];
+    assert.ok(!args.some((a) => /own-runtime/.test(a)), 'none of it reaches the runtime');
+  }
+});
+
+test('start without --own-runtime tells no such notice', async () => {
+  const home = installedHome({other: true});
+  const told = await toldBy(['start', '--stdio', '--home', home], io(home, {env: {GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: 'example-other'}}));
+  assert.ok(!told.some((t) => /runs its own runtime|so it runs its own/.test(t)), told.join(' | '));
+});
+
 test('start --home must be absolute and an existing directory, and is refused with exit 2 otherwise', async () => {
   const {main} = require('../bin/ch-local');
   const home = installedHome();
@@ -874,6 +922,28 @@ test('start in session mode with no pack loadable: the shared runtime starts wit
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
   assert.ok(told.some((t) => /^not loading ci-failure-triage: it needs the GitHub token: run `gh auth login`/.test(t)), told.join(' | '));
   assert.ok(told.some((t) => /no pack is loaded this start/.test(t)), told.join(' | '));
+  end(0);
+  await done;
+});
+
+test('start in session mode never tells a session to set a pack\'s own credential: it comes only from a session\'s environment, which runs its own runtime', {skip: POSIX_ONLY}, async () => {
+  const home = installedHome({other: true});
+  const f = ghLoggedIn(io(home, {env: {}}));
+  const sent = [];
+  let deliver = null;
+  let end = null;
+  f.spawn = (cmd, args) => {
+    f.spawned.push({cmd, args});
+    return {kill: () => {}, exited: new Promise((r) => { end = r; }), onMessage: (fn) => { deliver = fn; },
+      send: (m) => { sent.push(m); if (deliver != null) deliver({id: m.id, ok: true}); }};
+  };
+  const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, restore: () => ({type: 'restore', sessions: [], declines: [], reset: []})}}, f);
+  for (let i = 0; i < 100 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
+  deliver({type: 'ready'});
+  for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /not loading other/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
+  const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
+  assert.ok(told.some((t) => t === 'not loading other in the shared runtime: its credential (OTHER_TOKEN) comes only from a session\'s own environment, and a session whose client sets it runs its own runtime, with the pack'), told.join(' | '));
+  assert.ok(!told.some((t) => /set OTHER_TOKEN in the environment your client starts from/.test(t)));
   end(0);
   await done;
 });
