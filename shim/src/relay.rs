@@ -692,6 +692,19 @@ impl Relay {
                 }
             }
             "forget" => self.records.forget(),
+            // a call the client cancelled has no answer (MCP completeness
+            // section 13): its seq is forgotten, so no crash answer is made
+            // for it, and a close waiting on it ends once nothing is left.
+            // A seq not held (answered already, or another connection's) is
+            // ignored, as an op this shim did not know would be.
+            "cancelled" => {
+                if let Some(seq) = op.get("seq").and_then(Value::as_u64) {
+                    self.inflight.lock().expect("in-flight lock").settle(seq);
+                    if matches!(self.state, State::Closing(_)) && self.nothing_in_flight() {
+                        return Some(self.finish());
+                    }
+                }
+            }
             "drain" if self.state == State::Live => self.state = State::Draining,
             "own-runtime" => {
                 let reason: String = op
@@ -1834,6 +1847,52 @@ mod tests {
         let lines = sink.lines();
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("RUNTIME_RESTARTED"));
+    }
+
+    // MCP completeness section 13: a cancelled call has no answer, so the
+    // runtime sends `cancelled` with its seq and the shim forgets it: no
+    // crash answer is made for it, and a close waiting on it ends at once.
+    #[test]
+    fn a_cancelled_seq_is_forgotten_with_no_crash_answer_and_a_close_waiting_on_it_ends_at_once() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\"}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        let started = Instant::now();
+        let op = format!(r#"{{"op":"cancelled","seq":{}}}"#, seq.unwrap());
+        frame::write_frame(&mut s, Kind::Control, op.as_bytes(), BIG).unwrap();
+        assert!(matches!(done.join().unwrap(), Exit::Done));
+        assert!(started.elapsed() < Duration::from_secs(2), "at once, not at the 10 s grace: {:?}", started.elapsed());
+        assert_eq!(sink.lines(), Vec::<String>::new(), "no answer and no crash answer for a cancelled call");
+    }
+
+    #[test]
+    fn a_cancelled_op_for_an_unknown_seq_is_ignored_and_answers_still_relay() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"cancelled","seq":999}"#, BIG).unwrap();
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"cancelled"}"#, BIG).unwrap();
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"a\"}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":6,"result":{}}"#);
+        thread::sleep(Duration::from_millis(100));
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+        assert_eq!(sink.lines(), [r#"{"jsonrpc":"2.0","id":6,"result":{}}"#]);
     }
 
     // The ordering CI hit: the line too large for this connection arrives
