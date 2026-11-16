@@ -124,11 +124,14 @@ async function main(argv, io) {
       return await require('../lib/conditions-command').conditions({pid: a.values['--for'], home: a.values['--home']}, io);
     }
     if (command === 'daemon') {
-      const a = parse(rest, {values: ['--home']});
+      // --handoff: started by a daemon re-execing onto a new ch-local (C3b),
+      // with the session table on fd 3, never in argv or env
+      const a = parse(rest, {values: ['--home'], flags: ['--handoff']});
       if (a == null || a.positional.length > 0 || a.values['--home'] === undefined) return usage();
       const {isFullPath} = require('../lib/home');
       if (!isFullPath(a.values['--home'])) { io.stderr.write('ch-local daemon: --home must be an absolute path\n'); return 2; }
-      return await require('../lib/daemon').daemon({home: a.values['--home']}, io);
+      const handoff = a.flags['--handoff'] === true ? await io.readHandoff() : null;
+      return await require('../lib/daemon').daemon({home: a.values['--home'], handoff}, io);
     }
     if (command === 'start') {
       if (rest[0] !== '--stdio') return usage();
@@ -224,6 +227,10 @@ function realIo() {
     // a signal this process takes and does nothing with (ch-local daemon:
     // SIGHUP, so it outlives the shim's parent ending)
     ignoreSignal: (name) => process.on(name, () => {}),
+    // ch-local daemon's re-exec (C3b): the new daemon, with the table on its
+    // fd 3; and that fd's bytes, read by the daemon started so
+    spawnDaemon: (args, {handoff}) => require('../lib/handoff-io').spawnDaemon(args[2], args, {handoff, env: process.env}),
+    readHandoff: () => require('../lib/handoff-io').readHandoff(3),
     // SIGINT, SIGTERM and SIGHUP (or the signals named) go to handler(name)
     // until the returned function is called; start decides what each means.
     trapSignals: (handler, signals = ['SIGINT', 'SIGTERM', 'SIGHUP']) => {

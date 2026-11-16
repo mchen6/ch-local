@@ -493,3 +493,35 @@ test('a tarball that cannot be read is a problem named like the others, not a cr
   assert.match(io.err, /@countinghouse\/ch-step-redact@0\.1\.0: cannot read countinghouse-ch-step-redact-0\.1\.0\.tgz \(EISDIR\)/);
   assert.match(io.err, /nothing was installed/);
 });
+
+test('a running daemon is told: install appends an upgrade request to run/daemon/requests (C3b)', {skip: process.platform === 'win32'}, async () => {
+  const r = release(); const h = home();
+  const dir = path.join(h, 'run', 'daemon');
+  fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+  fs.chmodSync(path.join(h, 'run'), 0o700);
+  fs.chmodSync(dir, 0o700);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const lines = fs.readFileSync(path.join(dir, 'requests'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepStrictEqual(lines.map((l) => l.op), ['upgrade']);
+});
+
+test('no lock-order deadlock (the review of #35): an install while the daemon holds start.lock and waits on packs.lock, and both finish', {skip: process.platform === 'win32'}, async () => {
+  const {withLockFile, withLock} = require('../lib/lock');
+  const r = release(); const h = home();
+  const dir = path.join(h, 'run', 'daemon');
+  fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+  fs.chmodSync(path.join(h, 'run'), 0o700);
+  fs.chmodSync(dir, 0o700);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  const installing = run(r, io);
+  // once the install holds packs.lock, a daemon takes start.lock and waits on packs.lock, as its start() does
+  const until = Date.now() + 10000;
+  while (!fs.existsSync(path.join(h, 'packs.lock')) && Date.now() < until) await new Promise((res) => setTimeout(res, 5));
+  const daemonSide = withLockFile(path.join(dir, 'start.lock'), dir, fakeIo({}), async() => withLock({home: h}, fakeIo({}), async() => 0, {wait: true}), {wait: true});
+  const both = Promise.all([installing, daemonSide]);
+  const outcome = await Promise.race([both, new Promise((res) => setTimeout(() => res('deadlock'), 15000))]);
+  assert.notStrictEqual(outcome, 'deadlock');
+  assert.strictEqual(outcome[0], 0, io.err);
+  assert.ok(fs.readFileSync(path.join(dir, 'requests'), 'utf8').includes('"op":"upgrade"'), 'and the request was still written');
+});
