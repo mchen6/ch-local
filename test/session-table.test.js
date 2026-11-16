@@ -49,6 +49,26 @@ test('a state the runtime would refuse is never kept, and drops that session\'s 
   assert.deepStrictEqual(t.restore().sessions, [], 'the whole row goes (#34 review): its resume is refused, and the shim replays only-tighter');
 });
 
+// B's next export (the distinct kinds with one unanswered form): an optional
+// `unanswered`, the known kind names, distinct, at most three; any other
+// key still drops the row.
+test('a state with unanswered is kept; a bad unanswered, or an unknown key beside it, drops the row', () => {
+  const t = createSessionTable({warn: () => {}});
+  t.told({type: 'session-resume', session: ID(1), hash: HASH});
+  const withIt = Object.assign({}, STATE, {unanswered: ['pack', 'maxOutputBytes']});
+  assert.strictEqual(t.told({type: 'session-state', session: ID(1), state: withIt}), true);
+  assert.deepStrictEqual(t.restore().sessions, [{session: ID(1), resume: HASH, state: withIt}]);
+  for (const unanswered of [['other'], ['pack', 'pack'], 'pack', [1], ['pack', 'maxOutputBytes', 'requestTimeout', 'pack']]) {
+    const u = createSessionTable({warn: () => {}});
+    u.told({type: 'session-resume', session: ID(2), hash: HASH});
+    assert.strictEqual(u.told({type: 'session-state', session: ID(2), state: Object.assign({}, STATE, {unanswered})}), false, JSON.stringify(unanswered));
+  }
+  const v = createSessionTable({warn: () => {}});
+  v.told({type: 'session-resume', session: ID(3), hash: HASH});
+  assert.strictEqual(v.told({type: 'session-state', session: ID(3), state: Object.assign({}, STATE, {unanswered: ['pack'], nonce: 'x'})}), false, 'still no other key');
+  assert.deepStrictEqual(v.restore().sessions, []);
+});
+
 test('bad ids and hashes are refused; past the row cap a new session is not kept', () => {
   const t = createSessionTable({warn: () => {}});
   assert.strictEqual(t.told({type: 'session-resume', session: 'not-hex', hash: HASH}), false);
@@ -62,7 +82,7 @@ test('bad ids and hashes are refused; past the row cap a new session is not kept
   assert.strictEqual(t.size(), MAX_ROWS);
 });
 
-test('declines: the three kinds, a past epoch ms; kept 30 minutes; at most MAX_DECLINES, the newest', () => {
+test('declines: the three kinds, a past epoch ms; kept DECLINE_KEEP_MS; at most MAX_DECLINES, the newest', () => {
   let now = 1000000000000;
   const t = createSessionTable({now: () => now});
   assert.strictEqual(t.told({type: 'decline', kind: 'pack', at: now}), true);
@@ -74,6 +94,22 @@ test('declines: the three kinds, a past epoch ms; kept 30 minutes; at most MAX_D
   assert.deepStrictEqual(t.restore().declines, []);
   for (let i = 0; i < MAX_DECLINES + 5; i++) t.told({type: 'decline', kind: 'requestTimeout', at: now});
   assert.strictEqual(t.restore().declines.length, MAX_DECLINES);
+});
+
+// countinghouse's UserWindow.load (lib/settings-confirm.js LOAD_KEEP_MS)
+// takes the declines of two 30-minute windows: a lock runs 30 minutes from
+// its third decline, so declines at 0, 0 and 29 min lock until 59. A restart
+// at 31 must still be handed all three, or the lock ends 28 minutes early.
+test('declines are kept two windows (60 minutes): one 59 minutes old reaches a restart, one 61 minutes old does not', () => {
+  let now = 1000000000000;
+  const t = createSessionTable({now: () => now});
+  assert.strictEqual(DECLINE_KEEP_MS, 60 * 60 * 1000);
+  const old = now;
+  assert.strictEqual(t.told({type: 'decline', kind: 'pack', at: old}), true);
+  now = old + 59 * 60 * 1000;
+  assert.deepStrictEqual(t.restore().declines, [{kind: 'pack', at: old}], '59 minutes old: still handed to a restart');
+  now = old + 61 * 60 * 1000;
+  assert.deepStrictEqual(t.restore().declines, [], '61 minutes old: gone');
 });
 
 test('clear() empties the table (a restore the runtime refused, #34 review)', () => {

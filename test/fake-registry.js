@@ -27,8 +27,14 @@ async function fakeRegistry() {
   const server = http.createServer((req, res) => {
     const url = decodeURIComponent(req.url);
     requests.push(url);
+    // connection: close on every answer, so the client never reuses a
+    // socket: Node's server closes an idle keep-alive socket after
+    // keepAliveTimeout (5 s), and a fetch (undici) that reuses one just as it
+    // closes fails ECONNRESET, which the Windows legs hit in two different
+    // shim-install tests (ch-local #51). A fresh connection per request takes
+    // that race away; the code under test fetches the same either way.
     const send = (status, body, type = 'application/json') => {
-      res.writeHead(status, {'content-type': type});
+      res.writeHead(status, {'content-type': type, connection: 'close'});
       res.end(body);
     };
     // attestations: /-/npm/v1/attestations/<name>@<version>
