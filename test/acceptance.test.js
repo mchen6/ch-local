@@ -236,5 +236,6 @@ test('the shared runtime through the native shim', {timeout: 2400000, skip: SRC 
 // "skipped 0" still holds.
 test('shared: (a) progress frames before an answer, through the shim', {todo: 'needs a hopping pack in the shared runtime: per-session packs (B3/B5)'});
 test('shared: (c) a cancelled call leaves no in-flight entry, through the shim', {todo: 'needs a hopping pack in the shared runtime: per-session packs (B3/B5)'});
+test('shared: (b1) the settings confirmation form round trip, through the shim', {todo: 'once a tested Claude Code range is in countinghouse lib/elicitation-clients.json (the maintainer\'s hand test before release)'});
 test('shared: (b2) ctx.ask through the shim', {todo: 'once M13 (ctx.ask) is on countinghouse master'});
 test('shared: (d) a paged list through the shim', {todo: 'once M1 (pagination) is on countinghouse master'});

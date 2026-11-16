@@ -12,9 +12,9 @@
 //     live daemon outside the client's process tree, and nothing in that tree
 //     is a per-session runtime (`start --stdio --own-runtime`), so the
 //     fallback can never pass for the shared path;
-//   - (b) a settings confirmation round trip: input_required with a
-//     requestState, then the retry with the user's accept, applied to this
-//     session only.
+//   - (b) settings through the shim: a loosening, with no tested client on
+//     countinghouse's list yet, refused with the terminal command; a
+//     tightening applied to this session.
 // On win32 the daemon is not yet available (C4c): the shim runs the
 // per-session runtime, and that fallback is what is checked.
 //
@@ -27,6 +27,9 @@
 //     session-runtime 01 and mcp-contract 11 and 19 over the session
 //     transport, and the shim relay's unit tests (progress frames written as
 //     they arrive; the `cancelled` op).
+//   - (b1) the confirmation form round trip, once a tested Claude Code range
+//     is in countinghouse's lib/elicitation-clients.json (the maintainer's
+//     hand test before release): until then no client gets a form.
 //   - (b2) ctx.ask through the shim, once M13 is on countinghouse's master.
 //   - (d) a paged list, once M1 is.
 //
@@ -265,24 +268,23 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       `daemon ${pid}; tree ${JSON.stringify(tree)}`);
     check('no per-session runtime in the client\'s tree', tree != null && !tree.some((p) => /\s--own-runtime\b/.test(p.args)), JSON.stringify(tree));
 
-    // (b) the settings confirmation round trip
+    // (b) settings through the shim. countinghouse's tested-client list
+    // (lib/elicitation-clients.json) has no tested Claude Code version until
+    // the maintainer's hand test before release, so a loosening gets no form
+    // yet: it is refused with the terminal command, as documented. A
+    // tightening needs no form and applies to this session. The form round
+    // trip itself joins once a tested range is listed (a todo).
     const call = (a, extra = {}) => mcp.request('tools/call', Object.assign({_meta: META, name: 'countinghouse_settings', arguments: a}, extra));
-    const set60 = {action: 'set', name: 'requestTimeout', value: '60s'};
-    const ask = await call(set60);
-    const asked = ask.result != null && ask.result.resultType === 'input_required' && typeof(ask.result.requestState) === 'string';
-    // on a failure, what the client's conditions answer (the shim asks them so)
-    const conditionsNow = () => {
-      const r = spawnSync(node, [path.join(home, 'bin', 'ch-local.js'), 'conditions', '--for', String(client.pid), '--home', home],
-        {cwd: repo, encoding: 'utf8', timeout: 30000, env: launcherEnv(home, {CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CONFIG_DIR: h.config, CLAUDE_PROJECT_DIR: repo})});
-      return `conditions: ${String(r.stdout).trim()} ${String(r.stderr).trim()}`;
-    };
-    if (!check('(b) a loosening asks: input_required with a requestState', asked, `${JSON.stringify(ask).slice(0, 1000)} ${asked ? '' : conditionsNow()}`)) return 1;
-    const done = await call(set60, {requestState: ask.result.requestState, inputResponses: {approve: {action: 'accept', content: {approve: true}}}});
-    const applied = done.result != null && done.result.structuredContent != null && done.result.structuredContent.new === 60000 && done.result.structuredContent.applies === 'this session';
-    check('(b) the user\'s accept is applied to this session', applied, JSON.stringify(done).slice(0, 1000));
+    const loosen = await call({action: 'set', name: 'requestTimeout', value: '60s'});
+    const loosenCode = loosen.result != null && loosen.result._meta != null ? loosen.result._meta['countinghouse/code'] : null;
+    check('(b) a loosening, with no tested client yet, is refused with the terminal command', loosen.result != null && loosen.result.isError === true &&
+      loosenCode === 'SETTING_NEEDS_CONFIRMATION' && /ch-local settings set requestTimeout 60s/.test(JSON.stringify(loosen.result.content)), JSON.stringify(loosen).slice(0, 1000));
+    const tighten = await call({action: 'set', name: 'requestTimeout', value: '10s'});
+    const t = tighten.result != null ? tighten.result.structuredContent : null;
+    check('(b) a tightening applies to this session', t != null && t.new === 10000 && t.applies === 'this session', JSON.stringify(tighten).slice(0, 1000));
     const got = await call({action: 'get'});
-    const value = got.result != null && got.result.structuredContent != null ? (got.result.structuredContent.settings || []).find((s) => s.name === 'requestTimeout') : null;
-    check('(b) settings shows it', value != null && value.value === 60000, JSON.stringify(got).slice(0, 1000));
+    const value = got.result != null && got.result.structuredContent != null ? (got.result.structuredContent.settings || []).find((x) => x.name === 'requestTimeout') : null;
+    check('(b) settings shows it', value != null && value.value === 10000, JSON.stringify(got).slice(0, 1000));
     return 0;
   };
   let code = 1;
