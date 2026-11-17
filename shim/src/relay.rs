@@ -1015,7 +1015,9 @@ impl Relay {
                 self.answer_each(&ids, batch, |id| answer::crash(id, false));
             }
         }
-        self.control(br#"{"op":"bye"}"#);
+        // the bye waits for what is in flight (finish): the runtime ends a
+        // session at once on its bye, so one sent here would end the calls
+        // still running and leave them only crash answers
         self.state = State::Closing(Instant::now() + self.setup.timing.closing);
         if self.nothing_in_flight() {
             return Some(self.finish());
@@ -1028,7 +1030,14 @@ impl Relay {
         self.inflight.lock().expect("in-flight lock").is_empty() && self.streaming.load(Ordering::SeqCst) == 0
     }
 
+    /// The end: the client gone, once nothing is in flight or the closing
+    /// grace has passed. Then, and only then, the bye (the runtime ends the
+    /// session on it at once, workers included), and what is still in flight
+    /// is crash-answered. A connection already lost sends nothing.
     fn finish(&mut self) -> Exit {
+        if self.stdin_done {
+            self.control(br#"{"op":"bye"}"#);
+        }
         self.close_and_crash_answer();
         Exit::Done
     }
@@ -2018,13 +2027,57 @@ mod tests {
         client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\"}\n").unwrap();
         let (seq, _) = read_m(&mut s);
         drop(client_in);
-        until_op(&mut s, "bye");
+        // the close waits on the call: no bye while it is in flight
         let started = Instant::now();
         let op = format!(r#"{{"op":"cancelled","seq":{}}}"#, seq.unwrap());
         frame::write_frame(&mut s, Kind::Control, op.as_bytes(), BIG).unwrap();
+        // settled, nothing is in flight: the bye, at once
+        until_op(&mut s, "bye");
         assert!(matches!(done.join().unwrap(), Exit::Done));
         assert!(started.elapsed() < Duration::from_secs(2), "at once, not at the 10 s grace: {:?}", started.elapsed());
         assert_eq!(sink.lines(), Vec::<String>::new(), "no answer and no crash answer for a cancelled call");
+    }
+
+    // The runtime ends a session at once on its bye (countinghouse
+    // lib/session-transport/listener.js: shut() and _end('bye'), its
+    // per-session workers stopped with it), so a bye sent at the stdin's close
+    // ended every call still in flight, which then had only crash answers
+    // (ch-local #72's acceptance run). The bye waits for them, within the
+    // closing grace: this fake runtime closes the connection the moment a bye
+    // arrives, as the real one does, and answers the call 300 ms after the
+    // close, which the client must get.
+    #[test]
+    fn at_the_stdin_close_a_call_in_flight_gets_its_answer_before_the_bye_which_ends_the_session() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\"}\n").unwrap();
+        let (seq, _) = read_m(&mut s);
+        drop(client_in);
+        // the real runtime's way with a bye: the session ends, the connection with it
+        s.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        // (a byte read here is a bye come early, and fails the test anyway)
+        let mut head = [0u8; 1];
+        let early = match s.read(&mut head) {
+            Ok(n) => n > 0,
+            Err(e) => !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
+        };
+        assert!(!early, "nothing (no bye) while the call is in flight");
+        s.set_read_timeout(None).unwrap();
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":5,"result":{"ran":true}}"#);
+        // then the bye, and the session ends on it
+        until_op(&mut s, "bye");
+        drop(s);
+        assert!(matches!(done.join().unwrap(), Exit::Done));
+        assert_eq!(
+            sink.lines(),
+            [r#"{"jsonrpc":"2.0","id":5,"result":{"ran":true}}"#],
+            "the call's own answer, no crash answer"
+        );
     }
 
     #[test]
