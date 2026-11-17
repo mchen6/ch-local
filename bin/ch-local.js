@@ -140,8 +140,26 @@ async function main(argv, io) {
       // (#236 section 5), so a client's COUNTINGHOUSE_HOME can't pick the home
       let i = 1;
       let home = null;
+      // the shim's hand-over says why the session can't share
+      // (--own-runtime-reason, a short token: token, credential,
+      // conditions-failed; --own-runtime-why: the conditions check's own
+      // words), told to the client in its first result's notice (#236
+      // section 5). An older shim sends neither: then only that it runs its own.
+      let ownRuntime = null;
       for (;;) {
-        if (rest[i] === '--own-runtime') { i += 1; continue; }
+        if (rest[i] === '--own-runtime') { i += 1; ownRuntime = ownRuntime || {}; continue; }
+        if (rest[i] === '--own-runtime-reason' || rest[i] === '--own-runtime-why') {
+          const v = rest[i + 1];
+          // only on the shim's hand-over, after --own-runtime, and never an option as its value
+          if (ownRuntime == null || typeof v !== 'string' || v.startsWith('--')) { io.stderr.write(`ch-local start: ${rest[i]} needs --own-runtime before it and a value\n`); return 2; }
+          if (rest[i] === '--own-runtime-reason') ownRuntime.reason = /^[a-z][a-z-]{0,31}$/.test(v) ? v : 'unknown';
+          // cut and cleaned at the source: no control, line-separator, bidi,
+          // zero-width, soft-hyphen, interlinear or tag characters (hidden
+          // text a model reads), and cut by code point (never half a pair)
+          else ownRuntime.why = Array.from(v.replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufff9-\ufffb\u{e0000}-\u{e007f}]/gu, ' ')).slice(0, 200).join('');
+          i += 2;
+          continue;
+        }
         if (rest[i] === '--home') {
           const v = rest[i + 1];
           const {isFullPath} = require('../lib/home');
@@ -158,7 +176,7 @@ async function main(argv, io) {
         }
         break;
       }
-      return await require('../lib/start').start({passThrough: rest.slice(i), home}, io);
+      return await require('../lib/start').start({passThrough: rest.slice(i), home, ownRuntime}, io);
     }
     if (command === 'settings') {
       if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return await require('../lib/settings-command').settings({action: 'get'}, io);
