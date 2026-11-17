@@ -272,10 +272,16 @@ test('(2) a crash during a runtime upgrade\'s drain: the crash\'s restart stands
     while (!one.requests.some((m) => m.type === 'drain') && Date.now() < until) await tick();
     await one.exit(1);   // it crashes while draining
     const two = await s.nth(1);
-    await tick(800);
+    // the upgrade's restart finds the crash's runtime already on the new
+    // files and writes its version once it holds start.lock: polled, since
+    // on Windows the lock's ACL work takes PowerShell's time (#39's first
+    // Windows run read it after a fixed 800 ms, too soon)
+    const versionBy = Date.now() + 10000;
+    while (JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).runtimeVersion !== '8.1.0' && Date.now() < versionBy) await tick();
+    assert.strictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).runtimeVersion, '8.1.0');
+    await tick(400);
     assert.strictEqual(s.calls.length, 2, 'the upgrade did not stop the restarted runtime too');
     assert.strictEqual(two.ended, false);
-    assert.strictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).runtimeVersion, '8.1.0');
     await two.exit(1);   // a real crash: counted, restarted after the backoff
     await s.nth(2);
     assert.strictEqual((io.err.match(/the shared runtime ended \(exit 1\)/g) || []).length, 2, 'both crashes counted');

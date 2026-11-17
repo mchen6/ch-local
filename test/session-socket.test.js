@@ -33,7 +33,7 @@ test('a daemon.json socket a daemon of this home may have chosen: any pipe of th
   assert.strictEqual(ss.socketOk(ss.newPipeName(), runDir, {platform: 'linux'}), false, 'no pipe on POSIX');
 });
 
-test('POSIX: the run directory\'s socket while it fits the limit (107 bytes on Linux, 103 on macOS); past it, $TMPDIR/ch-<uid>/sessions.sock', () => {
+test('POSIX: the run directory\'s socket while it fits the limit (107 bytes on Linux, 103 on macOS); past it, $TMPDIR/ch-<uid>/sessions.sock', {skip: process.platform === 'win32' && 'POSIX only: POSIX paths, built with the host\'s path module'}, () => {
   const env = {TMPDIR: '/var/folders/xy/T'};
   const short = '/home/u/.countinghouse/run/daemon';
   assert.deepStrictEqual(ss.socketFor(short, {platform: 'linux', env, uid: 1000}), {socket: `${short}/sessions.sock`, fallback: null});

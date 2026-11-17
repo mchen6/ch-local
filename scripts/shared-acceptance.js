@@ -505,19 +505,25 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     if (!check('the shim answers initialize', init.result != null, `${JSON.stringify(init).slice(0, 1000)} ${failedJson()}`)) return 1;
     mcp.notify('notifications/initialized', {});
 
-    if (process.platform === 'win32') {
-      // the daemon is POSIX only until C4c: the shim runs the per-session runtime
-      check('win32: no daemon, the per-session runtime answers (C4c pending)', daemonPid(home) == null);
-      return 0;
-    }
     // the shim starts the daemon (its child until the shim ends: it outlives
     // the shim by design), which runs the shared runtime on its socket
     const pid = daemonPid(home);
-    const tree = treeOf(client.pid);
-    const runtime = pid != null ? (treeOf(pid) || []).find((p) => /framework\.js\b.*\s--sessionSocket\s/.test(p.args)) : null;
-    check('attached to the shared runtime: a live daemon running it on its session socket', pid != null && alive(pid) && runtime != null,
-      `daemon ${pid}; tree ${JSON.stringify(tree)}`);
-    check('no per-session runtime in the client\'s tree', tree != null && !tree.some((p) => /\s--own-runtime\b/.test(p.args)), JSON.stringify(tree));
+    if (process.platform === 'win32') {
+      // C4c: on Windows the shared runtime's socket is a named pipe, a new one
+      // at each start, which daemon.json names. ps is POSIX, so the process
+      // tree is not read here: the daemon is live and names its pipe, and the
+      // rest of this run goes through it.
+      let socket = null;
+      try { socket = JSON.parse(fs.readFileSync(path.join(home, 'run', 'daemon', 'daemon.json'), 'utf8')).socket; } catch (e) { socket = null; }
+      check('attached to the shared runtime: a live daemon running it on its named pipe', pid != null && alive(pid) && typeof socket === 'string' && /^\\\\\.\\pipe\\countinghouse-[0-9a-f]+$/.test(socket),
+        `daemon ${pid}; socket ${JSON.stringify(socket)}`);
+    } else {
+      const tree = treeOf(client.pid);
+      const runtime = pid != null ? (treeOf(pid) || []).find((p) => /framework\.js\b.*\s--sessionSocket\s/.test(p.args)) : null;
+      check('attached to the shared runtime: a live daemon running it on its session socket', pid != null && alive(pid) && runtime != null,
+        `daemon ${pid}; tree ${JSON.stringify(tree)}`);
+      check('no per-session runtime in the client\'s tree', tree != null && !tree.some((p) => /\s--own-runtime\b/.test(p.args)), JSON.stringify(tree));
+    }
 
     // (b) settings through the shim. countinghouse's tested-client list
     // (lib/elicitation-clients.json) has no tested Claude Code version until
@@ -595,7 +601,8 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const init2 = await mcp2.request('initialize', {protocolVersion: '2026-07-28', capabilities: {elicitation: {}}, clientInfo: {name: 'claude-code', version: '2.1.323'}});
     if (!check('(b-latched) the second client\'s shim answers initialize', init2.result != null, JSON.stringify(init2).slice(0, 1000))) return 1;
     mcp2.notify('notifications/initialized', {});
-    const tree2 = treeOf(client2.pid);
+    // (ps is POSIX: on Windows the same live daemon, its tree not read)
+    const tree2 = process.platform === 'win32' ? [] : treeOf(client2.pid);
     check('(b-latched) attached to the same live daemon, with no per-session runtime in its tree', daemonPid(home) === pid && alive(pid) &&
       tree2 != null && !tree2.some((p) => /\s--own-runtime\b/.test(p.args)), `daemon ${daemonPid(home)} (was ${pid}); tree ${JSON.stringify(tree2)}`);
     // the conditions line the shim hands over for this client, as it runs
