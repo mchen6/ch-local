@@ -21,15 +21,26 @@ const until = async (cond, ms = 10000) => {
 // A running start over an installed home, with a runtime that answers each
 // control request with `answer(msg)` (default ok) and runs until end().
 // env: start's credentials (a GitHub token and another by default)
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs,
-  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}} = {}) {
-  const home = tmp('ch-home-');
-  const r = release();
+// shared: as ch-local daemon runs the shared runtime (a session with the home)
+// ghToken: what gh auth token answers (a shared runtime's GitHub token comes
+// from gh only), else gh is not logged in
+// home: start again on a home a running() made (a runtime restart), without installing
+// clientAncestry: what start's may-elicit reads of the client's ancestry. Read
+// for real it can take more than check()'s 3 s on a loaded Windows runner,
+// which answers "client settings unreadable" (fail closed, as it should), so
+// the tests here are given it read already (ch-local's intermittent
+// may-elicit failure on main ed73a358); lib/client-conditions' own tests
+// cover the read and the wait.
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs, shared = false, ghToken = null, home: reuse = null,
+  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, clientAncestry = Promise.resolve({lines: null, policyPresent: false})} = {}) {
+  const home = reuse != null ? reuse : tmp('ch-home-');
+  const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
-  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
-  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs, clientAncestry});
+  if (ghToken != null) f.exec = async (c) => (c === 'gh' ? {status: 0, stdout: `${ghToken}\n`, stderr: ''} : {status: 0, stdout: '', stderr: ''});
   const requests = [];
   let end = null;
   let listener = null;
@@ -53,7 +64,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
       onMessage: (fn) => { listener = fn; setImmediate(() => fn({type: 'ready'})); }
     };
   };
-  const done = start({passThrough}, f);
+  const done = start({passThrough, session: shared ? {home, socket: path.join(home, 'run', 'daemon', 's')} : null}, f);
   await until(() => end != null);
   const runDir = () => path.join(home, 'run', fs.readdirSync(path.join(home, 'run'))[0]);
   return {home, r, f, requests, cmd, done, args: () => spawnedArgs, end: () => end(0), runDir, ask: (m) => listener(m),
@@ -83,7 +94,7 @@ test('no pack has its credential: the runtime starts with no pack, and the clien
     await until(() => [/not loading ci-failure-triage/, /no pack is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
     const told = notices(s).map(([, t]) => t);
     const why = told.find((t) => /not loading ci-failure-triage/.test(t));
-    assert.match(why, /needs the GitHub token: run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
+    assert.match(why, /needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
     assert.doesNotMatch(why, /\(above\)/, 'self-contained: the client never saw a line above');
     assert.ok(told.some((t) => /no pack is loaded this start/.test(t)), told.join(' | '));
   } finally {
@@ -452,6 +463,161 @@ test('load-pack: an installed pack, off, allowed, at the version the form showed
     ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: ['ci-failure-triage'], conversation: true}});
     fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'en'}}));
     await until(() => count('unload') === 2);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// A shared runtime (as ch-local daemon runs it), its GitHub token from gh
+// (its environment holds no other credential), with ci-failure-triage
+// turned off by the terminal after it loaded at spawn
+const CI = '@countinghouse/ch-pack-ci-failure-triage';
+async function sharedWithCiOff(opts = {}) {
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true, env: {}, ghToken: `t${require('node:crypto').randomBytes(12).toString('hex')}`, ...opts});
+  const where = layout({COUNTINGHOUSE_HOME: s.home});
+  assert.ok(s.args().some((a) => a.includes('ch-pack-ci-failure-triage')), `loaded at spawn: ${s.args().join(' ')}`);
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': false}}));
+  await until(() => s.requests.some((m) => m.type === 'unload' && m.name === CI));
+  const count = (type) => s.requests.filter((m) => m.type === type && m.name === CI).length;
+  const reply = async (msg) => { s.ask(msg); await until(() => s.requests.some((m) => m.id === msg.id)); return s.requests.find((m) => m.id === msg.id); };
+  return {s, where, count, reply};
+}
+
+// The shared contract for these messages (countinghouse's shared-runtime-wire
+// vectors, packMessages, copied): what the runtime refuses, by reason token.
+const PACK_V = require('./vectors/pack-messages.json').packMessages;
+function packMessageProblem(m) {
+  const packOk = (p) => typeof p === 'string' && new RegExp(PACK_V.packPattern).test(p);
+  if (m.type === 'set') return (typeof m.name === 'string' && m.name.startsWith('pack.') && m.value !== true) ? 'set-false' : null;
+  if (m.type === 'load' || m.type === 'reload') {
+    if (typeof m.global !== 'boolean') return 'global';
+    return packOk(m.pack) ? null : 'pack';
+  }
+  if (m.type === 'unload') return packOk(m.pack) ? null : 'pack';
+  if (m.type === 'notice') return (m.pack === undefined || packOk(m.pack)) ? null : 'pack';
+  return null;
+}
+const holdsToTheVectors = (requests) => {
+  for (const m of requests) assert.strictEqual(packMessageProblem(m), null, JSON.stringify(m));
+};
+
+test('B3: the pack messages\' vectors: each accepted one passes, each refused one fails for its reason', () => {
+  for (const {why, message} of PACK_V.accepted) assert.strictEqual(packMessageProblem(message), null, why);
+  for (const {why, reason, message} of PACK_V.refused) assert.strictEqual(packMessageProblem(message), reason, why);
+});
+
+// countinghouse's shared runtime, B3 "For C": every load, reload and unload
+// names its pack beside the scenario, a load or reload says whether it is for
+// everyone (global), and a notice about a pack names it
+test('B3: a load from the settings is global; an unload and a told notice name the pack', async () => {
+  const {s} = await withOtherOff();
+  try {
+    const load = s.requests.find((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other');
+    assert.deepStrictEqual([load.pack, load.global], ['other', true]);
+    const unload = s.requests.find((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other');
+    assert.strictEqual(unload.pack, 'other');
+    assert.ok(!('global' in unload), 'an unload is for everyone that lists it');
+    // its notice rides on the unload, which the runtime tells before the pack
+    // goes; no separate notice tagged with the pack follows it (by then no
+    // session lists it, and it would reach nobody)
+    assert.strictEqual(unload.notice, 'other turned off');
+    assert.ok(!s.requests.some((m) => m.type === 'notice' && m.pack === 'other' && /turned off|removed/.test(m.text)), JSON.stringify(s.requests.filter((m) => m.type === 'notice')));
+    holdsToTheVectors(s.requests);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('B3: a pack a session turned on loads with global false; in a shared runtime its notice names the pack and says "for this session"', async () => {
+  const {s, reply} = await sharedWithCiOff();
+  try {
+    assert.strictEqual(s.requests.find((m) => m.type === 'unload' && m.name === CI).pack, 'ci-failure-triage');
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: true});
+    const load = s.requests.find((m) => m.type === 'load' && m.name === CI);
+    assert.deepStrictEqual([load.pack, load.global], ['ci-failure-triage', false]);
+    await until(() => s.requests.some((m) => m.type === 'notice' && /ci-failure-triage turned on for this session 0\.1\.0/.test(m.text)));
+    const notice = s.requests.find((m) => m.type === 'notice' && /turned on for this session/.test(m.text));
+    assert.strictEqual(notice.pack, 'ci-failure-triage');
+    assert.ok(!s.requests.some((m) => m.type === 'notice' && /turned on for this start/.test(m.text)));
+    assert.strictEqual(s.history().filter((e) => e.pack === 'ci-failure-triage').pop().change, 'turned on for this session (confirmed in the client)');
+    // a notice about no pack carries no pack key
+    assert.ok(s.requests.filter((m) => m.type === 'notice' && /changed outside ch-local/.test(m.text)).every((m) => !('pack' in m)));
+    holdsToTheVectors(s.requests);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('B3: the terminal turning on a session\'s pack is set pack.<n> true and no load; the terminal\'s off is an unload naming it, never a set to false', async () => {
+  const {s, where, count, reply} = await sharedWithCiOff();
+  try {
+    await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'});
+    const loads = count('load');
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': true}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'pack.ci-failure-triage'));
+    assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set' && m.name === 'pack.ci-failure-triage').map((m) => m.value), [true]);
+    assert.strictEqual(count('load'), loads, 'loaded already: no load follows');
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': false}}));
+    await until(() => count('unload') === 2);
+    assert.strictEqual(s.requests.filter((m) => m.type === 'unload').pop().pack, 'ci-failure-triage');
+    assert.ok(!s.requests.some((m) => m.type === 'set' && /^pack\./.test(m.name) && m.value !== true), 'never a set to false');
+    holdsToTheVectors(s.requests);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('B3: outside a shared runtime the terminal\'s on sends no set, and the notice still says "for this start"', async () => {
+  const {s, where, reply} = await withOtherOff();
+  try {
+    await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'});
+    await until(() => s.requests.some((m) => m.type === 'notice' && /other turned on for this start 0\.3\.0/.test(m.text)));
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': true, locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.ok(!s.requests.some((m) => m.type === 'set' && m.name === 'pack.other'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('B3: a runtime restart starts with the global packs only: a pack a session turned on is not loaded again', async () => {
+  const {s, reply} = await sharedWithCiOff();
+  let home;
+  try {
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: true});
+    assert.ok(s.requests.some((m) => m.type === 'load' && m.name === CI), 'loaded for the session');
+    home = s.home;
+  } finally {
+    s.end();
+    await s.done;
+  }
+  // the daemon restarts its runtime: a new start on the same home
+  const again = await running({shared: true, env: {}, ghToken: `t${require('node:crypto').randomBytes(12).toString('hex')}`, home});
+  try {
+    assert.ok(!again.args().some((a) => a.includes('ch-pack-ci-failure-triage')), `not at spawn: ${again.args().join(' ')}`);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!again.requests.some((m) => m.type === 'load' && m.name === CI), 'and not loaded in place');
+  } finally {
+    again.end();
+    await again.done;
+  }
+});
+
+test('B3: a set pack.<n> true the runtime refuses is said, and the rest of that change is still applied', async () => {
+  const {s, where, reply} = await sharedWithCiOff({answer: (m) => (m.type === 'set' && m.name === 'pack.ci-failure-triage' ? {ok: false, code: 'CONTROL_NOT_LIVE'} : {ok: true})});
+  try {
+    await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': true, locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    await until(() => /ci-failure-triage turned on for everyone \(it was on for a session\): not applied in place \(CONTROL_NOT_LIVE\)/.test(s.f.err));
+    const h = s.history().filter((e) => e.pack === 'ci-failure-triage').pop();
+    assert.strictEqual(h.problem, 'CONTROL_NOT_LIVE');
   } finally {
     s.end();
     await s.done;

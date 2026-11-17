@@ -29,6 +29,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
        ch-local settings [get | set <name> <value> | reset]
+       ch-local credentials [list | add github [--module <package>] | remove github]
        ch-local start --stdio [countinghouse options]
 `;
 
@@ -111,6 +112,15 @@ async function main(argv, io) {
       if (rest.length !== 1) return usage();
       return await require('../lib/clients').add(rest[0], io);
     }
+    if (command === 'credentials') {
+      const a = parse(rest, {values: ['--module']});
+      if (a == null) return usage();
+      const [action = 'list', name, ...more] = a.positional;
+      if (more.length > 0 || (action === 'list' && (name !== undefined || a.values['--module'] !== undefined))) return usage();
+      if ((action === 'add' || action === 'remove') && name === undefined) return usage();
+      if (action === 'remove' && a.values['--module'] !== undefined) return usage();
+      return await require('../lib/credentials-command').credentials({action, name, module: a.values['--module'] || null}, io);
+    }
     if (command === 'uninstall') {
       const a = parse(rest, {flags: ['--keep-data']});
       if (a == null || a.positional.length > 0) return usage();
@@ -140,8 +150,24 @@ async function main(argv, io) {
       // (#236 section 5), so a client's COUNTINGHOUSE_HOME can't pick the home
       let i = 1;
       let home = null;
+      // the shim's hand-over says why the session can't share
+      // (--own-runtime-reason, a short token: token, credential,
+      // conditions-failed; --own-runtime-why: the conditions check's own
+      // words), told to the client in its first result's notice (#236
+      // section 5). An older shim sends neither: then only that it runs its own.
+      let ownRuntime = null;
       for (;;) {
-        if (rest[i] === '--own-runtime') { i += 1; continue; }
+        if (rest[i] === '--own-runtime') { i += 1; ownRuntime = ownRuntime || {}; continue; }
+        if (rest[i] === '--own-runtime-reason' || rest[i] === '--own-runtime-why') {
+          const v = rest[i + 1];
+          // only on the shim's hand-over, after --own-runtime, and never an option as its value
+          if (ownRuntime == null || typeof v !== 'string' || v.startsWith('--')) { io.stderr.write(`ch-local start: ${rest[i]} needs --own-runtime before it and a value\n`); return 2; }
+          if (rest[i] === '--own-runtime-reason') ownRuntime.reason = /^[a-z][a-z-]{0,31}$/.test(v) ? v : 'unknown';
+          // cut and cleaned at the source (lib/clean-text.js)
+          else ownRuntime.why = require('../lib/clean-text').cleanText(v, 200);
+          i += 2;
+          continue;
+        }
         if (rest[i] === '--home') {
           const v = rest[i + 1];
           const {isFullPath} = require('../lib/home');
@@ -158,7 +184,7 @@ async function main(argv, io) {
         }
         break;
       }
-      return await require('../lib/start').start({passThrough: rest.slice(i), home}, io);
+      return await require('../lib/start').start({passThrough: rest.slice(i), home, ownRuntime}, io);
     }
     if (command === 'settings') {
       if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return await require('../lib/settings-command').settings({action: 'get'}, io);
@@ -218,6 +244,9 @@ function realIo() {
     pid: process.pid,
     // A terminal to ask on: rollback over a security fix asks, or needs --yes.
     interactive: Boolean(process.stdin.isTTY),
+    // A terminal both ways (credentials add: the prompt seen, the typing not)
+    terminal: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+    readHidden: (prompt) => require('../lib/hidden-input').readHidden(prompt),
     // Read when used: a directory removed under a shell makes process.cwd()
     // throw, and only start needs it (null: git runs wherever it is).
     get cwd() { try { return process.cwd(); } catch (err) { return null; } },

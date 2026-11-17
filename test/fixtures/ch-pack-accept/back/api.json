@@ -1,0 +1,33 @@
+{
+  "device": {
+    "friendlyName": "ch-accept-back",
+    "manufacturer": "countinghouse-test",
+    "modelDescription": "acceptance fixture part",
+    "serviceList": {
+      "urn:countinghouse-test:serviceID:backService": {
+        "actionList": [
+          {
+            "name": "work",
+            "description": "Answers at once.",
+            "input": {
+              "schema": "/backService/work/input"
+            },
+            "output": {
+              "schema": "/backService/work/output"
+            }
+          },
+          {
+            "name": "hold",
+            "description": "Waits the given ms, then answers.",
+            "input": {
+              "schema": "/backService/hold/input"
+            },
+            "output": {
+              "schema": "/backService/hold/output"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

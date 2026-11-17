@@ -178,6 +178,49 @@ test('shared: the client harness is a `claude` beside a script and an empty conf
   fs.rmSync(path.dirname(dir), {recursive: true, force: true});
 });
 
+// M17 (b), 2026-11-16: a run under a home whose .claude held the person's
+// plugins answered "no" for the tested client, and (b) read as declined.
+test('shared: the client\'s repository goes in the runner\'s temporary directory on CI, else /tmp on POSIX, never the run\'s TMPDIR', () => {
+  assert.strictEqual(shared.clientRepoRoot({RUNNER_TEMP: '/runner/_temp'}, 'linux'), '/runner/_temp');
+  assert.strictEqual(shared.clientRepoRoot({TMPDIR: '/home/someone/tmp'}, 'linux'), '/tmp');
+  assert.strictEqual(shared.clientRepoRoot({TMPDIR: '/home/someone/tmp'}, 'darwin'), '/tmp');
+  assert.strictEqual(shared.clientRepoRoot({RUNNER_TEMP: 'relative'}, 'linux'), '/tmp', 'a relative RUNNER_TEMP is not one');
+  assert.strictEqual(shared.clientRepoRoot({}, 'win32'), os.tmpdir());
+});
+
+test('shared: every .claude at or above the client\'s repository is found, except the client\'s own configuration', () => {
+  const top = tmp('ch-shared-stray-');
+  const repo = path.join(top, 'a', 'b', 'repo');
+  fs.mkdirSync(repo, {recursive: true});
+  const config = path.join(top, 'config');
+  fs.mkdirSync(config);
+  // only what is inside this test's directory: the machine's own may sit higher
+  const ours = (found) => found.filter((d) => d.startsWith(top + path.sep));
+  assert.deepStrictEqual(ours(shared.strayClaudeDirs(repo, config)), []);
+  fs.mkdirSync(path.join(top, 'a', '.claude'));
+  fs.mkdirSync(path.join(repo, '.claude'));
+  assert.deepStrictEqual(ours(shared.strayClaudeDirs(repo, config)), [path.join(repo, '.claude'), path.join(top, 'a', '.claude')]);
+  assert.deepStrictEqual(ours(shared.strayClaudeDirs(repo, path.join(top, 'a', '.claude'))), [path.join(repo, '.claude')], 'the client\'s own configuration is not a stray');
+  fs.rmSync(top, {recursive: true, force: true});
+});
+
+test('shared: the client\'s configuration directory must be an absolute path to an existing, empty directory', () => {
+  const top = tmp('ch-shared-config-');
+  assert.match(shared.configProblem(''), /not an absolute path/);
+  assert.match(shared.configProblem(undefined), /not an absolute path/);
+  assert.match(shared.configProblem('relative/config'), /not an absolute path/);
+  assert.match(shared.configProblem(path.join(top, 'missing')), /ENOENT/);
+  fs.writeFileSync(path.join(top, 'file'), '');
+  assert.match(shared.configProblem(path.join(top, 'file')), /not a directory/);
+  fs.mkdirSync(path.join(top, 'full'));
+  fs.writeFileSync(path.join(top, 'full', 'settings.json'), '{}');
+  assert.match(shared.configProblem(path.join(top, 'full')), /not empty/);
+  fs.mkdirSync(path.join(top, 'empty'));
+  assert.strictEqual(shared.configProblem(path.join(top, 'empty')), null);
+  assert.strictEqual(shared.configProblem(shared.claudeHarness(path.join(top, 'client')).config), null, 'the harness\'s own');
+  fs.rmSync(top, {recursive: true, force: true});
+});
+
 test('shared: the shim goes in a private <home>/shim, executable by its owner only', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
   const home = tmp('ch-shared-home-');
   const bin = path.join(home, 'built');
@@ -261,10 +304,122 @@ test('the shared runtime through the native shim', {timeout: 2400000, skip: SRC 
   assert.strictEqual(report.ok, true, JSON.stringify(report.checks.filter((c) => !c.ok)));
 });
 
-// Not yet through the real shim (scripts/shared-acceptance.js says where each
-// is covered meanwhile): todos, never skips, so the acceptance workflow's
+// (b-latched), the checks the gated run makes against two sessions
+// (countinghouse #337), here against stand-ins: what a refusal must say to
+// pass, and what each wrong answer fails on.
+test('shared: (b-latched) a latched session is refused as the latch, with the handed-over reason; never as a decline', async () => {
+  const why = {reason: 'client hook present', at: '~/x/.claude/settings.json'};
+  const run = async (loosening, {firstValue = 10000, handed = why} = {}) => {
+    const checks = [];
+    const check = (name, ok, detail) => { checks.push({name, ok: ok === true, detail}); return ok === true; };
+    const second = async (a) => (a.action === 'set' && a.value === '60s' ? loosening
+      : {result: {structuredContent: {new: 20000, applies: 'this session'}}});
+    const first = async () => ({result: {structuredContent: {settings: [{name: 'requestTimeout', value: firstValue}]}}});
+    await shared.latchedChecks({second, first, why: handed, reason: 'client hook present', check});
+    return checks;
+  };
+  const refusal = (code, text) => ({result: {isError: true, _meta: {'countinghouse/code': code}, content: [{type: 'text', text}]}});
+  const good = refusal('SETTING_CLIENT_NOT_CONFIRMED', 'Loosening requestTimeout is not asked in this session: this client\'s configuration could answer forms by itself (client hook present: ~/x/.claude/settings.json); nothing was changed. To allow it, run `ch-local settings set requestTimeout 60s` in a terminal yourself.');
+  assert.ok((await run(good)).every((c) => c.ok), JSON.stringify(await run(good)));
+  const failed = async (...a) => (await run(...a)).filter((c) => !c.ok).map((c) => c.name);
+  assert.strictEqual((await failed(refusal('SETTING_DECLINED_THIS_SESSION', good.result.content[0].text))).length, 1, 'a decline is not the latch');
+  assert.strictEqual((await failed(refusal('SETTING_CLIENT_NOT_CONFIRMED', 'this client could not be confirmed; run `ch-local settings set requestTimeout 60s`'))).length, 1, 'the reason must be the handed-over one');
+  assert.strictEqual((await failed(good, {firstValue: 20000})).length, 1, 'the first session\'s own value');
+  assert.strictEqual((await failed(good, {handed: {reason: 'plugin hook present'}})).length, 2, 'a hand-over with another reason fails both');
+});
+
+// Not yet through the real shim (scripts/shared-acceptance.js says where it
+// is covered meanwhile): a todo, never a skip, so the acceptance workflow's
 // "skipped 0" still holds.
-test('shared: (a) progress frames before an answer, through the shim', {todo: 'needs a hopping pack in the shared runtime: per-session packs (B3/B5)'});
-test('shared: (c) a cancelled call leaves no in-flight entry, through the shim', {todo: 'needs a hopping pack in the shared runtime: per-session packs (B3/B5)'});
 test('shared: (b1) the settings confirmation form round trip, through the shim', {todo: 'once a tested Claude Code range is in countinghouse lib/elicitation-clients.json (the maintainer\'s hand test before release)'});
-test('shared: (b2) ctx.ask through the shim', {todo: 'once M13 (ctx.ask) is on countinghouse master'});
+
+// (a), (c) and (b2): the checks the gated run makes through the shim, with
+// the acceptance fixture pack turned on from the terminal, here against
+// stand-ins: a good run passes every check, and each wrong one fails its own.
+const checksOf = async (fn) => {
+  const checks = [];
+  const check = (name, ok, detail) => { checks.push({name, ok: ok === true, detail}); return ok === true; };
+  await fn(check);
+  return {all: checks, failed: checks.filter((c) => !c.ok).map((c) => c.name)};
+};
+
+test('shared: (a) progress frames before an answer, through the shim: the checks', async () => {
+  const token = 'tok';
+  const frame = (progress, t = token) => ({jsonrpc: '2.0', method: 'notifications/progress', params: {progressToken: t, progress}});
+  const answer = {jsonrpc: '2.0', id: 7, result: {structuredContent: {hopped: true, said: 'back'}}};
+  const run = (r) => (check) => shared.progressChecks({token, check, run: async () => Object.assign({response: answer, before: [frame(25), frame(75)], after: []}, r)});
+  assert.deepStrictEqual((await checksOf(run({}))).failed, []);
+  assert.ok((await checksOf(run({before: []}))).failed.some((n) => /before its answer/.test(n)), 'no frame before the answer');
+  assert.ok((await checksOf(run({before: [frame(75), frame(25)]}))).failed.some((n) => /rises/.test(n)), 'progress that falls');
+  assert.ok((await checksOf(run({after: [frame(90)]}))).failed.some((n) => /after the answer/.test(n)), 'a frame after the answer');
+  assert.ok((await checksOf(run({before: [frame(25, 'other')]}))).failed.some((n) => /token/.test(n)), 'another call\'s frame');
+  assert.ok((await checksOf(run({response: {jsonrpc: '2.0', id: 7, result: {structuredContent: {hopped: false}}}}))).failed.some((n) => /through its part/.test(n)), 'no hop');
+});
+
+test('shared: (c) a cancelled call leaves no in-flight entry, through the shim: the checks', async () => {
+  const holdMs = 20000;
+  const controlHoldMs = 5000;
+  // the control's own answer, waited for at the close (within the grace)
+  const answered = [{jsonrpc: '2.0', id: 3, result: {structuredContent: {waited: controlHoldMs}}}];
+  const crash = [{jsonrpc: '2.0', id: 3, error: {code: -32603, message: 'countinghouse\'s runtime restarted before answering; the call may have run', data: {'countinghouse/code': 'RUNTIME_RESTARTED'}}}];
+  const run = (c, k) => (check) => shared.cancelChecks({holdMs, controlHoldMs, check,
+    cancelled: async () => Object.assign({exitMs: 300, answers: []}, c), control: async () => Object.assign({exitMs: 3200, answers: answered}, k)});
+  assert.deepStrictEqual((await checksOf(run({}, {}))).failed, []);
+  assert.ok((await checksOf(run({answers: answered}, {}))).failed.some((n) => /never answered/.test(n)), 'a cancelled call answered');
+  assert.ok((await checksOf(run({answers: crash}, {}))).failed.some((n) => /never answered/.test(n)), 'a cancelled call crash-answered');
+  assert.ok((await checksOf(run({exitMs: 19000}, {}))).failed.some((n) => /promptly/.test(n)), 'the shim waited on the cancelled call');
+  assert.ok((await checksOf(run({exitMs: null}, {}))).failed.some((n) => /promptly/.test(n)), 'the shim never ended');
+  // the control is what makes the check sensitive: a call in flight at the close must get its own answer
+  assert.ok((await checksOf(run({}, {answers: []}))).failed.some((n) => /control/.test(n)), 'a control left unanswered');
+  assert.ok((await checksOf(run({}, {exitMs: 5, answers: crash}))).failed.some((n) => /control/.test(n)), 'a control crash-answered (the bye sent at the close)');
+  assert.ok((await checksOf(run({}, {exitMs: 10500}))).failed.some((n) => /control/.test(n)), 'a control ended past the grace');
+});
+
+test('shared: (b2) ctx.ask through the shim: the checks', async () => {
+  const what = 'acceptance';
+  const state = `v1.${'a'.repeat(20)}.${'b'.repeat(43)}`;
+  const question = {result: {resultType: 'input_required', requestState: state,
+    inputRequests: {answer: {method: 'elicitation/create', params: {mode: 'form', message: `ch-pack-accept: Proceed with ${what}?`, requestedSchema: {type: 'object'}}}}}};
+  const refused = (code) => ({result: {isError: true, _meta: {'countinghouse/code': code}, content: [{type: 'text', text: code}]}});
+  // the runtime as it should answer: the question, the answer once, then the state used
+  const runtime = (over) => {
+    const used = new Set();
+    return async (extra) => {
+      if (extra.requestState == null) return over.first || question;
+      if (extra.requestState !== state) return over.forged || refused('ASK_STATE_INVALID');
+      if (used.has(state)) return over.again || refused('ASK_STATE_INVALID');
+      used.add(state);
+      return over.retry || {result: {structuredContent: {asked: true, answer: extra.inputResponses.answer.content}}};
+    };
+  };
+  const run = (over) => (check) => shared.askChecks({what, check, call: runtime(over)});
+  assert.deepStrictEqual((await checksOf(run({}))).failed, []);
+  const none = await checksOf(run({first: {result: {structuredContent: {asked: false, code: 'ASK_UNAVAILABLE'}}}}));
+  assert.deepStrictEqual([none.all.length, none.failed.length], [1, 1], 'no question: the rest is not tried');
+  assert.ok((await checksOf(run({retry: {result: {structuredContent: {asked: true, answer: {yes: false}}}}}))).failed.some((n) => /gets it/.test(n)), 'the wrong answer');
+  assert.ok((await checksOf(run({again: {result: {structuredContent: {asked: true, answer: {yes: true}}}}}))).failed.some((n) => /used once/.test(n)), 'a state used twice');
+  assert.ok((await checksOf(run({forged: {result: {structuredContent: {asked: true, answer: {yes: true}}}}}))).failed.some((n) => /tampered/.test(n)), 'a tampered state served');
+});
+
+// The acceptance fixture pack is the run's own: never in a shipped allowlist,
+// release-pins.json or the published package (the reviewer's condition).
+test('shared: the acceptance fixture pack is in no shipped allowlist, release pin or published file, and npm refuses to publish it', () => {
+  const {ALLOWLIST} = require('../lib/allowlist');
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(ALLOWLIST.packs, shared.ACCEPT), false);
+  const shipped = new Set([...ALLOWLIST.runtime.packages, ...Object.values(ALLOWLIST.packs).flatMap((p) => p.packages), ...Object.keys(ALLOWLIST.pins || {})]);
+  for (const name of shared.ACCEPT_PACKAGES) assert.strictEqual(shipped.has(name), false, name);
+  const pinsText = fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8');
+  for (const name of [...shared.ACCEPT_PACKAGES, 'fixtures']) assert.ok(!pinsText.includes(name), name);
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  assert.ok(Array.isArray(pkg.files) && pkg.files.every((f) => !/^test\b/.test(f)), JSON.stringify(pkg.files));
+  for (const dir of shared.ACCEPT_DIRS) {
+    assert.ok(dir.startsWith(path.join(__dirname, 'fixtures')), dir);
+    const own = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    assert.strictEqual(own.private, true, `${own.name}: npm refuses to publish it`);
+    assert.ok(shared.ACCEPT_PACKAGES.includes(own.name), own.name);
+  }
+  // the release the run adds it with only adds it: the shipped packs unchanged
+  const added = shared.acceptRelease(ALLOWLIST);
+  assert.deepStrictEqual(Object.keys(added.packs).filter((k) => k !== shared.ACCEPT), Object.keys(ALLOWLIST.packs));
+  assert.deepStrictEqual(added.packs[shared.ACCEPT].credentials, []);
+});

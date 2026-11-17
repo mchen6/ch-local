@@ -173,14 +173,17 @@ running. The daemon holds the runtime for every session of this user.
   the daemon's working directory, and be owned by this user with no group or
   world write. Its environment is `shim.json`'s allowlist (`PATH`, `HOME`,
   `LANG`, `TMPDIR`; on Windows their equivalents), never a client's.
-- **Its GitHub token comes from `gh auth token` only**, held in memory as
+- **Its GitHub token is the one stored with `ch-local credentials add
+  github`, else `gh auth token`**, held in memory as
   `COUNTINGHOUSE_GITHUB_TOKEN`. A `GITHUB_TOKEN` in a shell doesn't reach
-  it. With no `gh` login, the shared runtime has no token, so a pack that
-  needs one isn't loaded there. The runtime still starts, with ch-local's
+  it. A stored token added or removed while it runs restarts its runtime
+  once the calls in flight finish. With neither, the shared runtime has no
+  token, so a pack that needs one isn't loaded there. The runtime still starts, with ch-local's
   own tools, and tells each session which pack isn't loaded and why (run
   `gh auth login`), so the agent can say so. A session whose client chooses a token of
-  its own (`COUNTINGHOUSE_GITHUB_TOKEN`, or `GITHUB_TOKEN` with no `gh`
-  login) then differs from the daemon's, and runs its own runtime. That
+  its own (`COUNTINGHOUSE_GITHUB_TOKEN`, or `GITHUB_TOKEN` with neither a
+  stored token nor a `gh` login) then differs from the daemon's, and runs
+  its own runtime. That
   fails safe: no session gets another's token, or none silently.
 - **Installs and rollbacks are picked up while it runs.** `ch-local install`
   and `ch-local rollback` leave an upgrade request in
