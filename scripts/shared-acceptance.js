@@ -304,20 +304,27 @@ async function progressChecks({run, token, check}) {
 // (c) a cancelled call leaves no in-flight entry, through the shim. The
 // relay's table is not exposed (no status op, no debug output: the reviewer's
 // ruling), so the check is its behaviour at the close of its stdin: the shim
-// ends, and answers every call still in flight with its crash answer
-// (RUNTIME_RESTARTED, "the call may have run"). A cancelled call was settled
-// by the runtime's `cancelled` op, so it is no longer in flight and gets no
-// answer at all; the control, the same call not cancelled, gets that crash
-// answer, which is what makes the check sensitive. cancelled, control ->
-// {exitMs, answers}: how long after the close the shim exited, and the lines
-// answering that id.
-async function cancelChecks({cancelled, control, holdMs, check}) {
+// waits, within its closing grace (10 s), for every call still in flight,
+// then says bye (ch-local's fix: before it the bye went at the close, and the
+// runtime, which ends a session at once on its bye, left those calls only
+// crash answers). A cancelled call was settled by the runtime's `cancelled`
+// op, so nothing is left to wait for: the shim ends at once, and the call is
+// never answered. The control, a call not cancelled that ends inside the
+// grace, gets its own answer before the shim ends, which is what makes the
+// check sensitive. cancelled, control -> {exitMs, answers}: how long after
+// the close the shim exited, and the lines answering that id. holdMs: the
+// cancelled call's hold; controlHoldMs: the control's (inside the grace).
+const CLOSING_GRACE_MS = 10000;
+async function cancelChecks({cancelled, control, holdMs, controlHoldMs, check}) {
   const c = await cancelled();
   check('(c) a cancelled call is never answered through the shim, nor crash-answered at the close', c.answers.length === 0, JSON.stringify(c.answers).slice(0, 1000));
   check('(c) with it cancelled, the shim ends promptly at the close: nothing is left in flight', c.exitMs != null && c.exitMs < holdMs / 2, `exited ${c.exitMs} ms after the close; the call holds ${holdMs} ms`);
   const k = await control();
-  // the control: the same call, not cancelled, is still in flight at the close, and is answered then
-  check('(c, control) not cancelled, the call is still in flight at the close: the shim answers it (its answer, or the crash answer)', k.answers.length === 1,
+  // the control: the same call, not cancelled and ending inside the grace, is waited for and gets its own answer
+  const a = k.answers.length === 1 ? k.answers[0] : null;
+  check('(c, control) not cancelled, the call in flight at the close gets its own answer (not a crash answer), and the shim ends after it, within the grace',
+    a != null && a.result != null && a.error === undefined && a.result.structuredContent != null && a.result.structuredContent.waited === controlHoldMs &&
+    k.exitMs != null && k.exitMs < CLOSING_GRACE_MS,
     `exited ${k.exitMs} ms after the close; answers ${JSON.stringify(k.answers).slice(0, 600)}`);
 }
 
@@ -644,7 +651,9 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     await askChecks({what, check, call: (extra) => mcp.request('tools/call', Object.assign({_meta: META, name: toolOf(listed, 'ask'), arguments: {what}}, extra))});
 
     // (c) a cancelled call, through a shim of its own each time (its stdin is closed)
+    // the cancelled call holds past the grace; the control ends inside it
     const holdMs = 20000;
+    const controlHoldMs = 5000;
     const slowRun = async (cancel) => {
       const c = spawn(h.claude, [h.script, installed, home], {cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
         env: launcherEnv(home, {CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CONFIG_DIR: h.config, CLAUDE_PROJECT_DIR: repo})});
@@ -656,7 +665,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       await m.request('initialize', {protocolVersion: '2026-07-28', capabilities: {elicitation: {}}, clientInfo: {name: 'claude-code', version: '2.1.323'}});
       m.notify('notifications/initialized', {});
       const id = m.nextId();
-      m.request('tools/call', {_meta: META, name: toolOf(listed, 'slow'), arguments: {ms: holdMs}}, holdMs * 3).catch(() => {});
+      m.request('tools/call', {_meta: META, name: toolOf(listed, 'slow'), arguments: {ms: cancel ? holdMs : controlHoldMs}}, holdMs * 3).catch(() => {});
       await new Promise((r) => setTimeout(r, 1500));   // the call is in the runtime
       if (cancel) m.notify('notifications/cancelled', {requestId: id, reason: 'shared-acceptance (c)'});
       await new Promise((r) => setTimeout(r, 500));
@@ -665,7 +674,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       const t = await Promise.race([exited, new Promise((r) => setTimeout(() => r(null), holdMs * 3))]);
       return {exitMs: t == null ? null : t - closedAt, answers: m.log.filter((x) => x.id === id)};
     };
-    await cancelChecks({holdMs, check, cancelled: () => slowRun(true), control: () => slowRun(false)});
+    await cancelChecks({holdMs, controlHoldMs, check, cancelled: () => slowRun(true), control: () => slowRun(false)});
     return 0;
   };
   let code = 1;
