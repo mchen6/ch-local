@@ -296,6 +296,24 @@ test('conditions: the why holds to the shared vectors: the vectors\' own cases, 
   }
 });
 
+test('conditions: whyOf sends no place whose name holds a backslash (a separator on Windows)', {skip: process.platform === 'win32'}, () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-why-bs-')));
+  try {
+    const odd = path.join(home, '..\\..\\Users\\example', 'settings.json');
+    fs.mkdirSync(path.dirname(odd), {recursive: true});
+    fs.writeFileSync(odd, '{}');
+    const hook = 'client hook present';
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: odd}, home), {reason: hook});
+    // and an ordinary place under the same home still has its at
+    const plain = path.join(home, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(plain), {recursive: true});
+    fs.writeFileSync(plain, '{}');
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: plain}, home), {reason: hook, at: '~/.claude/settings.json'});
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('conditions: whyOf by real path: a home through a link keeps its places; a shallow home is no boundary; ..dotfiles is under the home', () => {
   const root = tmpHome();
   try {
