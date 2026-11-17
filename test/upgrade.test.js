@@ -287,7 +287,7 @@ const withdrawFrom = (name) => (doc) => {
   for (const pkg of gone) if (!used.has(pkg)) delete doc.pins[pkg];
 };
 
-// Withdrawn packs (Matt, 2026-11-17, option 1): a release that no longer
+// Withdrawn packs (maintainer's decision, 2026-11-17): a release that no longer
 // lists the home's one pack still upgrades (a pack is usually withdrawn for a
 // security problem: staying on the old release would keep running it). The
 // runtime is installed; the pack's record entry, its files and its data stay

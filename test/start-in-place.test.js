@@ -734,7 +734,7 @@ test('load-pack follow-ups: a confirmed load answered past the runtime\'s wait i
   }
 });
 
-// Withdrawn packs (Matt, 2026-11-17, option 1): installed, but not in the
+// Withdrawn packs (maintainer's decision, 2026-11-17): installed, but not in the
 // running release's allowlist: never started; told once, on stderr and to
 // the client; nothing of it removed. An unreleased install is exempt (its
 // record is marked only by --unreleased-pins, which needs CH_LOCAL_DEV=1),
