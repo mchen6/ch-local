@@ -14,7 +14,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {daemon, encodeHandoff} = require('../lib/daemon');
-const {requestUpgrade} = require('../lib/daemon-requests');
+const {requestUpgrade, requestRestart} = require('../lib/daemon-requests');
 const {fakeRuntime, daemonIo, tmpHome, runDirOf} = require('./daemon-fakes');
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -113,6 +113,31 @@ test('an upgrade request with nothing changed does nothing', {skip: process.plat
     assert.strictEqual(await done, 0);
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// a credential stored or removed (ch-local credentials): the runtime takes
+// the token at its start, so it is drained and started again, even when an
+// upgrade request with nothing changed came in the same read
+test('a restart request (a credential changed): drained and started again, also beside an upgrade request that changed nothing', {skip: process.platform === 'win32'}, async() => {
+  for (const withUpgrade of [false, true]) {
+    const {home, io} = setup();
+    try {
+      const s = scripted(home);
+      const done = daemon({home}, io, {run: s.run});
+      const one = await s.nth(0);
+      await adopted(home);
+      if (withUpgrade) await requestUpgrade(home);
+      await requestRestart(home);
+      await s.nth(1);
+      assert.ok(one.requests.some((m) => m.type === 'drain'), 'drained first');
+      assert.strictEqual(s.calls.length, 2, `withUpgrade ${withUpgrade}`);
+      assert.match(io.err, /a stored credential changed: draining, then restarting the runtime/);
+      io.signal('SIGTERM');
+      assert.strictEqual(await done, 0);
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
+    }
   }
 });
 

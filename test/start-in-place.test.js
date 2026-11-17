@@ -88,7 +88,7 @@ test('no pack has its credential: the runtime starts with no pack, and the clien
     await until(() => [/not loading ci-failure-triage/, /no pack is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
     const told = notices(s).map(([, t]) => t);
     const why = told.find((t) => /not loading ci-failure-triage/.test(t));
-    assert.match(why, /needs the GitHub token: run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
+    assert.match(why, /needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
     assert.doesNotMatch(why, /\(above\)/, 'self-contained: the client never saw a line above');
     assert.ok(told.some((t) => /no pack is loaded this start/.test(t)), told.join(' | '));
   } finally {
