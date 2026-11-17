@@ -24,13 +24,34 @@ zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`
 
 ## Token
 
-The launcher asks the GitHub CLI for the token each time it starts
-(`gh auth token`) and holds it in memory: log `gh` in once with
-`gh auth login`. No config entry sets a token, and none is written to a file.
-A token from `gh auth login` carries gh's scopes, which can write to your
-repositories. For a narrower one, set a fine-grained, read-only token
-(Actions read, Contents read) in `COUNTINGHOUSE_GITHUB_TOKEN`: when it is set,
-the launcher uses it and does not ask `gh`.
+The packs that read GitHub need a token. The recommended one is a
+fine-grained, read-only token (Actions read, Contents read), stored once at a
+terminal:
+
+```
+ch-local credentials add github
+```
+
+It asks for the token with nothing shown as you type or paste it, and keeps
+it in `credentials/` in the ch-local home, readable by your user only. Every
+session uses it, including the shared runtime that serves them all. Another
+program running as your user can read that file, as it can read `gh`'s own
+token; ch-local doesn't use the system keychain yet.
+`ch-local credentials list` shows what is stored (names only), and
+`ch-local credentials remove github` removes it. The shared runtime moves to
+a new or removed token once its calls in flight finish; a session that runs
+a runtime of its own takes it at its next start (restart that client). Every
+session sharing the runtime uses the token it then holds.
+
+Without a stored token, the launcher asks the GitHub CLI each time it starts
+(`gh auth token`) and holds the token in memory: log `gh` in once with
+`gh auth login`. A token from `gh auth login` carries gh's scopes, which can
+write to your repositories. No client config entry sets a token.
+
+The order, the same everywhere: `COUNTINGHOUSE_GITHUB_TOKEN` set in the
+environment Claude Code is started from, then the stored token, then
+`gh auth token`, then `GITHUB_TOKEN`. A session whose environment sets a
+token the shared runtime doesn't hold runs a runtime of its own.
 
 For headless or CI use, where `gh` is not logged in, the launcher falls back
 to `GITHUB_TOKEN` from the environment Claude Code is started from. A token set

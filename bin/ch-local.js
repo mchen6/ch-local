@@ -29,6 +29,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
        ch-local settings [get | set <name> <value> | reset]
+       ch-local credentials [list | add github [--module <package>] | remove github]
        ch-local start --stdio [countinghouse options]
 `;
 
@@ -110,6 +111,15 @@ async function main(argv, io) {
     if (command === 'add') {
       if (rest.length !== 1) return usage();
       return await require('../lib/clients').add(rest[0], io);
+    }
+    if (command === 'credentials') {
+      const a = parse(rest, {values: ['--module']});
+      if (a == null) return usage();
+      const [action = 'list', name, ...more] = a.positional;
+      if (more.length > 0 || (action === 'list' && (name !== undefined || a.values['--module'] !== undefined))) return usage();
+      if ((action === 'add' || action === 'remove') && name === undefined) return usage();
+      if (action === 'remove' && a.values['--module'] !== undefined) return usage();
+      return await require('../lib/credentials-command').credentials({action, name, module: a.values['--module'] || null}, io);
     }
     if (command === 'uninstall') {
       const a = parse(rest, {flags: ['--keep-data']});
@@ -234,6 +244,9 @@ function realIo() {
     pid: process.pid,
     // A terminal to ask on: rollback over a security fix asks, or needs --yes.
     interactive: Boolean(process.stdin.isTTY),
+    // A terminal both ways (credentials add: the prompt seen, the typing not)
+    terminal: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+    readHidden: (prompt) => require('../lib/hidden-input').readHidden(prompt),
     // Read when used: a directory removed under a shell makes process.cwd()
     // throw, and only start needs it (null: git runs wherever it is).
     get cwd() { try { return process.cwd(); } catch (err) { return null; } },
