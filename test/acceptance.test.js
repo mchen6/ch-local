@@ -178,6 +178,49 @@ test('shared: the client harness is a `claude` beside a script and an empty conf
   fs.rmSync(path.dirname(dir), {recursive: true, force: true});
 });
 
+// M17 (b), 2026-11-16: a run under a home whose .claude held the person's
+// plugins answered "no" for the tested client, and (b) read as declined.
+test('shared: the client\'s repository goes in the runner\'s temporary directory on CI, else /tmp on POSIX, never the run\'s TMPDIR', () => {
+  assert.strictEqual(shared.clientRepoRoot({RUNNER_TEMP: '/runner/_temp'}, 'linux'), '/runner/_temp');
+  assert.strictEqual(shared.clientRepoRoot({TMPDIR: '/home/someone/tmp'}, 'linux'), '/tmp');
+  assert.strictEqual(shared.clientRepoRoot({TMPDIR: '/home/someone/tmp'}, 'darwin'), '/tmp');
+  assert.strictEqual(shared.clientRepoRoot({RUNNER_TEMP: 'relative'}, 'linux'), '/tmp', 'a relative RUNNER_TEMP is not one');
+  assert.strictEqual(shared.clientRepoRoot({}, 'win32'), os.tmpdir());
+});
+
+test('shared: every .claude at or above the client\'s repository is found, except the client\'s own configuration', () => {
+  const top = tmp('ch-shared-stray-');
+  const repo = path.join(top, 'a', 'b', 'repo');
+  fs.mkdirSync(repo, {recursive: true});
+  const config = path.join(top, 'config');
+  fs.mkdirSync(config);
+  // only what is inside this test's directory: the machine's own may sit higher
+  const ours = (found) => found.filter((d) => d.startsWith(top + path.sep));
+  assert.deepStrictEqual(ours(shared.strayClaudeDirs(repo, config)), []);
+  fs.mkdirSync(path.join(top, 'a', '.claude'));
+  fs.mkdirSync(path.join(repo, '.claude'));
+  assert.deepStrictEqual(ours(shared.strayClaudeDirs(repo, config)), [path.join(repo, '.claude'), path.join(top, 'a', '.claude')]);
+  assert.deepStrictEqual(ours(shared.strayClaudeDirs(repo, path.join(top, 'a', '.claude'))), [path.join(repo, '.claude')], 'the client\'s own configuration is not a stray');
+  fs.rmSync(top, {recursive: true, force: true});
+});
+
+test('shared: the client\'s configuration directory must be an absolute path to an existing, empty directory', () => {
+  const top = tmp('ch-shared-config-');
+  assert.match(shared.configProblem(''), /not an absolute path/);
+  assert.match(shared.configProblem(undefined), /not an absolute path/);
+  assert.match(shared.configProblem('relative/config'), /not an absolute path/);
+  assert.match(shared.configProblem(path.join(top, 'missing')), /ENOENT/);
+  fs.writeFileSync(path.join(top, 'file'), '');
+  assert.match(shared.configProblem(path.join(top, 'file')), /not a directory/);
+  fs.mkdirSync(path.join(top, 'full'));
+  fs.writeFileSync(path.join(top, 'full', 'settings.json'), '{}');
+  assert.match(shared.configProblem(path.join(top, 'full')), /not empty/);
+  fs.mkdirSync(path.join(top, 'empty'));
+  assert.strictEqual(shared.configProblem(path.join(top, 'empty')), null);
+  assert.strictEqual(shared.configProblem(shared.claudeHarness(path.join(top, 'client')).config), null, 'the harness\'s own');
+  fs.rmSync(top, {recursive: true, force: true});
+});
+
 test('shared: the shim goes in a private <home>/shim, executable by its owner only', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
   const home = tmp('ch-shared-home-');
   const bin = path.join(home, 'built');
