@@ -307,10 +307,11 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
     assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
     const r = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(r.outcome, 'installed', r.line);
-    assert.match(r.line, /upgraded ch-local 0\.1\.0 -> 0\.1\.1; ch-local rollback undoes it; pack ci-failure-triage was withdrawn in this release and is not started; `ch-local remove-pack ci-failure-triage` removes it/);
+    assert.match(r.line, /upgraded ch-local 0\.1\.0 -> 0\.1\.1; ch-local rollback undoes it; pack ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it/);
     const after = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'));
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.1.1');
-    assert.deepStrictEqual(after.packs, {'ci-failure-triage': entry}, 'the pack\'s entry unchanged');
+    assert.deepStrictEqual(after.packs, {}, 'no longer an installed pack');
+    assert.deepStrictEqual(after.held, {'ci-failure-triage': {...entry, installedUnder: '0.1.0', withdrawn: true}}, 'held, marked withdrawn');
     assert.deepStrictEqual(historyOf(h).filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', '0.1.1']]);
   } finally {
     await w.close();

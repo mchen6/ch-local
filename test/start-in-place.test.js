@@ -837,3 +837,58 @@ test('load-pack for a withdrawn pack is refused CONTROL_PACK_NOT_ALLOWED, and no
     await s.done;
   }
 });
+
+// Withdrawn packs, held (the review of #74): an upgrade that withdraws a pack
+// moves it from packs to held, marked withdrawn, as the runtime-only install
+// writes it. Nothing of it is removed.
+function withdrawHeld(home, name) {
+  const f = path.join(home, 'packs.json');
+  const r = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const {[name]: entry, ...rest} = r.packs;
+  fs.writeFileSync(f, JSON.stringify({...r, packs: rest, held: {...(r.held || {}), [name]: {...entry, installedUnder: '0.1.0', withdrawn: true}}}, null, 2));
+}
+
+test('a pack held as withdrawn is not started: told once; an unreleased home never brings it back', async () => {
+  const s = await running({beforeStart: (home) => {
+    withdrawHeld(home, 'ci-failure-triage');
+    const f = path.join(home, 'packs.json');
+    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), unreleased: true}, null, 2));
+  }});
+  try {
+    await until(() => notices(s).some(([, t]) => t === LINE));
+    assert.strictEqual(loadsPack(s), false, JSON.stringify(s.args()));
+    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, LINE]], 'once, to the client');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('a running start stops serving a pack an upgrade withdraws: unloaded, and the client told why', async () => {
+  const s = await running();
+  try {
+    assert.strictEqual(loadsPack(s), true);
+    withdrawHeld(s.home, 'ci-failure-triage');
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-ci-failure-triage'));
+    const now = 'pack ci-failure-triage was withdrawn in this release and is no longer served; `ch-local remove-pack ci-failure-triage` removes it';
+    await until(() => s.requests.some((m) => (m.type === 'unload' && m.notice === now) || (m.type === 'notice' && m.text === now)));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('load-pack for a pack held as withdrawn is refused CONTROL_PACK_NOT_ALLOWED, and the session is told why', async () => {
+  const {s, count, reply} = await withOtherOff();
+  try {
+    withdrawHeld(s.home, 'other');
+    await new Promise((r) => setTimeout(r, 500));   // the watcher's apply has run
+    const line = 'pack other was withdrawn in this release and was not started; `ch-local remove-pack other` removes it';
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
+    await until(() => notices(s).some(([, t]) => t === line));
+    assert.strictEqual(count('load'), 1, 'nothing loaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});

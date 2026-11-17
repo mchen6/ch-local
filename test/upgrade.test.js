@@ -316,7 +316,10 @@ test('a release that withdraws the home\'s one pack upgrades: the runtime instal
     assert.doesNotMatch(io.out, /was dropped/);
     const after = recordOf(s.home);
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.2.0', 'the runtime upgraded');
-    assert.deepStrictEqual(after.packs, {'ci-failure-triage': entry}, 'the pack\'s entry unchanged');
+    // the pack moves to held, marked withdrawn: start, the running start's
+    // applier, add-pack and install never take it for an installed pack
+    assert.deepStrictEqual(after.packs, {}, 'no longer an installed pack');
+    assert.deepStrictEqual(after.held, {'ci-failure-triage': {...entry, installedUnder: '0.1.0', withdrawn: true}}, 'held, its entry kept, marked withdrawn');
     assert.deepStrictEqual(bytes(), before, 'its files and data byte for byte');
     const h = historyOf(s.home);
     assert.deepStrictEqual(h.filter((e) => e.kind === 'upgrade').map((e) => [e.outcome, e.to]), [['installed', '0.2.0']]);
