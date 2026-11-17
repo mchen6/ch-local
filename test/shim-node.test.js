@@ -267,6 +267,108 @@ test('conditions: the token the environment chooses, as its keyed hash; gh asked
   }
 });
 
+// the pack credentials the client environment chooses (a session whose
+// choice the shared runtime lacks runs its own runtime), named by the
+// installed packs only: packs.json, as install writes it
+function withPacks(home, packs) {
+  fs.writeFileSync(path.join(home, 'packs.json'), JSON.stringify({runtime: {versions: {countinghouse: '8.0.0'}}, packs: Object.fromEntries(Object.entries(packs).map(([n, credentials]) => [n, {packages: {[`@countinghouse/ch-pack-${n}`]: '1.0.0'}, credentials}]))}));
+}
+const CRED_V = require('./vectors/credentials.json');
+
+test('conditions: a pack credential the environment chooses, by the installed packs\' names, as the vectors\' keyed hash; never its value', async() => {
+  const home = homeWithSecret();
+  try {
+    // SECRET is the vectors' own (32 bytes of 0x5a), so the MAC is theirs exactly
+    withPacks(home, {other: [CRED_V.credentialMac.name], ci: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']});
+    const io = conditionsIo({env: {[CRED_V.credentialMac.name]: CRED_V.credentialMac.value, UNDECLARED_TOKEN: 'example-undeclared', GITHUB_TOKEN: 'example-shell-token'}});
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+    const line = JSON.parse(io.out);
+    assert.deepStrictEqual(line.credentials, {[CRED_V.credentialMac.name]: CRED_V.credentialMac.macB64}, 'only the declared one; the GitHub ones are token\'s');
+    assert.deepStrictEqual(JSON.parse(CRED_V.clientCredentials).credentials, line.credentials, 'the vectors\' client frame');
+    for (const v of [CRED_V.credentialMac.value, 'example-undeclared', 'example-shell-token']) assert.ok(!io.out.includes(v) && !io.err.includes(v), 'no value is printed');
+    assert.ok(!io.out.includes('UNDECLARED_TOKEN'), 'no name the environment offers');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: no pack credential chosen, or no packs: no credentials key, and the secret is not read for them', async() => {
+  const home = homeWithSecret();
+  try {
+    let io = conditionsIo({env: {}});
+    await conditions.conditions({pid: 1, home}, io);
+    assert.ok(!('credentials' in JSON.parse(io.out)));
+    withPacks(home, {other: ['OTHER_TOKEN']});
+    io = conditionsIo({env: {OTHER_TOKEN: '${OTHER_TOKEN}'}});
+    await conditions.conditions({pid: 1, home}, io);
+    assert.ok(!('credentials' in JSON.parse(io.out)), 'an unresolved placeholder is no choice, as for start');
+    // no secret needed when nothing is hashed
+    fs.rmSync(path.join(home, 'run', 'daemon', 'secret'));
+    io = conditionsIo({env: {}});
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: start\'s precedence: a pack whose choice is a GitHub variable is token\'s, not a credential; a name the runtime would refuse fails the check', async() => {
+  const home = homeWithSecret();
+  try {
+    withPacks(home, {mixed: ['COUNTINGHOUSE_GITHUB_TOKEN', 'OTHER_TOKEN']});
+    let io = conditionsIo({env: {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token', OTHER_TOKEN: 'example-other'}});
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+    assert.ok(!('credentials' in JSON.parse(io.out)), 'start would load it with the GitHub token');
+    io = conditionsIo({env: {OTHER_TOKEN: 'example-other'}});
+    await conditions.conditions({pid: 1, home}, io);
+    assert.deepStrictEqual(Object.keys(JSON.parse(io.out).credentials), ['OTHER_TOKEN'], 'with no GitHub token set, the other');
+    withPacks(home, {odd: ['MY-API-KEY']});
+    io = conditionsIo({env: {'MY-API-KEY': 'example-odd'}});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: a line that would pass the shim\'s 4 KiB fails here, named, with no line', async() => {
+  const home = homeWithSecret();
+  try {
+    const packs = {};
+    const env = {};
+    for (let i = 0; i < conditions.MAX_CREDENTIALS; i++) {
+      const name = `PACK_VAR_${String(i).padStart(2, '0')}_${'X'.repeat(110)}`;
+      packs[`p${i}`] = [name];
+      env[name] = `example-${i}`;
+    }
+    withPacks(home, packs);
+    const io = conditionsIo({env});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
+    assert.match(io.err, new RegExp(`over ${conditions.MAX_LINE_BYTES} bytes`));
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: more than 32 chosen pack credentials, or packs.json that cannot be read, is a failure: no line, a non-zero exit', async() => {
+  const home = homeWithSecret();
+  try {
+    const many = {};
+    const env = {};
+    for (let i = 0; i <= conditions.MAX_CREDENTIALS; i++) { many[`p${i}`] = [`EXAMPLE_${i}_TOKEN`]; env[`EXAMPLE_${i}_TOKEN`] = `example-${i}`; }
+    withPacks(home, many);
+    let io = conditionsIo({env});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
+    fs.writeFileSync(path.join(home, 'packs.json'), '{not json');
+    io = conditionsIo({env: {}});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('conditions: a gh that times out or cannot run is a failure, never "none chosen": no line, a non-zero exit', async() => {
   const home = homeWithSecret();
   try {
