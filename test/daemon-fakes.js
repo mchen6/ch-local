@@ -38,8 +38,19 @@ async function fakeRuntime(runDir, socket, {wrongSecret = false} = {}) {
 
 // the shim's cleared environment: only shim.json's allowlist, never
 // COUNTINGHOUSE_HOME
+// every daemon io made, so a test that fails before it stops its daemon
+// leaves none running (a daemon's poller would hold the process open until
+// the job's timeout): stopLeftDaemons() after each test
+const made = new Set();
+function stopLeftDaemons() {
+  for (const io of made) {
+    if (typeof io.signal === 'function') { try { io.signal('SIGTERM'); } catch (e) { /* it was ending */ } }
+  }
+  made.clear();
+}
 function daemonIo(home) {
   const io = fakeIo({env: {PATH: '/usr/bin:/bin', HOME: os.tmpdir()}, homedir: os.tmpdir});
+  made.add(io);
   io.cwd = home;
   io.pid = process.pid;
   io.alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
@@ -63,4 +74,4 @@ const makeRunDir = (home) => {
   return runDir;
 };
 
-module.exports = {fakeRuntime, daemonIo, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame};
+module.exports = {fakeRuntime, daemonIo, stopLeftDaemons, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame};

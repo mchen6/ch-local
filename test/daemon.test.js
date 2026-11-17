@@ -20,7 +20,9 @@ const path = require('node:path');
 const {fakeIo} = require('./fake-io');
 const {daemon, probe} = require('../lib/daemon');
 
-const {fakeRuntime, daemonIo, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame} = require('./daemon-fakes');
+const {fakeRuntime, daemonIo, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame, stopLeftDaemons} = require('./daemon-fakes');
+// a test that fails before it stops its daemon leaves none running
+test.afterEach(() => stopLeftDaemons());
 const {isPipeName} = require('../lib/session-socket');
 const WIN = process.platform === 'win32';
 // owner-only: 0600 and 0700 on POSIX; on Windows the DACL (privateProblem)

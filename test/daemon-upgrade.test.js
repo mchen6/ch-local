@@ -15,7 +15,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {daemon, encodeHandoff} = require('../lib/daemon');
 const {requestUpgrade} = require('../lib/daemon-requests');
-const {fakeRuntime, daemonIo, tmpHome, runDirOf} = require('./daemon-fakes');
+const {fakeRuntime, daemonIo, tmpHome, runDirOf, stopLeftDaemons} = require('./daemon-fakes');
+// a test that fails before it stops its daemon leaves none running
+test.afterEach(() => stopLeftDaemons());
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 const ID = (n) => n.toString(16).padStart(32, '0');
