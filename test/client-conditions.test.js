@@ -284,3 +284,28 @@ test('a world under a directory whose .claude enables plugins sees only its own 
     fs.rmSync(outer, {recursive: true, force: true});
   }
 });
+
+// stopAt narrows a security scan (it stops the walk up), so it must be out
+// of reach in use (the review of #62): it lives only in the scan's own
+// definition, the conditions command's one io read and the fixture worlds,
+// and no file that takes argv, env or settings names it at all
+test('stopAt and conditionsStopAt are reachable only from tests: in lib/, bin/ and clients/ they appear only where they are defined and read', () => {
+  const root = path.join(__dirname, '..');
+  const files = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(path.join(root, dir), {withFileTypes: true})) {
+      const rel = path.join(dir, e.name);
+      if (e.isDirectory()) walk(rel); else if (/\.(c?js|json)$/.test(e.name) || dir === 'bin') files.push(rel.split(path.sep).join('/'));
+    }
+  };
+  for (const d of ['lib', 'bin', 'clients']) if (fs.existsSync(path.join(root, d))) walk(d);
+  const naming = files.filter((f) => /\b(stopAt|conditionsStopAt)\b/.test(fs.readFileSync(path.join(root, f), 'utf8')));
+  assert.deepStrictEqual(naming.sort(), ['lib/client-conditions-fixtures.js', 'lib/client-conditions.js', 'lib/conditions-command.js']);
+  // the command's only mention is the one io read, never an argument or an option
+  const command = fs.readFileSync(path.join(root, 'lib', 'conditions-command.js'), 'utf8').split('\n').filter((l) => /\b(stopAt|conditionsStopAt)\b/.test(l));
+  assert.deepStrictEqual(command.map((l) => l.trim()), ['...(io.conditionsStopAt != null ? {stopAt: io.conditionsStopAt} : {})});']);
+  // the fixture worlds bound only their own temp root
+  const fixtures = fs.readFileSync(path.join(root, 'lib', 'client-conditions-fixtures.js'), 'utf8').split('\n').filter((l) => /\bstopAt\b/.test(l) && !/^\s*\/\//.test(l));
+  assert.ok(fixtures.length === 1 && /stopAt: root\}/.test(fixtures[0]), fixtures.join('\n'));
+});
+
