@@ -304,10 +304,34 @@ test('the shared runtime through the native shim', {timeout: 2400000, skip: SRC 
   assert.strictEqual(report.ok, true, JSON.stringify(report.checks.filter((c) => !c.ok)));
 });
 
+// (b-latched), the checks the gated run makes against two sessions
+// (countinghouse #337), here against stand-ins: what a refusal must say to
+// pass, and what each wrong answer fails on.
+test('shared: (b-latched) a latched session is refused as the latch, with the handed-over reason; never as a decline', async () => {
+  const why = {reason: 'client hook present', at: '~/x/.claude/settings.json'};
+  const run = async (loosening, {firstValue = 10000, handed = why} = {}) => {
+    const checks = [];
+    const check = (name, ok, detail) => { checks.push({name, ok: ok === true, detail}); return ok === true; };
+    const second = async (a) => (a.action === 'set' && a.value === '60s' ? loosening
+      : {result: {structuredContent: {new: 20000, applies: 'this session'}}});
+    const first = async () => ({result: {structuredContent: {settings: [{name: 'requestTimeout', value: firstValue}]}}});
+    await shared.latchedChecks({second, first, why: handed, reason: 'client hook present', check});
+    return checks;
+  };
+  const refusal = (code, text) => ({result: {isError: true, _meta: {'countinghouse/code': code}, content: [{type: 'text', text}]}});
+  const good = refusal('SETTING_CLIENT_NOT_CONFIRMED', 'Loosening requestTimeout is not asked in this session: this client\'s configuration could answer forms by itself (client hook present: ~/x/.claude/settings.json); nothing was changed. To allow it, run `ch-local settings set requestTimeout 60s` in a terminal yourself.');
+  assert.ok((await run(good)).every((c) => c.ok), JSON.stringify(await run(good)));
+  const failed = async (...a) => (await run(...a)).filter((c) => !c.ok).map((c) => c.name);
+  assert.strictEqual((await failed(refusal('SETTING_DECLINED_THIS_SESSION', good.result.content[0].text))).length, 1, 'a decline is not the latch');
+  assert.strictEqual((await failed(refusal('SETTING_CLIENT_NOT_CONFIRMED', 'this client could not be confirmed; run `ch-local settings set requestTimeout 60s`'))).length, 1, 'the reason must be the handed-over one');
+  assert.strictEqual((await failed(good, {firstValue: 20000})).length, 1, 'the first session\'s own value');
+  assert.strictEqual((await failed(good, {handed: {reason: 'plugin hook present'}})).length, 2, 'a hand-over with another reason fails both');
+});
+
 // Not yet through the real shim (scripts/shared-acceptance.js says where each
 // is covered meanwhile): todos, never skips, so the acceptance workflow's
 // "skipped 0" still holds.
 test('shared: (a) progress frames before an answer, through the shim', {todo: 'needs a hopping pack in the shared runtime: per-session packs (B3/B5)'});
 test('shared: (c) a cancelled call leaves no in-flight entry, through the shim', {todo: 'needs a hopping pack in the shared runtime: per-session packs (B3/B5)'});
 test('shared: (b1) the settings confirmation form round trip, through the shim', {todo: 'once a tested Claude Code range is in countinghouse lib/elicitation-clients.json (the maintainer\'s hand test before release)'});
-test('shared: (b2) ctx.ask through the shim', {todo: 'once M13 (ctx.ask) is on countinghouse master'});
+test('shared: (b2) ctx.ask through the shim', {todo: 'needs an asking pack in the shared runtime (B3/B5\'s pack path)'});

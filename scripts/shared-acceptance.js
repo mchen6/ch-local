@@ -48,6 +48,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
 const dogfood = require('./dogfood');
+const fixtures = require('../lib/client-conditions-fixtures');
 const {launcherEnv, stopTree, trapSignals} = require('./acceptance');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -241,6 +242,32 @@ function treeOf(root) {
   return rows.filter((row) => inTree.has(row.pid));
 }
 
+// (b-latched), the countinghouse #337 contract: a session whose client's
+// conditions latched "no" is refused a loosening as that latch, with the
+// reason the shim handed over, never as the user's decline; a tightening
+// still applies to it; and another session's settings are its own.
+// second, first: each session's tools/call of countinghouse_settings; why:
+// the conditions line's `why` ({reason, at?}) for the second client; reason:
+// the fixture's own expected reason. -> nothing; each finding via check().
+async function latchedChecks({second, first, why, reason, check}) {
+  check('(b-latched) the conditions handed over for the second client say no, with the fixture\'s reason', why != null && why.reason === reason, JSON.stringify(why));
+  const loosen = await second({action: 'set', name: 'requestTimeout', value: '60s'});
+  const code = loosen.result != null && loosen.result._meta != null ? loosen.result._meta['countinghouse/code'] : null;
+  const text = loosen.result != null ? JSON.stringify(loosen.result.content) : '';
+  // the refusal states the session's own conditionsWhy, as the runtime holds
+  // it from the hand-over (countinghouse lib/conditions-why.js said())
+  const said = why != null ? `(${why.reason}${why.at !== undefined ? `: ${why.at}` : ''})` : '(none handed over)';
+  check('(b-latched) a loosening is refused as the latch, with the handed-over reason and the terminal command; never as a decline',
+    loosen.result != null && loosen.result.isError === true && code === 'SETTING_CLIENT_NOT_CONFIRMED' && text.includes(said) &&
+    /ch-local settings set requestTimeout 60s/.test(text), `${said} ${JSON.stringify(loosen).slice(0, 1000)}`);
+  const tighten = await second({action: 'set', name: 'requestTimeout', value: '20s'});
+  const t = tighten.result != null ? tighten.result.structuredContent : null;
+  check('(b-latched) a tightening still applies to that session', t != null && t.new === 20000 && t.applies === 'this session', JSON.stringify(tighten).slice(0, 1000));
+  const got = await first({action: 'get'});
+  const value = got.result != null && got.result.structuredContent != null ? (got.result.structuredContent.settings || []).find((x) => x.name === 'requestTimeout') : null;
+  check('(b-latched) the first session\'s settings are its own (its 10 s kept)', value != null && value.value === 10000, JSON.stringify(got).slice(0, 1000));
+}
+
 async function main(argv, io = {stdout: process.stdout, stderr: process.stderr}) {
   const say = (s) => io.stdout.write(`${s}\n`);
   const report = {startedAt: new Date().toISOString(), platform: `${process.platform}-${process.arch}`, node: process.version, checks: [], ok: false};
@@ -270,11 +297,13 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   const home = path.join(work, 'home');
   const node = process.execPath;
   let client = null;
+  let client2 = null;
   let stderr = '';
   let finished = null;
   const finish = (interrupted) => finished || (finished = (async () => {
     if (interrupted != null) check('the run was not interrupted', false, interrupted);
     if (client != null) await stopTree(client);
+    if (client2 != null) await stopTree(client2);
     if (report.checks.some((c) => !c.ok)) await diagnose();
     await stopDaemon(home);
     const left = daemonPid(home);
@@ -428,6 +457,58 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       JSON.stringify(rest).slice(0, 1000));
     const bad = await mcp.request('tools/list', {_meta: META, cursor: 'not-a-cursor'});
     check('(d) a cursor that names nothing is -32602', bad.error != null && bad.error.code === -32602, JSON.stringify(bad).slice(0, 1000));
+
+    // (b-latched) a second client whose own settings hold a hook (the
+    // conditions fixture's 'user-settings': its reason is the fixture's),
+    // on the same daemon. Everything in the run's own directories, removed
+    // with them; never the user's ~/.claude.
+    const root2 = path.join(work, 'client2');
+    const h2 = claudeHarness(root2);
+    const home2 = path.join(root2, 'home');
+    const config2 = path.join(home2, '.claude');
+    fs.mkdirSync(config2, {recursive: true});
+    const repo2 = path.join(repoRoot, 'repo2');
+    fs.mkdirSync(path.join(repo2, '.git'), {recursive: true});
+    fs.writeFileSync(path.join(repo2, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/example/shared-acceptance-latched.git\n');
+    const config2Bad = configProblem(config2);
+    if (!check('(b-latched) the second client\'s configuration directory is its own: an existing, empty directory', config2Bad == null, config2Bad)) return 1;
+    const stray2 = strayClaudeDirs(repo2, config2);
+    if (!check('(b-latched) no .claude at or above the second client\'s repository but its own configuration', stray2.length === 0, stray2.join('\n'))) return 1;
+    const settings2 = path.join(config2, 'settings.json');
+    const within = (p, dir) => { const rel = path.relative(dir, p); return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel); };
+    if (!check('(b-latched) the hook goes inside the run\'s own directory, never the user\'s ~/.claude', within(settings2, work) && !within(settings2, path.join(os.homedir(), '.claude')), settings2)) return 1;
+    const reason = fixtures.plant('user-settings', {home: home2, write: (file, value) => {
+      if (path.resolve(file) !== settings2) throw new Error(`the fixture wrote ${file}, not ${settings2}`);
+      fs.mkdirSync(path.dirname(file), {recursive: true});
+      fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value));
+      return file;
+    }});
+    const env2 = launcherEnv(home, {CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CONFIG_DIR: config2, CLAUDE_PROJECT_DIR: repo2});
+    client2 = spawn(h2.claude, [h2.script, installed, home], {cwd: repo2, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', env: env2});
+    client2.stderr.setEncoding('utf8');
+    client2.stderr.on('data', (d) => { stderr = (stderr + d).slice(-200000); });
+    const mcp2 = session(client2);
+    const init2 = await mcp2.request('initialize', {protocolVersion: '2026-07-28', capabilities: {elicitation: {}}, clientInfo: {name: 'claude-code', version: '2.1.323'}});
+    if (!check('(b-latched) the second client\'s shim answers initialize', init2.result != null, JSON.stringify(init2).slice(0, 1000))) return 1;
+    mcp2.notify('notifications/initialized', {});
+    const tree2 = treeOf(client2.pid);
+    check('(b-latched) attached to the same live daemon, with no per-session runtime in its tree', daemonPid(home) === pid && alive(pid) &&
+      tree2 != null && !tree2.some((p) => /\s--own-runtime\b/.test(p.args)), `daemon ${daemonPid(home)} (was ${pid}); tree ${JSON.stringify(tree2)}`);
+    // the conditions line the shim hands over for this client, as it runs
+    // it: ch-local conditions for the client's pid, in its directory and
+    // environment (lib/conditions-command.js)
+    const sj = JSON.parse(fs.readFileSync(path.join(home, 'shim.json'), 'utf8'));
+    const conds = spawnSync(sj.node, [sj.chLocal, 'conditions', '--for', String(client2.pid), '--home', home], {cwd: repo2, env: env2, encoding: 'utf8', timeout: STEP_MS});
+    let why = null;
+    try { why = JSON.parse(conds.stdout.trim().split('\n').pop()).why || null; } catch (e) { why = null; }
+    const settingsCall = (m) => (a) => m.request('tools/call', {_meta: META, name: 'countinghouse_settings', arguments: a});
+    await latchedChecks({second: settingsCall(mcp2), first: settingsCall(mcp), why, reason, check});
+    // it leaves with a bye (its stdin closed), and the first session is served on
+    client2.stdin.end();
+    await new Promise((resolve) => { const t = setTimeout(resolve, STEP_MS); client2.once('exit', () => { clearTimeout(t); resolve(); }); });
+    const stillServed = await mcp.request('tools/list', {_meta: META});
+    check('(b-latched) after the second session\'s bye, the daemon still serves the first', stillServed.result != null && Array.isArray(stillServed.result.tools) &&
+      stillServed.result.tools.length > 0 && alive(pid), JSON.stringify(stillServed).slice(0, 1000));
     return 0;
   };
   let code = 1;
@@ -444,4 +525,4 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code));
 
-module.exports = {main, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session};
+module.exports = {main, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session, latchedChecks};
