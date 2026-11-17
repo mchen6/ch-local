@@ -278,3 +278,51 @@ test('the yes is a person\'s at a terminal: a piped answer installs nothing; a n
   }
 });
 
+// A release that withdraws the pack `name`: its entry and the pins of its
+// packages that nothing else in the release uses are gone, as a real one's are.
+const withdrawFrom = (name) => (doc) => {
+  const gone = doc.packs[name].packages;
+  delete doc.packs[name];
+  const used = new Set([...doc.runtime.packages, ...Object.values(doc.packs).flatMap((p) => p.packages)]);
+  for (const pkg of gone) if (!used.has(pkg)) delete doc.pins[pkg];
+};
+
+// Withdrawn packs (Matt, 2026-11-17, option 1): a release that no longer
+// lists the home's one pack still upgrades (a pack is usually withdrawn for a
+// security problem: staying on the old release would keep running it). The
+// runtime is installed; the pack's record entry, its files and its data stay
+// byte for byte; the notice is said and recorded, as information; start then
+// skips the pack.
+test('a release that withdraws the home\'s one pack upgrades: the runtime installed, the pack kept byte for byte, the notice said and recorded', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release(), {edit: withdrawFrom('ci-failure-triage')});
+  try {
+    const {layout} = require('../lib/home');
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    const entry = recordOf(s.home).packs['ci-failure-triage'];
+    const dir = require('../lib/pack-dir').packDir(where, 'ci-failure-triage', require('../lib/pack-dir').packKey(entry.packages));
+    fs.mkdirSync(dir, {recursive: true});
+    fs.writeFileSync(path.join(dir, 'pack-file'), 'the pack\'s own bytes');
+    fs.mkdirSync(path.join(where.moduleData, 'ch-pack-ci-failure-triage'), {recursive: true});
+    fs.writeFileSync(path.join(where.moduleData, 'ch-pack-ci-failure-triage', 'state.json'), '{"kept":true}');
+    const bytes = () => ({pack: fs.readFileSync(path.join(dir, 'pack-file'), 'utf8'), data: fs.readFileSync(path.join(where.moduleData, 'ch-pack-ci-failure-triage', 'state.json'), 'utf8')});
+    const before = bytes();
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    // said before the question, and after the install
+    assert.match(io.out, /it withdraws:\n  ci-failure-triage \(it stays installed and is not started after the upgrade; `ch-local remove-pack ci-failure-triage` removes it\)/);
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0; ch-local rollback undoes it/);
+    assert.match(io.out, /pack ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it/);
+    assert.doesNotMatch(io.out, /was dropped/);
+    const after = recordOf(s.home);
+    assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.2.0', 'the runtime upgraded');
+    assert.deepStrictEqual(after.packs, {'ci-failure-triage': entry}, 'the pack\'s entry unchanged');
+    assert.deepStrictEqual(bytes(), before, 'its files and data byte for byte');
+    const h = historyOf(s.home);
+    assert.deepStrictEqual(h.filter((e) => e.kind === 'upgrade').map((e) => [e.outcome, e.to]), [['installed', '0.2.0']]);
+    assert.deepStrictEqual(h.filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', '0.2.0']]);
+  } finally {
+    await w.close();
+    s.done();
+  }
+});

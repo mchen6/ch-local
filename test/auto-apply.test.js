@@ -284,3 +284,35 @@ test('the CLI: `ch-local upgrade --apply-auto` runs it and prints its line; with
   const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
   assert.strictEqual(await main(['upgrade', '--apply-auto', '--auto', 'on'], io2), 2);
 });
+
+// A release that withdraws the pack `name`: its entry and the pins of its
+// packages that nothing else in the release uses are gone, as a real one's are.
+const withdrawFrom = (name) => (doc) => {
+  const gone = doc.packs[name].packages;
+  delete doc.packs[name];
+  const used = new Set([...doc.runtime.packages, ...Object.values(doc.packs).flatMap((p) => p.packages)]);
+  for (const pkg of gone) if (!used.has(pkg)) delete doc.pins[pkg];
+};
+
+// Withdrawn packs (Matt, 2026-11-17, option 1): an automatic upgrade to a
+// release that withdraws the home's one pack installs it like any other (the
+// usual reason is a security problem); the pack's entry stays, the line says
+// it is withdrawn, and the next start skips it with the notice.
+test('a release that withdraws the home\'s one pack installs automatically: the pack kept, the withdrawal said and recorded', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H), edit: withdrawFrom('ci-failure-triage')});
+  try {
+    const h = home();
+    const entry = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8')).packs['ci-failure-triage'];
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const r = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    assert.match(r.line, /upgraded ch-local 0\.1\.0 -> 0\.1\.1; ch-local rollback undoes it; pack ci-failure-triage was withdrawn in this release and is not started; `ch-local remove-pack ci-failure-triage` removes it/);
+    const after = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'));
+    assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.1.1');
+    assert.deepStrictEqual(after.packs, {'ci-failure-triage': entry}, 'the pack\'s entry unchanged');
+    assert.deepStrictEqual(historyOf(h).filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', '0.1.1']]);
+  } finally {
+    await w.close();
+  }
+});
