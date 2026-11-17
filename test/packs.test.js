@@ -105,3 +105,17 @@ test('a record whose pack names or versions are not a release\'s is refused: the
     assert.throws(() => installedPacks(where), /not a ch-local record/, JSON.stringify(packs));
   }
 });
+
+// Withdrawn packs (Matt, 2026-11-17, option 1)
+test('withdrawnPacks: the packs the release does not list; an unreleased install is exempt, a released one never', () => {
+  const {withdrawnPacks, withdrawnLine} = require('../lib/packs');
+  const packs = [{name: 'kept'}, {name: 'gone'}];
+  const allow = {packs: {kept: {packages: [], credentials: []}}};
+  assert.deepStrictEqual(withdrawnPacks(packs, {allow, record: {unreleased: false}}).map((p) => p.name), ['gone']);
+  // the record is marked unreleased only by --unreleased-pins, which needs
+  // CH_LOCAL_DEV=1 (lib/pins.js): the dev intent is on record
+  assert.deepStrictEqual(withdrawnPacks(packs, {allow, record: {unreleased: true}}), [], 'unreleased: exempt');
+  assert.deepStrictEqual(withdrawnPacks(packs, {allow: {packs: {}}, record: null}).map((p) => p.name), ['kept', 'gone']);
+  assert.strictEqual(withdrawnLine('gone'), 'pack gone was withdrawn in this release and was not started; `ch-local remove-pack gone` removes it');
+});
+

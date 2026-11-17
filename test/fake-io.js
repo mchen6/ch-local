@@ -34,9 +34,29 @@ function fakeIo({env = {}, answers = [], exec, fetch, version = 'v24.21.0', home
       return fetch(url, opts);
     }
   };
+  // The running release's allowlist (lib/packs.js withdrawnPacks): a test
+  // home's packs are no shipped release's, so by default the release lists
+  // every pack the home holds, read when asked (a pack added while start
+  // runs is listed too). A test of a withdrawn pack sets its own.
+  let release;
+  Object.defineProperty(io, 'release', {enumerable: true, configurable: true,
+    get: () => (release !== undefined ? release : installedRelease(env.COUNTINGHOUSE_HOME)),
+    set: (v) => { release = v; }});
   return io;
 }
 
 const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 
-module.exports = {fakeIo, tmp, FAKE_NODE};
+// The shipped allowlist, its packs those the home's record lists (null
+// with no home, or none installed: the shipped one, then).
+function installedRelease(home) {
+  if (typeof home !== 'string' || home === '') return null;
+  let record;
+  try { record = JSON.parse(require('node:fs').readFileSync(require('node:path').join(home, 'packs.json'), 'utf8')); } catch (e) { return null; }
+  const {ALLOWLIST} = require('../lib/allowlist');
+  const packs = {};
+  for (const [name, p] of Object.entries(record.packs || {})) packs[name] = {packages: Object.keys(p.packages || {}), credentials: Array.isArray(p.credentials) ? p.credentials : []};
+  return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}};
+}
+
+module.exports = {fakeIo, tmp, FAKE_NODE, installedRelease};

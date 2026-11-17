@@ -25,6 +25,7 @@ const until = async (cond, ms = 10000) => {
 // ghToken: what gh auth token answers (a shared runtime's GitHub token comes
 // from gh only), else gh is not logged in
 // home: start again on a home a running() made (a runtime restart), without installing
+// release: the running release's allowlist (a withdrawn pack's tests), else the shipped one
 // clientAncestry: what start's may-elicit reads of the client's ancestry. Read
 // for real it can take more than check()'s 3 s on a loaded Windows runner,
 // which answers "client settings unreadable" (fail closed, as it should), so
@@ -32,7 +33,7 @@ const until = async (cond, ms = 10000) => {
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs, shared = false, ghToken = null, home: reuse = null,
-  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, clientAncestry = Promise.resolve({lines: null, policyPresent: false})} = {}) {
+  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
@@ -40,6 +41,9 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs, clientAncestry});
+  // release: the running release's allowlist, for a withdrawn pack's tests (else the shipped one)
+  // (by default fakeIo's: the packs the home holds are listed)
+  if (running_release != null) f.release = running_release;
   if (ghToken != null) f.exec = async (c) => (c === 'gh' ? {status: 0, stdout: `${ghToken}\n`, stderr: ''} : {status: 0, stdout: '', stderr: ''});
   const requests = [];
   let end = null;
@@ -724,6 +728,110 @@ test('load-pack follow-ups: a confirmed load answered past the runtime\'s wait i
     await until(() => count('unload') === 2);
     assert.ok(!s.requests.some((m) => m.type === 'notice' && /other turned on for this start/.test(m.text)), 'never told as turned on');
     assert.ok(s.history().some((h) => h.pack === 'other' && h.change === 'not turned on (answered too late)'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// Withdrawn packs (Matt, 2026-11-17, option 1): installed, but not in the
+// running release's allowlist: never started; told once, on stderr and to
+// the client; nothing of it removed. An unreleased install is exempt (its
+// record is marked only by --unreleased-pins, which needs CH_LOCAL_DEV=1),
+// and says so at every start; a released one never is, whatever its env.
+const withdrawnRelease = () => ({...require('../lib/allowlist').ALLOWLIST, packs: {}});
+const LINE = 'pack ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it';
+// every file of the home a start must leave as it was: the record, and the pack's tree and data
+function packFiles(home) {
+  const out = {};
+  const walk = (d) => {
+    let names = [];
+    try { names = fs.readdirSync(d, {withFileTypes: true}); } catch (e) { return; }
+    for (const n of names) {
+      const p = path.join(d, n.name);
+      if (n.isDirectory()) walk(p); else if (n.isFile()) out[path.relative(home, p)] = require('node:crypto').createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+    }
+  };
+  const {layout} = require('../lib/home');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  out['packs.json'] = require('node:crypto').createHash('sha256').update(fs.readFileSync(where.packs)).digest('hex');
+  for (const d of [where.app, where.packsDir, path.join(home, 'module_data')]) if (d != null) walk(d);
+  return out;
+}
+const loadsPack = (s) => (s.args() || []).some((a, i, all) => all[i - 1] === '--loadModule' && /ch-pack-ci-failure-triage/.test(String(a)));
+
+test('a withdrawn pack is not started: told once (stderr and the client), its record, files and data untouched', async () => {
+  let before = null;
+  const s = await running({release: withdrawnRelease(), beforeStart: (home) => {
+    fs.mkdirSync(path.join(home, 'module_data', 'ch-pack-ci-failure-triage', 'data'), {recursive: true});
+    fs.writeFileSync(path.join(home, 'module_data', 'ch-pack-ci-failure-triage', 'data', 'kept.txt'), 'the user\'s data');
+    before = packFiles(home);
+  }});
+  try {
+    await until(() => notices(s).length > 0);
+    assert.strictEqual(loadsPack(s), false, JSON.stringify(s.args()));
+    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, LINE]], 'once, to the client');
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(LINE)).length, 1, s.f.err);
+    assert.ok(!/\/|\\\\/.test(LINE.replace(/`[^`]*`/g, '')), 'no path in the notice');
+  } finally {
+    s.end();
+    await s.done;
+  }
+  assert.deepStrictEqual(packFiles(s.home), before, 'nothing removed or changed');
+});
+
+test('a released install started with CH_LOCAL_DEV=1 is still refused its withdrawn pack', async () => {
+  const s = await running({release: withdrawnRelease(), env: {GITHUB_TOKEN: 'secret', CH_LOCAL_DEV: '1'}});
+  try {
+    await until(() => notices(s).length > 0);
+    assert.strictEqual(loadsPack(s), false);
+    assert.ok(notices(s).some(([, t]) => t === LINE));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('an unreleased install is exempt, with CH_LOCAL_DEV=1 or without (the shared daemon never has it): the pack starts, the unreleased line said each time', async () => {
+  const unreleased = (home) => {
+    const f = path.join(home, 'packs.json');
+    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), unreleased: true}, null, 2));
+  };
+  const dev = await running({release: withdrawnRelease(), beforeStart: unreleased, env: {GITHUB_TOKEN: 'secret', CH_LOCAL_DEV: '1'}});
+  try {
+    await until(() => dev.args() != null);
+    assert.strictEqual(loadsPack(dev), true, JSON.stringify(dev.args()));
+    assert.ok(!notices(dev).some(([, t]) => /withdrawn/.test(t)));
+  } finally {
+    dev.end();
+    await dev.done;
+  }
+  const plain = await running({release: withdrawnRelease(), beforeStart: unreleased});
+  try {
+    await until(() => plain.args() != null);
+    assert.strictEqual(loadsPack(plain), true, JSON.stringify(plain.args()));
+    assert.ok(!notices(plain).some(([, t]) => /withdrawn/.test(t)));
+    for (const s of [dev, plain]) assert.ok(s.f.err.includes(require('../lib/pins').UNRELEASED_LINE), 'never silent: the unreleased line');
+  } finally {
+    plain.end();
+    await plain.done;
+  }
+});
+
+test('load-pack for a withdrawn pack is refused CONTROL_PACK_NOT_ALLOWED, and nothing is loaded', async () => {
+  const {s, count, reply} = await withOtherOff();
+  try {
+    // a release that no longer lists `other`: it is withdrawn
+    const release = require('./fake-io').installedRelease(s.home);
+    const {other, ...kept} = release.packs;
+    assert.ok(other != null, 'the release listed other');
+    s.f.release = {...release, packs: kept};
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
+    assert.strictEqual(count('load'), 1, 'nothing loaded');
+    // listed again, the same request loads it: the release was the refusal
+    s.f.release = release;
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r2', ok: true});
+    assert.strictEqual(count('load'), 2);
   } finally {
     s.end();
     await s.done;
