@@ -410,3 +410,41 @@ test('a store that can\'t be written is said, nothing stored, never an unhandled
   assert.strictEqual(store.get(h, VAR), null);
 });
 
+// the review of #63 (N3): a file over its bound, or cut short, is refused
+// and its content never reaches an error, a line start says or the history
+test('a credentials file over 64 KiB, or one cut short around a value, is refused without its content in any error or line', POSIX, async () => {
+  for (const shape of ['over', 'cut']) {
+    const h = home();
+    const value = made();
+    store.add(h, VAR, value, ACCESS);
+    const file = path.join(h, 'credentials', 'credentials.json');
+    const whole = fs.readFileSync(file, 'utf8');
+    if (shape === 'over') fs.writeFileSync(file, whole.replace('"v": 1', `"v": 1, "pad": "${'x'.repeat(70 * 1024)}"`));
+    else fs.writeFileSync(file, whole.slice(0, whole.indexOf(value) + Math.floor(value.length / 2)));
+    assert.throws(() => store.get(h, VAR), (e) => !e.message.includes(value) && !e.message.includes(value.slice(0, 8)), shape);
+    const f = io(h, {typed: made()});
+    assert.notStrictEqual(await credentials({action: 'add', name: 'github'}, f), 0);
+    assert.ok(!everything(h, f).includes(value.slice(0, 8)), shape);
+    // start passes it over and says why, without the value
+    const s = io(h);
+    s.exec = async (cmd) => (cmd === 'gh' ? {status: 0, stdout: `${made()}\n`, stderr: ''} : {status: 0, stdout: '', stderr: ''});
+    const c = await chooseGitHubToken(s, h);
+    assert.strictEqual(c.source, 'gh');
+    assert.ok(c.storeProblem != null && !c.storeProblem.includes(value.slice(0, 8)), c.storeProblem);
+  }
+});
+
+test('Windows (win-acl stubbed): the home\'s own DACL is checked before a write; one another user can reach, or that can\'t be read, refuses', () => {
+  const h = tmp('ch-cred-winhome-');
+  const me = 'S-1-5-21-1-2-3-1001';
+  const mine = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-18', type: 'Allow', rights: 2032127}]};
+  const open = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-32-545', type: 'Allow', rights: 1179817}]};
+  const {privateProblem} = require('../lib/win-acl');
+  const realHome = fs.realpathSync(h);
+  const seam = (homeAcl) => ({privateProblem, fileAcl: (p) => { if (p === realHome) { if (homeAcl instanceof Error) throw homeAcl; return homeAcl; } return mine; },
+    makePrivateDirs: (dirs) => dirs.map(() => mine), createPrivate: (file, data) => fs.writeFileSync(file, data, {flag: 'wx'})});
+  assert.throws(() => store.add(h, VAR, made(), ACCESS, {platform: 'win32', acl: seam(open)}), /is accessible by S-1-5-32-545/);
+  assert.throws(() => store.add(h, VAR, made(), ACCESS, {platform: 'win32', acl: seam(new Error('powershell failed'))}), /access list could not be read \(powershell failed\)/);
+  assert.ok(!fs.existsSync(path.join(h, 'credentials')), 'nothing made under a home that failed');
+});
+

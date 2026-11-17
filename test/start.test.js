@@ -516,7 +516,7 @@ test('a pack that takes only GITHUB_TOKEN gets gh\'s token too, and with none it
   assert.ok(Object.values(f.spawned[0].env).includes(token));
   const g = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
   assert.strictEqual(await start({passThrough: []}, g), 0, g.err);
-  assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token: run `gh auth login`/);
+  assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`/);
   assert.doesNotMatch(g.err, /set GITHUB_TOKEN in the environment your client starts from/);
 });
 
@@ -937,7 +937,7 @@ test('start in session mode with no pack loadable: the shared runtime starts wit
   for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /no pack is loaded/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   assert.strictEqual(sent[0].type, 'restore', 'the restore is still the first request');
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => /^not loading ci-failure-triage: it needs the GitHub token: run `gh auth login`/.test(t)), told.join(' | '));
+  assert.ok(told.some((t) => /^not loading ci-failure-triage: it needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`/.test(t)), told.join(' | '));
   assert.ok(told.some((t) => /no pack is loaded this start/.test(t)), told.join(' | '));
   end(0);
   await done;
