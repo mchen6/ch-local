@@ -98,7 +98,7 @@ test('waitForText waits for a line that comes later, and gives up after its time
   assert.strictEqual(await acceptance.waitForText(() => text, /never/, 200), false);
 });
 
-test('stopTree ends the launcher and what it started, which holds the same pipes', {skip: process.platform === 'win32' && 'taskkill /T on Windows'}, async () => {
+test('stopTree ends the launcher and what it started, which holds the same pipes (on Windows, taskkill /T)', async () => {
   const {spawn} = require('node:child_process');
   // A launcher that starts a long-lived child on inherited pipes, as start does.
   const code = "const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'inherit'}); console.log(c.pid); setInterval(() => {}, 1000);";
@@ -221,14 +221,27 @@ test('shared: the client\'s configuration directory must be an absolute path to 
   fs.rmSync(top, {recursive: true, force: true});
 });
 
-test('shared: the shim goes in a private <home>/shim, executable by its owner only', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+test('shared: the shim goes in a private <home>/shim, its owner\'s only (POSIX modes; on Windows a DACL of this user and SYSTEM)', () => {
   const home = tmp('ch-shared-home-');
   const bin = path.join(home, 'built');
   fs.writeFileSync(bin, '#!/bin/sh\n');
   const to = shared.installShim(home, bin);
-  assert.strictEqual(to, path.join(home, 'shim', 'ch-shim'));
-  assert.strictEqual(fs.statSync(path.join(home, 'shim')).mode & 0o777, 0o700);
-  assert.strictEqual(fs.statSync(to).mode & 0o777, 0o700);
+  if (process.platform === 'win32') {
+    const winAcl = require('../lib/win-acl');
+    assert.strictEqual(to, path.join(home, 'shim', 'ch-shim.exe'));
+    // private as ch-local's secrets are, and made so here: the temporary
+    // directory's inherited rules (Administrators among them) are gone, and
+    // only this user and SYSTEM are allowed anything
+    for (const [what, acl, opts] of [['the shim\'s directory', winAcl.fileAcl(path.join(home, 'shim')), {directory: true}], ['the shim', winAcl.fileAcl(to), {}]]) {
+      assert.strictEqual(winAcl.privateProblem(what, acl, opts), null, JSON.stringify(acl));
+      const rules = (Array.isArray(acl.rules) ? acl.rules : [acl.rules]).filter((r) => r != null && r.type === 'Allow' && r.inheritOnly !== true);
+      assert.deepStrictEqual([...new Set(rules.map((r) => r.sid))].sort(), [acl.user, winAcl.SYSTEM].sort(), `${what}: ${JSON.stringify(acl)}`);
+    }
+  } else {
+    assert.strictEqual(to, path.join(home, 'shim', 'ch-shim'));
+    assert.strictEqual(fs.statSync(path.join(home, 'shim')).mode & 0o777, 0o700);
+    assert.strictEqual(fs.statSync(to).mode & 0o777, 0o700);
+  }
   fs.rmSync(home, {recursive: true, force: true});
 });
 
@@ -245,7 +258,7 @@ test('shared: daemonPid reads daemon.json\'s pid, and null for none or a bad one
 
 // A failed run explains itself in CI (#54): with no live daemon, one is
 // started exactly as the shim would start it, and what it says is shown.
-test('shared: daemonDiagnosis starts the daemon as shim.json says and shows its output, ended within its bound', {skip: process.platform === 'win32' && 'POSIX'}, async () => {
+test('shared: daemonDiagnosis starts the daemon as shim.json says and shows its output, ended within its bound', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-shared-diag-'));
   try {
     assert.match(await shared.daemonDiagnosis(home), /no shim\.json/);
@@ -273,17 +286,21 @@ test('shared: daemonDiagnosis starts the daemon as shim.json says and shows its 
   }
 });
 
-test('shared: treeOf lists a process and its descendants, and nothing else', {skip: process.platform === 'win32' && 'POSIX ps'}, async () => {
+test('shared: treeOf lists a process and its descendants, and nothing else (on Windows through WMI)', async () => {
   const {spawn} = require('node:child_process');
-  const parent = spawn(process.execPath, ['-e', "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 5000)'], {stdio: 'ignore'}); setTimeout(()=>{}, 5000)"], {stdio: 'ignore'});
+  const parent = spawn(process.execPath, ['-e', "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], {stdio: 'ignore'}); setTimeout(()=>{}, 60000)"], {stdio: 'ignore'});
   try {
     let tree = [];
-    for (const until = Date.now() + 5000; Date.now() < until && tree.length < 2;) {
+    for (const until = Date.now() + (process.platform === 'win32' ? 30000 : 5000); Date.now() < until && tree.length < 2;) {
       tree = shared.treeOf(parent.pid) || [];
       await new Promise((r) => setTimeout(r, 50));
     }
-    assert.strictEqual(tree.length, 2, JSON.stringify(tree));
-    assert.ok(tree.some((p) => p.pid === parent.pid));
+    // its node child, by its command line (on Windows a console-less node
+    // may also have a conhost.exe below it, which is its descendant too)
+    const nodes = tree.filter((p) => p.pid !== parent.pid && /setTimeout/.test(p.args));
+    if (process.platform !== 'win32') assert.strictEqual(tree.length, 2, JSON.stringify(tree));
+    assert.ok(tree.some((p) => p.pid === parent.pid), JSON.stringify(tree));
+    assert.strictEqual(nodes.length, 1, JSON.stringify(tree));
     assert.ok(!tree.some((p) => p.pid === process.pid), 'not its parent');
   } finally {
     for (const p of shared.treeOf(parent.pid) || []) { try { process.kill(p.pid, 'SIGKILL'); } catch (e) { /* gone */ } }

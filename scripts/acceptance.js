@@ -158,13 +158,33 @@ async function waitForText(get, re, ms) {
   }
 }
 
+// Windows: a process tree from its root, ended at once (taskkill /T /F),
+// bounded; taskkill by its path in the Windows directory (lib/win-acl.js
+// windowsDir, a drive path), never by name: a program search looks in the
+// current directory first. -> whether taskkill could be run.
+function endTree(pid, ms = 10000) {
+  try {
+    const r = spawnSync(path.win32.join(require('../lib/win-acl').windowsDir(), 'System32', 'taskkill.exe'), ['/pid', String(pid), '/T', '/F'],
+      {stdio: 'ignore', timeout: ms, windowsHide: true});
+    return r.error == null;
+  } catch (e) {
+    return false;
+  }
+}
+const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return false; } };
+
 // Ends the launcher and everything it started (the runtime holds the same
 // pipes): its process group, SIGTERM and then SIGKILL after ms; on Windows,
-// taskkill of the tree. Safe after the launcher has exited.
+// taskkill of the tree, then waits for the launcher to be gone (TerminateProcess
+// returns before it is), killing it directly at the bound. Safe after the
+// launcher has exited. (On Windows a child whose launcher already ended is
+// out of the tree taskkill sees: orphans are not re-parented there.)
 async function stopTree(child, ms = 5000) {
   if (child == null || child.pid == null) return;
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], {stdio: 'ignore'});
+    endTree(child.pid, ms);
+    for (const until = Date.now() + ms; isAlive(child.pid) && Date.now() < until;) await sleep(100);
+    if (isAlive(child.pid)) { try { child.kill(); } catch (e) { /* gone */ } }
     return;
   }
   const group = (sig) => { try { process.kill(-child.pid, sig); return true; } catch (err) { return false; } };
@@ -377,4 +397,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`acceptance: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, reportText, trapSignals, startStandIn, recordedAnswer, filesContaining, launcherEnv, waitForText, stopTree, RECEIPT};
+module.exports = {main, reportText, trapSignals, startStandIn, recordedAnswer, filesContaining, launcherEnv, waitForText, stopTree, endTree, RECEIPT};
