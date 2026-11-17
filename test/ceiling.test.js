@@ -416,3 +416,25 @@ test('the review of #18: a ceiling that cannot be trusted loads NO pack, and ins
   assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 2);
   assert.match(io.err, /the pack "ci-failure-triage" is not allowed on this machine: the operator's ceiling file .* cannot be trusted/);
 });
+
+// The known folder from a ch-local whose environment has no SystemDrive, as
+// the shim's cleared one has none: it was empty, so only C:\ProgramData was
+// looked at (Windows only).
+test('Windows: the known folder is found with no SystemDrive in the environment', {skip: process.platform !== 'win32'}, () => {
+  const child = `
+    delete process.env.SystemDrive;
+    const {programDataFolder} = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'ceiling'))});
+    console.log(JSON.stringify({systemDrive: process.env.SystemDrive == null ? null : process.env.SystemDrive, folder: programDataFolder()}));
+  `;
+  const r = require('node:child_process').spawnSync(process.execPath, ['-e', child], {encoding: 'utf8', timeout: 45000});
+  assert.strictEqual(r.status, 0, `${r.stdout} ${r.stderr}`);
+  const got = JSON.parse(String(r.stdout).trim());
+  assert.strictEqual(got.systemDrive, null, 'the process had no SystemDrive');
+  assert.match(String(got.folder), /^[A-Za-z]:\\/, JSON.stringify(got));
+});
+
+test('the known-folder script names no cmdlet', () => {
+  const {PROGRAMDATA_SCRIPT} = require('../lib/ceiling');
+  const code = PROGRAMDATA_SCRIPT.replace(/'[^']*'/g, "''");
+  assert.doesNotMatch(code, /\b[A-Z][a-z]+-[A-Z][A-Za-z]+\b/, code);
+});
