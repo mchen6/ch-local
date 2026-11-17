@@ -323,3 +323,60 @@ test('another host\'s lock counts while its heartbeat is fresh, and is cleared o
   assert.strictEqual(await withLock({home}, f, async () => 0), 0, 'stale: cleared');
   assert.ok(!fs.existsSync(lock));
 });
+
+// Withdrawn packs, held (the review of #74): what an upgrade that withdraws a
+// pack writes, as lib/install.js's runtime-only path does.
+function withdrawHeld(home, name) {
+  const f = path.join(home, 'packs.json');
+  const r = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const {[name]: entry, ...rest} = r.packs;
+  fs.writeFileSync(f, JSON.stringify({...r, packs: rest, held: {...(r.held || {}), [name]: {...entry, installedUnder: '0.1.0', withdrawn: true}}}, null, 2));
+}
+
+test('a pack held as withdrawn: status says so; an install over it keeps it held; remove-pack removes it and its files', async () => {
+  const s = await installed();
+  withdrawHeld(s.home, 'ci-failure-triage');
+  const st = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
+  assert.strictEqual(await status({}, st), 0, st.err);
+  assert.match(st.out, /ci-failure-triage: withdrawn in this release, so it is not started; `ch-local remove-pack ci-failure-triage` removes it/);
+  assert.doesNotMatch(st.out, /no pack is installed/);
+  // remove-pack: the held entry goes, and its tree with it
+  const tree = path.join(s.home, 'packs', 'ci-failure-triage');
+  assert.ok(fs.existsSync(tree), 'its files are there while it is held');
+  const rm = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
+  assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, rm), 0, rm.err);
+  assert.match(rm.out, /removed the withdrawn pack "ci-failure-triage"/);
+  assert.strictEqual(record(s.home).held, undefined);
+  assert.ok(!fs.existsSync(tree) || fs.readdirSync(tree).length === 0, 'its files are collected');
+  // an install over a held withdrawn pack: dropped, never "add it again"
+  const t = await installed();
+  withdrawHeld(t.home, 'ci-failure-triage');
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: t.home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'other', from: t.r.from}, io, t.r.allow), 0, io.err);
+  // nothing deleted: carried as held, never "dropped"; this release lists it
+  // again, so it is marked relisted and the user told how to add it back
+  assert.strictEqual(record(t.home).held['ci-failure-triage'].relisted, true);
+  assert.doesNotMatch(io.out, /ci-failure-triage" was dropped/);
+  assert.match(io.out, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
+});
+
+test('the record takes a held pack marked withdrawn, and refuses a withdrawn mark that is not true', () => {
+  const {readRecord} = require('../lib/record');
+  const home = tmp('ch-held-');
+  const write = (held) => fs.writeFileSync(path.join(home, 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {}, held}));
+  write({p: {packages: {}, credentials: [], installedUnder: '0.1.0', withdrawn: true}});
+  assert.strictEqual(readRecord({home, packs: path.join(home, 'packs.json')}).held.p.withdrawn, true);
+  write({p: {packages: {}, credentials: [], installedUnder: '0.1.0', withdrawn: 'yes'}});
+  assert.throws(() => readRecord({home, packs: path.join(home, 'packs.json')}), /not a ch-local record/);
+});
+
+test('remove-pack of a withdrawn pack removes it from the rollback copy\'s held too: a rollback never brings it back', async () => {
+  const s = await installed();
+  withdrawHeld(s.home, 'ci-failure-triage');
+  const held = JSON.parse(fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8')).held;
+  fs.mkdirSync(path.join(s.home, 'previous'), {recursive: true});
+  fs.writeFileSync(path.join(s.home, 'previous', 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {}, held}));
+  const rm = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
+  assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, rm), 0, rm.err);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'previous', 'packs.json'), 'utf8')).held, undefined);
+});

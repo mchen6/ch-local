@@ -210,7 +210,7 @@ test('a kept release older than rollback itself is refused: it could never come 
   assert.strictEqual(versionOf(s.home, REDACT), '0.2.0');
 });
 
-test('held packs: remove-pack removes one, uninstall names its credentials, and an install over them names them as dropped', async () => {
+test('held packs: remove-pack removes one, uninstall names its credentials, and an install over them keeps them held', async () => {
   const {removePack} = require('../lib/packs-command');
   const s = await upgraded();
   assert.strictEqual(await addPack({pack: 'other', from: s.r2.from}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}}), s.r2.allow), 0);
@@ -223,7 +223,9 @@ test('held packs: remove-pack removes one, uninstall names its credentials, and 
   assert.match(un.out, /revoke the credentials you gave it: .*OTHER_TOKEN/i, 'a held pack\'s credential is named too');
   const again = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: s.r1.from}, again, s.r1.allow), 0, again.err);
-  assert.match(again.out, /the pack "other" was dropped/);
+  // nothing deleted (the deep review of #77): carried as held, not dropped
+  assert.doesNotMatch(again.out, /the pack "other" was dropped/);
+  assert.ok(record(s.home).held.other != null, JSON.stringify(record(s.home).held));
   // Remove a held pack.
   const t2 = await upgraded();
   assert.strictEqual(await addPack({pack: 'other', from: t2.r2.from}, fakeIo({env: {COUNTINGHOUSE_HOME: t2.home}}), t2.r2.allow), 0);
@@ -405,4 +407,35 @@ test('the review of #48: the version rolled back from is declined, so the automa
   // rolling back again keeps it once
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
   assert.deepStrictEqual(require('../lib/upgrade-stamp').readStamp(s.home).stamp.declined, [left]);
+});
+
+// Withdrawn packs, held (the review of the held design): a rollback to the
+// release that had the pack brings it back; rolling forward again holds it
+// as withdrawn still, never as a pack "installed under" the older release.
+test('rolling back past a withdrawal and forward again keeps the pack held as withdrawn', async () => {
+  const s = await upgraded();
+  const f = path.join(s.home, 'packs.json');
+  const cur = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const {'ci-failure-triage': entry, ...rest} = cur.packs;
+  fs.writeFileSync(f, JSON.stringify({...cur, packs: rest, held: {'ci-failure-triage': {...entry, installedUnder: '0.2.0', withdrawn: true}}}, null, 2));
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.ok(record(s.home).packs['ci-failure-triage'] != null, 'back as an installed pack under the release that had it');
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  const fwd = record(s.home);
+  assert.deepStrictEqual(Object.keys(fwd.packs), []);
+  assert.strictEqual(fwd.held['ci-failure-triage'].withdrawn, true, JSON.stringify(fwd.held));
+});
+
+test('a rollback round trip keeps each release\'s own held marks, relisted too', async () => {
+  const s = await upgraded();
+  const f = path.join(s.home, 'packs.json');
+  const prev = path.join(s.home, 'previous', 'packs.json');
+  const p = {packages: {}, credentials: [], installedUnder: '0.2.0'};
+  fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone: {...p, relisted: true}}}));
+  fs.writeFileSync(prev, JSON.stringify({...JSON.parse(fs.readFileSync(prev, 'utf8')), held: {gone: {...p, withdrawn: true}}}));
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(record(s.home).held.gone.withdrawn, true, 'the older release held it withdrawn');
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(record(s.home).held.gone.relisted, true, 'the newer release held it relisted');
+  assert.strictEqual(record(s.home).held.gone.withdrawn, undefined);
 });

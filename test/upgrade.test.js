@@ -316,7 +316,10 @@ test('a release that withdraws the home\'s one pack upgrades: the runtime instal
     assert.doesNotMatch(io.out, /was dropped/);
     const after = recordOf(s.home);
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.2.0', 'the runtime upgraded');
-    assert.deepStrictEqual(after.packs, {'ci-failure-triage': entry}, 'the pack\'s entry unchanged');
+    // the pack moves to held, marked withdrawn: start, the running start's
+    // applier, add-pack and install never take it for an installed pack
+    assert.deepStrictEqual(after.packs, {}, 'no longer an installed pack');
+    assert.deepStrictEqual(after.held, {'ci-failure-triage': {...entry, installedUnder: '0.1.0', withdrawn: true}}, 'held, its entry kept, marked withdrawn');
     assert.deepStrictEqual(bytes(), before, 'its files and data byte for byte');
     const h = historyOf(s.home);
     assert.deepStrictEqual(h.filter((e) => e.kind === 'upgrade').map((e) => [e.outcome, e.to]), [['installed', '0.2.0']]);
@@ -356,5 +359,58 @@ test('a release that withdraws the pack: its runtime packages are verified as an
       await w.close();
       s.done();
     }
+  }
+});
+
+// The review of the held design: a home whose only pack an upgrade withdrew
+// can still be upgraded (a later release may be a security fix): runtime
+// only. A release that lists the pack again drops it from held, and says how
+// to add it back.
+test('a home whose only pack is held as withdrawn still upgrades, runtime only; a release that lists it again says how to add it back', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const f = path.join(s.home, 'packs.json');
+  const cur = JSON.parse(fs.readFileSync(f, 'utf8'));
+  fs.writeFileSync(f, JSON.stringify({...cur, packs: {}, held: {'ci-failure-triage': {...cur.packs['ci-failure-triage'], installedUnder: '0.0.9', withdrawn: true}}}));
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0/);
+    // this release lists ci-failure-triage again
+    assert.match(io.out, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
+    // nothing deleted: the entry stays held, marked relisted, not withdrawn
+    const held = recordOf(s.home).held['ci-failure-triage'];
+    assert.strictEqual(held.relisted, true);
+    assert.strictEqual(held.withdrawn, undefined);
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// The deep review of #77 (HIGH): a later full upgrade of a home with another
+// pack installed keeps a withdrawn pack held, its entry and its files (Matt's
+// "nothing deleted"), in the record and in the rollback copy.
+test('a full upgrade keeps a pack held as withdrawn: its entry and its tree', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const {layout} = require('../lib/home');
+  const {packDir, packKey} = require('../lib/pack-dir');
+  const where = layout({COUNTINGHOUSE_HOME: s.home});
+  const f = path.join(s.home, 'packs.json');
+  const w = {packages: {'@countinghouse/ch-pack-gone': '1.0.0'}, credentials: [], installedUnder: '0.0.9', withdrawn: true};
+  fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone: w}}));
+  const tree = packDir(where, 'gone', packKey(w.packages));
+  fs.mkdirSync(tree, {recursive: true});
+  fs.writeFileSync(path.join(tree, 'kept'), 'the pack\'s own bytes');
+  const nw = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, nw.fromNpm), 0, io.err);
+    assert.deepStrictEqual(recordOf(s.home).held, {gone: w}, 'held as it was');
+    assert.strictEqual(fs.readFileSync(path.join(tree, 'kept'), 'utf8'), 'the pack\'s own bytes', 'its tree kept');
+    assert.doesNotMatch(io.out, /"gone" was dropped/);
+  } finally {
+    await nw.close();
+    s.done();
   }
 });

@@ -525,3 +525,22 @@ test('no lock-order deadlock (the review of #35): an install while the daemon ho
   assert.strictEqual(outcome[0], 0, io.err);
   assert.ok(fs.readFileSync(path.join(dir, 'requests'), 'utf8').includes('"op":"upgrade"'), 'and the request was still written');
 });
+
+// Held packs are never dropped by an install (the deep review of #77), and
+// each one's mark follows the release installed (its /code-review medium).
+test('carriedHeld: every held pack is carried, its mark as this release has it', () => {
+  const {carriedHeld} = require('../lib/install');
+  const p = {packages: {}, credentials: [], installedUnder: '0.1.0'};
+  const previous = {held: {w: {...p, withdrawn: true}, r: {...p, relisted: true}, h: p, back: {...p, withdrawn: true}, plain: p, mine: p}};
+  const listed = (n) => ['back', 'plain', 'mine'].includes(n);
+  const {held, relisted} = carriedHeld(previous, listed, 'mine');
+  assert.deepStrictEqual(held, {
+    w: {...p, withdrawn: true},          // still not listed: withdrawn
+    r: {...p, withdrawn: true},          // relisted once, withdrawn again
+    h: p,                                // held after a rollback, not listed: as it was
+    back: {...p, relisted: true},        // withdrawn, listed again
+    plain: {...p, relisted: true},       // held after a rollback, listed now
+  }, 'the pack being installed leaves held');
+  assert.deepStrictEqual(relisted.sort(), ['back', 'plain']);
+  assert.deepStrictEqual(carriedHeld(null, listed), {held: {}, relisted: []});
+});

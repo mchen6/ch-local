@@ -307,11 +307,56 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
     assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
     const r = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(r.outcome, 'installed', r.line);
-    assert.match(r.line, /upgraded ch-local 0\.1\.0 -> 0\.1\.1; ch-local rollback undoes it; pack ci-failure-triage was withdrawn in this release and is not started; `ch-local remove-pack ci-failure-triage` removes it/);
+    assert.match(r.line, /upgraded ch-local 0\.1\.0 -> 0\.1\.1; ch-local rollback undoes it; pack ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it/);
     const after = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'));
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.1.1');
-    assert.deepStrictEqual(after.packs, {'ci-failure-triage': entry}, 'the pack\'s entry unchanged');
+    assert.deepStrictEqual(after.packs, {}, 'no longer an installed pack');
+    assert.deepStrictEqual(after.held, {'ci-failure-triage': {...entry, installedUnder: '0.1.0', withdrawn: true}}, 'held, marked withdrawn');
     assert.deepStrictEqual(historyOf(h).filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', '0.1.1']]);
+  } finally {
+    await w.close();
+  }
+});
+
+// The review of the held design: a home whose only pack an upgrade withdrew
+// still takes an automatic upgrade, runtime only; a release that lists the
+// pack again says how to add it back.
+test('a home whose only pack is held as withdrawn still upgrades automatically; a release listing it again says so', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home({packs: []});
+    const f = path.join(h, 'packs.json');
+    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {'ci-failure-triage': {packages: {}, credentials: [], installedUnder: '0.0.9', withdrawn: true}}}));
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const r = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    assert.match(r.line, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
+  } finally {
+    await w.close();
+  }
+});
+
+// The deep review of #77 (HIGH): an automatic upgrade of a home with another
+// pack installed keeps a withdrawn pack held, its entry and its tree.
+test('an automatic upgrade keeps a pack held as withdrawn: its entry and its tree', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home();
+    const {layout} = require('../lib/home');
+    const {packDir, packKey} = require('../lib/pack-dir');
+    const f = path.join(h, 'packs.json');
+    const gone = {packages: {'@countinghouse/ch-pack-gone': '1.0.0'}, credentials: [], installedUnder: '0.0.9', withdrawn: true};
+    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone}}));
+    const tree = packDir(layout({COUNTINGHOUSE_HOME: h}), 'gone', packKey(gone.packages));
+    fs.mkdirSync(tree, {recursive: true});
+    fs.writeFileSync(path.join(tree, 'kept'), 'bytes');
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const r = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')).held, {gone});
+    assert.strictEqual(fs.readFileSync(path.join(tree, 'kept'), 'utf8'), 'bytes');
   } finally {
     await w.close();
   }
