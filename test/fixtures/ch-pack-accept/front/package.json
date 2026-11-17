@@ -1,0 +1,14 @@
+{
+  "name": "ch-pack-accept",
+  "version": "0.0.1",
+  "license": "Apache-2.0",
+  "private": true,
+  "description": "Acceptance-only fixture pack (scripts/shared-acceptance.js): never in a release, a registry or a packs list.",
+  "countinghouse": {
+    "role": "scenario",
+    "calls": [
+      "ch-accept-back/backService.work",
+      "ch-accept-back/backService.hold"
+    ]
+  }
+}

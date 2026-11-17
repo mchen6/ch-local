@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "#/",
+  "type": "object",
+  "backService": {
+    "work": {
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "said": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "said"
+        ]
+      }
+    },
+    "hold": {
+      "input": {
+        "type": "object",
+        "properties": {
+          "ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 120000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "waited": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "waited"
+        ]
+      }
+    }
+  }
+}

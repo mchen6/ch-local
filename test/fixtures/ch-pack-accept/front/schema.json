@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "#/",
+  "type": "object",
+  "acceptService": {
+    "relay": {
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "hopped": {
+            "type": "boolean"
+          },
+          "said": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hopped"
+        ]
+      }
+    },
+    "slow": {
+      "input": {
+        "type": "object",
+        "properties": {
+          "ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 120000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "waited": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "ask": {
+      "input": {
+        "type": "object",
+        "properties": {
+          "what": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "what"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "asked": {
+            "type": "boolean"
+          },
+          "answer": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asked"
+        ]
+      },
+      "questions": {
+        "confirm": {
+          "type": "object",
+          "properties": {
+            "yes": {
+              "type": "boolean",
+              "title": "Yes"
+            }
+          },
+          "required": [
+            "yes"
+          ]
+        }
+      }
+    }
+  }
+}
