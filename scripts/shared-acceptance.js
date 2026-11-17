@@ -6,8 +6,12 @@
 // clean home, builds the native shim from this checkout and installs it at
 // <home>/shim/ch-shim, then runs the shim as a client's MCP server would be
 // run, under a parent named `claude` with the tested client's session
-// variables and an empty configuration, so its conditions are "yes" and it
-// attaches to the daemon it starts. Then, over the shim's stdio:
+// variables and an empty configuration of its own, in a repository under the
+// system's temporary directory (never the run's TMPDIR, which may sit in a
+// home whose .claude the conditions would read as a project's: the run
+// refuses to start with any .claude above the repository), so its conditions
+// are "yes" and it attaches to the daemon it starts. Then, over the shim's
+// stdio:
 //   - initialize, and that the session really attached: daemon.json names a
 //     live daemon outside the client's process tree, and nothing in that tree
 //     is a per-session runtime (`start --stdio --own-runtime`), so the
@@ -101,6 +105,46 @@ function installShim(home, file) {
   fs.copyFileSync(file, to);
   if (process.platform !== 'win32') fs.chmodSync(to, 0o700);
   return to;
+}
+
+// Where the simulated client's repository goes: never below the run's
+// working directory, which follows TMPDIR and may sit in a home whose
+// .claude holds the person's own settings. The client's conditions read
+// every .claude above its project as a project's (lib/client-conditions.js),
+// so a run under such a home read the person's plugins and answered "no",
+// and (b) read as a declined session (M17, 2026-11-16). The repository is a
+// few bytes: the system's own temporary directory on POSIX (/tmp), the
+// runner's on CI (RUNNER_TEMP).
+function clientRepoRoot(env = process.env, platform = process.platform) {
+  if (typeof env.RUNNER_TEMP === 'string' && path.isAbsolute(env.RUNNER_TEMP)) return env.RUNNER_TEMP;
+  return platform === 'win32' ? os.tmpdir() : '/tmp';
+}
+
+const realOr = (p) => { try { return fs.realpathSync(p); } catch (e) { return path.resolve(p); } };
+
+// Every .claude directory at or above `dir` other than the client's own
+// configuration directory: what the client's conditions would read as a
+// project's settings. A run must have none.
+function strayClaudeDirs(dir, configDir) {
+  const out = [];
+  const own = realOr(configDir);
+  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
+    const c = path.join(d, '.claude');
+    if (fs.existsSync(c) && realOr(c) !== own) out.push(c);
+    if (path.dirname(d) === d) return out;
+  }
+}
+
+// The client's configuration directory must be its own: an absolute path to
+// an existing, empty directory, never unset or "" (which a client may read as
+// its default, the person's). -> null, or what is wrong.
+function configProblem(config) {
+  if (typeof config !== 'string' || config === '' || !path.isAbsolute(config)) return `not an absolute path: ${JSON.stringify(config)}`;
+  let st;
+  try { st = fs.statSync(config); } catch (e) { return `${config}: ${e.code || e.message}`; }
+  if (!st.isDirectory()) return `${config}: not a directory`;
+  if (fs.readdirSync(config).length !== 0) return `${config}: not empty`;
+  return null;
 }
 
 // The tested client's shape, in the run's own directory and nowhere else:
@@ -221,6 +265,8 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   if (refProblem != null) { io.stderr.write(`shared-acceptance: ${refProblem}\n`); return 1; }
 
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-shared-acc-'));
+  // the client's repository, apart from the work (clientRepoRoot)
+  const repoRoot = fs.mkdtempSync(path.join(clientRepoRoot(), 'ch-shared-acc-repo-'));
   const home = path.join(work, 'home');
   const node = process.execPath;
   let client = null;
@@ -242,6 +288,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'})`);
     } finally {
       fs.rmSync(work, {recursive: true, force: true});
+      fs.rmSync(repoRoot, {recursive: true, force: true});
     }
   })());
   // A failed run's diagnosis, said into the output (CI keeps no report
@@ -289,10 +336,19 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     check('ch-local uses the installed shim', found.shim === installed, `${installed}: ${found.shim} ${found.note || ''}`);
 
     // the client: a repository directory, and the tested client's shape
-    const repo = path.join(work, 'repo');
+    const repo = path.join(repoRoot, 'repo');
     fs.mkdirSync(path.join(repo, '.git'), {recursive: true});
     fs.writeFileSync(path.join(repo, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/example/shared-acceptance.git\n');
     const h = claudeHarness(path.join(work, 'client'));
+    // The client's settings are its own, and nothing above its repository
+    // is read as a project's: else its conditions answer for the machine the
+    // run is on, not for the tested client, and a "no" reads as a product
+    // refusal.
+    const configBad = configProblem(h.config);
+    if (!check('the client\'s configuration directory is its own: an existing, empty directory', configBad == null, configBad)) return 1;
+    const stray = strayClaudeDirs(repo, h.config);
+    if (!check('no .claude at or above the client\'s repository but its own configuration (its conditions would read one as a project\'s)',
+      stray.length === 0, stray.join('\n'))) return 1;
     // A debugging aid (CH_SHARED_ACCEPTANCE_DAEMON_LOG=1): the daemon started
     // here as the shim would start it (shim.json's environment, the home its
     // working directory), its output kept in the report, and the shim attaches
@@ -339,11 +395,13 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const call = (a, extra = {}) => mcp.request('tools/call', Object.assign({_meta: META, name: 'countinghouse_settings', arguments: a}, extra));
     const loosen = await call({action: 'set', name: 'requestTimeout', value: '60s'});
     const loosenCode = loosen.result != null && loosen.result._meta != null ? loosen.result._meta['countinghouse/code'] : null;
-    // refused either way, naming the terminal command: SETTING_NEEDS_CONFIRMATION,
-    // or (countinghouse master since 9d93943) SETTING_DECLINED_THIS_SESSION
-    // for a client that gets no form
+    // refused SETTING_NEEDS_CONFIRMATION, naming the terminal command. Never
+    // SETTING_DECLINED_THIS_SESSION: no form was declined, and a session the
+    // client's conditions latched "no" is the machine's, not the tested
+    // client's (2026-11-16: a run under a home whose .claude held plugins
+    // answered so; the guard above now refuses such a run)
     check('(b) a loosening, with no tested client yet, is refused with the terminal command', loosen.result != null && loosen.result.isError === true &&
-      ['SETTING_NEEDS_CONFIRMATION', 'SETTING_DECLINED_THIS_SESSION'].includes(loosenCode) && /ch-local settings set requestTimeout 60s/.test(JSON.stringify(loosen.result.content)),
+      loosenCode === 'SETTING_NEEDS_CONFIRMATION' && /ch-local settings set requestTimeout 60s/.test(JSON.stringify(loosen.result.content)),
       JSON.stringify(loosen).slice(0, 1000));
     const tighten = await call({action: 'set', name: 'requestTimeout', value: '10s'});
     const t = tighten.result != null ? tighten.result.structuredContent : null;
@@ -386,4 +444,4 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code));
 
-module.exports = {main, buildShim, installShim, claudeHarness, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session};
+module.exports = {main, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session};
