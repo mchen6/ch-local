@@ -513,6 +513,11 @@ test('B3: a load from the settings is global; an unload and a told notice name t
     const unload = s.requests.find((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other');
     assert.strictEqual(unload.pack, 'other');
     assert.ok(!('global' in unload), 'an unload is for everyone that lists it');
+    // its notice rides on the unload, which the runtime tells before the pack
+    // goes; no separate notice tagged with the pack follows it (by then no
+    // session lists it, and it would reach nobody)
+    assert.strictEqual(unload.notice, 'other turned off');
+    assert.ok(!s.requests.some((m) => m.type === 'notice' && m.pack === 'other' && /turned off|removed/.test(m.text)), JSON.stringify(s.requests.filter((m) => m.type === 'notice')));
     holdsToTheVectors(s.requests);
   } finally {
     s.end();
