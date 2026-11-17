@@ -153,10 +153,8 @@ async function main(argv, io) {
           // only on the shim's hand-over, after --own-runtime, and never an option as its value
           if (ownRuntime == null || typeof v !== 'string' || v.startsWith('--')) { io.stderr.write(`ch-local start: ${rest[i]} needs --own-runtime before it and a value\n`); return 2; }
           if (rest[i] === '--own-runtime-reason') ownRuntime.reason = /^[a-z][a-z-]{0,31}$/.test(v) ? v : 'unknown';
-          // cut and cleaned at the source: no control, line-separator, bidi,
-          // zero-width, soft-hyphen, interlinear or tag characters (hidden
-          // text a model reads), and cut by code point (never half a pair)
-          else ownRuntime.why = Array.from(v.replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufff9-\ufffb\u{e0000}-\u{e007f}]/gu, ' ')).slice(0, 200).join('');
+          // cut and cleaned at the source (lib/clean-text.js)
+          else ownRuntime.why = require('../lib/clean-text').cleanText(v, 200);
           i += 2;
           continue;
         }
