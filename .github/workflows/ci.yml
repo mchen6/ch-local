@@ -31,6 +31,14 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+      # How long the PowerShell calls take on the runner, cold and warm, before
+      # the tests run (the first round is the machine's first PowerShell): the
+      # client-ancestry read against conditionsService's 3 s, a win-acl check
+      # against its 10 s. A measurement, never a check (tools/measure).
+      - name: Measure PowerShell (Windows; not a check)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: node tools/measure/powershell.js --rounds 5
       - name: Test
         run: npm test
 
