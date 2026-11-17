@@ -59,9 +59,12 @@ const META = {'io.modelcontextprotocol/protocolVersion': '2026-07-28',
   'io.modelcontextprotocol/clientInfo': {name: 'claude-code', version: '2.1.323'}};
 
 // One MCP session over a child's stdio: newline-delimited JSON-RPC.
+// Every message it writes is kept, in order, in `log` (progress frames and
+// answers alike: (a) reads which came first, (c) whether an id was answered).
 function session(child) {
   let buf = '';
   const waiting = new Map();
+  const log = [];
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (d) => {
     buf += d;
@@ -71,11 +74,15 @@ function session(child) {
       if (line === '') continue;
       let msg;
       try { msg = JSON.parse(line); } catch (err) { continue; }
+      log.push(msg);
       if (msg.id != null && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
     }
   });
   let id = 0;
   return {
+    log,
+    // the id the next request() gets
+    nextId: () => id + 1,
     request: (method, params, ms = STEP_MS) => new Promise((resolve, reject) => {
       const n = ++id;
       const timer = setTimeout(() => reject(new Error(`no answer to ${method} in ${ms} ms`)), ms);
@@ -268,6 +275,78 @@ async function latchedChecks({second, first, why, reason, check}) {
   check('(b-latched) the first session\'s settings are its own (its 10 s kept)', value != null && value.value === 10000, JSON.stringify(got).slice(0, 1000));
 }
 
+// The acceptance fixture pack (test/fixtures/ch-pack-accept): built into
+// this run's own release only, and added with a release that lists it beside
+// the shipped one (the reviewer's route (B)). The shipped allowlist
+// (lib/release-pins.json) never names it, nothing publishes it (its
+// packages are private), and ch-local's package carries no test/.
+const ACCEPT = 'accept';
+const ACCEPT_DIRS = ['back', 'front'].map((d) => path.join(ROOT, 'test', 'fixtures', 'ch-pack-accept', d));
+const ACCEPT_PACKAGES = ['ch-pack-accept', 'ch-accept-back'];
+const acceptRelease = (release) => ({...release, packs: {...release.packs, [ACCEPT]: {packages: ACCEPT_PACKAGES, credentials: []}}});
+const toolOf = (names, action) => names.find((n) => new RegExp(`(^|[^A-Za-z0-9])${action}$`).test(n)) || null;
+
+// (a) progress frames before an answer (MCP completeness M21), through the
+// shim. run() -> {response, before, after}: the call's answer, and the
+// notifications/progress frames carrying its token before and after it.
+async function progressChecks({run, token, check}) {
+  const {response, before, after} = await run();
+  const out = response != null && response.result != null ? response.result.structuredContent : null;
+  check('(a) the hopping call answers, through its part', response != null && response.result != null && response.result.isError !== true &&
+    out != null && out.hopped === true && out.said === 'back', JSON.stringify(response).slice(0, 1000));
+  check('(a) progress frames carrying the call\'s token arrive before its answer', before.length >= 1 && before.every((f) => f.params != null && f.params.progressToken === token),
+    JSON.stringify(before).slice(0, 1000));
+  const values = before.map((f) => f.params.progress);
+  check('(a) their progress only rises', values.every((v, i) => typeof v === 'number' && (i === 0 || v > values[i - 1])), JSON.stringify(values));
+  check('(a) none comes after the answer', after.length === 0, JSON.stringify(after).slice(0, 1000));
+}
+
+// (c) a cancelled call leaves no in-flight entry, through the shim. The
+// relay's table is not exposed (no status op, no debug output: the reviewer's
+// ruling), so the check is its behaviour at the close of its stdin: the shim
+// ends, and answers every call still in flight with its crash answer
+// (RUNTIME_RESTARTED, "the call may have run"). A cancelled call was settled
+// by the runtime's `cancelled` op, so it is no longer in flight and gets no
+// answer at all; the control, the same call not cancelled, gets that crash
+// answer, which is what makes the check sensitive. cancelled, control ->
+// {exitMs, answers}: how long after the close the shim exited, and the lines
+// answering that id.
+async function cancelChecks({cancelled, control, holdMs, check}) {
+  const c = await cancelled();
+  check('(c) a cancelled call is never answered through the shim, nor crash-answered at the close', c.answers.length === 0, JSON.stringify(c.answers).slice(0, 1000));
+  check('(c) with it cancelled, the shim ends promptly at the close: nothing is left in flight', c.exitMs != null && c.exitMs < holdMs / 2, `exited ${c.exitMs} ms after the close; the call holds ${holdMs} ms`);
+  const k = await control();
+  // the control: the same call, not cancelled, is still in flight at the close, and is answered then
+  check('(c, control) not cancelled, the call is still in flight at the close: the shim answers it (its answer, or the crash answer)', k.answers.length === 1,
+    `exited ${k.exitMs} ms after the close; answers ${JSON.stringify(k.answers).slice(0, 600)}`);
+}
+
+// (b2) ctx.ask through the shim (MCP completeness M13). call(extra) -> the
+// answer to tools/call of the fixture's ask, with `extra` in its params (a
+// retry's requestState and inputResponses).
+async function askChecks({call, what, check}) {
+  const first = await call({});
+  const r = first != null ? first.result : null;
+  const asked = r != null && r.inputRequests != null ? r.inputRequests.answer : null;
+  const ok = check('(b2) the handler\'s declared question comes back through the shim as an InputRequiredResult (a form)', r != null && r.resultType === 'input_required' &&
+    asked != null && asked.method === 'elicitation/create' && asked.params != null && asked.params.mode === 'form' &&
+    typeof asked.params.message === 'string' && asked.params.message.includes(`Proceed with ${what}?`) && typeof r.requestState === 'string' && /^v1\./.test(r.requestState),
+    JSON.stringify(first).slice(0, 1000));
+  if (!ok) return;
+  const accept = (state) => ({requestState: state, inputResponses: {answer: {action: 'accept', content: {yes: true}}}});
+  const retry = await call(accept(r.requestState));
+  const out = retry != null && retry.result != null ? retry.result.structuredContent : null;
+  check('(b2) the retry with the answer runs the handler again, which gets it', retry != null && retry.result != null && retry.result.isError !== true &&
+    out != null && out.asked === true && JSON.stringify(out.answer) === JSON.stringify({yes: true}), JSON.stringify(retry).slice(0, 1000));
+  const codeOf = (x) => (x != null && x.result != null && x.result._meta != null ? x.result._meta['countinghouse/code'] : null);
+  const again = await call(accept(r.requestState));
+  check('(b2) the state is used once: the same retry again is refused', codeOf(again) === 'ASK_STATE_INVALID', JSON.stringify(again).slice(0, 1000));
+  const tampered = `${r.requestState.slice(0, -1)}${r.requestState.endsWith('A') ? 'B' : 'A'}`;
+  const forged = await call(accept(tampered));
+  check('(b2) a tampered state is refused, and nothing is answered for it', forged != null && forged.result != null && forged.result.isError === true &&
+    String(codeOf(forged) || '').startsWith('ASK_STATE'), JSON.stringify(forged).slice(0, 1000));
+}
+
 async function main(argv, io = {stdout: process.stdout, stderr: process.stderr}) {
   const say = (s) => io.stdout.write(`${s}\n`);
   const report = {startedAt: new Date().toISOString(), platform: `${process.platform}-${process.arch}`, node: process.version, checks: [], ok: false};
@@ -298,12 +377,15 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   const node = process.execPath;
   let client = null;
   let client2 = null;
+  // (c)'s clients: each stopped in finish, as the others are
+  const more = [];
   let stderr = '';
   let finished = null;
   const finish = (interrupted) => finished || (finished = (async () => {
     if (interrupted != null) check('the run was not interrupted', false, interrupted);
     if (client != null) await stopTree(client);
     if (client2 != null) await stopTree(client2);
+    for (const c of more) await stopTree(c);
     if (report.checks.some((c) => !c.ok)) await diagnose();
     await stopDaemon(home);
     const left = daemonPid(home);
@@ -355,6 +437,21 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       fetch: async () => { throw new Error('shared-acceptance: install makes no network call of its own'); }};
     const code = await require('../lib/install').install({pack: dogfood.PACK, from: built.release, unreleasedPins: built.pinsFile}, installIo);
     if (!check('install into a clean home', code === 0, `exit ${code}`)) return 1;
+    // (a), (c), (b2)'s fixture pack: packed into this run's release and pinned
+    // there, added with a release that lists it (acceptRelease), then turned
+    // off, so it is turned on from the terminal while the daemon serves
+    const npmIo = {node, exec: async (cmd, a, {cwd}) => dogfood.run(cmd, a, {cwd})};
+    for (const dir of ACCEPT_DIRS) {
+      const p = await require('../lib/release').packInto(npmIo, dir, built.release);
+      built.pins[p.name] = {version: p.version, integrity: p.integrity};
+    }
+    const pinsDoc = JSON.parse(fs.readFileSync(built.pinsFile, 'utf8'));
+    fs.writeFileSync(built.pinsFile, JSON.stringify({...pinsDoc, pins: built.pins}, null, 2));
+    const added = await require('../lib/packs-command').addPack({pack: ACCEPT, from: built.release, unreleasedPins: built.pinsFile}, installIo,
+      acceptRelease(require('../lib/allowlist').ALLOWLIST));
+    if (!check('the acceptance fixture pack is added (this run\'s release only)', added === 0, `exit ${added}`)) return 1;
+    const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: home});
+    require('../lib/settings').setSetting(where, `pack.${ACCEPT}`, 'off', {by: 'cli'});
     if (process.platform !== 'win32') fs.chmodSync(home, 0o700);
 
     const shim = buildShim();
@@ -509,6 +606,66 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const stillServed = await mcp.request('tools/list', {_meta: META});
     check('(b-latched) after the second session\'s bye, the daemon still serves the first', stillServed.result != null && Array.isArray(stillServed.result.tools) &&
       stillServed.result.tools.length > 0 && alive(pid), JSON.stringify(stillServed).slice(0, 1000));
+
+    // The fixture pack, turned on from the terminal while the daemon serves:
+    // every session's (B3's all-sessions path; no form). A session's own
+    // "on" needs its form, which joins with (b1).
+    // `ch-local settings set pack.accept on` is a loosening, which the
+    // terminal confirms (lib/cli-change.js); the run has no terminal, so it
+    // calls that same path with an io that answers the question "y", as the
+    // user at a terminal would
+    let asked = null;
+    let said = '';
+    const on = await require('../lib/cli-change').cliSet(where, `pack.${ACCEPT}`, 'on',
+      {interactive: true, ask: async (q) => { asked = q; return 'y'; }, stderr: {write: (s) => { said += s; }}, platform: process.platform, env: launcherEnv(home)});
+    if (!check('the fixture pack is turned on from the terminal (its loosening asked and confirmed)', on.code === 0 && /Loosen pack\.accept/.test(String(asked)),
+      `${on.code} ${asked} ${said}`)) return 1;
+    let listed = [];
+    for (const until = Date.now() + STEP_MS; Date.now() < until;) {
+      const l = await mcp.request('tools/list', {_meta: META});
+      listed = l.result != null && Array.isArray(l.result.tools) ? l.result.tools.map((x) => x.name) : [];
+      if (['relay', 'slow', 'ask'].every((a) => toolOf(listed, a) != null)) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (!check('the daemon loads it in place: its tools are listed to the session', ['relay', 'slow', 'ask'].every((a) => toolOf(listed, a) != null), listed.join(', '))) return 1;
+
+    // (a) progress frames before an answer, through the shim
+    const token = 'acc-progress-1';
+    await progressChecks({token, check, run: async () => {
+      const response = await mcp.request('tools/call', {_meta: {...META, progressToken: token}, name: toolOf(listed, 'relay'), arguments: {}});
+      const at = mcp.log.indexOf(response);
+      const frames = (from, to) => mcp.log.slice(from, to).filter((m) => m.method === 'notifications/progress' && m.params != null && m.params.progressToken === token);
+      await new Promise((r) => setTimeout(r, 1000));   // anything that would come after
+      return {response, before: frames(0, at), after: frames(at + 1)};
+    }});
+
+    // (b2) ctx.ask through the shim
+    const what = 'acceptance';
+    await askChecks({what, check, call: (extra) => mcp.request('tools/call', Object.assign({_meta: META, name: toolOf(listed, 'ask'), arguments: {what}}, extra))});
+
+    // (c) a cancelled call, through a shim of its own each time (its stdin is closed)
+    const holdMs = 20000;
+    const slowRun = async (cancel) => {
+      const c = spawn(h.claude, [h.script, installed, home], {cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
+        env: launcherEnv(home, {CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CONFIG_DIR: h.config, CLAUDE_PROJECT_DIR: repo})});
+      more.push(c);
+      c.stderr.setEncoding('utf8');
+      c.stderr.on('data', (d) => { stderr = (stderr + d).slice(-200000); });
+      const m = session(c);
+      const exited = new Promise((resolve) => c.once('exit', () => resolve(Date.now())));
+      await m.request('initialize', {protocolVersion: '2026-07-28', capabilities: {elicitation: {}}, clientInfo: {name: 'claude-code', version: '2.1.323'}});
+      m.notify('notifications/initialized', {});
+      const id = m.nextId();
+      m.request('tools/call', {_meta: META, name: toolOf(listed, 'slow'), arguments: {ms: holdMs}}, holdMs * 3).catch(() => {});
+      await new Promise((r) => setTimeout(r, 1500));   // the call is in the runtime
+      if (cancel) m.notify('notifications/cancelled', {requestId: id, reason: 'shared-acceptance (c)'});
+      await new Promise((r) => setTimeout(r, 500));
+      const closedAt = Date.now();
+      c.stdin.end();
+      const t = await Promise.race([exited, new Promise((r) => setTimeout(() => r(null), holdMs * 3))]);
+      return {exitMs: t == null ? null : t - closedAt, answers: m.log.filter((x) => x.id === id)};
+    };
+    await cancelChecks({holdMs, check, cancelled: () => slowRun(true), control: () => slowRun(false)});
     return 0;
   };
   let code = 1;
@@ -525,4 +682,5 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code));
 
-module.exports = {main, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session, latchedChecks};
+module.exports = {main, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session, latchedChecks,
+  progressChecks, cancelChecks, askChecks, ACCEPT, ACCEPT_DIRS, ACCEPT_PACKAGES, acceptRelease};

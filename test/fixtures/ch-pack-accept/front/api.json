@@ -1,0 +1,49 @@
+{
+  "device": {
+    "friendlyName": "ch-pack-accept",
+    "manufacturer": "countinghouse-test",
+    "modelDescription": "acceptance fixture: a hop with progress, a slow hop, one question",
+    "serviceList": {
+      "urn:countinghouse-test:serviceID:acceptService": {
+        "actionList": [
+          {
+            "name": "relay",
+            "description": "Hops to its part, then reports progress twice before it answers.",
+            "input": {
+              "schema": "/acceptService/relay/input"
+            },
+            "output": {
+              "schema": "/acceptService/relay/output"
+            }
+          },
+          {
+            "name": "slow",
+            "description": "Hops to its part, which waits a while (to be cancelled).",
+            "input": {
+              "schema": "/acceptService/slow/input"
+            },
+            "output": {
+              "schema": "/acceptService/slow/output"
+            }
+          },
+          {
+            "name": "ask",
+            "description": "Asks one declared question and returns the answer.",
+            "input": {
+              "schema": "/acceptService/ask/input"
+            },
+            "output": {
+              "schema": "/acceptService/ask/output"
+            },
+            "questions": {
+              "confirm": {
+                "message": "Proceed with {what}?",
+                "schema": "/acceptService/ask/questions/confirm"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
