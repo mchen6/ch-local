@@ -25,15 +25,21 @@ const until = async (cond, ms = 10000) => {
 // ghToken: what gh auth token answers (a shared runtime's GitHub token comes
 // from gh only), else gh is not logged in
 // home: start again on a home a running() made (a runtime restart), without installing
+// clientAncestry: what start's may-elicit reads of the client's ancestry. Read
+// for real it can take more than check()'s 3 s on a loaded Windows runner,
+// which answers "client settings unreadable" (fail closed, as it should), so
+// the tests here are given it read already (ch-local's intermittent
+// may-elicit failure on main ed73a358); lib/client-conditions' own tests
+// cover the read and the wait.
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs, shared = false, ghToken = null, home: reuse = null,
-  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}} = {}) {
+  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, clientAncestry = Promise.resolve({lines: null, policyPresent: false})} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
-  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs, clientAncestry});
   if (ghToken != null) f.exec = async (c) => (c === 'gh' ? {status: 0, stdout: `${ghToken}\n`, stderr: ''} : {status: 0, stdout: '', stderr: ''});
   const requests = [];
   let end = null;
