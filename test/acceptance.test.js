@@ -358,15 +358,16 @@ test('shared: (a) progress frames before an answer, through the shim: the checks
 
 test('shared: (c) a cancelled call leaves no in-flight entry, through the shim: the checks', async () => {
   const holdMs = 20000;
-  const answered = [{jsonrpc: '2.0', id: 3, result: {structuredContent: {waited: holdMs}}}];
+  // the shim's crash answer for a call still in flight at its close (what the control gets)
+  const answered = [{jsonrpc: '2.0', id: 3, error: {code: -32603, message: 'countinghouse\'s runtime restarted before answering; the call may have run', data: {'countinghouse/code': 'RUNTIME_RESTARTED'}}}];
   const run = (c, k) => (check) => shared.cancelChecks({holdMs, check,
-    cancelled: async () => Object.assign({exitMs: 300, answers: []}, c), control: async () => Object.assign({exitMs: 18000, answers: answered}, k)});
+    cancelled: async () => Object.assign({exitMs: 300, answers: []}, c), control: async () => Object.assign({exitMs: 5, answers: answered}, k)});
   assert.deepStrictEqual((await checksOf(run({}, {}))).failed, []);
   assert.ok((await checksOf(run({answers: answered}, {}))).failed.some((n) => /never answered/.test(n)), 'a cancelled call answered');
   assert.ok((await checksOf(run({exitMs: 19000}, {}))).failed.some((n) => /promptly/.test(n)), 'the shim waited on the cancelled call');
   assert.ok((await checksOf(run({exitMs: null}, {}))).failed.some((n) => /promptly/.test(n)), 'the shim never ended');
-  // the control is what makes the check sensitive: a shim that ends at once whatever is in flight fails it
-  assert.ok((await checksOf(run({}, {exitMs: 300, answers: []}))).failed.some((n) => /control/.test(n)), 'a control that did not wait');
+  // the control is what makes the check sensitive: a shim that answers no call in flight at its close fails it
+  assert.ok((await checksOf(run({}, {answers: []}))).failed.some((n) => /control/.test(n)), 'a control left unanswered');
 });
 
 test('shared: (b2) ctx.ask through the shim: the checks', async () => {

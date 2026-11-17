@@ -303,17 +303,21 @@ async function progressChecks({run, token, check}) {
 
 // (c) a cancelled call leaves no in-flight entry, through the shim. The
 // relay's table is not exposed (no status op, no debug output: the reviewer's
-// ruling), so the check is its behaviour: a shim whose stdin closes waits
-// only on calls in flight. cancelled, control -> {exitMs, answers}: the
-// slow call, cancelled before the close, and the same with no cancel; how
-// long after the close the shim exited, and the lines answering that id.
+// ruling), so the check is its behaviour at the close of its stdin: the shim
+// ends, and answers every call still in flight with its crash answer
+// (RUNTIME_RESTARTED, "the call may have run"). A cancelled call was settled
+// by the runtime's `cancelled` op, so it is no longer in flight and gets no
+// answer at all; the control, the same call not cancelled, gets that crash
+// answer, which is what makes the check sensitive. cancelled, control ->
+// {exitMs, answers}: how long after the close the shim exited, and the lines
+// answering that id.
 async function cancelChecks({cancelled, control, holdMs, check}) {
   const c = await cancelled();
   check('(c) a cancelled call is never answered through the shim, nor crash-answered at the close', c.answers.length === 0, JSON.stringify(c.answers).slice(0, 1000));
   check('(c) with it cancelled, the shim ends promptly at the close: nothing is left in flight', c.exitMs != null && c.exitMs < holdMs / 2, `exited ${c.exitMs} ms after the close; the call holds ${holdMs} ms`);
   const k = await control();
-  // the control: the same call, not cancelled, keeps the shim at its close until it is answered
-  check('(c, control) not cancelled, the call is answered and the shim waits for it', k.answers.length === 1 && k.exitMs != null && k.exitMs >= holdMs / 2,
+  // the control: the same call, not cancelled, is still in flight at the close, and is answered then
+  check('(c, control) not cancelled, the call is still in flight at the close: the shim answers it (its answer, or the crash answer)', k.answers.length === 1,
     `exited ${k.exitMs} ms after the close; answers ${JSON.stringify(k.answers).slice(0, 600)}`);
 }
 
