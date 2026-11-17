@@ -26,7 +26,8 @@ function world() {
   for (const d of [home, cwd, path.dirname(managed)]) fs.mkdirSync(d, {recursive: true});
   const env = {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: project};
   const write = (file, value) => { fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value)); };
-  const ask = (o = {}) => clientConditions(Object.assign({client: CC, home, cwd, env, managedFile: managed, parentCommandLines: () => [['claude']]}, o));
+  // stopAt: this world's root, so the walk up never reaches the real home
+  const ask = (o = {}) => clientConditions(Object.assign({client: CC, home, cwd, env, managedFile: managed, parentCommandLines: () => [['claude']], stopAt: root}, o));
   return {root, home, project, cwd, managed, env, write, ask};
 }
 
@@ -151,7 +152,7 @@ test('a project under the home: the user\'s own settings, met on the way up, are
   fs.mkdirSync(path.join(home, '.claude'), {recursive: true});
   fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({enabledPlugins: {'x@y': true}}));
   const env = {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: project};
-  assert.deepStrictEqual(clientConditions({client: CC, home, cwd: project, env, managedFile: path.join(root, 'none.json'), parentCommandLines: () => [['claude']]}), {mayElicit: true, why: null});
+  assert.deepStrictEqual(clientConditions({client: CC, home, cwd: project, env, managedFile: path.join(root, 'none.json'), parentCommandLines: () => [['claude']], stopAt: root}), {mayElicit: true, why: null});
 });
 
 test('a --settings or --plugin-dir naming nothing readable: unreadable, no', () => {
@@ -166,9 +167,9 @@ test('the latch: a hook seen once holds for the whole start, though it is remove
   const file = path.join(w.project, '.claude', 'settings.json');
   w.write(file, HOOK('Elicitation'));
   const check = conditionsLatch();
-  assert.strictEqual(check({client: CC, home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed, parentCommandLines: () => [['claude']]}).why, 'client hook present');
+  assert.strictEqual(check({client: CC, home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed, parentCommandLines: () => [['claude']], stopAt: w.root}).why, 'client hook present');
   fs.rmSync(file);
-  assert.deepStrictEqual(check({client: CC, home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed, parentCommandLines: () => [['claude']]}), {mayElicit: false, why: 'client hook present'});
+  assert.deepStrictEqual(check({client: CC, home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed, parentCommandLines: () => [['claude']], stopAt: w.root}), {mayElicit: false, why: 'client hook present'});
   assert.strictEqual(w.ask().mayElicit, true, 'a fresh scan, unlatched, says yes');
 });
 
@@ -195,7 +196,7 @@ test('review: the user\'s own settings.local.json is read (the project is the ho
   fs.mkdirSync(path.join(home, '.claude'), {recursive: true});
   fs.writeFileSync(path.join(home, '.claude', 'settings.local.json'), JSON.stringify(HOOK('Elicitation')));
   const env = {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: home};
-  assert.strictEqual(clientConditions({client: CC, home, cwd: home, env, managedFile: path.join(root, 'none.json'), parentCommandLines: () => [['claude']]}).why, 'client hook present');
+  assert.strictEqual(clientConditions({client: CC, home, cwd: home, env, managedFile: path.join(root, 'none.json'), parentCommandLines: () => [['claude']], stopAt: root}).why, 'client hook present');
 });
 
 test('review: a relative --settings or --plugin-dir is unreadable (the client\'s own directory is not known for certain)', () => {
@@ -226,7 +227,7 @@ test('review: the service answers within its wait while the ancestry is still re
   const {conditionsService} = require('../lib/client-conditions');
   const w = world();
   let resolve;
-  const svc = conditionsService({home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed}, {ancestry: new Promise((r) => { resolve = r; }), waitMs: 30});
+  const svc = conditionsService({home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed, stopAt: w.root}, {ancestry: new Promise((r) => { resolve = r; }), waitMs: 30});
   assert.deepStrictEqual(await svc.check(CC), {mayElicit: false, why: 'client settings unreadable'});
   resolve([['claude']]);
   await svc.ready;
@@ -249,7 +250,7 @@ test('the real reader on this platform (Windows CI runs PowerShell here): read, 
   assert.ok(found === null || found.some((argv) => argv.slice(0, 2).some((a) => /claude/i.test(a))), JSON.stringify(found));
   // the service over the real reader: an answer, never a default yes
   const w = world();
-  const svc = conditionsService({home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed}, {waitMs: 60000});
+  const svc = conditionsService({home: w.home, cwd: w.cwd, env: w.env, managedFile: w.managed, stopAt: w.root}, {waitMs: 60000});
   await svc.ready;
   const r = await svc.check(CC);
   if (found === null) assert.deepStrictEqual(r, {mayElicit: false, why: 'client settings unreadable'});
@@ -259,4 +260,27 @@ test('the real reader on this platform (Windows CI runs PowerShell here): read, 
 test('a managed source start cannot read (a Windows policy key): unreadable', () => {
   const w = world();
   assert.deepStrictEqual(w.ask({managedPresent: true}), {mayElicit: false, why: 'client settings unreadable'});
+});
+
+// the review of #62: a world's temp root may sit under a directory with its
+// own .claude (TMPDIR under the developer's home): the walk stops at the
+// world's root, so only the world's own fixtures are seen
+test('a world under a directory whose .claude enables plugins sees only its own fixtures', () => {
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-cond-outer-'));
+  try {
+    fs.mkdirSync(path.join(outer, '.claude'));
+    fs.writeFileSync(path.join(outer, '.claude', 'settings.json'), JSON.stringify({enabledPlugins: {'example@example-market': true}, ...HOOK('Elicitation')}));
+    const root = fs.mkdtempSync(path.join(outer, 'ch-cond-'));
+    const home = path.join(root, 'home');
+    const project = path.join(root, 'work', 'proj');
+    fs.mkdirSync(home, {recursive: true});
+    fs.mkdirSync(project, {recursive: true});
+    const env = {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: project};
+    const args = {client: CC, home, cwd: project, env, managedFile: path.join(root, 'none.json'), parentCommandLines: () => [['claude']]};
+    assert.deepStrictEqual(clientConditions({...args, stopAt: root}), {mayElicit: true, why: null});
+    // and without the bound, the outer .claude is what a real walk would meet
+    assert.strictEqual(clientConditions(args).mayElicit, false);
+  } finally {
+    fs.rmSync(outer, {recursive: true, force: true});
+  }
 });

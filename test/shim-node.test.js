@@ -250,6 +250,7 @@ test('conditions: a "no" carries its why: the reason, and where under the home i
     fs.mkdirSync(project);
     const io = conditionsIo({env: {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: project}, cwd: project});
     io.homedir = () => user;
+    io.conditionsStopAt = user;
     assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
     const line = JSON.parse(io.out);
     assert.strictEqual(line.conditions, 'no');
@@ -332,6 +333,7 @@ test('conditions: a why that would take the line over the shim\'s 4 KiB is dropp
     withPacks(home, packs);
     const io = conditionsIo({env, cwd: deep});
     io.homedir = () => user;
+    io.conditionsStopAt = user;
     assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
     const line = JSON.parse(io.out);
     assert.strictEqual(line.conditions, 'no');
