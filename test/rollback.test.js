@@ -425,3 +425,17 @@ test('rolling back past a withdrawal and forward again keeps the pack held as wi
   assert.deepStrictEqual(Object.keys(fwd.packs), []);
   assert.strictEqual(fwd.held['ci-failure-triage'].withdrawn, true, JSON.stringify(fwd.held));
 });
+
+test('a rollback round trip keeps each release\'s own held marks, relisted too', async () => {
+  const s = await upgraded();
+  const f = path.join(s.home, 'packs.json');
+  const prev = path.join(s.home, 'previous', 'packs.json');
+  const p = {packages: {}, credentials: [], installedUnder: '0.2.0'};
+  fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone: {...p, relisted: true}}}));
+  fs.writeFileSync(prev, JSON.stringify({...JSON.parse(fs.readFileSync(prev, 'utf8')), held: {gone: {...p, withdrawn: true}}}));
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(record(s.home).held.gone.withdrawn, true, 'the older release held it withdrawn');
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.strictEqual(record(s.home).held.gone.relisted, true, 'the newer release held it relisted');
+  assert.strictEqual(record(s.home).held.gone.withdrawn, undefined);
+});

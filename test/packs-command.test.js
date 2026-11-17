@@ -369,3 +369,14 @@ test('the record takes a held pack marked withdrawn, and refuses a withdrawn mar
   write({p: {packages: {}, credentials: [], installedUnder: '0.1.0', withdrawn: 'yes'}});
   assert.throws(() => readRecord({home, packs: path.join(home, 'packs.json')}), /not a ch-local record/);
 });
+
+test('remove-pack of a withdrawn pack removes it from the rollback copy\'s held too: a rollback never brings it back', async () => {
+  const s = await installed();
+  withdrawHeld(s.home, 'ci-failure-triage');
+  const held = JSON.parse(fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8')).held;
+  fs.mkdirSync(path.join(s.home, 'previous'), {recursive: true});
+  fs.writeFileSync(path.join(s.home, 'previous', 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {}, held}));
+  const rm = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
+  assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, rm), 0, rm.err);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'previous', 'packs.json'), 'utf8')).held, undefined);
+});
