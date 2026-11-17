@@ -294,7 +294,7 @@ const withdrawFrom = (name) => (doc) => {
   for (const pkg of gone) if (!used.has(pkg)) delete doc.pins[pkg];
 };
 
-// Withdrawn packs (Matt, 2026-11-17, option 1): an automatic upgrade to a
+// Withdrawn packs (maintainer's decision, 2026-11-17): an automatic upgrade to a
 // release that withdraws the home's one pack installs it like any other (the
 // usual reason is a security problem); the pack's entry stays, the line says
 // it is withdrawn, and the next start skips it with the notice.

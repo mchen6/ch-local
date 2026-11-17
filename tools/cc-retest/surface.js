@@ -285,7 +285,7 @@ function approvedVersions(dir = APPROVED_DIR) {
 
 const snapshotOf = (version, fetched, surface) => ({version, extractor: EXTRACTOR, packages: fetched.packages, surface});
 
-// One line for Matt, then the details (stdout). -> exit code
+// One line for the maintainer, then the details (stdout). -> exit code
 function report(version, against, diff, out) {
   if (diff.failing.length > 0) {
     out(`Claude Code ${version}: FAIL against ${against}: new ${diff.failing.map((x) => `${x.set} ${x.item}`).slice(0, 8).join(', ')}${diff.failing.length > 8 ? `, and ${diff.failing.length - 8} more` : ''}`);
