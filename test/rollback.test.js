@@ -210,7 +210,7 @@ test('a kept release older than rollback itself is refused: it could never come 
   assert.strictEqual(versionOf(s.home, REDACT), '0.2.0');
 });
 
-test('held packs: remove-pack removes one, uninstall names its credentials, and an install over them names them as dropped', async () => {
+test('held packs: remove-pack removes one, uninstall names its credentials, and an install over them keeps them held', async () => {
   const {removePack} = require('../lib/packs-command');
   const s = await upgraded();
   assert.strictEqual(await addPack({pack: 'other', from: s.r2.from}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}}), s.r2.allow), 0);
@@ -223,7 +223,9 @@ test('held packs: remove-pack removes one, uninstall names its credentials, and 
   assert.match(un.out, /revoke the credentials you gave it: .*OTHER_TOKEN/i, 'a held pack\'s credential is named too');
   const again = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: s.r1.from}, again, s.r1.allow), 0, again.err);
-  assert.match(again.out, /the pack "other" was dropped/);
+  // nothing deleted (the deep review of #77): carried as held, not dropped
+  assert.doesNotMatch(again.out, /the pack "other" was dropped/);
+  assert.ok(record(s.home).held.other != null, JSON.stringify(record(s.home).held));
   // Remove a held pack.
   const t2 = await upgraded();
   assert.strictEqual(await addPack({pack: 'other', from: t2.r2.from}, fakeIo({env: {COUNTINGHOUSE_HOME: t2.home}}), t2.r2.allow), 0);

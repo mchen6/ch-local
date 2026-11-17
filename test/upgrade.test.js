@@ -378,9 +378,39 @@ test('a home whose only pack is held as withdrawn still upgrades, runtime only; 
     assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0/);
     // this release lists ci-failure-triage again
     assert.match(io.out, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
-    assert.strictEqual(recordOf(s.home).held, undefined);
+    // nothing deleted: the entry stays held, marked relisted, not withdrawn
+    const held = recordOf(s.home).held['ci-failure-triage'];
+    assert.strictEqual(held.relisted, true);
+    assert.strictEqual(held.withdrawn, undefined);
   } finally {
     await w.close();
+    s.done();
+  }
+});
+
+// The deep review of #77 (HIGH): a later full upgrade of a home with another
+// pack installed keeps a withdrawn pack held, its entry and its files (Matt's
+// "nothing deleted"), in the record and in the rollback copy.
+test('a full upgrade keeps a pack held as withdrawn: its entry and its tree', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const {layout} = require('../lib/home');
+  const {packDir, packKey} = require('../lib/pack-dir');
+  const where = layout({COUNTINGHOUSE_HOME: s.home});
+  const f = path.join(s.home, 'packs.json');
+  const w = {packages: {'@countinghouse/ch-pack-gone': '1.0.0'}, credentials: [], installedUnder: '0.0.9', withdrawn: true};
+  fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone: w}}));
+  const tree = packDir(where, 'gone', packKey(w.packages));
+  fs.mkdirSync(tree, {recursive: true});
+  fs.writeFileSync(path.join(tree, 'kept'), 'the pack\'s own bytes');
+  const nw = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, nw.fromNpm), 0, io.err);
+    assert.deepStrictEqual(recordOf(s.home).held, {gone: w}, 'held as it was');
+    assert.strictEqual(fs.readFileSync(path.join(tree, 'kept'), 'utf8'), 'the pack\'s own bytes', 'its tree kept');
+    assert.doesNotMatch(io.out, /"gone" was dropped/);
+  } finally {
+    await nw.close();
     s.done();
   }
 });

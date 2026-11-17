@@ -333,7 +333,7 @@ function withdrawHeld(home, name) {
   fs.writeFileSync(f, JSON.stringify({...r, packs: rest, held: {...(r.held || {}), [name]: {...entry, installedUnder: '0.1.0', withdrawn: true}}}, null, 2));
 }
 
-test('a pack held as withdrawn: status says so; an install over it drops it with no add-pack advice; remove-pack removes it and its files', async () => {
+test('a pack held as withdrawn: status says so; an install over it keeps it held; remove-pack removes it and its files', async () => {
   const s = await installed();
   withdrawHeld(s.home, 'ci-failure-triage');
   const st = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
@@ -353,8 +353,11 @@ test('a pack held as withdrawn: status says so; an install over it drops it with
   withdrawHeld(t.home, 'ci-failure-triage');
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: t.home}, exec: npm()});
   assert.strictEqual(await install({pack: 'other', from: t.r.from}, io, t.r.allow), 0, io.err);
-  assert.match(io.out, /the withdrawn pack "ci-failure-triage" was dropped/);
-  assert.doesNotMatch(io.out, /add-pack ci-failure-triage/);
+  // nothing deleted: carried as held, never "dropped"; this release lists it
+  // again, so it is marked relisted and the user told how to add it back
+  assert.strictEqual(record(t.home).held['ci-failure-triage'].relisted, true);
+  assert.doesNotMatch(io.out, /ci-failure-triage" was dropped/);
+  assert.match(io.out, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
 });
 
 test('the record takes a held pack marked withdrawn, and refuses a withdrawn mark that is not true', () => {

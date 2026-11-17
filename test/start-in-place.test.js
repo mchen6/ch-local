@@ -892,3 +892,16 @@ test('load-pack for a pack held as withdrawn is refused CONTROL_PACK_NOT_ALLOWED
     await s.done;
   }
 });
+
+test('a withdrawn pack whose unload is refused is tried once more, then the client is told to restart', async () => {
+  const s = await running({answer: (m) => (m.type === 'unload' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  try {
+    withdrawHeld(s.home, 'ci-failure-triage');
+    const unloads = () => s.requests.filter((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-ci-failure-triage').length;
+    await until(() => notices(s).some(([, t]) => /could not be stopped in place: restart your client now/.test(t)));
+    assert.strictEqual(unloads(), 2, 'tried twice');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});

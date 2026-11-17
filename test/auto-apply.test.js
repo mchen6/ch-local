@@ -336,3 +336,28 @@ test('a home whose only pack is held as withdrawn still upgrades automatically; 
     await w.close();
   }
 });
+
+// The deep review of #77 (HIGH): an automatic upgrade of a home with another
+// pack installed keeps a withdrawn pack held, its entry and its tree.
+test('an automatic upgrade keeps a pack held as withdrawn: its entry and its tree', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home();
+    const {layout} = require('../lib/home');
+    const {packDir, packKey} = require('../lib/pack-dir');
+    const f = path.join(h, 'packs.json');
+    const gone = {packages: {'@countinghouse/ch-pack-gone': '1.0.0'}, credentials: [], installedUnder: '0.0.9', withdrawn: true};
+    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone}}));
+    const tree = packDir(layout({COUNTINGHOUSE_HOME: h}), 'gone', packKey(gone.packages));
+    fs.mkdirSync(tree, {recursive: true});
+    fs.writeFileSync(path.join(tree, 'kept'), 'bytes');
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const r = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')).held, {gone});
+    assert.strictEqual(fs.readFileSync(path.join(tree, 'kept'), 'utf8'), 'bytes');
+  } finally {
+    await w.close();
+  }
+});
