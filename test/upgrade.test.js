@@ -326,3 +326,35 @@ test('a release that withdraws the home\'s one pack upgrades: the runtime instal
     s.done();
   }
 });
+
+// The runtime-only install (a release that withdraws the pack) runs every
+// check a pack install runs on the runtime's packages: their pins, their
+// sha512 integrity and their provenance (lib/install.js: names, the pinned
+// and lockfile checks, fetchRelease, loadTarballs, lockfileProblem, npm ci,
+// the installed version); it skips only placing the pack. A runtime package
+// whose provenance or integrity fails is refused: nothing installed, the
+// record unchanged.
+test('a release that withdraws the pack: its runtime packages are verified as any install\'s; a bad provenance or integrity installs nothing', async () => {
+  for (const [what, opts] of [
+    ['provenance', {lie: 'countinghouse', edit: withdrawFrom('ci-failure-triage')}],
+    ['integrity', {edit: (doc) => { withdrawFrom('ci-failure-triage')(doc); doc.pins.countinghouse.integrity = `sha512-${Buffer.alloc(64, 7).toString('base64')}`; }}]
+  ]) {
+    const s = setup({'@countinghouse/ch-local': '0.1.0'});
+    const w = await npmWorld(release(), opts);
+    try {
+      const before = fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8');
+      const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+      assert.strictEqual(await upgrade({}, io, w.fromNpm), 1, `${what}: ${io.err}`);
+      assert.match(io.out, /it withdraws:/, `${what}: the runtime-only path`);
+      assert.match(io.err, /countinghouse/, `${what}: the package named`);
+      assert.match(io.err, /the upgrade to 0\.2\.0 failed; nothing changed/, what);
+      assert.deepStrictEqual(io.execs, [], `${what}: npm never ran`);
+      assert.strictEqual(fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8'), before, `${what}: the record unchanged`);
+      assert.deepStrictEqual(historyOf(s.home).filter((e) => e.kind === 'upgrade').map((e) => e.outcome), ['failed'], what);
+      assert.deepStrictEqual(historyOf(s.home).filter((e) => e.change === 'withdrawn'), [], `${what}: no withdrawal recorded`);
+    } finally {
+      await w.close();
+      s.done();
+    }
+  }
+});
