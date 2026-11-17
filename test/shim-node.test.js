@@ -231,10 +231,121 @@ test('conditions: one JSON line; no interactive Claude Code session is "no"; the
     assert.strictEqual(await conditions.conditions({pid: 4242, home}, io), 0);
     const lines = io.out.split('\n').filter((l) => l !== '');
     assert.strictEqual(lines.length, 1, io.out);
-    assert.deepStrictEqual(JSON.parse(lines[0]), {status: 'ok', conditions: 'no', repo: 'acme/widgets', token: null});
+    assert.deepStrictEqual(JSON.parse(lines[0]), {status: 'ok', conditions: 'no', repo: 'acme/widgets', token: null, why: {reason: 'not an interactive session'}});
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
     fs.rmSync(repo, {recursive: true, force: true});
+  }
+});
+
+// the scan's why, for the runtime's latch: a closed reason, and where it was
+// seen under the home ("~/..."), never a path outside it
+test('conditions: a "no" carries its why: the reason, and where under the home it was seen', async() => {
+  const home = homeWithSecret();
+  const user = tmpHome();
+  try {
+    fs.mkdirSync(path.join(user, '.claude'));
+    fs.writeFileSync(path.join(user, '.claude', 'settings.json'), JSON.stringify({hooks: {Elicitation: [{hooks: [{type: 'command', command: 'true'}]}]}}));
+    const project = path.join(user, 'project');
+    fs.mkdirSync(project);
+    const io = conditionsIo({env: {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: project}, cwd: project});
+    io.homedir = () => user;
+    io.conditionsStopAt = user;
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+    const line = JSON.parse(io.out);
+    assert.strictEqual(line.conditions, 'no');
+    assert.deepStrictEqual(line.why, {reason: 'client hook present', at: '~/.claude/settings.json'});
+    assert.ok(!io.out.includes(user), 'the home\'s own path is never sent');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+    fs.rmSync(user, {recursive: true, force: true});
+  }
+});
+
+test('conditions: whyOf: a reason outside the closed set is none; a path outside the home is never sent; a path is cut and cleaned', () => {
+  const u = path.join(path.sep, 'home', 'someone');
+  assert.strictEqual(conditions.whyOf({mayElicit: false, why: 'made-up reason', at: path.join(u, 'x')}, u), null);
+  assert.deepStrictEqual(conditions.whyOf({mayElicit: false, why: 'plugin hook present', at: path.join(path.sep, 'opt', 'other-user', 'plugins', 'p')}, u), {reason: 'plugin hook present'});
+  assert.deepStrictEqual(conditions.whyOf({mayElicit: false, why: 'plugin hook present', at: path.join(u, '..', 'other', 'p')}, u), {reason: 'plugin hook present'});
+  assert.deepStrictEqual(conditions.whyOf({mayElicit: false, why: 'client hook present', at: u}, u), {reason: 'client hook present'}, 'the home itself names nothing');
+  const odd = conditions.whyOf({mayElicit: false, why: 'client hook present', at: path.join(u, `pl\u202eugin\u{e0041}${'x'.repeat(300)}`)}, u);
+  assert.ok(/^~\/pl ugin /.test(odd.at), odd.at);
+  assert.strictEqual(Array.from(odd.at).length, 200);
+  assert.deepStrictEqual(conditions.whyOf({mayElicit: false, why: 'client settings unreadable', at: null}, u), {reason: 'client settings unreadable'});
+});
+
+// the shared rule for the why (countinghouse's conditionsWhy vectors, copied)
+const WHY_V = require('./vectors/conditions-why.json').conditionsWhy;
+const whyOk = (w) => {
+  const hidden = new RegExp(`[${WHY_V.hiddenClass}]`, 'u');
+  return w != null && typeof w === 'object' && !Array.isArray(w) && WHY_V.reasons.includes(w.reason) && Object.keys(w).every((k) => k === 'reason' || k === 'at')
+    && (w.at === undefined || (typeof w.at === 'string' && w.at.startsWith('~/') && Array.from(w.at).length <= 200 && !hidden.test(w.at) && !w.at.split('/').includes('..')));
+};
+
+test('conditions: the why holds to the shared vectors: the vectors\' own cases, the closed reasons, and every why whyOf makes', () => {
+  for (const {why, value} of WHY_V.accepted) assert.strictEqual(whyOk(value), true, why);
+  for (const {why, value} of WHY_V.refused) assert.strictEqual(whyOk(value), false, why);
+  assert.deepStrictEqual([...require('../lib/client-conditions').REASONS].sort(), [...WHY_V.reasons].sort());
+  assert.strictEqual(require('../lib/clean-text').HIDDEN_CLASS, WHY_V.hiddenClass, 'one definition of a hidden character');
+  const u = path.join(path.sep, 'home', 'someone');
+  for (const at of [path.join(u, '.claude', 'settings.json'), path.join(u, `x\u202e${'y'.repeat(400)}`), path.join(path.sep, 'opt', 'x'), null]) {
+    for (const why of WHY_V.reasons) {
+      const w = conditions.whyOf({mayElicit: false, why, at}, u);
+      assert.ok(whyOk(w), JSON.stringify(w));
+    }
+  }
+});
+
+test('conditions: whyOf by real path: a home through a link keeps its places; a shallow home is no boundary; ..dotfiles is under the home', () => {
+  const root = tmpHome();
+  try {
+    const realHome = path.join(root, 'var', 'home', 'u');
+    fs.mkdirSync(path.join(realHome, 'proj', '.claude'), {recursive: true});
+    // the scan reports only what it found: the file is there
+    fs.writeFileSync(path.join(realHome, 'proj', '.claude', 'settings.json'), '{}');
+    fs.mkdirSync(path.join(realHome, '..dotfiles', '.claude'), {recursive: true});
+    fs.mkdirSync(path.join(root, 'home'));
+    fs.symlinkSync(realHome, path.join(root, 'home', 'u'), process.platform === 'win32' ? 'junction' : 'dir');
+    const hook = 'client hook present';
+    // HOME through the link, the hit by its real path (as cwd gives it)
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(realHome, 'proj', '.claude', 'settings.json')}, path.join(root, 'home', 'u')), {reason: hook, at: '~/proj/.claude/settings.json'});
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(realHome, '..dotfiles', '.claude')}, realHome), {reason: hook, at: '~/..dotfiles/.claude'});
+    // a place not (or no longer) there still resolves by its deepest part that is
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(root, 'home', 'u', 'gone', 'settings.json')}, realHome), {reason: hook, at: '~/gone/settings.json'});
+    // HOME=/ or one level down: nothing under it is sent
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(realHome, 'proj')}, path.parse(root).root), {reason: hook});
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(path.parse(root).root, 'home', 'alice', '.claude')}, path.join(path.parse(root).root, 'home')), {reason: hook});
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('conditions: a why that would take the line over the shim\'s 4 KiB is dropped, and the "no" still sent', async() => {
+  const home = homeWithSecret();
+  const user = tmpHome();
+  try {
+    const deep = path.join(user, ...Array.from({length: 4}, () => `${'\u{1F600}'.repeat(50)}`));
+    fs.mkdirSync(path.join(deep, '.claude'), {recursive: true});
+    fs.writeFileSync(path.join(deep, '.claude', 'settings.json'), JSON.stringify({hooks: {Elicitation: [{hooks: [{type: 'command', command: 'true'}]}]}}));
+    const packs = {};
+    const env = {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: deep};
+    for (let i = 0; i < conditions.MAX_CREDENTIALS; i++) {
+      const name = `PACK_VAR_${String(i).padStart(2, '0')}_${'X'.repeat(60)}`;
+      packs[`p${i}`] = [name];
+      env[name] = `example-${i}`;
+    }
+    withPacks(home, packs);
+    const io = conditionsIo({env, cwd: deep});
+    io.homedir = () => user;
+    io.conditionsStopAt = user;
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+    const line = JSON.parse(io.out);
+    assert.strictEqual(line.conditions, 'no');
+    assert.ok(!('why' in line), 'dropped, not a failure');
+    assert.strictEqual(Object.keys(line.credentials).length, conditions.MAX_CREDENTIALS);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+    fs.rmSync(user, {recursive: true, force: true});
   }
 });
 
@@ -262,6 +373,108 @@ test('conditions: the token the environment chooses, as its keyed hash; gh asked
     io = conditionsIo({env: {GITHUB_TOKEN: 'example-shell-token'}, gh: {status: 1, stdout: ''}});
     await conditions.conditions({pid: 1, home}, io);
     assert.strictEqual(JSON.parse(io.out).token, mac('example-shell-token'));
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the pack credentials the client environment chooses (a session whose
+// choice the shared runtime lacks runs its own runtime), named by the
+// installed packs only: packs.json, as install writes it
+function withPacks(home, packs) {
+  fs.writeFileSync(path.join(home, 'packs.json'), JSON.stringify({runtime: {versions: {countinghouse: '8.0.0'}}, packs: Object.fromEntries(Object.entries(packs).map(([n, credentials]) => [n, {packages: {[`@countinghouse/ch-pack-${n}`]: '1.0.0'}, credentials}]))}));
+}
+const CRED_V = require('./vectors/credentials.json');
+
+test('conditions: a pack credential the environment chooses, by the installed packs\' names, as the vectors\' keyed hash; never its value', async() => {
+  const home = homeWithSecret();
+  try {
+    // SECRET is the vectors' own (32 bytes of 0x5a), so the MAC is theirs exactly
+    withPacks(home, {other: [CRED_V.credentialMac.name], ci: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']});
+    const io = conditionsIo({env: {[CRED_V.credentialMac.name]: CRED_V.credentialMac.value, UNDECLARED_TOKEN: 'example-undeclared', GITHUB_TOKEN: 'example-shell-token'}});
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+    const line = JSON.parse(io.out);
+    assert.deepStrictEqual(line.credentials, {[CRED_V.credentialMac.name]: CRED_V.credentialMac.macB64}, 'only the declared one; the GitHub ones are token\'s');
+    assert.deepStrictEqual(JSON.parse(CRED_V.clientCredentials).credentials, line.credentials, 'the vectors\' client frame');
+    for (const v of [CRED_V.credentialMac.value, 'example-undeclared', 'example-shell-token']) assert.ok(!io.out.includes(v) && !io.err.includes(v), 'no value is printed');
+    assert.ok(!io.out.includes('UNDECLARED_TOKEN'), 'no name the environment offers');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: no pack credential chosen, or no packs: no credentials key, and the secret is not read for them', async() => {
+  const home = homeWithSecret();
+  try {
+    let io = conditionsIo({env: {}});
+    await conditions.conditions({pid: 1, home}, io);
+    assert.ok(!('credentials' in JSON.parse(io.out)));
+    withPacks(home, {other: ['OTHER_TOKEN']});
+    io = conditionsIo({env: {OTHER_TOKEN: '${OTHER_TOKEN}'}});
+    await conditions.conditions({pid: 1, home}, io);
+    assert.ok(!('credentials' in JSON.parse(io.out)), 'an unresolved placeholder is no choice, as for start');
+    // no secret needed when nothing is hashed
+    fs.rmSync(path.join(home, 'run', 'daemon', 'secret'));
+    io = conditionsIo({env: {}});
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: start\'s precedence: a pack whose choice is a GitHub variable is token\'s, not a credential; a name the runtime would refuse fails the check', async() => {
+  const home = homeWithSecret();
+  try {
+    withPacks(home, {mixed: ['COUNTINGHOUSE_GITHUB_TOKEN', 'OTHER_TOKEN']});
+    let io = conditionsIo({env: {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token', OTHER_TOKEN: 'example-other'}});
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+    assert.ok(!('credentials' in JSON.parse(io.out)), 'start would load it with the GitHub token');
+    io = conditionsIo({env: {OTHER_TOKEN: 'example-other'}});
+    await conditions.conditions({pid: 1, home}, io);
+    assert.deepStrictEqual(Object.keys(JSON.parse(io.out).credentials), ['OTHER_TOKEN'], 'with no GitHub token set, the other');
+    withPacks(home, {odd: ['MY-API-KEY']});
+    io = conditionsIo({env: {'MY-API-KEY': 'example-odd'}});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: a line that would pass the shim\'s 4 KiB fails here, named, with no line', async() => {
+  const home = homeWithSecret();
+  try {
+    const packs = {};
+    const env = {};
+    for (let i = 0; i < conditions.MAX_CREDENTIALS; i++) {
+      const name = `PACK_VAR_${String(i).padStart(2, '0')}_${'X'.repeat(110)}`;
+      packs[`p${i}`] = [name];
+      env[name] = `example-${i}`;
+    }
+    withPacks(home, packs);
+    const io = conditionsIo({env});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
+    assert.match(io.err, new RegExp(`over ${conditions.MAX_LINE_BYTES} bytes`));
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: more than 32 chosen pack credentials, or packs.json that cannot be read, is a failure: no line, a non-zero exit', async() => {
+  const home = homeWithSecret();
+  try {
+    const many = {};
+    const env = {};
+    for (let i = 0; i <= conditions.MAX_CREDENTIALS; i++) { many[`p${i}`] = [`EXAMPLE_${i}_TOKEN`]; env[`EXAMPLE_${i}_TOKEN`] = `example-${i}`; }
+    withPacks(home, many);
+    let io = conditionsIo({env});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
+    fs.writeFileSync(path.join(home, 'packs.json'), '{not json');
+    io = conditionsIo({env: {}});
+    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
+    assert.strictEqual(io.out, '');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
