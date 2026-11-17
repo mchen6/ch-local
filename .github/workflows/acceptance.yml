@@ -8,7 +8,7 @@ name: acceptance
 # It needs countinghouse's --remoteOriginMap (acceptance only, gated by
 # COUNTINGHOUSE_ACCEPTANCE=1); before that is on countinghouse master the run
 # stops at its preflight, starting nothing.
-# Windows legs report without gating, until countinghouse issue #40 closes.
+# Every leg gates, Windows included.
 
 on:
   push:
@@ -28,7 +28,6 @@ jobs:
   acceptance:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
