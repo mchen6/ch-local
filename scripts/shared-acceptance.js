@@ -49,7 +49,7 @@ const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
 const dogfood = require('./dogfood');
 const fixtures = require('../lib/client-conditions-fixtures');
-const {launcherEnv, stopTree, trapSignals} = require('./acceptance');
+const {launcherEnv, stopTree, endTree, trapSignals} = require('./acceptance');
 
 const ROOT = path.resolve(__dirname, '..');
 const SHIM_BUILD_MS = 20 * 60 * 1000;
@@ -109,6 +109,9 @@ function installShim(home, file) {
   const dir = path.join(home, 'shim');
   fs.mkdirSync(dir, {recursive: true, mode: 0o700});
   if (process.platform !== 'win32') fs.chmodSync(dir, 0o700);
+  // on Windows its DACL: protected, this user and SYSTEM only, which the
+  // shim copied in takes (lib/win-acl.js, as ch-local's own secrets' are)
+  else require('../lib/win-acl').makePrivateDirs([dir], [dir]);
   const to = path.join(dir, process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim');
   fs.copyFileSync(file, to);
   if (process.platform !== 'win32') fs.chmodSync(to, 0o700);
@@ -207,7 +210,9 @@ async function stopDaemon(home, ms = 10000) {
 // A failed run explains itself (#54): the shim discards its daemon's output,
 // so with no live daemon one is started exactly as the shim would start it
 // (shim.json's node, ch-local and environment, the home its working
-// directory), for at most ms, and what it said is returned. POSIX.
+// directory), for at most ms, and what it said is returned. At the bound
+// its tree is ended (POSIX: its process group; Windows: taskkill /T), and
+// whatever happens the answer comes within a few seconds more.
 function daemonDiagnosis(home, ms = 10000) {
   let sj;
   try { sj = JSON.parse(fs.readFileSync(path.join(home, 'shim.json'), 'utf8')); } catch (e) { return Promise.resolve(`no shim.json: ${e.message}`); }
@@ -217,30 +222,67 @@ function daemonDiagnosis(home, ms = 10000) {
     const add = (b) => { out = (out + b).slice(-20000); };
     let d;
     try {
-      d = spawn(sj.node, [sj.chLocal, 'daemon', '--home', home], {cwd: home, env: sj.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true});
+      d = spawn(sj.node, [sj.chLocal, 'daemon', '--home', home], {cwd: home, env: sj.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true});
     } catch (e) {
       return resolve(`the daemon could not be started: ${e.message}`);
     }
     d.stdout.on('data', add);
     d.stderr.on('data', add);
+    let answered = false;
+    const answer = (text) => { if (!answered) { answered = true; resolve(text); } };
     const timer = setTimeout(() => {
       ended = true;
-      try { process.kill(-d.pid, 'SIGTERM'); } catch (e) { /* gone */ }
-      setTimeout(() => { try { process.kill(-d.pid, 'SIGKILL'); } catch (e) { /* gone */ } }, 3000).unref();
+      if (process.platform === 'win32') endTree(d.pid);
+      else { try { process.kill(-d.pid, 'SIGTERM'); } catch (e) { /* gone */ } }
+      // never left waiting: past 3 s more, killed directly, its pipes let go
+      setTimeout(() => {
+        if (process.platform !== 'win32') { try { process.kill(-d.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+        try { d.kill('SIGKILL'); } catch (e) { /* gone */ }
+        d.stdout.destroy();
+        d.stderr.destroy();
+        answer(`${out}\n(still running after ${ms} ms; ended)`);
+      }, 3000).unref();
     }, ms);
-    d.on('error', (e) => { clearTimeout(timer); resolve(`${out}\n(the daemon could not be started: ${e.message})`); });
+    d.on('error', (e) => { clearTimeout(timer); answer(`${out}\n(the daemon could not be started: ${e.message})`); });
     d.on('close', (code, signal) => {
       clearTimeout(timer);
-      resolve(`${out}\n(${ended ? `still running after ${ms} ms; ended` : `exit ${code}${signal != null ? ` ${signal}` : ''}`})`);
+      answer(`${out}\n(${ended ? `still running after ${ms} ms; ended` : `exit ${code}${signal != null ? ` ${signal}` : ''}`})`);
     });
   });
 }
-// The command lines of `root` and every descendant (POSIX ps).
-function treeOf(root) {
+// every process: {pid, ppid, args}; null when they can't be read. POSIX: ps.
+// Windows: WMI (Win32_Process), as client-conditions reads a client's
+// ancestry: no cmdlet, PowerShell by its path, within the same 30 s (a cold
+// start on the runner takes seconds); a command line as base64, '-' unread
+const PROCESSES_SCRIPT = [
+  "$ErrorActionPreference='Stop'",
+  "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Management')",
+  "$s=[System.Management.ManagementObjectSearcher]::new('SELECT ProcessId,ParentProcessId,CommandLine FROM Win32_Process')",
+  "foreach($o in $s.Get()){$c=[string]$o['CommandLine']; if($c -eq ''){$c='-'}else{$c=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($c))}; [Console]::Out.WriteLine([string]$o['ProcessId']+' '+[string]$o['ParentProcessId']+' '+$c)}"
+].join(';');
+function processes(platform = process.platform) {
+  if (platform === 'win32') {
+    const winAcl = require('../lib/win-acl');
+    let out;
+    try {
+      const root = winAcl.windowsDir();
+      out = require('node:child_process').execFileSync(winAcl.powershellPath(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PROCESSES_SCRIPT],
+        {cwd: path.win32.join(root, 'System32'), env: {SystemRoot: root, windir: root}, timeout: 30000, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024});
+    } catch (e) {
+      return null;
+    }
+    return String(out).split(/\r?\n/).map((l) => l.trim().match(/^(\d+) (\d+) (\S+)$/)).filter(Boolean)
+      .map((m) => ({pid: Number(m[1]), ppid: Number(m[2]), args: m[3] === '-' ? '' : Buffer.from(m[3], 'base64').toString('utf8')}));
+  }
   const r = spawnSync('ps', ['-eo', 'pid=,ppid=,args='], {encoding: 'utf8', timeout: 10000});
   if (r.status !== 0) return null;
-  const rows = String(r.stdout).split('\n').map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter(Boolean)
+  return String(r.stdout).split('\n').map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter(Boolean)
     .map((m) => ({pid: Number(m[1]), ppid: Number(m[2]), args: m[3]}));
+}
+// The command lines of `root` and every descendant: {pid, ppid, args}.
+function treeOf(root) {
+  const rows = processes();
+  if (rows == null) return null;
   const inTree = new Set([root]);
   for (let grew = true; grew;) {
     grew = false;
@@ -428,7 +470,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     if (fs.existsSync(path.join(work, 'daemon.log'))) say(`the daemon's log (its last 120 lines):\n${indent(tail(read(path.join(work, 'daemon.log')), 120))}`);
     const pid = daemonPid(home);
     if (pid != null && alive(pid)) say(`a daemon is running (pid ${pid})`);
-    else if (process.platform !== 'win32' && fs.existsSync(home)) say(`no live daemon; one started as the shim would start it says:\n${indent(tail(await daemonDiagnosis(home), 80))}`);
+    else if (fs.existsSync(home)) say(`no live daemon; one started as the shim would start it says:\n${indent(tail(await daemonDiagnosis(home), 80))}`);
     say('--- end of the diagnosis ---');
   };
   const untrap = trapSignals(() => finish('interrupted by a signal'));
@@ -510,13 +552,15 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const pid = daemonPid(home);
     if (process.platform === 'win32') {
       // C4c: on Windows the shared runtime's socket is a named pipe, a new one
-      // at each start, which daemon.json names. ps is POSIX, so the process
-      // tree is not read here: the daemon is live and names its pipe, and the
-      // rest of this run goes through it.
+      // at each start, which daemon.json names: the daemon is live and names
+      // its pipe, and the rest of this run goes through it.
       let socket = null;
       try { socket = JSON.parse(fs.readFileSync(path.join(home, 'run', 'daemon', 'daemon.json'), 'utf8')).socket; } catch (e) { socket = null; }
       check('attached to the shared runtime: a live daemon running it on its named pipe', pid != null && alive(pid) && typeof socket === 'string' && /^\\\\\.\\pipe\\countinghouse-[0-9a-f]+$/.test(socket),
         `daemon ${pid}; socket ${JSON.stringify(socket)}`);
+      // and, read through WMI, no per-session runtime in the client's tree
+      const tree = treeOf(client.pid);
+      check('no per-session runtime in the client\'s tree', tree != null && !tree.some((p) => /\s--own-runtime\b/.test(p.args)), JSON.stringify(tree));
     } else {
       const tree = treeOf(client.pid);
       const runtime = pid != null ? (treeOf(pid) || []).find((p) => /framework\.js\b.*\s--sessionSocket\s/.test(p.args)) : null;
@@ -601,8 +645,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const init2 = await mcp2.request('initialize', {protocolVersion: '2026-07-28', capabilities: {elicitation: {}}, clientInfo: {name: 'claude-code', version: '2.1.323'}});
     if (!check('(b-latched) the second client\'s shim answers initialize', init2.result != null, JSON.stringify(init2).slice(0, 1000))) return 1;
     mcp2.notify('notifications/initialized', {});
-    // (ps is POSIX: on Windows the same live daemon, its tree not read)
-    const tree2 = process.platform === 'win32' ? [] : treeOf(client2.pid);
+    const tree2 = treeOf(client2.pid);
     check('(b-latched) attached to the same live daemon, with no per-session runtime in its tree', daemonPid(home) === pid && alive(pid) &&
       tree2 != null && !tree2.some((p) => /\s--own-runtime\b/.test(p.args)), `daemon ${daemonPid(home)} (was ${pid}); tree ${JSON.stringify(tree2)}`);
     // the conditions line the shim hands over for this client, as it runs
