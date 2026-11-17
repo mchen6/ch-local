@@ -301,6 +301,8 @@ test('conditions: whyOf by real path: a home through a link keeps its places; a 
   try {
     const realHome = path.join(root, 'var', 'home', 'u');
     fs.mkdirSync(path.join(realHome, 'proj', '.claude'), {recursive: true});
+    // the scan reports only what it found: the file is there
+    fs.writeFileSync(path.join(realHome, 'proj', '.claude', 'settings.json'), '{}');
     fs.mkdirSync(path.join(realHome, '..dotfiles', '.claude'), {recursive: true});
     fs.mkdirSync(path.join(root, 'home'));
     fs.symlinkSync(realHome, path.join(root, 'home', 'u'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -308,6 +310,8 @@ test('conditions: whyOf by real path: a home through a link keeps its places; a 
     // HOME through the link, the hit by its real path (as cwd gives it)
     assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(realHome, 'proj', '.claude', 'settings.json')}, path.join(root, 'home', 'u')), {reason: hook, at: '~/proj/.claude/settings.json'});
     assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(realHome, '..dotfiles', '.claude')}, realHome), {reason: hook, at: '~/..dotfiles/.claude'});
+    // a place not (or no longer) there still resolves by its deepest part that is
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(root, 'home', 'u', 'gone', 'settings.json')}, realHome), {reason: hook, at: '~/gone/settings.json'});
     // HOME=/ or one level down: nothing under it is sent
     assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(realHome, 'proj')}, path.parse(root).root), {reason: hook});
     assert.deepStrictEqual(conditions.whyOf({why: hook, at: path.join(path.parse(root).root, 'home', 'alice', '.claude')}, path.join(path.parse(root).root, 'home')), {reason: hook});
