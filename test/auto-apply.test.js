@@ -317,3 +317,22 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
     await w.close();
   }
 });
+
+// The review of the held design: a home whose only pack an upgrade withdrew
+// still takes an automatic upgrade, runtime only; a release that lists the
+// pack again says how to add it back.
+test('a home whose only pack is held as withdrawn still upgrades automatically; a release listing it again says so', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home({packs: []});
+    const f = path.join(h, 'packs.json');
+    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {'ci-failure-triage': {packages: {}, credentials: [], installedUnder: '0.0.9', withdrawn: true}}}));
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const r = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    assert.match(r.line, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
+  } finally {
+    await w.close();
+  }
+});

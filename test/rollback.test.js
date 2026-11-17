@@ -406,3 +406,20 @@ test('the review of #48: the version rolled back from is declined, so the automa
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
   assert.deepStrictEqual(require('../lib/upgrade-stamp').readStamp(s.home).stamp.declined, [left]);
 });
+
+// Withdrawn packs, held (the review of the held design): a rollback to the
+// release that had the pack brings it back; rolling forward again holds it
+// as withdrawn still, never as a pack "installed under" the older release.
+test('rolling back past a withdrawal and forward again keeps the pack held as withdrawn', async () => {
+  const s = await upgraded();
+  const f = path.join(s.home, 'packs.json');
+  const cur = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const {'ci-failure-triage': entry, ...rest} = cur.packs;
+  fs.writeFileSync(f, JSON.stringify({...cur, packs: rest, held: {'ci-failure-triage': {...entry, installedUnder: '0.2.0', withdrawn: true}}}, null, 2));
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  assert.ok(record(s.home).packs['ci-failure-triage'] != null, 'back as an installed pack under the release that had it');
+  assert.strictEqual(await rollback({}, rio(s.home)), 0);
+  const fwd = record(s.home);
+  assert.deepStrictEqual(Object.keys(fwd.packs), []);
+  assert.strictEqual(fwd.held['ci-failure-triage'].withdrawn, true, JSON.stringify(fwd.held));
+});

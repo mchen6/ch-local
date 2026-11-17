@@ -361,3 +361,26 @@ test('a release that withdraws the pack: its runtime packages are verified as an
     }
   }
 });
+
+// The review of the held design: a home whose only pack an upgrade withdrew
+// can still be upgraded (a later release may be a security fix): runtime
+// only. A release that lists the pack again drops it from held, and says how
+// to add it back.
+test('a home whose only pack is held as withdrawn still upgrades, runtime only; a release that lists it again says how to add it back', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const f = path.join(s.home, 'packs.json');
+  const cur = JSON.parse(fs.readFileSync(f, 'utf8'));
+  fs.writeFileSync(f, JSON.stringify({...cur, packs: {}, held: {'ci-failure-triage': {...cur.packs['ci-failure-triage'], installedUnder: '0.0.9', withdrawn: true}}}));
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0/);
+    // this release lists ci-failure-triage again
+    assert.match(io.out, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
+    assert.strictEqual(recordOf(s.home).held, undefined);
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
