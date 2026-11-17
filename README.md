@@ -191,8 +191,14 @@ running. The daemon holds the runtime for every session of this user.
   runtime and restarts it on the release now in place. If ch-local itself
   changed, it hands over to a new daemon. Confirmed loosenings don't survive
   a hand-over (each session is told), and tightenings do.
-- **On Windows it doesn't run yet.** Each session runs its own runtime there
-  until the Windows daemon lands.
+- **Where the runtime listens.**
+  - On Linux and macOS it's `<home>/run/daemon/sessions.sock`. When the home's path makes that too long for a socket (over 107 bytes on Linux, 103 on macOS), it's `$TMPDIR/ch-<uid>/sessions.sock` instead, a directory made 0700 and checked.
+  - On Windows it's a named pipe, `\\.\pipe\countinghouse-<32 hex>`, with a new random name at each runtime start, recorded in `daemon.json`.
+  - The secret always stays in `<home>/run/daemon`.
+- **On Windows its files are owner-only by DACL.**
+  - `<home>\run` and `<home>\run\daemon` get a protected DACL: this user and SYSTEM only, inherited by what's made in them.
+  - The home and both run directories must pass the same check the shim makes, or the daemon refuses to start, naming what's wrong.
+  - `daemon.json` and `failed.json` are created with an owner-only DACL.
 
 ### Publishing the shim
 

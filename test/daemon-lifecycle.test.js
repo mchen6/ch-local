@@ -11,7 +11,9 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {daemon} = require('../lib/daemon');
-const {fakeRuntime, daemonIo, tmpHome, runDirOf} = require('./daemon-fakes');
+const {fakeRuntime, daemonIo, tmpHome, runDirOf, stopLeftDaemons} = require('./daemon-fakes');
+// a test that fails before it stops its daemon leaves none running
+test.afterEach(() => stopLeftDaemons());
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 const ID = (n) => n.toString(16).padStart(32, '0');
@@ -21,7 +23,8 @@ const HASH = 'f'.repeat(64);
 function scripted(home) {
   const r = {calls: []};
   r.run = async(opts) => {
-    fs.rmSync(opts.socket, {force: true});
+    // a stale socket file (POSIX); a pipe leaves none
+    if (!require('../lib/session-socket').isPipeName(opts.socket)) fs.rmSync(opts.socket, {force: true});
     const rt = await fakeRuntime(runDirOf(home), opts.socket);
     let end = null;
     const exited = new Promise((res) => { end = res; });
@@ -62,7 +65,33 @@ const adopted = async(home) => {
 const failedJson = (home) => path.join(runDirOf(home), 'failed.json');
 const daemonJson = (home) => path.join(runDirOf(home), 'daemon.json');
 
-test('each runtime is handed the table: empty first, then what the crashed one told', {skip: process.platform === 'win32'}, async() => {
+test('a runtime that ends unasked: daemon.json names no socket until its successor listens, then the successor\'s (the review of #39)', async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    io.daemonBackoffMs = [400];
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await adopted(home);
+    const first = await s.nth(0);
+    const read = () => JSON.parse(fs.readFileSync(daemonJson(home), 'utf8'));
+    assert.strictEqual(read().socket, first.opts.socket);
+    await first.exit(1);
+    const until = Date.now() + 2000;
+    while (read().socket != null && Date.now() < until) await tick();
+    assert.strictEqual(read().socket, null, 'cleared while the next one starts');
+    const second = await s.nth(1);
+    const back = Date.now() + 3000;
+    while (read().socket == null && Date.now() < back) await tick();
+    assert.strictEqual(read().socket, second.opts.socket, 'the successor\'s, once it listens');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('each runtime is handed the table: empty first, then what the crashed one told', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -86,7 +115,7 @@ test('each runtime is handed the table: empty first, then what the crashed one t
   }
 });
 
-test('5 failures in 10 minutes: failed.json (its exact form, 0600), daemon.json removed, exit 1; restarts were backed off', {skip: process.platform === 'win32'}, async() => {
+test('5 failures in 10 minutes: failed.json (its exact form, 0600), daemon.json removed, exit 1; restarts were backed off', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -107,7 +136,8 @@ test('5 failures in 10 minutes: failed.json (its exact form, 0600), daemon.json 
     assert.deepStrictEqual(Object.keys(f).sort(), ['at', 'exit', 'reason', 'signal', 'v']);
     assert.deepStrictEqual([f.v, f.exit, f.signal, f.reason], [1, 7, null, 'restarts-exhausted']);
     assert.ok(Number.isSafeInteger(f.at) && Math.abs(Date.now() - f.at) < 60000);
-    assert.strictEqual(fs.statSync(failedJson(home)).mode & 0o777, 0o600);
+    if (process.platform !== 'win32') assert.strictEqual(fs.statSync(failedJson(home)).mode & 0o777, 0o600);
+    else { const w = require('../lib/win-acl'); assert.strictEqual(w.privateProblem('failed.json', w.fileAcl(failedJson(home))), null); }
     assert.ok(!fs.existsSync(daemonJson(home)), 'daemon.json removed');
     assert.match(io.err, /5 times in 10 minutes/);
   } finally {
@@ -115,7 +145,7 @@ test('5 failures in 10 minutes: failed.json (its exact form, 0600), daemon.json 
   }
 });
 
-test('a first runtime that never listens: failed.json, reason never-listened; a later success removes it', {skip: process.platform === 'win32'}, async() => {
+test('a first runtime that never listens: failed.json, reason never-listened; a later success removes it', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -140,7 +170,7 @@ test('a first runtime that never listens: failed.json, reason never-listened; a 
   }
 });
 
-test('the idle stop: not while busy; idle for the bound, then idle-stop, daemon.json removed, the runtime stopped, exit 0', {skip: process.platform === 'win32'}, async() => {
+test('the idle stop: not while busy; idle for the bound, then idle-stop, daemon.json removed, the runtime stopped, exit 0', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -167,7 +197,7 @@ test('the idle stop: not while busy; idle for the bound, then idle-stop, daemon.
   }
 });
 
-test('an idle-stop the runtime refuses (a session or a handshake arrived) keeps the daemon, until the next idle', {skip: process.platform === 'win32'}, async() => {
+test('an idle-stop the runtime refuses (a session or a handshake arrived) keeps the daemon, until the next idle', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -192,7 +222,7 @@ test('an idle-stop the runtime refuses (a session or a handshake arrived) keeps 
   }
 });
 
-test('the failed.json the daemon writes has exactly the vectors\' form, and is fresh by their rule (#257)', {skip: process.platform === 'win32'}, async() => {
+test('the failed.json the daemon writes has exactly the vectors\' form, and is fresh by their rule (#257)', async() => {
   const V = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'shim', 'tests', 'vectors', 'contract-2.json'), 'utf8')).failedJson;
   const home = tmpHome();
   try {
@@ -216,7 +246,7 @@ test('the failed.json the daemon writes has exactly the vectors\' form, and is f
 
 // the review of #34 ------------------------------------------------------------
 
-test('(1) start.lock is held from a crash until the restarted runtime is ready: a second daemon meanwhile waits, then finds this one and starts nothing', {skip: process.platform === 'win32'}, async() => {
+test('(1) start.lock is held from a crash until the restarted runtime is ready: a second daemon meanwhile waits, then finds this one and starts nothing', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -243,7 +273,7 @@ test('(1) start.lock is held from a crash until the restarted runtime is ready: 
   }
 });
 
-test('(2) an idle-stop answered anything but CONTROL_BUSY (no answer, a failure) stops the runtime anyway', {skip: process.platform === 'win32'}, async() => {
+test('(2) an idle-stop answered anything but CONTROL_BUSY (no answer, a failure) stops the runtime anyway', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -261,7 +291,7 @@ test('(2) an idle-stop answered anything but CONTROL_BUSY (no answer, a failure)
   }
 });
 
-test('(4) a CONTROL_BUSY with no busy told after it (a handshake in pre-auth) re-arms the idle timer', {skip: process.platform === 'win32'}, async() => {
+test('(4) a CONTROL_BUSY with no busy told after it (a handshake in pre-auth) re-arms the idle timer', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -279,7 +309,7 @@ test('(4) a CONTROL_BUSY with no busy told after it (a handshake in pre-auth) re
   }
 });
 
-test('(5) a SIGTERM during the first start, or during a backoff, is a stop: no failed.json, no restart', {skip: process.platform === 'win32'}, async() => {
+test('(5) a SIGTERM during the first start, or during a backoff, is a stop: no failed.json, no restart', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);
@@ -309,7 +339,7 @@ test('(5) a SIGTERM during the first start, or during a backoff, is a stop: no f
   }
 });
 
-test('(6) a refusal reported for a runtime that is no longer current never clears the table', {skip: process.platform === 'win32'}, async() => {
+test('(6) a refusal reported for a runtime that is no longer current never clears the table', async() => {
   const home = tmpHome();
   try {
     const io = fast(home);

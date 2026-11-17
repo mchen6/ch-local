@@ -38,8 +38,19 @@ async function fakeRuntime(runDir, socket, {wrongSecret = false} = {}) {
 
 // the shim's cleared environment: only shim.json's allowlist, never
 // COUNTINGHOUSE_HOME
+// every daemon io made, so a test that fails before it stops its daemon
+// leaves none running (a daemon's poller would hold the process open until
+// the job's timeout): stopLeftDaemons() after each test
+const made = new Set();
+function stopLeftDaemons() {
+  for (const io of made) {
+    if (typeof io.signal === 'function') { try { io.signal('SIGTERM'); } catch (e) { /* it was ending */ } }
+  }
+  made.clear();
+}
 function daemonIo(home) {
   const io = fakeIo({env: {PATH: '/usr/bin:/bin', HOME: os.tmpdir()}, homedir: os.tmpdir});
+  made.add(io);
   io.cwd = home;
   io.pid = process.pid;
   io.alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
@@ -52,5 +63,15 @@ function daemonIo(home) {
   return io;
 }
 const runDirOf = (home) => path.join(home, 'run', 'daemon');
+// a socket a daemon of this home would choose (C4c): on Windows a new pipe
+// name of the form, on POSIX the run directory's (name: another one there)
+const socketIn = (runDir, name = 'sessions.sock') => (process.platform === 'win32' ? require('../lib/session-socket').newPipeName() : path.join(runDir, name));
+// the run directory, as a test makes it ahead of the daemon (POSIX 0700)
+const makeRunDir = (home) => {
+  const runDir = runDirOf(home);
+  fs.mkdirSync(runDir, {recursive: true, mode: 0o700});
+  if (process.platform !== 'win32') fs.chmodSync(path.join(home, 'run'), 0o700);
+  return runDir;
+};
 
-module.exports = {fakeRuntime, daemonIo, tmpHome, runDirOf, hmac, frame};
+module.exports = {fakeRuntime, daemonIo, stopLeftDaemons, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame};

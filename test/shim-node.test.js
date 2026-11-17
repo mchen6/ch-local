@@ -170,8 +170,11 @@ test('on Windows the installed shim is used only when its directory and file pas
     const me = 'S-1-5-21-1-2-3-1001';
     const mine = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-18', type: 'Allow', rights: 2032127}]};
     const open = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-32-545', type: 'Allow', rights: 1179817}]};
+    // the home itself is checked too (lib/home.js homeOwnershipProblem, by
+    // its real path): its own ACL, private unless a case says otherwise
+    const realHome = fs.realpathSync(home);
     const run = (acls) => shimFor({home, platform: 'win32', locate: () => ({status: 'found', path: 'C:\\x\\ch-shim.exe'}), acl: {privateProblem, fileAcl: (p) => {
-      const a = acls[p === bin ? 'file' : 'dir'];
+      const a = p === realHome ? (acls.home !== undefined ? acls.home : mine) : acls[p === bin ? 'file' : 'dir'];
       if (a instanceof Error) throw a;
       return a;
     }}});
@@ -186,6 +189,12 @@ test('on Windows the installed shim is used only when its directory and file pas
     r = run({dir: new Error('powershell failed'), file: mine});
     assert.match(r.note, /shim could not be checked \(powershell failed\)/, 'an unreadable DACL fails closed');
     assert.strictEqual(r.shim, 'C:\\x\\ch-shim.exe');
+    // the home's own ACL: one that can't be read, or that Users can reach, refuses the install
+    r = run({home: new Error('powershell failed'), dir: mine, file: mine});
+    assert.match(r.note, /installed shim is not used: .*its ACL could not be read \(powershell failed\)/, 'an unreadable home ACL fails closed');
+    assert.strictEqual(r.shim, 'C:\\x\\ch-shim.exe');
+    r = run({home: open, dir: mine, file: mine});
+    assert.match(r.note, /installed shim is not used: .*is accessible by S-1-5-32-545/, 'a home Users can reach');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }

@@ -273,7 +273,7 @@ function realIo() {
     // detached: in its own process group (a session runtime: a terminal's
     // hang-up never reaches it)
     spawn: (cmd, args, {env, control = false, detached = false} = {}) => {
-      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env, detached});
+      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env, detached, windowsHide: true});
       const exited = new Promise((resolve) => {
         child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
         child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));

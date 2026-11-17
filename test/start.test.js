@@ -73,7 +73,9 @@ function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/
 }
 
 // the shared runtime (session mode) is POSIX-only until C4c, the Windows daemon
-const POSIX_ONLY = process.platform === 'win32' && 'shared runtime is POSIX-only until C4c';
+// the session runtime's environment allowlist is POSIX's here (Windows has
+// its own keys: lib/shim-config.js)
+const POSIX_ENV = process.platform === 'win32' && 'the POSIX environment allowlist';
 const valueOf = (args, flag) => args[args.indexOf(flag) + 1];
 
 test('start runs the profile: local store, enforce, the one store, no auth file, no usageDir, no port', async () => {
@@ -660,7 +662,7 @@ test('audit, passed, stored or forced on Windows, says what it watches and that 
 });
 
 // C4b: ch-local daemon's runtime, start in session mode (countinghouse #236)
-test('start in session mode: framework.js on --sessionSocket, never --stdio, and the same profile otherwise', {skip: POSIX_ONLY}, async () => {
+test('start in session mode: framework.js on --sessionSocket, never --stdio, and the same profile otherwise', async () => {
   const home = installedHome();
   const f = io(home);
   const socket = path.join(home, 'run', 'daemon', 'sessions.sock');
@@ -688,8 +690,54 @@ test('start in session mode refuses a path it would pass that resolves outside t
   assert.match(f.err, /outside the home/);
 });
 
+// C4c: --sessionDir, and the one socket that may be outside the home
+test('start in session mode passes --sessionDir, the daemon\'s run directory, after --sessionSocket', async () => {
+  const home = installedHome();
+  const f = io(home);
+  const runDir = path.join(home, 'run', 'daemon');
+  const socket = path.join(runDir, 'sessions.sock');
+  assert.strictEqual(await start({passThrough: [], session: {socket, sessionDir: runDir, home}}, ghLoggedIn(f)), 0, f.err);
+  assert.strictEqual(valueOf(f.spawned[0].args, '--sessionSocket'), socket);
+  assert.strictEqual(valueOf(f.spawned[0].args, '--sessionDir'), runDir);
+});
+
+test('start in session mode: a --sessionDir outside the home is refused; so is a socket outside it, but for the daemon\'s own long-home fallback', {skip: process.platform === 'win32' && 'POSIX socket paths'}, async () => {
+  const home = installedHome();
+  const outside = tmp('ch-local-outside-');
+  const refused = async(session) => {
+    const f = io(home);
+    const code = await start({passThrough: [], session: Object.assign({home}, session)}, ghLoggedIn(f));
+    return {code, f};
+  };
+  const runDir = path.join(home, 'run', 'daemon');
+  let r = await refused({socket: path.join(runDir, 'sessions.sock'), sessionDir: outside});
+  assert.notStrictEqual(r.code, 0);
+  assert.match(r.f.err, /--sessionDir .* resolves outside the home/);
+  r = await refused({socket: path.join(outside, 'sessions.sock'), sessionDir: runDir});
+  assert.notStrictEqual(r.code, 0);
+  assert.match(r.f.err, /--sessionSocket .* resolves outside the home/);
+  // the fallback the daemon picks from this same environment's TMPDIR
+  const f = io(home);
+  f.env.TMPDIR = outside;
+  const fallback = require('../lib/session-socket').fallbackSocket({env: f.env});
+  assert.strictEqual(await start({passThrough: [], session: {socket: fallback, sessionDir: runDir, home}}, ghLoggedIn(f)), 0, f.err);
+  assert.strictEqual(valueOf(f.spawned[0].args, '--sessionSocket'), fallback);
+});
+
+test('start in session mode on Windows: a pipe of the daemon\'s form is the socket, and nothing else outside the home', {skip: process.platform !== 'win32' && 'Windows only'}, async () => {
+  const home = installedHome();
+  const runDir = path.join(home, 'run', 'daemon');
+  const pipe = require('../lib/session-socket').newPipeName();
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: [], session: {socket: pipe, sessionDir: runDir, home}}, ghLoggedIn(f)), 0, f.err);
+  assert.strictEqual(valueOf(f.spawned[0].args, '--sessionSocket'), pipe);
+  const g = io(home);
+  assert.notStrictEqual(await start({passThrough: [], session: {socket: '\\\\.\\pipe\\other', sessionDir: runDir, home}}, ghLoggedIn(g)), 0);
+  assert.match(g.err, /--sessionSocket .* resolves outside the home/);
+});
+
 // C4b's review: the session runtime's home, signals, group and environment
-test('start in session mode takes its home from session.home, not the environment, which holds only the allowlist', {skip: POSIX_ONLY}, async () => {
+test('start in session mode takes its home from session.home, not the environment, which holds only the allowlist', {skip: POSIX_ENV}, async () => {
   const home = installedHome();
   const f = io(home, {env: {PATH: '/usr/bin', HOME: '/home/dev', NODE_OPTIONS: '--require /tmp/x.js', GITHUB_TOKEN: 'example-shell-token'}});
   delete f.env.COUNTINGHOUSE_HOME;   // the shim's cleared environment never carries it
@@ -704,7 +752,7 @@ test('start in session mode takes its home from session.home, not the environmen
   assert.strictEqual(env.COUNTINGHOUSE_GITHUB_TOKEN, 'gho_exampleexampleexample');
 });
 
-test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime in its own process group', {skip: POSIX_ONLY}, async () => {
+test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime in its own process group', async () => {
   const home = installedHome();
   const f = io(home);
   assert.strictEqual(await start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home}}, ghLoggedIn(f)), 0, f.err);
@@ -716,7 +764,7 @@ test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime 
   assert.notStrictEqual(g.detached, true);
 });
 
-test('start in session mode: an aborted signal kills the runtime, and the start ends', {skip: POSIX_ONLY}, async () => {
+test('start in session mode: an aborted signal kills the runtime, and the start ends', async () => {
   const home = installedHome();
   const f = io(home);
   let finish = null;
@@ -729,7 +777,7 @@ test('start in session mode: an aborted signal kills the runtime, and the start 
   assert.deepStrictEqual(f.killed, ['SIGTERM']);
 });
 
-test('start in session mode passes on the runtime\'s listening message', {skip: POSIX_ONLY}, async () => {
+test('start in session mode passes on the runtime\'s listening message', async () => {
   const home = installedHome();
   const f = io(home);
   let deliver = null;
@@ -835,7 +883,7 @@ test('start --home must be absolute and an existing directory, and is refused wi
 
 // the review of #32 (c7c6923): a runtime that ignores SIGTERM, and an abort
 // before the spawn
-test('start in session mode: a runtime that ignores SIGTERM gets SIGKILL after the bound', {skip: POSIX_ONLY}, async () => {
+test('start in session mode: a runtime that ignores SIGTERM gets SIGKILL after the bound', async () => {
   const home = installedHome();
   const f = ghLoggedIn(io(home));
   f.sessionKillMs = 200;
@@ -849,7 +897,7 @@ test('start in session mode: a runtime that ignores SIGTERM gets SIGKILL after t
   assert.deepStrictEqual(f.killed, ['SIGTERM', 'SIGKILL']);
 });
 
-test('start in session mode: an abort while it waits for the home\'s lock ends the wait, with nothing spawned', {skip: POSIX_ONLY}, async () => {
+test('start in session mode: an abort while it waits for the home\'s lock ends the wait, with nothing spawned', async () => {
   const home = installedHome();
   const f = ghLoggedIn(io(home));
   // a live holder on this host: the wait would go on
@@ -889,7 +937,7 @@ test('start\'s own runtime (--home) is given only paths under the home, as sessi
 });
 
 // C3a: the daemon's table and requests, through start's session mode
-test('start in session mode sends the daemon\'s restore first, passes the table\'s tells on, and hands the daemon a request sender', {skip: POSIX_ONLY}, async () => {
+test('start in session mode sends the daemon\'s restore first, passes the table\'s tells on, and hands the daemon a request sender', async () => {
   const home = installedHome();
   const f = ghLoggedIn(io(home));
   const sent = [];
@@ -918,7 +966,7 @@ test('start in session mode sends the daemon\'s restore first, passes the table\
 // runtime ended before it listened, and every client got only "no answer".
 // Now it starts with no pack (ch-local's own tools), its restore first as
 // ever, and the sessions are told which pack is not loaded and why.
-test('start in session mode with no pack loadable: the shared runtime starts with no pack, and tells why', {skip: POSIX_ONLY}, async () => {
+test('start in session mode with no pack loadable: the shared runtime starts with no pack, and tells why', {skip: process.platform === 'win32' && 'a socket path: Windows names a pipe'}, async () => {
   const home = installedHome();
   const f = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
   const sent = [];
@@ -943,7 +991,7 @@ test('start in session mode with no pack loadable: the shared runtime starts wit
   await done;
 });
 
-test('start in session mode never tells a session to set a pack\'s own credential: it comes only from a session\'s environment, which runs its own runtime', {skip: POSIX_ONLY}, async () => {
+test('start in session mode never tells a session to set a pack\'s own credential: it comes only from a session\'s environment, which runs its own runtime', {skip: process.platform === 'win32' && 'a socket path: Windows names a pipe'}, async () => {
   const home = installedHome({other: true});
   const f = ghLoggedIn(io(home, {env: {}}));
   const sent = [];
@@ -965,7 +1013,7 @@ test('start in session mode never tells a session to set a pack\'s own credentia
   await done;
 });
 
-test('start in session mode: a runtime that ends during its restore never reports a refusal; only an explicit one does (the review of #34)', {skip: POSIX_ONLY}, async () => {
+test('start in session mode: a runtime that ends during its restore never reports a refusal; only an explicit one does (the review of #34)', async () => {
   const runWith = async(answer) => {
     const home = installedHome();
     const f = ghLoggedIn(io(home));
