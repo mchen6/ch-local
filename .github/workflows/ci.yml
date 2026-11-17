@@ -36,9 +36,9 @@ jobs:
 
   # The profile end to end (reviewer, 2026-11-12): test/smoke.test.js installs
   # a no-remote fixture pack with --unreleased-pins and speaks MCP to it
-  # through `ch-local start --stdio`, on countinghouse master. Windows joins
-  # after countinghouse issue #40 (a module load there stops after the file
-  # broker's spawn walk).
+  # through `ch-local start --stdio`, on countinghouse master. It runs on
+  # Linux and macOS; Windows is covered end to end by acceptance.yml's
+  # Windows leg, which gates.
   smoke:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
