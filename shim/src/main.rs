@@ -57,10 +57,12 @@ fn main() -> ExitCode {
     );
     match relay.run(io::stdin()) {
         Exit::Done => ExitCode::SUCCESS,
-        Exit::OwnRuntime { reason, held, rest: lines, replay } => {
+        Exit::OwnRuntime { reason, code, why, held, rest: lines, replay } => {
             eprintln!("{reason}");
             let out = lines.out();
-            own(&home, &[], held, lines, replay, out)
+            // why the session runs its own, for ch-local's first-result notice
+            let flags = relay::own_runtime_flags(code.as_deref(), why.as_deref());
+            own(&home, &flags, held, lines, replay, out)
         }
         Exit::Refused => ExitCode::from(1),
     }

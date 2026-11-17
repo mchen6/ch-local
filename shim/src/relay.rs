@@ -159,6 +159,9 @@ pub struct Relay {
     quick_losses: u32,
     /// The conditions child runs one at a time; what waits for it.
     child_running: bool,
+    /// The `why` of this connection's first `client` frame, when it failed
+    /// (the conditions child's failure, in the shim's own words).
+    first_client_why: Option<String>,
     child_queue: std::collections::VecDeque<Option<u64>>,
     /// stdout failed: the client is gone, and the shim ends.
     stdout_gone: bool,
@@ -177,6 +180,15 @@ pub enum Exit {
     OwnRuntime {
         /// The line for stderr, as it is printed.
         reason: String,
+        /// The runtime's own-runtime op's reason token (token, credential,
+        /// conditions-failed, ...), passed to `ch-local start` as
+        /// `--own-runtime-reason` so the client's first result says why
+        /// (#236 section 5); None for a hand-over of the shim's own
+        /// (failed.json).
+        code: Option<String>,
+        /// For conditions-failed only: the `why` of the shim's own first
+        /// `client` frame when it failed, cleaned (own_runtime_flags).
+        why: Option<String>,
         held: Vec<Vec<u8>>,
         rest: Rest,
         /// A session that was live: its initialize under the shim's replay
@@ -273,6 +285,7 @@ impl Relay {
             attached_at: None,
             quick_losses: 0,
             child_running: false,
+            first_client_why: None,
             child_queue: std::collections::VecDeque::new(),
             stdout_gone: false,
             settle_losses: 0,
@@ -364,6 +377,14 @@ impl Relay {
             Ev::Client { generation, frame } => {
                 self.child_running = false;
                 if generation == self.generation {
+                    // the connection's first frame (no seq): its failure is what
+                    // a conditions-failed hand-over says why with
+                    if let Ok(Value::Object(f)) = serde_json::from_slice::<Value>(&frame) {
+                        if !f.contains_key("seq") {
+                            self.first_client_why = (f.get("status").and_then(Value::as_str) == Some("failed"))
+                                .then(|| f.get("why").and_then(Value::as_str).unwrap_or("").to_string());
+                        }
+                    }
                     self.control(&frame);
                 }
                 self.next_child();
@@ -722,9 +743,15 @@ impl Relay {
                         "ch-shim: this session can't share the runtime ({reason}), and it holds tightenings a runtime of its own wouldn't have; it can't go on"
                     ));
                 }
+                // the op's token as given, if it is one, for ch-local's notice;
+                // the shim's own words only for its own failed first frame
+                let code = reason_token(op.get("reason").and_then(Value::as_str));
+                let why = if code == "conditions-failed" { self.first_client_why.clone() } else { None };
                 return Some(self.hand_over(
                     format!("ch-shim: this session can't share the runtime ({reason}); it runs its own"),
                     None,
+                    Some(code),
+                    why,
                 ));
             }
             _ => {}
@@ -886,7 +913,13 @@ impl Relay {
     /// per-session runtime's output is the only thing on stdout from here;
     /// stdin's bytes pass through unsplit, since that runtime bounds its lines
     /// itself and the shim buffers none of them.
-    fn hand_over(&mut self, reason: String, replay: Option<(Vec<u8>, String)>) -> Exit {
+    fn hand_over(
+        &mut self,
+        reason: String,
+        replay: Option<(Vec<u8>, String)>,
+        code: Option<String>,
+        why: Option<String>,
+    ) -> Exit {
         self.close_and_crash_answer();
         if let Some(w) = self.writer.take() {
             let _ = w.shutdown();
@@ -896,7 +929,7 @@ impl Relay {
         let (_, dead) = mpsc::sync_channel(1);
         let rx = std::mem::replace(&mut self.rx, dead);
         let rest = Rest { rx, out: self.out.clone(), limit };
-        Exit::OwnRuntime { reason, held: self.held.take(), rest, replay }
+        Exit::OwnRuntime { reason, code, why, held: self.held.take(), rest, replay }
     }
 
     /// A daemon gave up (#236 section 6, failed.json). Never looser: a
@@ -919,7 +952,7 @@ impl Relay {
         } else {
             None
         };
-        Some(self.hand_over(crate::failed::startup_line(r), replay))
+        Some(self.hand_over(crate::failed::startup_line(r), replay, None, None))
     }
 
     /// The session can't go on (never looser): stderr says why; whatever is
@@ -999,6 +1032,49 @@ impl Relay {
         self.close_and_crash_answer();
         Exit::Done
     }
+}
+
+/// The runtime's reason as a token ch-local takes (`^[a-z][a-z-]{0,31}$`), else
+/// "unknown": never a value of the runtime's own choosing passed through.
+pub fn reason_token(given: Option<&str>) -> String {
+    match given {
+        Some(t)
+            if !t.is_empty()
+                && t.len() <= 32
+                && t.as_bytes()[0].is_ascii_lowercase()
+                && t.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') =>
+        {
+            t.to_string()
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+/// The shim's own words, as ch-local takes a `--own-runtime-why`: control,
+/// bidi and line-separator characters out, cut to 200 characters, and never
+/// an option (no leading `-`); None when nothing is left.
+pub fn clean_why(why: &str) -> Option<String> {
+    let bidi = |c: char| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}');
+    let cleaned: String = why.chars().map(|c| if c.is_control() || bidi(c) { ' ' } else { c }).take(200).collect();
+    let cleaned = cleaned.trim_start_matches(|c: char| c == '-' || c.is_whitespace()).trim_end().to_string();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+/// `ch-local start`'s flags for a hand-over (#236 section 5; ch-local #60):
+/// `--own-runtime-reason <code>`, and `--own-runtime-why <why>` when there is
+/// one. They follow `--home` in own_command's line, still ch-local's own
+/// options, before any pass-through.
+pub fn own_runtime_flags(code: Option<&str>, why: Option<&str>) -> Vec<OsString> {
+    let mut out = Vec::new();
+    if let Some(c) = code {
+        out.push(OsString::from("--own-runtime-reason"));
+        out.push(OsString::from(reason_token(Some(c))));
+        if let Some(w) = why.and_then(clean_why) {
+            out.push(OsString::from("--own-runtime-why"));
+            out.push(OsString::from(w));
+        }
+    }
+    out
 }
 
 /// The per-session runtime with the shim's own stdin, unread by the shim:
@@ -1480,9 +1556,14 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
         frame::write_frame(&mut s, Kind::Control, br#"{"op":"own-runtime","reason":"token"}"#, BIG).unwrap();
         let exit = done.join().unwrap();
-        let Exit::OwnRuntime { reason, held, rest, replay } = exit else { panic!("not handed over") };
+        let Exit::OwnRuntime { reason, code, why, held, rest, replay } = exit else { panic!("not handed over") };
         assert_eq!(replay, None, "the runtime's own-runtime op replays nothing");
         assert_eq!(reason, "ch-shim: this session can't share the runtime (token); it runs its own");
+        assert_eq!(
+            (code.as_deref(), why),
+            (Some("token"), None),
+            "its token for ch-local's notice; no words of the shim's"
+        );
         assert_eq!(held, vec![br#"{"jsonrpc":"2.0","id":1,"method":"a"}"#.to_vec()]);
         client_in.write_all(b"{\"later\":1}\n").unwrap();
         drop(client_in);
@@ -1763,6 +1844,79 @@ mod tests {
         done.join().unwrap();
         let a: Value = serde_json::from_str(&sink.lines()[0]).unwrap();
         assert_eq!((a["id"].as_u64(), a["error"]["data"]["mayHaveRun"].as_bool()), (Some(4), Some(false)));
+    }
+
+    // #236 section 5, ch-local #60: why the session runs its own reaches
+    // `ch-local start` as --own-runtime-reason and, for conditions-failed only,
+    // the shim's own words of its failed first `client` frame
+    #[test]
+    fn own_runtime_conditions_failed_carries_the_shims_own_failed_frame_why() {
+        let (home, sock) = home();
+        // the conditions child fails: the first client frame is status failed
+        fs::write(home.root().join("ch-local.sh"), "exit 3\n").unwrap();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        let first = control_payload(&mut s);
+        assert_eq!(first["status"], "failed", "{first}");
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"own-runtime","reason":"conditions-failed"}"#, BIG)
+            .unwrap();
+        let Exit::OwnRuntime { code, why, .. } = done.join().unwrap() else { panic!("not handed over") };
+        assert_eq!(code.as_deref(), Some("conditions-failed"));
+        assert_eq!(why.as_deref(), first["why"].as_str(), "the frame's own why");
+        let flags = own_runtime_flags(code.as_deref(), why.as_deref());
+        assert_eq!(
+            flags[..3],
+            [OsString::from("--own-runtime-reason"), "conditions-failed".into(), "--own-runtime-why".into()]
+        );
+        drop(client_in);
+    }
+
+    #[test]
+    fn own_runtime_conditions_failed_with_an_ok_first_frame_carries_no_why() {
+        // (the runtime's other cause for it: a malformed credentials key)
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        assert_eq!(control_payload(&mut s)["status"], "ok");
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"own-runtime","reason":"conditions-failed"}"#, BIG)
+            .unwrap();
+        let Exit::OwnRuntime { code, why, .. } = done.join().unwrap() else { panic!("not handed over") };
+        assert_eq!((code.as_deref(), why), (Some("conditions-failed"), None));
+        assert_eq!(
+            own_runtime_flags(code.as_deref(), None),
+            vec![OsString::from("--own-runtime-reason"), "conditions-failed".into()]
+        );
+        drop(client_in);
+    }
+
+    #[test]
+    fn own_runtime_flags_pass_only_a_token_and_clean_words() {
+        assert_eq!(reason_token(Some("credential")), "credential");
+        for bad in [
+            None,
+            Some(""),
+            Some("Token"),
+            Some("--home"),
+            Some("a b"),
+            Some("x".repeat(33).as_str()),
+            Some("t\u{202E}k"),
+        ] {
+            assert_eq!(reason_token(bad), "unknown", "{bad:?}");
+        }
+        assert_eq!(own_runtime_flags(None, Some("x")), Vec::<OsString>::new(), "no op, no flags");
+        let messy = format!("--home /x\u{7}\u{202E}evil\n{}", "y".repeat(400));
+        let flags = own_runtime_flags(Some("conditions-failed"), Some(&messy));
+        let w = flags[3].to_str().unwrap();
+        assert!(!w.starts_with('-'), "never read as an option: {w}");
+        assert!(w.chars().count() <= 200, "cut: {}", w.chars().count());
+        assert!(!w.chars().any(|c| c.is_control() || c == '\u{202E}'), "cleaned: {w:?}");
+        assert!(w.starts_with("home /x"), "{w}");
+        assert_eq!(clean_why("---\u{7}  "), None, "nothing left: no flag");
+        assert_eq!(own_runtime_flags(Some("token"), Some("--")).len(), 2, "no why flag when nothing is left");
     }
 
     #[test]
