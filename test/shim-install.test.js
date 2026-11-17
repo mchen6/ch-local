@@ -19,6 +19,24 @@ const provenance = require('../lib/provenance');
 const {parseReleasePins} = require('../lib/release-pins');
 const {installShim, alignShim, setAside} = require('../lib/shim-install');
 const {tmp} = require('./fake-io');
+const winAcl = require('../lib/win-acl');
+
+// On a Windows host, lib/win-acl.js's PowerShell checks run for every test
+// here, whatever platform the test gives: each is bounded at 10 s, and one
+// that passes the bound on a loaded runner fails closed (readVersions reads
+// {}), so a test of this file's logic answered "set aside" (#70, main
+// cc00fd14). The logic tests run with win-acl stubbed as private; the real
+// PowerShell path has the one test of its own below (REAL_ACL).
+const REAL_ACL = /real lib\/win-acl\.js/;
+const realAcl = {makePrivateDirs: winAcl.makePrivateDirs, privateProblem: winAcl.privateProblem, fileAcl: winAcl.fileAcl, createPrivate: winAcl.createPrivate};
+const PRIVATE = () => ({user: 'S-1-5-21-1', owner: 'S-1-5-21-1', otherAces: false, rules: []});
+test.beforeEach((t) => {
+  if (process.platform !== 'win32' || REAL_ACL.test(t.name)) return;
+  winAcl.makePrivateDirs = (dirs) => dirs.map(PRIVATE);
+  winAcl.privateProblem = () => null;
+  winAcl.fileAcl = PRIVATE;
+});
+test.afterEach(() => { Object.assign(winAcl, realAcl); });
 
 const io = {env: {}, fetch: (u, o) => globalThis.fetch(u, o)};
 const root = testRoot();
@@ -210,7 +228,6 @@ test('POSIX: <home>/shim is checked, not only set: a link is refused, nothing wr
 });
 
 test('Windows (lib/win-acl.js stubbed): ch-shim.exe in a directory made private and checked; a DACL that fails the check places nothing; .previous is not launchable', async() => {
-  const winAcl = require('../lib/win-acl');
   const saved = {makePrivateDirs: winAcl.makePrivateDirs, privateProblem: winAcl.privateProblem, fileAcl: winAcl.fileAcl};
   winAcl.fileAcl = () => ({user: 'S-1-5-21-1', owner: 'S-1-5-21-1', otherAces: false, rules: []});
   const calls = [];
@@ -293,3 +310,40 @@ test('a shim installShim placed passes shimFor\'s checks (A\'s #44): it is the o
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// The real PowerShell path, on a Windows host only: install two releases and
+// roll back with lib/win-acl.js unstubbed. A PowerShell call may pass its
+// 10 s bound on a loaded runner (fail closed, #70), so a run in which one
+// timed out is tried once more; any other failure fails.
+test('Windows, real lib/win-acl.js (retried once if a PowerShell call times out): install, reinstall and roll back with the real ACL checks', {skip: process.platform !== 'win32'}, async() => {
+  let timedOut = false;
+  const watch = (name) => {
+    const real = winAcl[name];
+    winAcl[name] = (...args) => { try { return real(...args); } catch (e) { if (e != null && e.code === 'ETIMEDOUT') timedOut = true; throw e; } };
+  };
+  for (const name of ['makePrivateDirs', 'fileAcl', 'createPrivate']) watch(name);
+  const once = async() => {
+    const a = await world({version: '0.5.0', body: 'r1', platform: 'win32'});
+    const b = await world({version: '0.6.0', body: 'r2', platform: 'win32'});
+    const home = tmp('ch-shim-real-');
+    try {
+      assert.strictEqual((await put(home, a)).status, 'installed');
+      await put(home, b);
+      assert.deepStrictEqual([read(home, 'ch-shim.exe'), read(home, 'ch-shim.previous')], ['r2', 'r1']);
+      assert.strictEqual(alignShim(home, {restored: {version: '0.5.0'}, platform: 'win32'}), 'swapped');
+      assert.strictEqual(read(home, 'ch-shim.exe'), 'r1');
+    } finally {
+      await a.reg.close();
+      await b.reg.close();
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  };
+  try {
+    await once();
+  } catch (e) {
+    if (!timedOut) throw e;
+    timedOut = false;
+    await once();
+  }
+});
+
