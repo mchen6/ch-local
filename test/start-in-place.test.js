@@ -736,8 +736,9 @@ test('load-pack follow-ups: a confirmed load answered past the runtime\'s wait i
 
 // Withdrawn packs (Matt, 2026-11-17, option 1): installed, but not in the
 // running release's allowlist: never started; told once, on stderr and to
-// the client; nothing of it removed. An unreleased install started with
-// CH_LOCAL_DEV=1 is exempt (the dev gate); a released one never is.
+// the client; nothing of it removed. An unreleased install is exempt (its
+// record is marked only by --unreleased-pins, which needs CH_LOCAL_DEV=1),
+// and says so at every start; a released one never is, whatever its env.
 const withdrawnRelease = () => ({...require('../lib/allowlist').ALLOWLIST, packs: {}});
 const LINE = 'pack ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it';
 // every file of the home a start must leave as it was: the record, and the pack's tree and data
@@ -791,7 +792,7 @@ test('a released install started with CH_LOCAL_DEV=1 is still refused its withdr
   }
 });
 
-test('an unreleased install started with CH_LOCAL_DEV=1 is exempt: the pack starts; without CH_LOCAL_DEV it is withdrawn', async () => {
+test('an unreleased install is exempt, with CH_LOCAL_DEV=1 or without (the shared daemon never has it): the pack starts, the unreleased line said each time', async () => {
   const unreleased = (home) => {
     const f = path.join(home, 'packs.json');
     fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), unreleased: true}, null, 2));
@@ -807,8 +808,10 @@ test('an unreleased install started with CH_LOCAL_DEV=1 is exempt: the pack star
   }
   const plain = await running({release: withdrawnRelease(), beforeStart: unreleased});
   try {
-    await until(() => notices(plain).length > 0);
-    assert.strictEqual(loadsPack(plain), false);
+    await until(() => plain.args() != null);
+    assert.strictEqual(loadsPack(plain), true, JSON.stringify(plain.args()));
+    assert.ok(!notices(plain).some(([, t]) => /withdrawn/.test(t)));
+    for (const s of [dev, plain]) assert.ok(s.f.err.includes(require('../lib/pins').UNRELEASED_LINE), 'never silent: the unreleased line');
   } finally {
     plain.end();
     await plain.done;
