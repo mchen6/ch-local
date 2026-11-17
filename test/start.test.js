@@ -425,8 +425,9 @@ test('under CH_LOCAL_REMOTE_MAP a credential that is not an acceptance token is 
   }
 });
 
-// The GitHub token from `gh auth token` (Matt, 2026-11-13): read at start,
-// held in memory, given to the runtime in its environment only; a plaintext
+// The GitHub token from `gh auth token` (maintainer's decision, 2026-11-13):
+// read at start, held in memory, given to the runtime in its environment
+// only; a plaintext
 // environment value is the fallback for headless and CI use. No token value
 // is ever written to a file or said. Values are made here, never literals.
 const crypto = require('node:crypto');

@@ -65,8 +65,9 @@ function homeFor(args, env = process.env) {
 
 // What the user runs. The token is gh's: the launcher asks `gh auth token`
 // at every start and holds it in memory, so no line carries a token value and
-// none is written to Claude Code's configuration (Matt, 2026-11-13). A home
-// other than the default goes with every command, since the launcher finds
+// none is written to Claude Code's configuration (maintainer's decision,
+// 2026-11-13). A home other than the default goes with every command, since
+// the launcher finds
 // its home by COUNTINGHOUSE_HOME.
 function instructions({node, home, defaultHome = DEFAULT_HOME()}) {
   const launcher = path.join(home, 'bin', 'ch-local.js');

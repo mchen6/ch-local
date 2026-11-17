@@ -106,7 +106,7 @@ test('a record whose pack names or versions are not a release\'s is refused: the
   }
 });
 
-// Withdrawn packs (Matt, 2026-11-17, option 1)
+// Withdrawn packs (maintainer's decision, 2026-11-17)
 test('withdrawnPacks: the packs the release does not list; an unreleased install is exempt, a released one never', () => {
   const {withdrawnPacks, withdrawnLine} = require('../lib/packs');
   const packs = [{name: 'kept'}, {name: 'gone'}];

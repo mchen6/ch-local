@@ -4,7 +4,7 @@ name: shim
 # targets, its dependencies audited, and, on a tag shim-v<version>, published
 # to npm as @countinghouse/ch-shim plus one package per target (the esbuild
 # pattern), under npm trusted publishing (OIDC: no token in this repository;
-# npm attaches provenance). Release 1 ships unsigned (Matt, 2026-11-14); the
+# npm attaches provenance). Release 1 ships unsigned (maintainer's decision, 2026-11-14); the
 # signing job below is a disabled placeholder until the accounts exist.
 
 on:
@@ -115,7 +115,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # PLACEHOLDER, DISABLED: release 1 ships unsigned (Matt, 2026-11-14).
+  # PLACEHOLDER, DISABLED: release 1 ships unsigned (maintainer's decision, 2026-11-14).
   # macOS notarization and Windows Authenticode signing come in a point
   # release once the company's accounts exist (early January). This job
   # will take the build artifacts, sign them, and hand the signed binaries
