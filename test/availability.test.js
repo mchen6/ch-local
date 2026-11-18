@@ -154,3 +154,25 @@ test('a cycle that reaches a module not installed leaves every module of it unav
   assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-step-z, which is not installed');
   assert.strictEqual(av.unavailable.get(B).line, 'not loading ch-pack-b: it calls ch-pack-a, which calls ch-step-z, which is not installed');
 });
+
+// the high review of L2a, 1: a top-level module without its credential is
+// not available to a module that calls it either
+test('a module that calls a top-level module without its credential is not available', () => {
+  const {where, record} = home({calls: {[A]: ['scenario', ['ch-step-x/s.go', 'ch-pack-b/s.go']]}});
+  const av = availability(where, record, {release: releaseOf(PACKS), seams: {...NONE, credential: (m) => (m === B ? 'set B_TOKEN' : null)}});
+  assert.deepStrictEqual(av.units, []);
+  assert.strictEqual(av.unavailable.get(B).line, 'not loading ch-pack-b: set B_TOKEN');
+  assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-pack-b, which is not available (set B_TOKEN)');
+});
+
+// the high review of L2a, 8: a module two packs record is on, and allowed,
+// while either pack is
+test('pack seams: a module two packs record is off only when both are, refused only when neither is allowed', () => {
+  const {packSeams} = require('../lib/pack-seams');
+  const seams = (values, ceiling = {state: 'none'}) => packSeams({installed: [], settings: {version: 1, values}, ceiling, env: {}, credentialReason: () => 'x'});
+  assert.strictEqual(seams({'pack.b': false}).off(A, ['a', 'b']), null);
+  assert.match(seams({'pack.a': false, 'pack.b': false}).off(A, ['a', 'b']), /it is turned off/);
+  const only = {state: 'trusted', ceiling: {packs: ['a']}};
+  assert.strictEqual(seams({}, only).ceiling(A, ['a', 'b']), null);
+  assert.match(seams({}, {state: 'trusted', ceiling: {packs: ['c']}}).ceiling(A, ['a', 'b']), /allows only c/);
+});

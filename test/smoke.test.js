@@ -139,7 +139,7 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       child = null;
       assert.deepStrictEqual(fs.existsSync(path.join(home, 'run')) ? fs.readdirSync(path.join(home, 'run')) : [], [], 'the run directory is removed');
       assert.strictEqual(stderr.split('\n').filter((l) => /unreleased install/.test(l)).length, 1, 'start says once that the install is unreleased');
-      assert.match(stderr, /loading smoke/);
+      assert.match(stderr, /loading ch-pack-smoke/);
     } finally {
       if (child != null) child.kill('SIGKILL');
       fs.rmSync(work, {recursive: true, force: true});

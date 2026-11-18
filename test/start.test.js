@@ -390,6 +390,22 @@ test('a top-level module two packs record is loaded once; each part of its closu
   assert.deepStrictEqual(run.stopped, {});
 });
 
+// the high review of L2a, 3: a start older than the record (a daemon or
+// binary from before an upgrade) judges it by none of its own pins
+test('a record of another release is started by the record, not by this start\'s pins', async () => {
+  const home = installedHome();
+  const {editHome} = require('./store-helpers');
+  editHome(home, (r) => ({...r, release: {version: '9.9.9', security: null}}));
+  const f = io(home);
+  // this start's own pins name none of the record's versions
+  const {ALLOWLIST} = require('../lib/allowlist');
+  f.release = {...ALLOWLIST, packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-access-github'], credentials: ['GITHUB_TOKEN']}}, pins: {}};
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const args = f.spawned[0].args;
+  assert.strictEqual(args.filter((a) => a === '--loadModule').length, 1, f.err);
+  assert.ok(!/this release pins/.test(f.err), f.err);
+});
+
 test('every start of an unreleased install says so in one stderr line', async () => {
   const f = io(installedHome({unreleased: true}));
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
