@@ -78,7 +78,10 @@ function installedRelease(home) {
     const modules = Object.keys(p.modules || {});
     packs[name] = {packages: modules, credentials: Array.isArray(given[name]) ? given[name] : [...new Set(modules.flatMap((m) => declared(m, p.modules[m])))]};
   }
-  return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}};
+  // and it pins each recorded module at its version (a test home's are no
+  // shipped release's: #413 section 5.2's version check)
+  const pins = Object.fromEntries(Object.entries(record.modules || {}).map(([m, e]) => [m, {version: e.version}]));
+  return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}, pins: {...ALLOWLIST.pins, ...pins}};
 }
 
 module.exports = {fakeIo, tmp, FAKE_NODE, installedRelease};

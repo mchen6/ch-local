@@ -291,7 +291,7 @@ test('the review of #18: the operator\'s allowlist of packs: an unlisted pack ne
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   reader(home, trusted({packs: ['other']}));
   const s = await startOnce(home);
-  assert.match(s.err, /not loading ci-failure-triage: this machine's operator ceiling allows only other/);
+  assert.match(s.err, /not loading ch-pack-ci-failure-triage: this machine's operator ceiling allows only other/);
   assert.ok(s.args != null && !s.args.includes('--loadModule'), 'started, with no pack (#54: never ended for want of one)');
   // a history that says it was turned on changes nothing
   fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: false, new: true}) + '\n');
@@ -410,7 +410,7 @@ test('the review of #18: a ceiling that cannot be trusted loads NO pack, and ins
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   reader(home, UNT);
   const s = await startOnce(home);
-  assert.match(s.err, /not loading ci-failure-triage: the operator's ceiling file .* cannot be trusted \(packs is not a list of pack names\), so no pack loads/);
+  assert.match(s.err, /not loading ch-pack-ci-failure-triage: the operator's ceiling file .* cannot be trusted \(packs is not a list of pack names\), so no pack loads/);
   assert.ok(s.args != null && !s.args.includes('--loadModule'), 'started, with no pack');
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 2);

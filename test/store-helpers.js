@@ -11,10 +11,13 @@ const {writeModulesRecord} = require('../lib/module-record');
 // One module version in the store: its package.json (manifest: the
 // countinghouse block and any other fields), any files, and its marker.
 // -> its directory.
+// Its api.json names it by its short name (the friendly name another
+// module's countinghouse.calls reach it by), unless files gives one.
 function storeModule(home, name, version, {countinghouse = null, extra = {}, files = {}} = {}) {
   const dir = path.join(home, 'module-store', ...name.split('/'), version);
   fs.mkdirSync(dir, {recursive: true});
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name, version, ...(countinghouse ? {countinghouse} : {}), ...extra}));
+  if (files['api.json'] === undefined) fs.writeFileSync(path.join(dir, 'api.json'), JSON.stringify({device: {friendlyName: name.replace(/^@[^/]+\//, ''), serviceList: {}}}));
   for (const [rel, data] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), {recursive: true});
     fs.writeFileSync(path.join(dir, rel), data);

@@ -21,7 +21,8 @@ const PACKAGES = {
   '@countinghouse/ch-pack-other': ['0.3.0', {role: 'scenario', calls: ['ch-step-redact/redactService.redact', 'ch-step-other/otherService.go']}],
   '@countinghouse/ch-step-other': ['0.2.0', {role: 'part'}]
 };
-const api = (tool) => JSON.stringify({device: {friendlyName: tool, serviceList: {'urn:x:serviceID:s': {actionList: [{name: tool, description: `the ${tool} tool`}, {name: 'hidden'}]}}}});
+// friendlyName: the module's short name, which countinghouse.calls name it by
+const api = (tool, friendly = tool) => JSON.stringify({device: {friendlyName: friendly, serviceList: {'urn:x:serviceID:s': {actionList: [{name: tool, description: `the ${tool} tool`}, {name: 'hidden'}]}}}});
 
 function release({versions = {}, extra = {}} = {}) {
   const from = tmp('ch-release-');
@@ -37,7 +38,7 @@ function release({versions = {}, extra = {}} = {}) {
   for (const [name, [v, countinghouse]] of Object.entries(PACKAGES)) {
     const version = versions[name] || v;
     const tool = name === '@countinghouse/ch-pack-ci-failure-triage' ? 'ci_failure_triage' : name.split('/')[1].replace(/-/g, '_');
-    const bytes = packageTgz({name, version, countinghouse, ...(extra[name] || {})}, {'api.json': api(tool), 'lib/index.js': `// ${name}\n`});
+    const bytes = packageTgz({name, version, countinghouse, ...(extra[name] || {})}, {'api.json': api(tool, name.replace(/^@[^/]+\//, '')), 'lib/index.js': `// ${name}\n`});
     fs.writeFileSync(path.join(from, tarballName(name, version)), bytes);
     pins[name] = {version, integrity: integrityOf(bytes)};
   }
