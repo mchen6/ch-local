@@ -50,8 +50,8 @@ test('a state the runtime would refuse is never kept, and drops that session\'s 
 });
 
 // B's next export (the distinct kinds with one unanswered form): an optional
-// `unanswered`, the known kind names, distinct, at most three; any other
-// key still drops the row.
+// `unanswered`, the known kind names (module among them), distinct; any
+// other key still drops the row.
 test('a state with unanswered is kept; a bad unanswered, or an unknown key beside it, drops the row', () => {
   const t = createSessionTable({warn: () => {}});
   t.told({type: 'session-resume', session: ID(1), hash: HASH});
@@ -60,6 +60,14 @@ test('a state with unanswered is kept; a bad unanswered, or an unknown key besid
   const withIt = Object.assign({}, STATE, {unanswered: ['maxOutputBytes', 'requestTimeout']});
   assert.strictEqual(t.told({type: 'session-state', session: ID(1), state: withIt}), true);
   assert.deepStrictEqual(t.restore().sessions, [{session: ID(1), resume: HASH, state: withIt}]);
+  // module's, and every kind at once (none locked, a form spent): kept, as
+  // the runtime's restore.js keeps them
+  for (const unanswered of [['module'], ['maxOutputBytes', 'module', 'pack', 'requestTimeout']]) {
+    const k = createSessionTable({warn: () => {}});
+    k.told({type: 'session-resume', session: ID(3), hash: HASH});
+    const st = {overrides: [], locks: [], formsLeft: 0, unanswered};
+    assert.strictEqual(k.told({type: 'session-state', session: ID(3), state: st}), true, JSON.stringify(unanswered));
+  }
   for (const unanswered of [['other'], ['pack', 'pack'], 'pack', [1], ['pack', 'maxOutputBytes', 'requestTimeout', 'pack']]) {
     const u = createSessionTable({warn: () => {}});
     u.told({type: 'session-resume', session: ID(2), hash: HASH});
