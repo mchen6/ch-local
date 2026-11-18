@@ -1,19 +1,17 @@
 'use strict';
-// Collection of what an earlier ch-local left (#413 section 10): the pack
-// trees under <home>/packs/<pack>/<key>/ are no longer placed (the module
-// store holds every module: test/gc-store.test.js), and are collected once
-// no running start from before names them ({<pack>: <tree key>} in its
-// run.json): on this machine while its pid or its runtime's lives, on
-// another while its heartbeat is fresh. A tree is renamed aside before it is
-// deleted. And a start of this release names in its run.json every module
-// version it loaded ({<module>: <version>}).
+// What an earlier ch-local left (#413 section 10; the Reviewer's ruling on
+// #83: nothing deleted): the pack trees under <home>/packs/ are kept aside
+// whole (packs.migrated-<time>) once no running start from before names one
+// ({<pack>: <tree key>} in its run.json): on this machine while its pid or
+// its runtime's lives, on another while its heartbeat is fresh. And a start
+// of this release names in its run.json every module version it loaded.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {install} = require('../lib/install');
 const {addPack} = require('../lib/packs-command');
-const {collect} = require('../lib/gc');
+const {keepOldTreesAside} = require('../lib/gc');
 const {layout} = require('../lib/home');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm} = require('./install-helpers');
@@ -37,46 +35,37 @@ function runDir(home, {host = 'here', pid = 4242, startedAt = Date.now(), loaded
   return dir;
 }
 
-test('a tree from before the store goes at once when no start names it, and its empty pack directory with it', () => {
+test('the trees from before the store are kept aside whole when no start from before uses them', () => {
   const s = migratedHome();
-  const result = collect(s.where, {alive: () => false, hostname: 'here'});
-  assert.ok(!fs.existsSync(s.otherTree) && !fs.existsSync(s.triageTree));
-  assert.ok(!fs.existsSync(path.join(s.home, 'packs', 'other')), 'its empty directory too');
-  assert.deepStrictEqual(result.removed.sort(), [s.otherTree, s.triageTree].sort());
+  const r = keepOldTreesAside(s.where, {alive: () => false, hostname: 'here'});
+  assert.ok(r.keptAt != null && /packs\.migrated-/.test(r.keptAt));
+  assert.ok(!fs.existsSync(path.join(s.home, 'packs')));
+  assert.ok(fs.existsSync(path.join(r.keptAt, 'other', s.otherKey)), 'nothing deleted');
 });
 
-test('a tree a live start from before names on this host is kept until that start ends', () => {
+test('while a live start from before names a tree, they stay where they are, untouched; after it ends they are kept aside', () => {
   const s = migratedHome();
   runDir(s.home, {loaded: {other: s.otherKey}});
   const alive = new Set([4242]);
-  collect(s.where, {alive: (pid) => alive.has(pid), hostname: 'here'});
-  assert.ok(fs.existsSync(s.otherTree), 'kept: a running start loaded it');
-  assert.ok(!fs.existsSync(s.triageTree), 'one it does not name goes');
+  assert.deepStrictEqual(keepOldTreesAside(s.where, {alive: (pid) => alive.has(pid), hostname: 'here'}), {waiting: true});
+  assert.ok(fs.existsSync(s.otherTree) && fs.existsSync(s.triageTree));
   alive.clear();
-  const result = collect(s.where, {alive: (pid) => alive.has(pid), hostname: 'here'});
-  assert.ok(!fs.existsSync(s.otherTree), 'its start ended');
-  assert.deepStrictEqual(result.removed, [s.otherTree]);
+  assert.ok(keepOldTreesAside(s.where, {alive: (pid) => alive.has(pid), hostname: 'here'}).keptAt != null);
 });
 
-test('another machine\'s start keeps its trees while its heartbeat is fresh (run.json\'s mtime), and not after', () => {
+test('another machine\'s start from before keeps them in place while its heartbeat is fresh', () => {
   const s = migratedHome();
   runDir(s.home, {host: 'there', pid: 7, startedAt: Date.now() - DAY + 60000, loaded: {other: s.otherKey}});
-  collect(s.where, {alive: () => false, hostname: 'here'});
-  assert.ok(fs.existsSync(s.otherTree), 'fresh: kept');
+  assert.deepStrictEqual(keepOldTreesAside(s.where, {alive: () => false, hostname: 'here'}), {waiting: true});
   const {STALE_MS} = require('../lib/gc');
-  const result = collect(s.where, {alive: () => false, hostname: 'here', now: Date.now() + STALE_MS + 1000});
-  assert.ok(!fs.existsSync(s.otherTree), 'its heartbeat stale: collected');
-  assert.ok(result.removed.includes(s.otherTree));
+  assert.ok(keepOldTreesAside(s.where, {alive: () => false, hostname: 'here', now: Date.now() + STALE_MS + 1000}).keptAt != null);
 });
 
-test('staging leftovers under the old trees are collected', () => {
+test('a start of this release (loaded by module version) does not keep them in place; none there is nothing to do', () => {
   const s = migratedHome();
-  runDir(s.home, {loaded: {other: s.otherKey}});
-  const stale = path.join(s.home, 'packs', 'other', `${s.otherKey}.new-deadbeef`);
-  fs.mkdirSync(stale, {recursive: true});
-  collect(s.where, {alive: () => true, hostname: 'here'});
-  assert.ok(!fs.existsSync(stale));
-  assert.ok(fs.existsSync(s.otherTree));
+  runDir(s.home, {loaded: {'@countinghouse/ch-step-redact': '0.1.0'}});
+  assert.ok(keepOldTreesAside(s.where, {alive: () => true, hostname: 'here'}).keptAt != null);
+  assert.deepStrictEqual(keepOldTreesAside(s.where, {alive: () => true, hostname: 'here'}), {});
 });
 
 test('start writes run.json naming its host, pid and every module version it loaded', async () => {
@@ -101,15 +90,12 @@ test('start writes run.json naming its host, pid and every module version it loa
     '@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-other': '0.2.0'}});
 });
 
-test('a start from before on this machine keeps its trees while its runtime lives, even after start itself has gone', () => {
+test('a start from before on this machine keeps them in place while its runtime lives, even after start itself has gone', () => {
   const s = migratedHome();
   const {machineId} = require('../lib/machine');
   const dir = path.join(s.home, 'run', 'here-4242-0a1b2c3d');
   fs.mkdirSync(dir, {recursive: true});
   fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({host: 'here', machine: machineId(), pid: 4242, childPid: 4343, startedAt: Date.now(), loaded: {other: s.otherKey}}));
-  collect(s.where, {alive: (pid) => pid === 4343, hostname: 'here'});
-  assert.ok(fs.existsSync(s.otherTree), 'kept: its runtime still runs');
-  collect(s.where, {alive: () => false, hostname: 'here'});
-  assert.ok(!fs.existsSync(s.otherTree));
-  assert.ok(!fs.readdirSync(path.join(s.home, 'packs')).some((n) => n.includes('.trash-')), 'nothing left aside');
+  assert.deepStrictEqual(keepOldTreesAside(s.where, {alive: (pid) => pid === 4343, hostname: 'here'}), {waiting: true});
+  assert.ok(keepOldTreesAside(s.where, {alive: () => false, hostname: 'here'}).keptAt != null);
 });

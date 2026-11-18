@@ -139,7 +139,7 @@ test('alive is required: a caller that leaves it out collects nothing (1)', () =
   place('@t/ch-pack-a', '1.0.0');
   recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
   assert.throws(() => collectStore(w), /alive is required/);
-  assert.throws(() => require('../lib/gc').collect(w), /alive is required/);
+  assert.throws(() => require('../lib/gc').keepOldTreesAside(w), /alive is required/);
   assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-pack-a', '1.0.0')));
 });
 
@@ -182,7 +182,8 @@ test('a run.json that cannot be read could be a live start\'s: nothing is collec
   const r = collectStore(w, {alive: () => true});
   assert.match(r.problem, /run\.json could not be read .*nothing was collected/);
   assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-x', '1.0.0')));
-  assert.match(require('../lib/gc').collect(w, {alive: () => true}).problem, /nothing was collected/);
+  fs.mkdirSync(w.packsDir, {recursive: true});
+  assert.match(require('../lib/gc').keepOldTreesAside(w, {alive: () => true}).problem, /nothing was collected/);
 });
 
 test('an incomplete version a live start loaded is kept, as placeModule refuses to replace it (2)', () => {
