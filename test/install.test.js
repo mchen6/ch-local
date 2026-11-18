@@ -256,9 +256,15 @@ test('migration: packs.json, its trees and held packs become modules.json and th
   // a held pack marked withdrawn becomes an ordinary pack; this release lists
   // it, so it is brought to its pins
   assert.deepStrictEqual(rec.packs.other.modules, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});
-  assert.deepStrictEqual(rec.held, {old: {from: {release: '0.1.0'}, modules: {'@countinghouse/ch-pack-old': '1.0.0'}}}, 'held after a rollback stays held');
+  // held after a rollback: not carried over, named (the Reviewer's one rule)
+  assert.strictEqual(rec.held, undefined);
+  assert.match(io.out, /not carried over: old; add it again with `ch-local add-pack old` once a release lists it/);
   assert.strictEqual(fs.existsSync(path.join(h, 'packs.json')), false);
-  assert.strictEqual(fs.existsSync(path.join(h, 'packs', 'ci-failure-triage')), false, 'the old tree is collected');
+  // the earlier ch-local's packs/ kept whole beside the home, never collected
+  assert.strictEqual(fs.existsSync(path.join(h, 'packs')), false);
+  const kept = fs.readdirSync(h).filter((n) => n.startsWith('packs.migrated-'));
+  assert.strictEqual(kept.length, 1);
+  assert.ok(fs.existsSync(path.join(h, kept[0], 'ci-failure-triage')), 'nothing deleted');
   assert.match(io.out, /this home's record is now modules\.json/);
   assert.strictEqual(JSON.stringify(rec).includes('credentials'), false, 'credentials dropped');
 });
@@ -714,15 +720,16 @@ test('the trees a kept packs.json names are collected; a later kept modules.json
   assert.ok(!fs.existsSync(path.join(h, 'previous', 'packs.json')));
 });
 
-test('a held pack this release lists is said: add-pack brings it back; one an earlier ch-local held with no packages is not migrated (2, 4)', async () => {
+test('a migration carries over only the packs these pins list: a held one and an empty one are named, not recorded', async () => {
   const r = release(); const h = home();
   fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
     packs: {'ci-failure-triage': {packages: Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0'])), credentials: []}},
     held: {other: {packages: {'@countinghouse/ch-pack-other': '0.3.0'}, credentials: [], installedUnder: '0.9.0'}, empty: {packages: {}, credentials: [], installedUnder: '0.9.0'}}}));
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await run(r, io), 0, io.err);
-  assert.deepStrictEqual(Object.keys(record(h).held), ['other'], 'the empty entry is not migrated');
-  assert.match(io.out, /pack other is in this release again: `ch-local add-pack other` adds it back/);
+  assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
+  assert.strictEqual(record(h).held, undefined);
+  assert.match(io.out, /not carried over: other; add it again with `ch-local add-pack other` once a release lists it/);
 });
 
 // the medium review of #83's fixes
@@ -804,17 +811,39 @@ test('a record set aside goes back when the install throws after the swap (3)', 
   assert.deepStrictEqual(fs.readdirSync(h).filter((n) => n.includes('.unreadable-')), []);
 });
 
-test('under development pins a migrated pack these pins do not list, and a held one, are named as not installed again (4)', async () => {
+test('under development pins a pack the pins do not pin is not carried over, without failing; a held one neither', async () => {
   const r = release(); const h = home();
   const triage = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
   fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: true, release: null,
-    packs: {'ci-failure-triage': {packages: triage, credentials: []}, gone: {packages: {'@countinghouse/ch-pack-gone': '1.0.0'}, credentials: []}},
+    packs: {'ci-failure-triage': {packages: triage, credentials: []}, other: {packages: {'@countinghouse/ch-pack-other': '0.3.0'}, credentials: []}},
     held: {kept: {packages: {'@countinghouse/ch-pack-kept': '1.0.0'}, credentials: [], installedUnder: '0.9.0'}}}));
+  // these development pins pin ci-failure-triage's modules and the runtime only
+  const pins = Object.fromEntries(Object.entries(r.pins).filter(([n]) => !/ch-pack-other|ch-step-other/.test(n)));
+  // (its --from holds what it pins: a tarball no pin names is refused)
+  for (const n of ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-other']) fs.rmSync(path.join(r.from, require('../lib/unpack').tarballName(n, r.pins[n].version)));
   const f = path.join(tmp('ch-pins-'), 'pins.json');
-  fs.writeFileSync(f, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile}));
+  fs.writeFileSync(f, JSON.stringify({pins, runtimeLockfile: r.lockfile}));
   const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
-  assert.match(io.out, /the pack "gone" is recorded but was not installed again: this release does not list it/);
-  assert.match(io.out, /the held pack "kept" is recorded but was not installed again: the release it needs installs it/);
+  assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
+  assert.match(io.out, /not carried over: other;/);
+  assert.match(io.out, /not carried over: kept;/);
+});
+
+// the Reviewer's round on #83, 5: a record that cannot be put back is named
+test('a set-aside record that cannot be put back is named, where it is and what to rename it to', async (t) => {
+  const r = release(); const h = home();
+  assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  const file = path.join(h, 'modules.json');
+  fs.writeFileSync(file, '{"v": 2');
+  t.mock.method(require('../lib/shim-config'), 'writeShimJson', () => { throw new Error('shim.json could not be written'); });
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (a, b) => { if (b === file) { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } return rename(a, b); });
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  await assert.rejects(run(r, io), /shim\.json could not be written/);
+  t.mock.restoreAll();
+  const aside = fs.readdirSync(h).find((n) => n.startsWith('modules.json.unreadable-'));
+  assert.ok(aside != null);
+  assert.match(io.err, new RegExp(`your previous record could not be put back \\(EBUSY\\): it is at .*${aside.replace(/[.]/g, '\\.')}; rename it to modules\\.json`));
 });
