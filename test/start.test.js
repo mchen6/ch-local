@@ -406,6 +406,20 @@ test('a record of another release is started by the record, not by this start\'s
   assert.ok(!/this release pins/.test(f.err), f.err);
 });
 
+// the medium review of the high round, 1: a record older than this
+// ch-local (an upgrade not yet installed) is judged by this release's pins
+test('a record older than this ch-local is judged by this release\'s pins', async () => {
+  const home = installedHome();
+  const {editHome} = require('./store-helpers');
+  editHome(home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
+  const f = io(home);
+  const {ALLOWLIST} = require('../lib/allowlist');
+  f.release = {...ALLOWLIST, packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-access-github'], credentials: ['GITHUB_TOKEN']}}, pins: {}};
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(f.spawned[0].args.filter((a) => a === '--loadModule').length, 0, f.err);
+  assert.match(f.err, /this release pins no version of it; run `ch-local install` again/);
+});
+
 test('every start of an unreleased install says so in one stderr line', async () => {
   const f = io(installedHome({unreleased: true}));
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);

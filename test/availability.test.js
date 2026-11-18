@@ -176,3 +176,22 @@ test('pack seams: a module two packs record is off only when both are, refused o
   assert.strictEqual(seams({}, only).ceiling(A, ['a', 'b']), null);
   assert.match(seams({}, {state: 'trusted', ceiling: {packs: ['c']}}).ceiling(A, ['a', 'b']), /allows only c/);
 });
+
+// the medium review of the high round, 3: an allowed pack that is off and a
+// forbidden one that is on never add up to a load
+test('pack seams: allowed-but-off plus forbidden-but-on is off', () => {
+  const {packSeams} = require('../lib/pack-seams');
+  const seams = packSeams({installed: [], settings: {version: 1, values: {'pack.a': false}}, ceiling: {state: 'trusted', ceiling: {packs: ['a']}}, env: {}, credentialReason: () => 'x'});
+  assert.strictEqual(seams.ceiling(A, ['a', 'b']), null);
+  assert.match(seams.off(A, ['a', 'b']), /it is turned off \(`ch-local settings set pack\.a on`\)/);
+});
+
+// the medium review of the high round, 8: the credential is asked only of
+// what would otherwise load, and never said over the real blocker
+test('a module that cannot load for another reason is never asked its credential, and says that reason', () => {
+  const {where, record} = home({calls: {[A]: ['scenario', ['ch-step-z/s.go']]}});
+  const asked = [];
+  const av = availability(where, record, {release: releaseOf(PACKS), seams: {...NONE, credential: (m) => { asked.push(m); return 'set A_TOKEN'; }}});
+  assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-step-z, which is not installed');
+  assert.ok(!asked.includes(A));
+});

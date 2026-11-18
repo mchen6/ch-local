@@ -1123,34 +1123,48 @@ test('a module added without its credential is told once, in start\'s words', as
   }
 });
 
-// the high review of L2a, 5: a stop told while the record cannot be read
-// (what the module ran unknown) keeps it out until a record written after
-// the stop; an install then is a change, and loads it
-test('module-stopped while the record cannot be read: kept out until an install after the stop, which loads it', async () => {
+// the high review of L2a, 5, and its medium review, 7: a stop of a module
+// this start never asked to run is kept at the version the record names
+// then; with the record unreadable, until its content changes (an install
+// after the stop), never by a timestamp's tick
+test('module-stopped for a module never asked to run: kept out at the record\'s version until another is installed', async () => {
   const s = await running();
   try {
     const settings = path.join(s.home, 'settings.json');
-    // other installed, turned off: never asked to run
+    fs.writeFileSync(settings, JSON.stringify({version: 1, values: {'pack.other': false}}));
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    s.ask({type: 'module-stopped', name: '@countinghouse/ch-pack-other', code: 'MODULE_SUSPENDED', when: 'restart'});
+    await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.change === 'stopped'));
+    // turned on: still out at 0.3.0
+    await settled(s, {locale: 'zh'});
+    assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'), 'kept out');
+    // another version installed: loads
+    const r2 = release({versions: {'@countinghouse/ch-pack-other': '0.3.1'}});
+    assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('module-stopped while the record cannot be read: kept out until the record\'s content changes, then loaded', async () => {
+  const s = await running();
+  try {
+    const settings = path.join(s.home, 'settings.json');
     fs.writeFileSync(settings, JSON.stringify({version: 1, values: {'pack.other': false}}));
     assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
     const file = path.join(s.home, 'modules.json');
     const good = fs.readFileSync(file);
-    const was = fs.statSync(file).mtime;
     fs.writeFileSync(file, '{');
     s.ask({type: 'module-stopped', name: '@countinghouse/ch-pack-other', code: 'MODULE_SUSPENDED', when: 'restart'});
     await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.change === 'stopped'));
-    // the record back as it was, not written since the stop, and other
-    // turned on: still out
-    const back = `${file}.back`;
-    fs.writeFileSync(back, good);
-    fs.utimesSync(back, was, was);
-    fs.renameSync(back, file);
-    fs.writeFileSync(settings, JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    // a record written after the stop, within the same timestamp tick (a
+    // filesystem with 1-2 s mtimes): a change by its content, so it loads
+    const tick = fs.statSync(file).mtime;
+    fs.writeFileSync(file, good);
+    fs.utimesSync(file, tick, tick);
     await settled(s, {locale: 'zh'});
-    assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'), 'kept out');
-    // an install after the stop: a change, and it loads
-    assert.strictEqual(await install({pack: 'ci-failure-triage', from: s.r.from}, s.cmd(), s.r.allow), 0);
     await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
   } finally {
     s.end();
@@ -1212,6 +1226,81 @@ test('module-stopped after a refused reload: kept out at the version it was aske
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await settled(s, {locale: 'zh'});
     assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === SCENARIO), 'not loaded again at 0.1.1');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium review of the high round, 2: a reload the channel refused
+// (busy) never ran, so a later stop of the old version is recorded at the
+// old closure, and the new one loads at the next apply
+test('module-stopped after a reload the channel refused: recorded at what ran, and the new version loads', async () => {
+  let busy = true;
+  const s = await running({answer: (m) => (m.type === 'reload' && busy ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true})});
+  try {
+    const r2 = release({versions: {[SCENARIO]: '0.1.1'}});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => s.requests.some((m) => m.type === 'reload' && m.names.includes(SCENARIO)));
+    busy = false;
+    s.ask({type: 'module-stopped', name: SCENARIO, code: 'MODULE_SUSPENDED', when: 'restart'});
+    await until(() => notices(s).some(([, t]) => t === STOPPED));
+    await settled(s);
+    await until(() => s.requests.some((m) => m.type === 'load' && m.name === SCENARIO && m.dirs[SCENARIO].endsWith('0.1.1')));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium review of the high round, 4: under another release's record,
+// a module no longer a pack's top-level module is still unloaded
+test('another release\'s record: a module no longer a pack\'s top-level module is unloaded', async () => {
+  const s = await running();
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+    editRecord(s.home, (r) => {
+      const {other, ...packs} = r.packs;
+      return {...r, release: {version: '9.9.9', security: null}, packs: {...packs, 'ci-failure-triage': {...packs['ci-failure-triage'], modules: {...packs['ci-failure-triage'].modules, ...other.modules}}}};
+    });
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other' && m.notice === 'ch-pack-other unloaded: it is no longer a pack\'s top-level module'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium review of the high round, 5: a caller stopped with a withdrawn
+// part names the part and the release that withdrew it
+test('another release\'s record: a caller of a withdrawn part refused twice names the part and the release just installed', async () => {
+  const s = await running({answer: (m) => (m.type === 'unload' ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true})});
+  try {
+    editRecord(s.home, (r) => ({...r, release: {version: '9.9.9', security: null}}),
+      {release: {packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-step-redact']}}}});
+    await until(() => notices(s).some(([, t]) => /could not be stopped in place/.test(t)));
+    assert.ok(notices(s).some(([, t]) => t === 'module ch-access-github was withdrawn in the release just installed, and ch-pack-ci-failure-triage, which calls it, could not be stopped in place: restart your client now to stop it'), JSON.stringify(notices(s)));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium review of the high round, 6: unload-pack for this start's pack
+// whose module another pack keeps on answers {} and says why, never
+// CONTROL_UNLOAD_FAILED
+test('unload-pack while another pack keeps its module on: answered {}, and the session told which pack', async () => {
+  const {s, where, reply} = await withOtherOff();
+  try {
+    // twin records the same scenario module, turned off too
+    editRecord(s.home, (r) => ({...r, packs: {...r.packs, twin: {from: r.packs.other.from, modules: {...r.packs.other.modules}}}}));
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, 'pack.twin': false}}));
+    await settled(s, {'pack.other': false, 'pack.twin': false});
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
+    // twin turned on in the settings: other's own value unchanged
+    await settled(s, {'pack.other': false});
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'other'}), {id: 'r2', ok: true});
+    await until(() => notices(s).some(([, t]) => t === 'ch-pack-other stays on: pack twin has it on (`ch-local settings set pack.twin off`)'));
   } finally {
     s.end();
     await s.done;
