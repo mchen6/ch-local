@@ -1489,3 +1489,19 @@ test('a home rolled back under a running start: "ch-local in this home is now <v
     await s.done;
   }
 });
+
+// the medium review of the refinement, 4 and 9: a rollback under a running
+// start stops the modules it moved back, naming the rollback, not an install
+test('a home rolled back under a running start: a module moved back is stopped "by the rollback just made"', async () => {
+  const s = await running();
+  try {
+    s.f.selfVersion = '0.2.1';
+    editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null},
+      packs: {...r.packs, 'ci-failure-triage': {...r.packs['ci-failure-triage'], modules: {...r.packs['ci-failure-triage'].modules, '@countinghouse/ch-step-redact': '0.0.9'}}}}));
+    const back = 'ch-step-redact was moved back to 0.0.9 by the rollback just made; it is stopped here until this client restarts; ch-pack-ci-failure-triage calls it and is stopped with it';
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === SCENARIO && m.notice === back));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});

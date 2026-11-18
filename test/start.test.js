@@ -395,11 +395,8 @@ test('a top-level module two packs record is loaded once; each part of its closu
 test('a start the home was upgraded under is started by the record, not by its own pins', async () => {
   const home = installedHome();
   const {editHome} = require('./store-helpers');
-  editHome(home, (r) => ({...r, release: {version: '9.9.9', security: null}}));
-  // the home's ch-local is 9.9.9, this process 0.1.0: stale, so frozen
-  const self = path.join(home, 'app', 'node_modules', '@countinghouse', 'ch-local');
-  fs.mkdirSync(self, {recursive: true});
-  fs.writeFileSync(path.join(self, 'package.json'), JSON.stringify({name: '@countinghouse/ch-local', version: '9.9.9'}));
+  // the home's ch-local (its record's) is 9.9.9, this process 0.1.0: stale
+  editHome(home, (r) => ({...r, release: {version: '9.9.9', security: null}, runtime: {versions: {...r.runtime.versions, '@countinghouse/ch-local': '9.9.9'}}}));
   const f = io(home);
   f.selfVersion = '0.1.0';
   // this start's own pins name none of the record's versions

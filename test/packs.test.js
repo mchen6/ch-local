@@ -130,34 +130,48 @@ test('withdrawnPacks: the packs the release does not list; an unreleased install
 
 
 // whose home this is (#413 section 9.8): one rule for start and the
-// applier, asked first of the running ch-local, then of the record, by full
-// semver precedence (the Reviewer on L2a)
+// applier, asked first of the running ch-local against the home's (its
+// record's), then of the record, by full semver precedence (the Reviewer on
+// L2a; the medium review of the refinement)
 test('recordRelease: stale (upgraded or rolled back), same, or another release\'s record', () => {
   const {recordRelease} = require('../lib/packs');
   const {layout} = require('../lib/home');
-  const where = (installed) => {
-    const w = layout({COUNTINGHOUSE_HOME: tmp('ch-whose-')});
-    if (installed != null) {
-      const d = path.join(w.app, 'node_modules', '@countinghouse', 'ch-local');
-      fs.mkdirSync(d, {recursive: true});
-      fs.writeFileSync(path.join(d, 'package.json'), JSON.stringify({version: installed}));
-    }
-    return w;
-  };
+  const where = layout({COUNTINGHOUSE_HOME: tmp('ch-whose-')});
   const io = (self, ours = self) => ({selfVersion: self, release: {release: {version: ours}}});
-  const rec = (v) => ({release: v == null ? null : {version: v}});
+  const rec = (v, installed = v) => ({release: v == null ? null : {version: v}, runtime: {versions: installed == null ? {} : {'@countinghouse/ch-local': installed}}});
+  const st = (x) => [x.state, x.how];
   // (a) the home's ch-local is not this process's: stale, by semver both ways
-  assert.deepStrictEqual((({state, how}) => [state, how])(recordRelease(rec('1.3.0'), io('1.2.0'), where('1.3.0'))), ['stale', 'upgraded']);
-  assert.deepStrictEqual((({state, how}) => [state, how])(recordRelease(rec('1.1.0'), io('1.2.0'), where('1.1.0'))), ['stale', 'rolled back']);
-  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0-rc.1'), where('1.2.0')).how, 'upgraded');
-  assert.strictEqual(recordRelease(rec('1.2.0-rc.1'), io('1.2.0'), where('1.2.0-rc.1')).how, 'rolled back');
+  assert.deepStrictEqual(st(recordRelease(rec('1.3.0'), io('1.2.0'), where)), ['stale', 'upgraded']);
+  assert.deepStrictEqual(st(recordRelease(rec('1.1.0'), io('1.2.0'), where)), ['stale', 'rolled back']);
+  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0-rc.1'), where).how, 'upgraded');
+  assert.strictEqual(recordRelease(rec('1.2.0-rc.1'), io('1.2.0'), where).how, 'rolled back');
   // (b) the home's own ch-local, its release's record (or unknowns): same
-  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0'), where('1.2.0')).state, 'same');
-  assert.strictEqual(recordRelease(rec(null), io('1.2.0'), where('1.2.0')).state, 'same');
-  assert.strictEqual(recordRelease(rec('1.2.0'), io(null, '1.2.0'), where('9.0.0')).state, 'same', 'the running version not known: never stale');
-  // (c) the home's own ch-local, another release's record, either way: other;
-  // versions that do not parse too (fail closed)
-  assert.strictEqual(recordRelease(rec('1.3.0'), io('1.2.0'), where('1.2.0')).state, 'other');
-  assert.strictEqual(recordRelease(rec('1.1.0'), io('1.2.0'), where(null)).state, 'other');
-  assert.strictEqual(recordRelease(rec('v1.3'), io('1.2.0'), where('1.2.0')).state, 'other');
+  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0'), where).state, 'same');
+  assert.strictEqual(recordRelease(rec(null, '1.2.0'), io('1.2.0'), where).state, 'same');
+  assert.strictEqual(recordRelease(rec('1.2.0', '1.2.0+build.7'), io('1.2.0'), where).state, 'same', 'build metadata is no other version');
+  assert.strictEqual(recordRelease(rec('1.2.0', '9.0.0'), io(null, '1.2.0'), where).state, 'same', 'the running version not known: never stale');
+  // (c) the home's own ch-local, another release's record: other; an
+  // unparsable version is never stale, and fails closed (other)
+  assert.strictEqual(recordRelease(rec('1.3.0', '1.2.0'), io('1.2.0'), where).state, 'other');
+  assert.strictEqual(recordRelease(rec('1.1.0', null), io('1.2.0'), where).state, 'other');
+  assert.strictEqual(recordRelease(rec('v1.3', 'garbage'), io('1.2.0'), where).state, 'other');
+  // the production default: a ch-local run from outside the home (this
+  // checkout) is never stale, whatever the home holds
+  assert.strictEqual(recordRelease(rec('1.2.0', '9.9.9'), {release: {release: {version: '1.2.0'}}}, where).state, 'same');
+});
+
+test('runsFromHome: only the home\'s own ch-local, by path or through a link', () => {
+  const {runsFromHome} = require('../lib/packs');
+  const {layout} = require('../lib/home');
+  const where = layout({COUNTINGHOUSE_HOME: tmp('ch-home-')});
+  const own = path.join(where.app, 'node_modules', '@countinghouse', 'ch-local');
+  fs.mkdirSync(own, {recursive: true});
+  assert.strictEqual(runsFromHome(where, own), true);
+  assert.strictEqual(runsFromHome(where, tmp('ch-checkout-')), false);
+  assert.strictEqual(runsFromHome(where), false, 'this checkout is not the home\'s');
+  if (process.platform !== 'win32') {
+    const link = path.join(tmp('ch-link-'), 'ch-local');
+    fs.symlinkSync(own, link);
+    assert.strictEqual(runsFromHome(where, link), true);
+  }
 });
