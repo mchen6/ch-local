@@ -921,3 +921,16 @@ test('an upgrade of a part two loaded packs share is one reload naming both pack
   s.end();
   await s.done;
 });
+
+// the medium review of #83's fixes, 4: the reload goes before a new pack's
+// load, so a pack added at a shared part's new version meets it there
+test('an install that moves a shared part and adds a pack reloads first, then loads the new pack', async () => {
+  const s = await running();
+  const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
+  assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
+  await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+  const order = s.requests.filter((m) => ['load', 'reload'].includes(m.type)).map((m) => m.type);
+  assert.deepStrictEqual(order, ['reload', 'load']);
+  s.end();
+  await s.done;
+});

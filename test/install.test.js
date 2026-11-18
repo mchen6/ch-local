@@ -627,7 +627,7 @@ test('a record that cannot be read is set aside and named; the install goes on, 
   const aside = fs.readdirSync(h).filter((n) => n.startsWith('modules.json.unreadable-'));
   assert.strictEqual(aside.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(h, aside[0]), 'utf8'), '{"v": 2', 'kept as it was');
-  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')}, and this install starts a new one: add the other packs again with \`ch-local add-pack\``));
+  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`ch-local add-pack\``));
   assert.deepStrictEqual(Object.keys(record(h).packs), ['other']);
   assert.ok(fs.existsSync(path.join(h, 'previous', 'keep')), 'the rollback target kept');
 });
@@ -725,4 +725,71 @@ test('a held pack this release lists is said: add-pack brings it back; one an ea
   assert.strictEqual(await run(r, io), 0, io.err);
   assert.deepStrictEqual(Object.keys(record(h).held), ['other'], 'the empty entry is not migrated');
   assert.match(io.out, /pack other is in this release again: `ch-local add-pack other` adds it back/);
+});
+
+// the medium review of #83's fixes
+test('an unreadable record is set aside only once the install is through: one refused later leaves it where it was (1)', async () => {
+  const r = release(); const h = home();
+  assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  fs.writeFileSync(path.join(h, 'modules.json'), '{"v": 2');
+  // npm ci fails: refused after the record was read
+  const failing = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: () => ({status: 1, stdout: '', stderr: 'boom'})});
+  assert.strictEqual(await run(r, failing), 1);
+  assert.strictEqual(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'), '{"v": 2', 'not set aside');
+  assert.deepStrictEqual(fs.readdirSync(h).filter((n) => n.includes('.unreadable-')), []);
+});
+
+function migratingHome(h) {
+  const {packKey} = require('../lib/gc');
+  const triage = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
+  const tree = path.join(h, 'packs', 'ci-failure-triage', packKey(triage), 'node_modules');
+  for (const n of TRIAGE) {
+    const dir = path.join(tree, ...n.split('/'));
+    fs.mkdirSync(dir, {recursive: true});
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: n, version: '0.1.0', countinghouse: {role: n.includes('ch-pack-') ? 'scenario' : 'part'}}));
+  }
+  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
+    packs: {'ci-failure-triage': {packages: triage, credentials: []}}}));
+  return tree;
+}
+
+test('a module a migration placed from its tree is marked so, and a later install of its pinned tarball replaces it (2, 3)', async () => {
+  const r = release(); const h = home();
+  migratingHome(h);
+  // --from without ci-failure-triage's tarballs: taken from the tree
+  const from = r.from;
+  const saved = {};
+  for (const n of TRIAGE) { const f = path.join(from, require('../lib/unpack').tarballName(n, '0.1.0')); saved[n] = fs.readFileSync(f); fs.rmSync(f); }
+  assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  const marker = (n) => JSON.parse(fs.readFileSync(path.join(h, 'module-store', ...n.split('/'), '0.1.0.json'), 'utf8'));
+  for (const n of TRIAGE) {
+    assert.strictEqual(marker(n).source, 'tree');
+    assert.notStrictEqual(marker(n).integrity, r.pins[n].integrity, 'its own hash, never the pin\'s');
+  }
+  for (const [n, bytes] of Object.entries(saved)) fs.writeFileSync(path.join(from, require('../lib/unpack').tarballName(n, '0.1.0')), bytes);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  for (const n of TRIAGE) {
+    assert.strictEqual(marker(n).source, undefined, 'the tarball\'s now');
+    assert.strictEqual(marker(n).integrity, r.pins[n].integrity);
+  }
+});
+
+test('a link in an earlier ch-local\'s tree refuses the migration cleanly, nothing installed (9)', {skip: process.platform === 'win32'}, async () => {
+  const r = release(); const h = home();
+  migratingHome(h);
+  // a held pack's module at a version these pins do not name: its tree is
+  // hashed (treeIntegrity), and holds a link to a directory
+  const {packKey} = require('../lib/gc');
+  const gone = {'@countinghouse/ch-step-gone': '1.0.0'};
+  const dir = path.join(h, 'packs', 'gone', packKey(gone), 'node_modules', '@countinghouse', 'ch-step-gone');
+  fs.mkdirSync(dir, {recursive: true});
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: '@countinghouse/ch-step-gone', version: '1.0.0'}));
+  fs.symlinkSync('/etc', path.join(dir, 'out'));
+  const rec = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'));
+  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({...rec, held: {gone: {packages: gone, credentials: [], installedUnder: '0.1.0'}}}));
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 1);
+  assert.match(io.err, /is not a file or a directory; it is not placed; nothing was installed/);
+  assert.ok(fs.existsSync(path.join(h, 'packs.json')), 'the earlier record is still the home\'s');
 });
