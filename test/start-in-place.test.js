@@ -13,6 +13,21 @@ const {start} = require('../lib/start');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm} = require('./install-helpers');
 
+// what a control request names: a load's or unload's name, a reload's names
+// (the module form, #413 section 7.3)
+const named = (m) => (m.name != null ? m.name : (Array.isArray(m.names) ? m.names.join(',') : undefined));
+// modules.json changed as an operation would write it (its own writer: the
+// derived modules and withdrawn). fn(record) -> the record to write;
+// release: the pins withdrawn is derived from (by default, every pack listed).
+function editRecord(home, fn, {release = null} = {}) {
+  const {writeModulesRecord} = require('../lib/module-record');
+  const {roleOf} = require('./store-helpers');
+  const file = path.join(home, 'modules.json');
+  const next = fn(JSON.parse(fs.readFileSync(file, 'utf8')));
+  const lists = release != null ? release : {packs: Object.fromEntries(Object.entries(next.packs).map(([p, e]) => [p, {packages: Object.keys(e.modules)}]))};
+  return writeModulesRecord({modulesRecord: file}, next, {roleOf: roleOf(home), release: lists});
+}
+const TRIAGE_LOADED = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.1.0'};
 const until = async (cond, ms = 10000) => {
   for (const t = Date.now(); Date.now() - t < ms; await new Promise((r) => setTimeout(r, 20))) if (cond()) return;
   throw new Error('timed out waiting');
@@ -78,10 +93,11 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
 test('start spawns its runtime with the control channel', async () => {
   const s = await running();
   assert.deepStrictEqual(s.args().slice(s.args().indexOf('--controlChannel'), s.args().indexOf('--controlChannel') + 2), ['--controlChannel', 'ipc']);
-  // where a pack loaded in place may be (countinghouse #205): the pack trees
-  // only, never the app, which holds the runtime and its dependencies
-  const roots = s.args().flatMap((a, i) => (s.args()[i - 1] === '--packsRoot' ? [a] : []));
-  assert.deepStrictEqual(roots, [path.join(s.home, 'packs')]);
+  // where every module loaded, at start or in place, may be (#413 section
+  // 7.2): the module store only, never the app, which holds the runtime
+  const roots = s.args().flatMap((a, i) => (s.args()[i - 1] === '--modulesRoot' ? [a] : []));
+  assert.deepStrictEqual(roots, [path.join(s.home, 'module-store')]);
+  assert.ok(!s.args().includes('--packsRoot'));
   s.end();
   assert.strictEqual(await s.done, 0);
 });
@@ -107,7 +123,7 @@ test('no pack has its credential: the runtime starts with no pack, and the clien
   }
 });
 
-test('add-pack while running: one load request with the pack\'s own tree, credentials file and notice; history and run.json follow', async () => {
+test('add-pack while running: one load request in the module form, each module by its store directory, with its notice; history and run.json follow', async () => {
   const s = await running();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
   await until(() => s.requests.length === 1);
@@ -116,14 +132,19 @@ test('add-pack while running: one load request with the pack\'s own tree, creden
   // the runtime knows a pack by its scenario's package name (countinghouse #205)
   assert.strictEqual(load.name, '@countinghouse/ch-pack-other');
   assert.strictEqual(load.notice, 'other added 0.3.0');
-  assert.ok(load.scenario.startsWith(path.join(s.home, 'packs', 'other')), load.scenario);
-  assert.ok(fs.existsSync(load.remoteCredentials));
+  // the module form (#413 section 7.3): no scenario path, pack, global or
+  // credentials file; each module's store directory
+  assert.deepStrictEqual(Object.keys(load.dirs).sort(), ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-other', '@countinghouse/ch-step-redact']);
+  assert.strictEqual(load.dirs['@countinghouse/ch-pack-other'], path.join(s.home, 'module-store', '@countinghouse', 'ch-pack-other', '0.3.0'));
+  for (const f of ['scenario', 'pack', 'global', 'remoteCredentials']) assert.ok(!(f in load), f);
   assert.ok(!('deviceConfigDir' in load), 'the runtime uses its own --deviceConfigPath');
   await until(() => s.history().length === 1);
   assert.deepStrictEqual((({pack, change, notice, by}) => ({pack, change, notice, by}))(s.history()[0]), {pack: 'other', change: 'added', notice: 'other added 0.3.0', by: 'start'});
   assert.ok(!JSON.stringify(s.history()).includes('secret'), 'never a value');
+  // run.json names every module version this runtime holds
   const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
-  assert.deepStrictEqual(Object.keys(run.loaded).sort(), ['ci-failure-triage', 'other']);
+  assert.deepStrictEqual(run.loaded, {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.1.0',
+    '@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-other': '0.2.0'});
   assert.match(s.f.err, /other added 0\.3\.0/);
   s.end();
   await s.done;
@@ -139,7 +160,7 @@ test('remove-pack while running: one unload request; reinstalling a changed rele
   const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
   await until(() => s.requests.length === 3);
-  assert.deepStrictEqual([s.requests[2].type, s.requests[2].name, s.requests[2].notice], ['reload', '@countinghouse/ch-pack-ci-failure-triage', 'ci-failure-triage updated 0.1.0 → 0.1.0']);
+  assert.deepStrictEqual([s.requests[2].type, named(s.requests[2]), s.requests[2].notice], ['reload', '@countinghouse/ch-pack-ci-failure-triage', 'ci-failure-triage updated 0.1.0 → 0.1.0']);
   s.end();
   await s.done;
 });
@@ -151,7 +172,7 @@ test('a refused request is recorded and said, and nothing is marked loaded; a ru
   assert.match(s.history()[0].problem, /^PART_VERSION_CONFLICT/);
   assert.match(s.f.err, /other added 0\.3\.0: not applied in place \(PART_VERSION_CONFLICT\); restart your client/);
   const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
-  assert.deepStrictEqual(Object.keys(run.loaded), ['ci-failure-triage']);
+  assert.deepStrictEqual(run.loaded, TRIAGE_LOADED);
   s.end();
   await s.done;
 
@@ -172,7 +193,7 @@ test('two changes in quick succession are applied one at a time, in order; the l
   // either both seen (load then unload) or only the final state (nothing to do)
   assert.ok(JSON.stringify(kinds) === JSON.stringify(['load @countinghouse/ch-pack-other', 'unload @countinghouse/ch-pack-other']) || kinds.length === 0, JSON.stringify(kinds));
   const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
-  assert.deepStrictEqual(Object.keys(run.loaded), ['ci-failure-triage']);
+  assert.deepStrictEqual(run.loaded, TRIAGE_LOADED);
   s.end();
   await s.done;
 });
@@ -188,7 +209,7 @@ test('the runtime is sent each pack\'s scenario package name: loaded at start, a
   const s = await running({answer: (m) => {
     if (!['load', 'unload', 'reload'].includes(m.type)) return {ok: true};
     if (m.type === 'load') { if (held.has(m.name)) { refusals++; return {ok: false, code: 'CONTROL_FAILED'}; } held.add(m.name); return {ok: true}; }
-    if (!held.has(m.name)) { refusals++; return {ok: false, code: 'CONTROL_FAILED', message: `${m.name} is not loaded`}; }
+    if (!held.has(named(m))) { refusals++; return {ok: false, code: 'CONTROL_FAILED', message: `${named(m)} is not loaded`}; }
     if (m.type === 'unload') held.delete(m.name);
     return {ok: true};
   }});
@@ -203,7 +224,7 @@ test('the runtime is sent each pack\'s scenario package name: loaded at start, a
   const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
   await until(() => s.requests.filter((m) => m.type !== 'set').length === 3);
-  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set').map((m) => `${m.type} ${m.name}`),
+  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set').map((m) => `${m.type} ${named(m)}`),
     ['load @countinghouse/ch-pack-other', 'unload @countinghouse/ch-pack-other', 'reload @countinghouse/ch-pack-ci-failure-triage']);
   assert.strictEqual(refusals, 0);
   await until(() => s.history().length === 3);
@@ -213,19 +234,19 @@ test('the runtime is sent each pack\'s scenario package name: loaded at start, a
   await s.done;
 });
 
-// A pack found only in the flat layout an earlier ch-local made (its tree
-// gone) is outside --packsRoot: it is not loaded in place, and the user is
-// told to run ch-local install, which places its tree.
-test('a pack only in the flat layout is not loaded in place: said and recorded, "run ch-local install"', async () => {
+// A pack the record names whose modules are not in the module store (a
+// record edited by hand, an install cut short) is not loaded in place, and
+// the user is told to run ch-local install, which places them.
+test('a pack whose modules are not in the module store is not loaded in place: said and recorded, "run ch-local install"', async () => {
   const s = await running();
-  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
-  await until(() => s.requests.filter((m) => m.type !== 'set').length === 1);
-  fs.rmSync(path.join(s.home, 'packs', 'other'), {recursive: true, force: true});
-  const record = path.join(s.home, 'packs.json');
-  fs.writeFileSync(record, fs.readFileSync(record));   // the same record, written again: start looks
+  const rec = JSON.parse(fs.readFileSync(path.join(s.home, 'modules.json'), 'utf8'));
+  const {writeModulesRecord} = require('../lib/module-record');
+  const {roleOf} = require('./store-helpers');
+  writeModulesRecord({modulesRecord: path.join(s.home, 'modules.json')}, {...rec, packs: {...rec.packs, other: {from: {release: '0.2.0'}, modules: {'@countinghouse/ch-pack-other': '0.3.0'}}}},
+    {roleOf: roleOf(s.home), release: {packs: {'ci-failure-triage': {packages: Object.keys(TRIAGE_LOADED)}, other: {packages: ['@countinghouse/ch-pack-other']}}}});
   await until(() => s.history().some((h) => h.pack === 'other' && h.problem != null));
-  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set').map((m) => m.type), ['load'], 'nothing sent for the flat one');
-  assert.match(s.history().find((h) => h.problem != null).problem, /ch-local install/);
+  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set').map((m) => m.type), [], 'nothing sent');
+  assert.match(s.history().find((h) => h.problem != null).problem, /not in the module store; run `ch-local install` again/);
   assert.match(s.f.err, /other not loaded in place: .*run `ch-local install`/);
   s.end();
   await s.done;
@@ -233,12 +254,10 @@ test('a pack only in the flat layout is not loaded in place: said and recorded, 
 
 test('a change that cannot be applied in place is said, never fatal: start runs on', async () => {
   const s = await running();
-  // its run directory replaced by a file: nothing can be written in it now
-  const dir = s.runDir();
-  fs.rmSync(dir, {recursive: true, force: true});
-  fs.writeFileSync(dir, 'not a directory');
-  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
-  await until(() => /could not be applied in place|not applied in place/.test(s.f.err));
+  // the record replaced by one that cannot be read
+  fs.writeFileSync(path.join(s.home, 'modules.json'), '{');
+  await until(() => /the home cannot be read .*nothing applied/.test(s.f.err));
+  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set'), []);
   s.end();
   assert.strictEqual(await s.done, 0);
 });
@@ -491,6 +510,8 @@ async function sharedWithCiOff(opts = {}) {
 
 // The shared contract for these messages (countinghouse's shared-runtime-wire
 // vectors, packMessages, copied): what the runtime refuses, by reason token.
+// From the module store every load, reload and unload is in the module form
+// (#413 section 7.3), which carries none of the pack form's fields.
 const PACK_V = require('./vectors/pack-messages.json').packMessages;
 function packMessageProblem(m) {
   const packOk = (p) => typeof p === 'string' && new RegExp(PACK_V.packPattern).test(p);
@@ -503,8 +524,12 @@ function packMessageProblem(m) {
   if (m.type === 'notice') return (m.pack === undefined || packOk(m.pack)) ? null : 'pack';
   return null;
 }
+const OLD_FIELDS = ['scenario', 'pack', 'global', 'remoteCredentials'];
 const holdsToTheVectors = (requests) => {
-  for (const m of requests) assert.strictEqual(packMessageProblem(m), null, JSON.stringify(m));
+  for (const m of requests) {
+    if (['load', 'reload', 'unload'].includes(m.type)) assert.deepStrictEqual(OLD_FIELDS.filter((f) => f in m), [], JSON.stringify(m));
+    else assert.strictEqual(packMessageProblem(m), null, JSON.stringify(m));
+  }
 };
 
 test('B3: the pack messages\' vectors: each accepted one passes, each refused one fails for its reason', () => {
@@ -512,20 +537,19 @@ test('B3: the pack messages\' vectors: each accepted one passes, each refused on
   for (const {why, reason, message} of PACK_V.refused) assert.strictEqual(packMessageProblem(message), reason, why);
 });
 
-// countinghouse's shared runtime, B3 "For C": every load, reload and unload
-// names its pack beside the scenario, a load or reload says whether it is for
-// everyone (global), and a notice about a pack names it
-test('B3: a load from the settings is global; an unload and a told notice name the pack', async () => {
+// countinghouse's shared runtime, B3, from the module store: a load and an
+// unload are in the module form, which names no pack and carries no global
+// (a shared runtime's module form is for everyone); a notice about a pack
+// names it
+test('B3: a load and an unload from the settings are in the module form; the unload carries its notice', async () => {
   const {s} = await withOtherOff();
   try {
     const load = s.requests.find((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other');
-    assert.deepStrictEqual([load.pack, load.global], ['other', true]);
+    assert.ok(load.dirs != null && !('pack' in load) && !('global' in load), JSON.stringify(load));
     const unload = s.requests.find((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other');
-    assert.strictEqual(unload.pack, 'other');
-    assert.ok(!('global' in unload), 'an unload is for everyone that lists it');
+    assert.ok(!('pack' in unload) && !('global' in unload));
     // its notice rides on the unload, which the runtime tells before the pack
-    // goes; no separate notice tagged with the pack follows it (by then no
-    // session lists it, and it would reach nobody)
+    // goes; no separate notice tagged with the pack follows it
     assert.strictEqual(unload.notice, 'other turned off');
     assert.ok(!s.requests.some((m) => m.type === 'notice' && m.pack === 'other' && /turned off|removed/.test(m.text)), JSON.stringify(s.requests.filter((m) => m.type === 'notice')));
     holdsToTheVectors(s.requests);
@@ -535,40 +559,19 @@ test('B3: a load from the settings is global; an unload and a told notice name t
   }
 });
 
-test('B3: a pack a session turned on loads with global false; in a shared runtime its notice names the pack and says "for this session"', async () => {
-  const {s, reply} = await sharedWithCiOff();
-  try {
-    assert.strictEqual(s.requests.find((m) => m.type === 'unload' && m.name === CI).pack, 'ci-failure-triage');
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: true});
-    const load = s.requests.find((m) => m.type === 'load' && m.name === CI);
-    assert.deepStrictEqual([load.pack, load.global], ['ci-failure-triage', false]);
-    await until(() => s.requests.some((m) => m.type === 'notice' && /ci-failure-triage turned on for this session 0\.1\.0/.test(m.text)));
-    const notice = s.requests.find((m) => m.type === 'notice' && /turned on for this session/.test(m.text));
-    assert.strictEqual(notice.pack, 'ci-failure-triage');
-    assert.ok(!s.requests.some((m) => m.type === 'notice' && /turned on for this start/.test(m.text)));
-    assert.strictEqual(s.history().filter((e) => e.pack === 'ci-failure-triage').pop().change, 'turned on for this session (confirmed in the client)');
-    // a notice about no pack carries no pack key
-    assert.ok(s.requests.filter((m) => m.type === 'notice' && /changed outside ch-local/.test(m.text)).every((m) => !('pack' in m)));
-    holdsToTheVectors(s.requests);
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('B3: the terminal turning on a session\'s pack is set pack.<n> true and no load; the terminal\'s off is an unload naming it, never a set to false', async () => {
+// a session's own pack on a shared runtime (the Reviewer, 11-18, L1a Q1):
+// the module form is global there, and one session must never turn a pack
+// on for everyone, so it is refused and the session told how to turn it on
+// for every session; the terminal's on loads it, for everyone
+test('B3: on a shared runtime a session\'s load-pack is refused and the session told to turn it on for every session; the terminal\'s on loads it', async () => {
   const {s, where, count, reply} = await sharedWithCiOff();
   try {
-    await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'});
-    const loads = count('load');
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
+    await until(() => notices(s).some(([, t]) => t === 'ci-failure-triage is turned on for every session: `ch-local settings set pack.ci-failure-triage on`'));
+    assert.strictEqual(count('load'), 0, 'nothing loaded for the session');
     fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': true}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'pack.ci-failure-triage'));
-    assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set' && m.name === 'pack.ci-failure-triage').map((m) => m.value), [true]);
-    assert.strictEqual(count('load'), loads, 'loaded already: no load follows');
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': false}}));
-    await until(() => count('unload') === 2);
-    assert.strictEqual(s.requests.filter((m) => m.type === 'unload').pop().pack, 'ci-failure-triage');
-    assert.ok(!s.requests.some((m) => m.type === 'set' && /^pack\./.test(m.name) && m.value !== true), 'never a set to false');
+    await until(() => count('load') === 1);
+    assert.ok(!s.requests.some((m) => m.type === 'set' && /^pack\./.test(m.name)), 'no set pack.<n>: the load is everyone\'s');
     holdsToTheVectors(s.requests);
   } finally {
     s.end();
@@ -584,44 +587,6 @@ test('B3: outside a shared runtime the terminal\'s on sends no set, and the noti
     fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': true, locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.ok(!s.requests.some((m) => m.type === 'set' && m.name === 'pack.other'));
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('B3: a runtime restart starts with the global packs only: a pack a session turned on is not loaded again', async () => {
-  const {s, reply} = await sharedWithCiOff();
-  let home;
-  try {
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: true});
-    assert.ok(s.requests.some((m) => m.type === 'load' && m.name === CI), 'loaded for the session');
-    home = s.home;
-  } finally {
-    s.end();
-    await s.done;
-  }
-  // the daemon restarts its runtime: a new start on the same home
-  const again = await running({shared: true, env: {}, ghToken: `t${require('node:crypto').randomBytes(12).toString('hex')}`, home});
-  try {
-    assert.ok(!again.args().some((a) => a.includes('ch-pack-ci-failure-triage')), `not at spawn: ${again.args().join(' ')}`);
-    await new Promise((r) => setTimeout(r, 300));
-    assert.ok(!again.requests.some((m) => m.type === 'load' && m.name === CI), 'and not loaded in place');
-  } finally {
-    again.end();
-    await again.done;
-  }
-});
-
-test('B3: a set pack.<n> true the runtime refuses is said, and the rest of that change is still applied', async () => {
-  const {s, where, reply} = await sharedWithCiOff({answer: (m) => (m.type === 'set' && m.name === 'pack.ci-failure-triage' ? {ok: false, code: 'CONTROL_NOT_LIVE'} : {ok: true})});
-  try {
-    await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'});
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': true, locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
-    await until(() => /ci-failure-triage turned on for everyone \(it was on for a session\): not applied in place \(CONTROL_NOT_LIVE\)/.test(s.f.err));
-    const h = s.history().filter((e) => e.pack === 'ci-failure-triage').pop();
-    assert.strictEqual(h.problem, 'CONTROL_NOT_LIVE');
   } finally {
     s.end();
     await s.done;
@@ -684,15 +649,15 @@ test('load-pack review: settings.json\'s value for the pack changing ends this s
   }
 });
 
-test('load-pack review: the version loaded is the one confirmed; a pack whose first package is not its ch-pack is refused; one not started within 10 s is refused unloaded', async () => {
+test('load-pack review: the version loaded is the one confirmed; a pack whose record holds no ch-pack is refused; one not started within 10 s is refused unloaded', async () => {
   const {s, count, reply} = await withOtherOff();
   try {
-    // packs.json lists another package first for `other`
-    const file = path.join(s.home, 'packs.json');
-    const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const pk = rec.packs.other.packages;
-    rec.packs.other.packages = Object.fromEntries([['@countinghouse/ch-step-other', pk['@countinghouse/ch-step-other']], ...Object.entries(pk).filter(([k]) => k !== '@countinghouse/ch-step-other')]);
-    fs.writeFileSync(file, JSON.stringify(rec));
+    // the record's `other` no longer holds its ch-pack package
+    editRecord(s.home, (r) => {
+      const {'@countinghouse/ch-pack-other': _drop, ...rest} = r.packs.other.modules;
+      void _drop;
+      return {...r, packs: {...r.packs, other: {...r.packs.other, modules: rest}}};
+    });
     assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_VERSION_CHANGED'});
     assert.strictEqual(count('load'), 1);
   } finally {
@@ -754,8 +719,8 @@ function packFiles(home) {
   };
   const {layout} = require('../lib/home');
   const where = layout({COUNTINGHOUSE_HOME: home});
-  out['packs.json'] = require('node:crypto').createHash('sha256').update(fs.readFileSync(where.packs)).digest('hex');
-  for (const d of [where.app, where.packsDir, path.join(home, 'module_data')]) if (d != null) walk(d);
+  out['modules.json'] = require('node:crypto').createHash('sha256').update(fs.readFileSync(where.modulesRecord)).digest('hex');
+  for (const d of [where.app, where.moduleStore, path.join(home, 'module_data')]) if (d != null) walk(d);
   return out;
 }
 const loadsPack = (s) => (s.args() || []).some((a, i, all) => all[i - 1] === '--loadModule' && /ch-pack-ci-failure-triage/.test(String(a)));
@@ -793,10 +758,7 @@ test('a released install started with CH_LOCAL_DEV=1 is still refused its withdr
 });
 
 test('an unreleased install is exempt, with CH_LOCAL_DEV=1 or without (the shared daemon never has it): the pack starts, the unreleased line said each time', async () => {
-  const unreleased = (home) => {
-    const f = path.join(home, 'packs.json');
-    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), unreleased: true}, null, 2));
-  };
+  const unreleased = (home) => editRecord(home, (r) => ({...r, unreleased: true}));
   const dev = await running({release: withdrawnRelease(), beforeStart: unreleased, env: {GITHUB_TOKEN: 'secret', CH_LOCAL_DEV: '1'}});
   try {
     await until(() => dev.args() != null);
@@ -838,31 +800,13 @@ test('load-pack for a withdrawn pack is refused CONTROL_PACK_NOT_ALLOWED, and no
   }
 });
 
-// Withdrawn packs, held (the review of #74): an upgrade that withdraws a pack
-// moves it from packs to held, marked withdrawn, as the runtime-only install
-// writes it. Nothing of it is removed.
+// Withdrawn by the record (#413 section 9.7): an upgrade to a release that
+// no longer lists a pack writes its modules into the record's withdrawn
+// list, which a start of the release before reads. Nothing of it is removed.
 function withdrawHeld(home, name) {
-  const f = path.join(home, 'packs.json');
-  const r = JSON.parse(fs.readFileSync(f, 'utf8'));
-  const {[name]: entry, ...rest} = r.packs;
-  fs.writeFileSync(f, JSON.stringify({...r, packs: rest, held: {...(r.held || {}), [name]: {...entry, installedUnder: '0.1.0', withdrawn: true}}}, null, 2));
+  editRecord(home, (r) => r, {release: {packs: Object.fromEntries(Object.entries(JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8')).packs)
+    .filter(([p]) => p !== name).map(([p, e]) => [p, {packages: Object.keys(e.modules)}]))}});
 }
-
-test('a pack held as withdrawn is not started: told once; an unreleased home never brings it back', async () => {
-  const s = await running({beforeStart: (home) => {
-    withdrawHeld(home, 'ci-failure-triage');
-    const f = path.join(home, 'packs.json');
-    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), unreleased: true}, null, 2));
-  }});
-  try {
-    await until(() => notices(s).some(([, t]) => t === LINE));
-    assert.strictEqual(loadsPack(s), false, JSON.stringify(s.args()));
-    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, LINE]], 'once, to the client');
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
 
 test('a running start stops serving a pack an upgrade withdraws: unloaded, and the client told why', async () => {
   const s = await running();

@@ -178,10 +178,12 @@ test('an incomplete version still at its path is asked about too: in use, it is 
   assert.ok(fs.existsSync(path.join(dir, 'package.json')), 'not touched');
 });
 
-// (lib/unpack.js still comes through lib/pack-dir.js until L1a-2 removes it)
+// start reads the record and where a version is (lib/store-paths.js), but
+// none of collection's or the store's placing code (the tar reader comes
+// through lib/npm-upgrade.js, as before the store)
 test('start loads none of collection\'s or the store\'s code (10)', () => {
   const r = require('node:child_process').spawnSync(process.execPath, ['-e',
-    "require('./lib/start'); const loaded = Object.keys(require.cache).map((k) => require('node:path').basename(k)); console.log(JSON.stringify(['gc.js', 'module-store.js', 'module-record.js'].filter((f) => loaded.includes(f))))"],
+    "require('./lib/start'); const loaded = Object.keys(require.cache).map((k) => require('node:path').basename(k)); console.log(JSON.stringify(['gc.js', 'module-store.js'].filter((f) => loaded.includes(f))))"],
   {cwd: path.join(__dirname, '..'), encoding: 'utf8'});
   assert.strictEqual(r.status, 0, r.stderr);
   assert.deepStrictEqual(JSON.parse(r.stdout.trim()), []);
@@ -228,4 +230,21 @@ test('without O_NOFOLLOW (Windows) a marker is read by lstat, open and fstat, an
     return st;
   });
   assert.throws(() => store.readMarker(w, 'weather-tool', '1.2.0', {noFollow: undefined}), (e) => e.unknown === true && /could not be read \(ECHANGED\)/.test(e.message));
+});
+
+// #429's noted (6), the Reviewer's condition for release 1: nothing placed
+// in the store can carry a link, so no store module holds one out of
+// --modulesRoot (the strict reader, lib/tar.js, takes files and
+// directories only)
+test('a tarball with a symbolic or a hard link is refused by placeModule, and nothing is placed', () => {
+  const {tgz, member} = require('./tgz');
+  const w = where();
+  for (const [type, linkname] of [['2', '/etc/passwd'], ['1', 'package/package.json']]) {
+    const bytes = tgz(member('package/package.json', {data: JSON.stringify({name: 'weather-tool', version: '1.2.0'})}), member('package/out', {type, linkname}));
+    const pin = {version: '1.2.0', integrity: require('../lib/integrity').integrityOf(bytes)};
+    assert.throws(() => store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => false}), /a link/, type);
+    assert.strictEqual(store.isComplete(w, 'weather-tool', '1.2.0'), false);
+    const dir = path.join(w.moduleStore, 'weather-tool');
+    assert.deepStrictEqual(fs.existsSync(dir) ? fs.readdirSync(dir) : [], [], 'no stage left');
+  }
 });
