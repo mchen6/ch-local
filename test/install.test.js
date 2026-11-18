@@ -790,3 +790,31 @@ test('a kept packs.json that survives a same-release install is refused by rollb
   assert.match(rio.err, /the kept release predates the module store, so it could not return you here; install it again instead/);
 });
 
+
+// the medium review of the Reviewer's round on #83
+test('a record set aside goes back when the install throws after the swap (3)', async (t) => {
+  const r = release(); const h = home();
+  assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  const file = path.join(h, 'modules.json');
+  fs.writeFileSync(file, '{"v": 2');
+  t.mock.method(require('../lib/shim-config'), 'writeShimJson', () => { throw new Error('shim.json could not be written'); });
+  await assert.rejects(run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), /shim\.json could not be written/);
+  t.mock.restoreAll();
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"v": 2', 'put back, never left with no record');
+  assert.deepStrictEqual(fs.readdirSync(h).filter((n) => n.includes('.unreadable-')), []);
+});
+
+test('under development pins a migrated pack these pins do not list, and a held one, are named as not installed again (4)', async () => {
+  const r = release(); const h = home();
+  const triage = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
+  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: true, release: null,
+    packs: {'ci-failure-triage': {packages: triage, credentials: []}, gone: {packages: {'@countinghouse/ch-pack-gone': '1.0.0'}, credentials: []}},
+    held: {kept: {packages: {'@countinghouse/ch-pack-kept': '1.0.0'}, credentials: [], installedUnder: '0.9.0'}}}));
+  const f = path.join(tmp('ch-pins-'), 'pins.json');
+  fs.writeFileSync(f, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile}));
+  const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
+  assert.match(io.out, /the pack "gone" is recorded but was not installed again: this release does not list it/);
+  assert.match(io.out, /the held pack "kept" is recorded but was not installed again: the release it needs installs it/);
+});

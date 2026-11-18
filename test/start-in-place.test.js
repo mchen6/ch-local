@@ -952,3 +952,34 @@ test('two packs whose moved modules do not overlap are reloaded apart: one refus
   s.end();
   await s.done;
 });
+
+// the medium review of the Reviewer's round on #83
+test('a pack that drops a module another pack moves reloads in the same group as it (1)', async () => {
+  const s = await running();
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+  await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+  // ci-failure-triage moves ch-step-redact to 0.2.0; other no longer takes it
+  const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0', '@countinghouse/ch-step-other': '0.2.1'}});
+  r2.allow.packs.other = {...r2.allow.packs.other, packages: r2.allow.packs.other.packages.filter((n) => n !== '@countinghouse/ch-step-redact')};
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+  await until(() => s.requests.some((m) => m.type === 'reload'));
+  await new Promise((r) => setTimeout(r, 300));
+  const reloads = s.requests.filter((m) => m.type === 'reload');
+  assert.strictEqual(reloads.length, 1, JSON.stringify(reloads.map((m) => m.names)));
+  assert.deepStrictEqual(reloads[0].names.slice().sort(), ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-pack-other']);
+  s.end();
+  await s.done;
+});
+
+test('a new pack taking a module at a version a refused reload could not move is held back with it (2)', async () => {
+  const s = await running({answer: (m) => (m.type === 'reload' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  // a release where other also takes ch-access-github, now at 0.1.1
+  const r2 = release({versions: {'@countinghouse/ch-access-github': '0.1.1'}});
+  r2.allow.packs.other = {...r2.allow.packs.other, packages: [...r2.allow.packs.other.packages, '@countinghouse/ch-access-github']};
+  assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
+  await until(() => s.history().some((h) => h.pack === 'other' && h.problem != null));
+  assert.match(s.history().find((h) => h.pack === 'other').problem, /takes @countinghouse\/ch-access-github 0\.1\.1, which ci-failure-triage keeps at 0\.1\.0 for now/);
+  assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'), 'never loaded beside the old version');
+  s.end();
+  await s.done;
+});
