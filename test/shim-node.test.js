@@ -213,14 +213,19 @@ test('the shim\'s binary: found, missing (say reinstall), or unsupported (the pe
 
 // conditions --for <pid> ---------------------------------------------------
 
+// the release withPacks wrote the home's packs from (their pins'
+// credentials), which a conditions run reads through its io
+let packsRelease = null;
 function conditionsIo({env = {}, cwd, gh = {status: 1, stdout: ''}, ancestry} = {}) {
   const io = fakeIo({env, exec: (cmd) => (cmd === 'gh' ? gh : {status: 0, stdout: ''})});
+  if (packsRelease != null) io.release = packsRelease;
   io.cwd = cwd;
   io.clientAncestry = ancestry !== undefined ? ancestry : Promise.resolve({lines: null, policyPresent: false});
   return io;
 }
 const SECRET = Buffer.alloc(32, 0x5a);
 function homeWithSecret() {
+  packsRelease = null;
   const home = tmpHome();
   const run = path.join(home, 'run', 'daemon');
   fs.mkdirSync(run, {recursive: true, mode: 0o700});
@@ -409,7 +414,8 @@ test('conditions: the token the environment chooses, as its keyed hash; gh asked
 // choice the shared runtime lacks runs its own runtime), named by the
 // installed packs only: packs.json, as install writes it
 function withPacks(home, packs) {
-  fs.writeFileSync(path.join(home, 'packs.json'), JSON.stringify({runtime: {versions: {countinghouse: '8.0.0'}}, packs: Object.fromEntries(Object.entries(packs).map(([n, credentials]) => [n, {packages: {[`@countinghouse/ch-pack-${n}`]: '1.0.0'}, credentials}]))}));
+  require('./store-helpers').writeHome(home, Object.fromEntries(Object.keys(packs).map((n) => [n, {[`@countinghouse/ch-pack-${n}`]: '1.0.0'}])), {runtime: {countinghouse: '8.0.0'}});
+  packsRelease = {packs: Object.fromEntries(Object.entries(packs).map(([n, credentials]) => [n, {packages: [`@countinghouse/ch-pack-${n}`], credentials}]))};
 }
 const CRED_V = require('./vectors/credentials.json');
 
@@ -488,7 +494,7 @@ test('conditions: a line that would pass the shim\'s 4 KiB fails here, named, wi
   }
 });
 
-test('conditions: more than 32 chosen pack credentials, or packs.json that cannot be read, is a failure: no line, a non-zero exit', async() => {
+test('conditions: more than 32 chosen pack credentials, or a record that cannot be read, is a failure: no line, a non-zero exit', async() => {
   const home = homeWithSecret();
   try {
     const many = {};
@@ -498,7 +504,7 @@ test('conditions: more than 32 chosen pack credentials, or packs.json that canno
     let io = conditionsIo({env});
     assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
     assert.strictEqual(io.out, '');
-    fs.writeFileSync(path.join(home, 'packs.json'), '{not json');
+    fs.writeFileSync(path.join(home, 'modules.json'), '{not json');
     io = conditionsIo({env: {}});
     assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
     assert.strictEqual(io.out, '');

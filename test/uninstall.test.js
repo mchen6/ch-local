@@ -11,7 +11,6 @@ function setup() {
   const user = tmp('ch-user-');
   const home = path.join(user, '.countinghouse');
   const files = {
-    'packs.json': JSON.stringify({runtime: {versions: {}}, packs: {'ci-failure-triage': {packages: {}, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}, other: {packages: {}, credentials: ['OTHER_TOKEN', 'GITHUB_TOKEN']}}}),
     'settings.json': '{"autoUpgrade": false}',
     'auth.json': '{"keys": ["k"]}',
     'run/4242/remote-credentials.json': '{}',
@@ -29,9 +28,16 @@ function setup() {
     fs.mkdirSync(path.dirname(path.join(home, f)), {recursive: true});
     fs.writeFileSync(path.join(home, f), body);
   }
+  // two packs installed, in the module store and modules.json
+  const {storeModule, writeHome} = require('./store-helpers');
+  storeModule(home, '@countinghouse/ch-pack-ci-failure-triage', '1.0.0', {countinghouse: {role: 'scenario'}});
+  storeModule(home, '@countinghouse/ch-pack-other', '1.0.0', {countinghouse: {role: 'scenario'}});
+  writeHome(home, {'ci-failure-triage': {'@countinghouse/ch-pack-ci-failure-triage': '1.0.0'}, other: {'@countinghouse/ch-pack-other': '1.0.0'}});
   return {user, home, done: () => fs.rmSync(user, {recursive: true, force: true})};
 }
-const io = (s, answers) => fakeIo({env: {GITHUB_TOKEN: 'secret-value-123'}, homedir: s.user, answers});
+// the running release's pins give each pack its credentials
+const RELEASE = {packs: {'ci-failure-triage': {credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}, other: {credentials: ['OTHER_TOKEN', 'GITHUB_TOKEN']}}};
+const io = (s, answers) => Object.assign(fakeIo({env: {GITHUB_TOKEN: 'secret-value-123'}, homedir: s.user, answers}), {release: RELEASE});
 
 test('uninstall lists the home directory and deletes nothing without a yes', async () => {
   const s = setup();
@@ -74,7 +80,7 @@ test('--keep-data keeps the data and removes the program, the identity secret an
     for (const kept of ['store/kv.json', 'module_data/ch-access-github/x', 'usage/1.jsonl', 'data/pack-ci-failure-triage/r/fingerprints.json']) assert.ok(has(kept), kept);
     // run/ holds each start's own files: program, not data. settings.json is
     // the user's (with its history): kept, so a reinstall keeps their tightenings.
-    for (const gone of ['app', 'bin', 'node', 'store/.identity-secret', 'auth.json', 'packs.json', 'run', 'modules']) assert.ok(!has(gone), gone);
+    for (const gone of ['app', 'bin', 'node', 'store/.identity-secret', 'auth.json', 'modules.json', 'module-store', 'run', 'modules']) assert.ok(!has(gone), gone);
   } finally {
     s.done();
   }

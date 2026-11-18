@@ -60,4 +60,14 @@ function setPackCredentials(home, credentials) {
   fs.writeFileSync(path.join(home, CREDENTIALS_FILE), JSON.stringify(credentials));
 }
 
-module.exports = {storeModule, writeHome, roleOf, setPackCredentials, CREDENTIALS_FILE};
+// modules.json changed as an operation would write it (its own writer: the
+// derived modules and withdrawn). fn(record) -> the record to write;
+// release: the pins withdrawn is derived from (by default, every pack listed).
+function editHome(home, fn, {release = null} = {}) {
+  const file = path.join(home, 'modules.json');
+  const next = fn(JSON.parse(fs.readFileSync(file, 'utf8')));
+  const lists = release != null ? release : {packs: Object.fromEntries(Object.entries(next.packs).map(([p, e]) => [p, {packages: Object.keys(e.modules)}]))};
+  return writeModulesRecord({modulesRecord: file}, next, {roleOf: roleOf(home), release: lists});
+}
+
+module.exports = {storeModule, writeHome, editHome, roleOf, setPackCredentials, CREDENTIALS_FILE};

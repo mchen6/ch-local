@@ -30,13 +30,10 @@ function home({extra = []} = {}) {
   fs.chmodSync(h, 0o700);
   const pkgs = {'@countinghouse/ch-pack-ci-failure-triage': {role: 'scenario'}, [ACCESS]: {role: 'part', remotes: [GITHUB]}};
   for (const m of extra) pkgs[m] = {role: 'part', remotes: [GITHUB]};
-  for (const [name, countinghouse] of Object.entries(pkgs)) {
-    const at = path.join(h, 'app', 'node_modules', ...name.split('/'));
-    fs.mkdirSync(at, {recursive: true});
-    fs.writeFileSync(path.join(at, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse}));
-  }
-  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: {countinghouse: '1.0.0'}}, packs: {
-    'ci-failure-triage': {packages: Object.fromEntries(Object.keys(pkgs).map((n) => [n, '1.0.0'])), credentials: [VAR, 'GITHUB_TOKEN']}}}));
+  // the modules in the store, modules.json, and the release's pins' credentials
+  const {storeModule, writeHome} = require('./store-helpers');
+  for (const [name, countinghouse] of Object.entries(pkgs)) storeModule(h, name, '1.0.0', {countinghouse});
+  writeHome(h, {'ci-failure-triage': Object.fromEntries(Object.keys(pkgs).map((n) => [n, '1.0.0']))}, {credentials: {'ci-failure-triage': [VAR, 'GITHUB_TOKEN']}});
   return h;
 }
 const io = (h, {terminal = true, typed = null, env = {}} = {}) => {
@@ -346,14 +343,14 @@ test('a token typed where the name or --module goes is never shown back', async 
 
 test('the binding: a pack whose manifest can\'t be read is refused, never skipped; a GITHUB_TOKEN-only module counts; a remote whose origin is not allowed does not', async () => {
   const broken = home({extra: ['@countinghouse/ch-access-github-mirror']});
-  fs.rmSync(path.join(broken, 'app', 'node_modules', '@countinghouse', 'ch-access-github-mirror', 'package.json'));
+  fs.rmSync(path.join(broken, 'module-store', '@countinghouse', 'ch-access-github-mirror', '1.0.0', 'package.json'));
   const f = io(broken, {typed: made()});
   assert.notStrictEqual(await credentials({action: 'add', name: 'github'}, f), 0);
   assert.match(f.err, /the installed pack ci-failure-triage can't be read; run `ch-local install` again\. Nothing was changed\./);
   assert.strictEqual(store.get(broken, VAR), null, 'never bound to the one module still visible');
   // only GITHUB_TOKEN, and a remote to an origin the release doesn't allow
   const h = home();
-  const access = path.join(h, 'app', 'node_modules', ...ACCESS.split('/'), 'package.json');
+  const access = path.join(h, 'module-store', ...ACCESS.split('/'), '1.0.0', 'package.json');
   fs.writeFileSync(access, JSON.stringify({name: ACCESS, version: '1.0.0', countinghouse: {role: 'part', remotes: [{...GITHUB, credential: {env: 'GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]}}));
   assert.deepStrictEqual(require('../lib/credentials-command').declaringModules(require('../lib/home').layout({COUNTINGHOUSE_HOME: h}), ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']), [ACCESS]);
   fs.writeFileSync(access, JSON.stringify({name: ACCESS, version: '1.0.0', countinghouse: {role: 'part', remotes: [{...GITHUB, url: 'https://example.invalid/mcp/'}]}}));

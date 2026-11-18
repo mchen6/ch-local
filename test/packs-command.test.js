@@ -14,7 +14,8 @@ async function installed(r = release(), env = {}) {
   const home = tmp('ch-home-');
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 0, io.err);
-  return {home, r, io: (more = {}) => fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env, ...more}, exec: npm()})};
+  // the running release: r's (its pins give each pack its credentials)
+  return {home, r, io: (more = {}) => Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env, ...more}, exec: npm()}), {release: r.allow})};
 }
 
 test('add-pack installs a second pack beside the first and shares an installed part at the pinned version', async () => {
@@ -25,8 +26,8 @@ test('add-pack installs a second pack beside the first and shares an installed p
   for (const name of ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-other']) assert.ok(fs.existsSync(path.join(pkgDir(s.home, name), 'package.json')), name);
   assert.strictEqual(fs.statSync(path.join(pkgDir(s.home, '@countinghouse/ch-step-redact'), 'package.json')).mtimeMs, before, 'the shared part is not unpacked again');
   assert.deepStrictEqual(Object.keys(record(s.home).packs), ['ci-failure-triage', 'other']);
-  assert.deepStrictEqual(record(s.home).packs.other.packages, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});
-  assert.match(io.out, /shares @countinghouse\/ch-step-redact/);
+  assert.deepStrictEqual(record(s.home).packs.other.modules, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});
+  assert.match(io.out, /it shares ch-step-redact with the packs already installed/);
   assert.deepStrictEqual(io.execs, [], 'no npm: packs are unpacked');
 });
 
@@ -88,32 +89,20 @@ test('add-pack before any install says to install first; an installed pack is le
   assert.match(again.out, /already installed/);
 });
 
-// A home an earlier ch-local made: every pack's packages in the flat app
-// (packs in place keeps reading it, and removes from it as before).
-const flatDir = (home, name) => path.join(home, 'app', 'node_modules', ...name.split('/'));
-function flatten(home) {
-  const rec = record(home);
-  for (const [pack, p] of Object.entries(rec.packs)) {
-    for (const name of Object.keys(p.packages)) {
-      if (fs.existsSync(flatDir(home, name))) continue;
-      fs.mkdirSync(path.dirname(flatDir(home, name)), {recursive: true});
-      fs.renameSync(pkgDir(home, name, pack), flatDir(home, name));
-    }
-  }
-  fs.rmSync(path.join(home, 'packs'), {recursive: true, force: true});
-}
-
-test('remove-pack in a flat home keeps a part another pack calls and removes one no pack calls', async () => {
+// #413 sections 9.5 and 9.10: remove-pack takes the pack out of the record;
+// a module version another pack records stays, the ones no pack records go
+// with collection
+test('remove-pack keeps a module version another pack records and collects the ones no pack records', async () => {
   const s = await installed();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
-  flatten(s.home);
+  const store = (n, v) => path.join(s.home, 'module-store', ...n.split('/'), v);
   const io = s.io();
   assert.strictEqual(await removePack({pack: 'other'}, io), 0, io.err);
-  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-pack-other')));
-  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-other')));
-  assert.ok(fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-redact')), 'ci-failure-triage still calls it');
-  assert.match(io.out, /kept @countinghouse\/ch-step-redact/);
+  assert.ok(!fs.existsSync(store('@countinghouse/ch-pack-other', '0.3.0')));
+  assert.ok(!fs.existsSync(store('@countinghouse/ch-step-other', '0.2.0')));
+  assert.ok(fs.existsSync(store('@countinghouse/ch-step-redact', '0.1.0')), 'ci-failure-triage still records it');
   assert.deepStrictEqual(Object.keys(record(s.home).packs), ['ci-failure-triage']);
+  assert.ok(!('@countinghouse/ch-pack-other' in record(s.home).modules));
   const io2 = s.io();
   assert.strictEqual(await removePack({pack: 'other'}, io2), 1);
   assert.match(io2.err, /the pack "other" is not installed/);
@@ -192,23 +181,6 @@ test('a part at another version names a way forward that exists: a clean install
   assert.match(io.err, /install the newer release with `ch-local install --pack ci-failure-triage --from <its directory>`, then add-pack other/);
 });
 
-test('remove-pack in a flat home records the removal first, so a package that cannot be deleted leaves start working, and says what is left', async () => {
-  const s = await installed();
-  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
-  flatten(s.home);
-  const real = fs.rmSync;
-  try {
-    fs.rmSync = (p, o) => { if (String(p).endsWith('ch-pack-other')) { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } return real(p, o); };
-    const io = s.io();
-    assert.strictEqual(await removePack({pack: 'other'}, io), 1);
-    assert.match(io.err, /could not delete .*ch-pack-other \(EBUSY\)/);
-  } finally {
-    fs.rmSync = real;
-  }
-  assert.deepStrictEqual(Object.keys(record(s.home).packs), ['ci-failure-triage'], 'the record no longer lists it');
-  assert.ok(!fs.existsSync(flatDir(s.home, '@countinghouse/ch-step-other')), 'the rest went');
-});
-
 test('a home made by an earlier development launcher (installed.json only) is told to reinstall', async () => {
   const home = tmp('ch-home-');
   fs.writeFileSync(path.join(home, 'installed.json'), JSON.stringify({pack: 'ci-failure-triage', versions: {}, credentials: []}));
@@ -237,11 +209,12 @@ test('install, add-pack and remove-pack hold the home\'s lock: a live holder sto
   assert.ok(!fs.existsSync(lock), 'released after');
 });
 
-test('a record whose pack entries are malformed is refused once, by readRecord, and status answers rather than throws', async () => {
-  for (const body of ['{}', JSON.stringify({runtime: {versions: {}}, packs: {x: {}}}), JSON.stringify({runtime: {versions: {}}, packs: {x: {packages: {a: 1}, credentials: []}}}),
-    JSON.stringify({runtime: {versions: {}}, packs: {x: {packages: {}, credentials: 'GITHUB_TOKEN'}}})]) {
+test('a record whose pack entries are malformed is refused once, by the record\'s reader, and status answers rather than throws', async () => {
+  const base = {v: 2, runtime: {versions: {}}, release: null, unreleased: false, modules: {}, withdrawn: []};
+  for (const body of ['{}', JSON.stringify({...base, packs: {x: {}}}), JSON.stringify({...base, packs: {x: {from: {release: '1.0.0'}, modules: {a: 1}}}}),
+    JSON.stringify({...base, packs: {x: {from: 'latest', modules: {a: '1.0.0'}}}})]) {
     const home = tmp('ch-home-');
-    fs.writeFileSync(path.join(home, 'packs.json'), body);
+    fs.writeFileSync(path.join(home, 'modules.json'), body);
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(await status({}, io), 1, body);
     assert.match(io.err, /is not a ch-local record/, body);
@@ -324,40 +297,37 @@ test('another host\'s lock counts while its heartbeat is fresh, and is cleared o
   assert.ok(!fs.existsSync(lock));
 });
 
-// Withdrawn packs, held (the review of #74): what an upgrade that withdraws a
-// pack writes, as lib/install.js's runtime-only path does.
+// Withdrawn by the record (#413 section 9.7): an upgrade to a release that no
+// longer lists a pack writes its modules into the record's withdrawn list;
+// the pack stays recorded.
 function withdrawHeld(home, name) {
-  const f = path.join(home, 'packs.json');
-  const r = JSON.parse(fs.readFileSync(f, 'utf8'));
-  const {[name]: entry, ...rest} = r.packs;
-  fs.writeFileSync(f, JSON.stringify({...r, packs: rest, held: {...(r.held || {}), [name]: {...entry, installedUnder: '0.1.0', withdrawn: true}}}, null, 2));
+  const {editHome} = require('./store-helpers');
+  const packs = JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8')).packs;
+  editHome(home, (r) => r, {release: {packs: Object.fromEntries(Object.entries(packs).filter(([p]) => p !== name).map(([p, e]) => [p, {packages: Object.keys(e.modules)}]))}});
 }
 
-test('a pack held as withdrawn: status says so; an install over it keeps it held; remove-pack removes it and its files', async () => {
+test('a pack the record lists as withdrawn: status says so; remove-pack removes it and its module versions; an install that lists it again brings it to its pins', async () => {
   const s = await installed();
   withdrawHeld(s.home, 'ci-failure-triage');
   const st = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
   assert.strictEqual(await status({}, st), 0, st.err);
   assert.match(st.out, /ci-failure-triage: withdrawn in this release, so it is not started; `ch-local remove-pack ci-failure-triage` removes it/);
   assert.doesNotMatch(st.out, /no pack is installed/);
-  // remove-pack: the held entry goes, and its tree with it
-  const tree = path.join(s.home, 'packs', 'ci-failure-triage');
-  assert.ok(fs.existsSync(tree), 'its files are there while it is held');
+  const scenario = path.join(s.home, 'module-store', '@countinghouse', 'ch-pack-ci-failure-triage', '0.1.0');
+  assert.ok(fs.existsSync(scenario), 'its files are there while it is recorded');
   const rm = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
   assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, rm), 0, rm.err);
   assert.match(rm.out, /removed the withdrawn pack "ci-failure-triage"/);
-  assert.strictEqual(record(s.home).held, undefined);
-  assert.ok(!fs.existsSync(tree) || fs.readdirSync(tree).length === 0, 'its files are collected');
-  // an install over a held withdrawn pack: dropped, never "add it again"
+  assert.deepStrictEqual(record(s.home).packs, {});
+  assert.ok(!fs.existsSync(scenario), 'its module versions are collected');
+  // an install from a release that lists it again: at its pins, not withdrawn
   const t = await installed();
   withdrawHeld(t.home, 'ci-failure-triage');
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: t.home}, exec: npm()});
   assert.strictEqual(await install({pack: 'other', from: t.r.from}, io, t.r.allow), 0, io.err);
-  // nothing deleted: carried as held, never "dropped"; this release lists it
-  // again, so it is marked relisted and the user told how to add it back
-  assert.strictEqual(record(t.home).held['ci-failure-triage'].relisted, true);
-  assert.doesNotMatch(io.out, /ci-failure-triage" was dropped/);
-  assert.match(io.out, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
+  assert.deepStrictEqual(record(t.home).withdrawn, []);
+  assert.match(io.out, /the pack "ci-failure-triage" is at this release's pins/);
+  assert.doesNotMatch(io.out, /adds it back|was dropped/);
 });
 
 test('the record takes a held pack marked withdrawn, and refuses a withdrawn mark that is not true', () => {
@@ -370,13 +340,15 @@ test('the record takes a held pack marked withdrawn, and refuses a withdrawn mar
   assert.throws(() => readRecord({home, packs: path.join(home, 'packs.json')}), /not a ch-local record/);
 });
 
-test('remove-pack of a withdrawn pack removes it from the rollback copy\'s held too: a rollback never brings it back', async () => {
+test('remove-pack of a withdrawn pack removes it from the rollback\'s kept record too: a rollback never brings it back', async () => {
   const s = await installed();
-  withdrawHeld(s.home, 'ci-failure-triage');
-  const held = JSON.parse(fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8')).held;
+  // the kept record (the release before) had the pack, as the current one does
   fs.mkdirSync(path.join(s.home, 'previous'), {recursive: true});
-  fs.writeFileSync(path.join(s.home, 'previous', 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {}, held}));
+  fs.copyFileSync(path.join(s.home, 'modules.json'), path.join(s.home, 'previous', 'modules.json'));
+  withdrawHeld(s.home, 'ci-failure-triage');
   const rm = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
   assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, rm), 0, rm.err);
-  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'previous', 'packs.json'), 'utf8')).held, undefined);
+  const kept = JSON.parse(fs.readFileSync(path.join(s.home, 'previous', 'modules.json'), 'utf8'));
+  assert.deepStrictEqual(kept.packs, {});
+  assert.deepStrictEqual(kept.modules, {});
 });

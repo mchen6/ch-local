@@ -83,8 +83,8 @@ test('a pack the older release lacks stays recorded but is not loaded, and statu
   const rec = record(s.home);
   assert.deepStrictEqual(Object.keys(rec.packs), ['ci-failure-triage']);
   assert.deepStrictEqual(Object.keys(rec.held), ['other']);
-  assert.strictEqual(rec.held.other.installedUnder, '0.3.0');
-  assert.deepStrictEqual(installedPacks({packs: path.join(s.home, 'packs.json')}).map((p) => p.name), ['ci-failure-triage'], 'start loads only what this release has');
+  assert.deepStrictEqual(rec.held.other.from, {release: '0.3.0'});
+  assert.deepStrictEqual(installedPacks(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home})).map((p) => p.name), ['ci-failure-triage'], 'start loads only what this release has');
   assert.match(io.out, /the pack "other" needs ch-local 0\.3\.0; it stays recorded and is not loaded/);
   const st = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
   await status({}, st);
@@ -176,14 +176,14 @@ test('a rename that fails part-way puts everything back: the newer release is ne
 
 test('a rollback interrupted after the swap is finished by the next rollback; meanwhile every command says so', async () => {
   const s = await upgraded();
-  const rec = require('../lib/record');
-  const realWrite = rec.writeRecord;
+  const rec = require('../lib/module-record');
+  const realWrite = rec.writeRecordAsIs;
   let calls = 0;
-  rec.writeRecord = (...a) => { calls++; if (calls === 2) throw new Error('killed'); return realWrite(...a); };
+  rec.writeRecordAsIs = (...a) => { calls++; if (calls === 2) throw new Error('killed'); return realWrite(...a); };
   try {
     await assert.rejects(rollback({}, rio(s.home)), /killed/);
   } finally {
-    rec.writeRecord = realWrite;
+    rec.writeRecordAsIs = realWrite;
   }
   assert.ok(fs.existsSync(path.join(s.home, 'rollback.journal')));
   const st = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
@@ -194,13 +194,13 @@ test('a rollback interrupted after the swap is finished by the next rollback; me
   assert.match(fin.out, /finished the interrupted rollback to 0\.2\.0/);
   assert.strictEqual(versionOf(s.home, REDACT), '0.1.0');
   assert.strictEqual(record(s.home).release.version, '0.2.0', 'the record matches the app');
-  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'previous', 'packs.json'), 'utf8')).release.version, '0.3.0');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'previous', 'modules.json'), 'utf8')).release.version, '0.3.0');
   assert.ok(!fs.existsSync(path.join(s.home, 'rollback.journal')));
 });
 
 test('a kept release older than rollback itself is refused: it could never come back', async () => {
   const s = await upgraded();
-  const file = path.join(s.home, 'previous', 'packs.json');
+  const file = path.join(s.home, 'previous', 'modules.json');
   const kept = JSON.parse(fs.readFileSync(file, 'utf8'));
   delete kept.release;
   fs.writeFileSync(file, JSON.stringify(kept));
@@ -208,6 +208,18 @@ test('a kept release older than rollback itself is refused: it could never come 
   assert.strictEqual(await rollback({}, io), 1);
   assert.match(io.err, /the kept release predates rollback, so it could not return you here; install it again instead/);
   assert.strictEqual(versionOf(s.home, REDACT), '0.2.0');
+});
+
+// #413 section 10: a kept release from before the module store keeps its
+// record as packs.json, which this release does not read
+test('a kept release from before the module store is refused: it could not return you here', async () => {
+  const s = await upgraded();
+  const prev = path.join(s.home, 'previous');
+  fs.renameSync(path.join(prev, 'modules.json'), path.join(prev, 'packs.json'));
+  const io = rio(s.home);
+  assert.strictEqual(await rollback({}, io), 1);
+  assert.match(io.err, /the kept release predates the module store, so it could not return you here; install it again instead/);
+  assert.strictEqual(versionOf(s.home, REDACT), '0.2.0', 'nothing changed');
 });
 
 test('held packs: remove-pack removes one, uninstall names its credentials, and an install over them keeps them held', async () => {
@@ -219,6 +231,9 @@ test('held packs: remove-pack removes one, uninstall names its credentials, and 
   assert.strictEqual(await addPack({pack: 'other', from: u.r2.from}, fakeIo({env: {COUNTINGHOUSE_HOME: u.home}}), u.r2.allow), 0);
   assert.strictEqual(await rollback({}, rio(u.home)), 0);
   const un = fakeIo({env: {COUNTINGHOUSE_HOME: u.home}, homedir: tmp('ch-user-'), answers: ['yes']});
+  // the running release (after the rollback, r1's) lists other: held only
+  // because the restored record lacked it; its pins give its credential
+  un.release = u.r1.allow;
   assert.strictEqual(await require('../lib/uninstall').uninstall({}, un), 0, un.err);
   assert.match(un.out, /revoke the credentials you gave it: .*OTHER_TOKEN/i, 'a held pack\'s credential is named too');
   const again = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
@@ -241,7 +256,7 @@ test('rolling forward labels a pack added under the older release by that releas
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
   assert.strictEqual(await addPack({pack: 'other', from: s.r1.from}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}}), s.r1.allow), 0);
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
-  assert.strictEqual(record(s.home).held.other.installedUnder, '0.2.0');
+  assert.strictEqual(record(s.home).held.other.from.release, '0.2.0');
 });
 
 // The /code-review medium of rollback-2 (2026-11-12).
@@ -249,13 +264,13 @@ test('rolling forward labels a pack added under the older release by that releas
 // Stops a rollback after its swap, before either record is written: the
 // journal stays and the apps are already swapped.
 async function killedAfterSwap(home) {
-  const rec = require('../lib/record');
-  const realWrite = rec.writeRecord;
-  rec.writeRecord = () => { throw new Error('killed'); };
+  const rec = require('../lib/module-record');
+  const realWrite = rec.writeRecordAsIs;
+  rec.writeRecordAsIs = () => { throw new Error('killed'); };
   try {
     await assert.rejects(rollback({}, rio(home)), /killed/);
   } finally {
-    rec.writeRecord = realWrite;
+    rec.writeRecordAsIs = realWrite;
   }
   assert.ok(fs.existsSync(path.join(home, 'rollback.journal')));
 }
@@ -266,13 +281,13 @@ test('an install while a rollback is interrupted refuses and moves nothing', asy
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
   const listing = (dir) => fs.readdirSync(dir, {recursive: true}).sort();
   const appBefore = listing(path.join(s.home, 'app'));
-  const packsBefore = listing(path.join(s.home, 'packs'));
+  const storeBefore = listing(path.join(s.home, 'module-store'));
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: s.r2.from}, io, s.r2.allow), 1);
   assert.match(io.err, /a rollback was interrupted; run `ch-local rollback` to finish it/);
   assert.ok(fs.existsSync(path.join(s.home, 'rollback.journal')), 'the journal is kept');
-  // the packs are in their own trees (packs in place): nothing of either moved
+  // the modules are in the store: nothing of either release moved
   assert.deepStrictEqual(listing(path.join(s.home, 'app')), appBefore, 'the swapped app is untouched');
-  assert.deepStrictEqual(listing(path.join(s.home, 'packs')), packsBefore, 'the pack trees are untouched');
+  assert.deepStrictEqual(listing(path.join(s.home, 'module-store')), storeBefore, 'the module store is untouched');
   assert.ok(fs.existsSync(path.join(s.home, 'previous', 'app', 'node_modules')), 'the newer release is kept');
   const fin = rio(s.home);
   assert.strictEqual(await rollback({}, fin), 0, fin.err);
@@ -307,7 +322,7 @@ test('reinstalling the current release keeps the release rollback returns to', a
   const s = await upgraded();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: s.r2.from}, io, s.r2.allow), 0, io.err);
-  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'previous', 'packs.json'), 'utf8')).release.version, '0.2.0');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'previous', 'modules.json'), 'utf8')).release.version, '0.2.0');
   const rb = rio(s.home);
   assert.strictEqual(await rollback({}, rb), 0, rb.err);
   assert.match(rb.out, /rolled back from ch-local 0\.3\.0 to 0\.2\.0/);
@@ -374,8 +389,8 @@ test('a running daemon is told: a rollback appends an upgrade request, after the
 test('rollback swaps the shim with the release: the restored record\'s shim comes back, and again forward', async () => {
   const s = await upgraded();
   const patch = (file, shim) => { const rec = JSON.parse(fs.readFileSync(file, 'utf8')); if (shim == null) delete rec.shim; else rec.shim = shim; fs.writeFileSync(file, JSON.stringify(rec)); };
-  patch(path.join(s.home, 'packs.json'), {package: '@countinghouse/ch-shim-linux-x64', version: '0.6.0'});
-  patch(path.join(s.home, 'previous', 'packs.json'), {package: '@countinghouse/ch-shim-linux-x64', version: '0.5.0'});
+  patch(path.join(s.home, 'modules.json'), {package: '@countinghouse/ch-shim-linux-x64', version: '0.6.0'});
+  patch(path.join(s.home, 'previous', 'modules.json'), {package: '@countinghouse/ch-shim-linux-x64', version: '0.5.0'});
   const dir = path.join(s.home, 'shim');
   fs.mkdirSync(dir);
   const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
@@ -409,33 +424,16 @@ test('the review of #48: the version rolled back from is declined, so the automa
   assert.deepStrictEqual(require('../lib/upgrade-stamp').readStamp(s.home).stamp.declined, [left]);
 });
 
-// Withdrawn packs, held (the review of the held design): a rollback to the
-// release that had the pack brings it back; rolling forward again holds it
-// as withdrawn still, never as a pack "installed under" the older release.
-test('rolling back past a withdrawal and forward again keeps the pack held as withdrawn', async () => {
+// Withdrawn by the record (#413 section 9.7): each record's withdrawn list is
+// derived by the release that wrote it, from its own pins, so a rollback
+// swaps the records as they are, never re-deriving either
+test('a rollback round trip keeps each record\'s own withdrawn list', async () => {
   const s = await upgraded();
-  const f = path.join(s.home, 'packs.json');
+  const f = path.join(s.home, 'modules.json');
   const cur = JSON.parse(fs.readFileSync(f, 'utf8'));
-  const {'ci-failure-triage': entry, ...rest} = cur.packs;
-  fs.writeFileSync(f, JSON.stringify({...cur, packs: rest, held: {'ci-failure-triage': {...entry, installedUnder: '0.2.0', withdrawn: true}}}, null, 2));
+  fs.writeFileSync(f, JSON.stringify({...cur, withdrawn: ['@countinghouse/ch-step-redact']}));
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
-  assert.ok(record(s.home).packs['ci-failure-triage'] != null, 'back as an installed pack under the release that had it');
+  assert.deepStrictEqual(record(s.home).withdrawn, [], 'the older release withdrew nothing');
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
-  const fwd = record(s.home);
-  assert.deepStrictEqual(Object.keys(fwd.packs), []);
-  assert.strictEqual(fwd.held['ci-failure-triage'].withdrawn, true, JSON.stringify(fwd.held));
-});
-
-test('a rollback round trip keeps each release\'s own held marks, relisted too', async () => {
-  const s = await upgraded();
-  const f = path.join(s.home, 'packs.json');
-  const prev = path.join(s.home, 'previous', 'packs.json');
-  const p = {packages: {}, credentials: [], installedUnder: '0.2.0'};
-  fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone: {...p, relisted: true}}}));
-  fs.writeFileSync(prev, JSON.stringify({...JSON.parse(fs.readFileSync(prev, 'utf8')), held: {gone: {...p, withdrawn: true}}}));
-  assert.strictEqual(await rollback({}, rio(s.home)), 0);
-  assert.strictEqual(record(s.home).held.gone.withdrawn, true, 'the older release held it withdrawn');
-  assert.strictEqual(await rollback({}, rio(s.home)), 0);
-  assert.strictEqual(record(s.home).held.gone.relisted, true, 'the newer release held it relisted');
-  assert.strictEqual(record(s.home).held.gone.withdrawn, undefined);
+  assert.deepStrictEqual(record(s.home).withdrawn, ['@countinghouse/ch-step-redact'], 'the newer release\'s own list, as it wrote it');
 });

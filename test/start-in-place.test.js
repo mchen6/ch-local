@@ -16,17 +16,7 @@ const {release, npm} = require('./install-helpers');
 // what a control request names: a load's or unload's name, a reload's names
 // (the module form, #413 section 7.3)
 const named = (m) => (m.name != null ? m.name : (Array.isArray(m.names) ? m.names.join(',') : undefined));
-// modules.json changed as an operation would write it (its own writer: the
-// derived modules and withdrawn). fn(record) -> the record to write;
-// release: the pins withdrawn is derived from (by default, every pack listed).
-function editRecord(home, fn, {release = null} = {}) {
-  const {writeModulesRecord} = require('../lib/module-record');
-  const {roleOf} = require('./store-helpers');
-  const file = path.join(home, 'modules.json');
-  const next = fn(JSON.parse(fs.readFileSync(file, 'utf8')));
-  const lists = release != null ? release : {packs: Object.fromEntries(Object.entries(next.packs).map(([p, e]) => [p, {packages: Object.keys(e.modules)}]))};
-  return writeModulesRecord({modulesRecord: file}, next, {roleOf: roleOf(home), release: lists});
-}
+const editRecord = (...a) => require('./store-helpers').editHome(...a);
 const TRIAGE_LOADED = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.1.0'};
 const until = async (cond, ms = 10000) => {
   for (const t = Date.now(); Date.now() - t < ms; await new Promise((r) => setTimeout(r, 20))) if (cond()) return;

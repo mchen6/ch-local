@@ -10,8 +10,11 @@ const {fakeIo, tmp} = require('./fake-io');
 function setup(versions = {'@countinghouse/ch-local': '0.2.0', '@countinghouse/ch-step-redact': '0.1.0'}, {unreleased = false} = {}) {
   const home = tmp('ch-home-');
   const runtime = Object.fromEntries(Object.entries(versions).filter(([n]) => n === '@countinghouse/ch-local' || n === 'countinghouse'));
-  const pack = Object.fromEntries(Object.entries(versions).filter(([n]) => runtime[n] == null));
-  fs.writeFileSync(path.join(home, 'packs.json'), JSON.stringify({runtime: {versions: runtime}, packs: {'ci-failure-triage': {packages: pack, credentials: []}}, unreleased}));
+  const given = Object.fromEntries(Object.entries(versions).filter(([n]) => runtime[n] == null));
+  // the pack's modules (its scenario when none is given): modules.json by
+  // its own writer
+  const pack = Object.keys(given).length > 0 ? given : {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0'};
+  require('./store-helpers').writeHome(home, {'ci-failure-triage': pack}, {runtime, unreleased});
   return {home, done: () => fs.rmSync(home, {recursive: true, force: true})};
 }
 // The npm registry's abbreviated metadata, by package.
@@ -26,7 +29,7 @@ const registry = (latest) => async (url) => {
 // registry and the test root reach it only as its test-only argument.
 const {npmWorld} = require('./npm-world');
 const {release, npm} = require('./install-helpers');
-const recordOf = (home) => JSON.parse(fs.readFileSync(path.join(home, 'packs.json'), 'utf8'));
+const recordOf = (home) => JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8'));
 const historyOf = (home) => { try { return fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (e) { return []; } };
 const realFetch = (url, opts) => globalThis.fetch(url, opts);
 // at a terminal: the yes is a person's (the review of #48)
@@ -37,13 +40,13 @@ test('upgrade shows the installed and the newer ch-local, checked; a no changes 
   const w = await npmWorld(release());
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
-    const before = fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8');
+    const before = fs.readFileSync(path.join(s.home, 'modules.json'), 'utf8');
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.match(io.out, /ch-local 0\.1\.0 -> 0\.2\.0, its provenance checked/);
     assert.match(io.out, /nothing changed/);
     assert.strictEqual(io.asked.length, 1);
     assert.deepStrictEqual(io.execs, []);
-    assert.strictEqual(fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8'), before);
+    assert.strictEqual(fs.readFileSync(path.join(s.home, 'modules.json'), 'utf8'), before);
   } finally {
     await w.close();
     s.done();
@@ -265,9 +268,7 @@ test('the yes is a person\'s at a terminal: a piped answer installs nothing; a n
     assert.match(no.out, /under semver a 0\.x minor or 0\.0\.x patch may break what works now/);
     const over = tty({env: {COUNTINGHOUSE_HOME: s.home, CH_LOCAL_DEV: '1'}, answers: ['yes'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, over, w.fromNpm), 1);
-    const rec = recordOf(s.home);
-    rec.packs.other = {packages: {}, credentials: []};
-    fs.writeFileSync(path.join(s.home, 'packs.json'), JSON.stringify(rec));
+    require('./store-helpers').editHome(s.home, (rec) => ({...rec, packs: {...rec.packs, other: {from: {release: '0.2.0'}, modules: {'@countinghouse/ch-pack-other': '0.3.0'}}}}));
     const several = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, several, w.fromNpm), 1);
     assert.deepStrictEqual(historyOf(s.home).map((e) => [e.outcome, e.reason || null]),
@@ -300,9 +301,9 @@ test('a release that withdraws the home\'s one pack upgrades: the runtime instal
     const {layout} = require('../lib/home');
     const where = layout({COUNTINGHOUSE_HOME: s.home});
     const entry = recordOf(s.home).packs['ci-failure-triage'];
-    const dir = require('../lib/pack-dir').packDir(where, 'ci-failure-triage', require('../lib/pack-dir').packKey(entry.packages));
-    fs.mkdirSync(dir, {recursive: true});
-    fs.writeFileSync(path.join(dir, 'pack-file'), 'the pack\'s own bytes');
+    // the pack's scenario in the module store
+    const dir = require('./store-helpers').storeModule(s.home, '@countinghouse/ch-pack-ci-failure-triage', '0.1.0',
+      {countinghouse: {role: 'scenario'}, files: {'pack-file': 'the pack\'s own bytes'}});
     fs.mkdirSync(path.join(where.moduleData, 'ch-pack-ci-failure-triage'), {recursive: true});
     fs.writeFileSync(path.join(where.moduleData, 'ch-pack-ci-failure-triage', 'state.json'), '{"kept":true}');
     const bytes = () => ({pack: fs.readFileSync(path.join(dir, 'pack-file'), 'utf8'), data: fs.readFileSync(path.join(where.moduleData, 'ch-pack-ci-failure-triage', 'state.json'), 'utf8')});
@@ -316,10 +317,11 @@ test('a release that withdraws the home\'s one pack upgrades: the runtime instal
     assert.doesNotMatch(io.out, /was dropped/);
     const after = recordOf(s.home);
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.2.0', 'the runtime upgraded');
-    // the pack moves to held, marked withdrawn: start, the running start's
-    // applier, add-pack and install never take it for an installed pack
-    assert.deepStrictEqual(after.packs, {}, 'no longer an installed pack');
-    assert.deepStrictEqual(after.held, {'ci-failure-triage': {...entry, installedUnder: '0.1.0', withdrawn: true}}, 'held, its entry kept, marked withdrawn');
+    // the pack stays recorded as it was; the record's withdrawn list names its
+    // modules, so start and a running start's applier never load it (#413
+    // section 9.7)
+    assert.deepStrictEqual(after.packs['ci-failure-triage'], entry, 'its entry kept');
+    assert.deepStrictEqual(after.withdrawn, ['@countinghouse/ch-pack-ci-failure-triage']);
     assert.deepStrictEqual(bytes(), before, 'its files and data byte for byte');
     const h = historyOf(s.home);
     assert.deepStrictEqual(h.filter((e) => e.kind === 'upgrade').map((e) => [e.outcome, e.to]), [['installed', '0.2.0']]);
@@ -345,14 +347,14 @@ test('a release that withdraws the pack: its runtime packages are verified as an
     const s = setup({'@countinghouse/ch-local': '0.1.0'});
     const w = await npmWorld(release(), opts);
     try {
-      const before = fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8');
+      const before = fs.readFileSync(path.join(s.home, 'modules.json'), 'utf8');
       const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
       assert.strictEqual(await upgrade({}, io, w.fromNpm), 1, `${what}: ${io.err}`);
       assert.match(io.out, /it withdraws:/, `${what}: the runtime-only path`);
       assert.match(io.err, /countinghouse/, `${what}: the package named`);
       assert.match(io.err, /the upgrade to 0\.2\.0 failed; nothing changed/, what);
       assert.deepStrictEqual(io.execs, [], `${what}: npm never ran`);
-      assert.strictEqual(fs.readFileSync(path.join(s.home, 'packs.json'), 'utf8'), before, `${what}: the record unchanged`);
+      assert.strictEqual(fs.readFileSync(path.join(s.home, 'modules.json'), 'utf8'), before, `${what}: the record unchanged`);
       assert.deepStrictEqual(historyOf(s.home).filter((e) => e.kind === 'upgrade').map((e) => e.outcome), ['failed'], what);
       assert.deepStrictEqual(historyOf(s.home).filter((e) => e.change === 'withdrawn'), [], `${what}: no withdrawal recorded`);
     } finally {
@@ -362,53 +364,44 @@ test('a release that withdraws the pack: its runtime packages are verified as an
   }
 });
 
-// The review of the held design: a home whose only pack an upgrade withdrew
-// can still be upgraded (a later release may be a security fix): runtime
-// only. A release that lists the pack again drops it from held, and says how
-// to add it back.
-test('a home whose only pack is held as withdrawn still upgrades, runtime only; a release that lists it again says how to add it back', async () => {
+// Withdrawn by the record (#413 section 9.7): a home whose one pack the
+// record's withdrawn list names (an earlier upgrade's pins wrote it) still
+// upgrades: a later release may be the security fix it needs. A release that
+// lists it again brings it to its pins, with nothing to add back.
+test('a home whose one pack the record lists as withdrawn still upgrades; a release that lists it again brings it to its pins', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
-  const f = path.join(s.home, 'packs.json');
-  const cur = JSON.parse(fs.readFileSync(f, 'utf8'));
-  fs.writeFileSync(f, JSON.stringify({...cur, packs: {}, held: {'ci-failure-triage': {...cur.packs['ci-failure-triage'], installedUnder: '0.0.9', withdrawn: true}}}));
+  require('./store-helpers').editHome(s.home, (r) => r, {release: {packs: {}}});
+  assert.deepStrictEqual(recordOf(s.home).withdrawn, ['@countinghouse/ch-pack-ci-failure-triage']);
   const w = await npmWorld(release());
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0/);
-    // this release lists ci-failure-triage again
-    assert.match(io.out, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
-    // nothing deleted: the entry stays held, marked relisted, not withdrawn
-    const held = recordOf(s.home).held['ci-failure-triage'];
-    assert.strictEqual(held.relisted, true);
-    assert.strictEqual(held.withdrawn, undefined);
+    const rec = recordOf(s.home);
+    assert.deepStrictEqual(rec.withdrawn, [], 'listed again: no longer withdrawn');
+    assert.strictEqual(rec.packs['ci-failure-triage'].modules['@countinghouse/ch-pack-ci-failure-triage'], '0.1.0', 'at this release\'s pins');
+    assert.doesNotMatch(io.out, /adds it back/);
   } finally {
     await w.close();
     s.done();
   }
 });
 
-// The deep review of #77 (HIGH): a later full upgrade of a home with another
-// pack installed keeps a withdrawn pack held, its entry and its files (Matt's
-// "nothing deleted"), in the record and in the rollback copy.
-test('a full upgrade keeps a pack held as withdrawn: its entry and its tree', async () => {
+// The deep review of #77 (HIGH): a later full upgrade keeps a held pack (one
+// a rollback's restored release lacked), its entry and its module versions
+// in the store (Matt's "nothing deleted").
+test('a full upgrade keeps a held pack: its entry and its module versions', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
-  const {layout} = require('../lib/home');
-  const {packDir, packKey} = require('../lib/pack-dir');
-  const where = layout({COUNTINGHOUSE_HOME: s.home});
-  const f = path.join(s.home, 'packs.json');
-  const w = {packages: {'@countinghouse/ch-pack-gone': '1.0.0'}, credentials: [], installedUnder: '0.0.9', withdrawn: true};
-  fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone: w}}));
-  const tree = packDir(where, 'gone', packKey(w.packages));
-  fs.mkdirSync(tree, {recursive: true});
-  fs.writeFileSync(path.join(tree, 'kept'), 'the pack\'s own bytes');
+  const {storeModule, editHome} = require('./store-helpers');
+  const gone = {from: {release: '0.0.9'}, modules: {'@countinghouse/ch-pack-gone': '1.0.0'}};
+  const dir = storeModule(s.home, '@countinghouse/ch-pack-gone', '1.0.0', {countinghouse: {role: 'scenario'}, files: {kept: 'the pack\'s own bytes'}});
+  editHome(s.home, (r) => ({...r, held: {gone}}));
   const nw = await npmWorld(release());
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, nw.fromNpm), 0, io.err);
-    assert.deepStrictEqual(recordOf(s.home).held, {gone: w}, 'held as it was');
-    assert.strictEqual(fs.readFileSync(path.join(tree, 'kept'), 'utf8'), 'the pack\'s own bytes', 'its tree kept');
-    assert.doesNotMatch(io.out, /"gone" was dropped/);
+    assert.deepStrictEqual(recordOf(s.home).held, {gone}, 'held as it was');
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'kept'), 'utf8'), 'the pack\'s own bytes', 'its store version kept');
   } finally {
     await nw.close();
     s.done();

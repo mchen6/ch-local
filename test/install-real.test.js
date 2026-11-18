@@ -30,8 +30,15 @@ test('a real install of this launcher runs from <home>/bin/ch-local.js', {timeou
     assert.strictEqual(packed.status, 0, packed.stderr);
     const file = JSON.parse(packed.stdout)[0].filename;
     const integrity = 'sha512-' + crypto.createHash('sha512').update(fs.readFileSync(path.join(from, file))).digest('base64');
-    // The runtime is this launcher alone; the pack holds no package.
-    const allow = {runtime: {packages: [pkg.name], lockfile: null}, packs: {solo: {packages: [], credentials: ['GITHUB_TOKEN']}}, pins: {[pkg.name]: {version: pkg.version, integrity}}};
+    // The runtime is this launcher alone; the pack, one small module (a
+    // release's pack lists at least one: lib/release-pins.js, and so does
+    // the record: lib/module-record.js)
+    const {packageTgz} = require('./tgz');
+    const modBytes = packageTgz({name: '@countinghouse/ch-pack-solo', version: '0.1.0', countinghouse: {role: 'scenario'}});
+    fs.writeFileSync(path.join(from, 'countinghouse-ch-pack-solo-0.1.0.tgz'), modBytes);
+    const modIntegrity = 'sha512-' + crypto.createHash('sha512').update(modBytes).digest('base64');
+    const allow = {runtime: {packages: [pkg.name], lockfile: null}, packs: {solo: {packages: ['@countinghouse/ch-pack-solo'], credentials: ['GITHUB_TOKEN']}},
+      pins: {[pkg.name]: {version: pkg.version, integrity}, '@countinghouse/ch-pack-solo': {version: '0.1.0', integrity: modIntegrity}}};
     // What a release does: the runtime's lockfile, from the manifest install writes.
     const release = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-real-release-'));
     try {
@@ -50,6 +57,7 @@ test('a real install of this launcher runs from <home>/bin/ch-local.js', {timeou
     assert.match(r.stdout, /^\[mcp_servers\.countinghouse\]$/m);
     assert.ok(r.stdout.includes(JSON.stringify(path.join(home, 'bin', 'ch-local.js'))));
     assert.ok(fs.existsSync(path.join(home, 'app', 'package-lock.json')));
+    assert.ok(fs.existsSync(path.join(home, 'module-store', '@countinghouse', 'ch-pack-solo', '0.1.0.json')), 'the pack\'s module in the store');
   } finally {
     fs.rmSync(from, {recursive: true, force: true});
     fs.rmSync(home, {recursive: true, force: true});
