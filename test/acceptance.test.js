@@ -394,7 +394,8 @@ test('shared: (c) a cancelled call leaves no in-flight entry, through the shim: 
 
 test('shared: (b2) ctx.ask through the shim: the checks', async () => {
   const what = 'acceptance';
-  const state = `v1.${'a'.repeat(20)}.${'b'.repeat(43)}`;
+  // a state as countinghouse mints it (#412, F2-4): v2, its payload sealed
+  const state = `v2.${Buffer.alloc(64, 0xa5).toString('base64url')}.${'b'.repeat(43)}`;
   const question = {result: {resultType: 'input_required', requestState: state,
     inputRequests: {answer: {method: 'elicitation/create', params: {mode: 'form', message: `ch-pack-accept: Proceed with ${what}?`, requestedSchema: {type: 'object'}}}}}};
   const refused = (code) => ({result: {isError: true, _meta: {'countinghouse/code': code}, content: [{type: 'text', text: code}]}});
@@ -411,6 +412,24 @@ test('shared: (b2) ctx.ask through the shim: the checks', async () => {
   };
   const run = (over) => (check) => shared.askChecks({what, check, call: runtime(over)});
   assert.deepStrictEqual((await checksOf(run({}))).failed, []);
+  // the state must be opaque, whatever its version: one whose payload a
+  // client can read (v1's JSON in the clear), or that shows the question's
+  // name, fails the first check
+  const firstWith = (requestState) => ({first: {result: Object.assign({}, question.result, {requestState})}});
+  const st = (bytes) => `v1.${Buffer.from(bytes).toString('base64url')}.${'b'.repeat(43)}`;
+  const cases = [
+    [st(JSON.stringify({n: 'x', r: 1})), 'a payload readable as JSON'],
+    [st(Buffer.concat([Buffer.alloc(28, 0xa5), Buffer.from(JSON.stringify({n: 'x', e: 1}))])), 'JSON in the clear after a binary prefix (sealed but not encrypted)'],
+    [st('\u0000answer\u0001'), 'the question\'s name in the payload'],
+    [st('\u0000ch-pack-accept\u0001'), 'the asking module\'s name in the payload'],
+    ['opaque', 'no version'],
+  ];
+  for (const [s, why] of cases) {
+    const c = await checksOf(run(firstWith(s)));
+    assert.ok(c.failed.some((n) => /InputRequiredResult/.test(n)), why);
+  }
+  const v7 = await checksOf(run(firstWith(`v7.${'a'.repeat(40)}.${'b'.repeat(43)}`)));
+  assert.ok(!v7.failed.some((n) => /InputRequiredResult/.test(n)), 'another version, opaque: accepted (the privacy is pinned, not the number)');
   const none = await checksOf(run({first: {result: {structuredContent: {asked: false, code: 'ASK_UNAVAILABLE'}}}}));
   assert.deepStrictEqual([none.all.length, none.failed.length], [1, 1], 'no question: the rest is not tried');
   assert.ok((await checksOf(run({retry: {result: {structuredContent: {asked: true, answer: {yes: false}}}}}))).failed.some((n) => /gets it/.test(n)), 'the wrong answer');
