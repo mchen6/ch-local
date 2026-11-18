@@ -84,7 +84,14 @@ test('bad ids and hashes are refused; past the row cap a new session is not kept
   assert.strictEqual(t.size(), MAX_ROWS);
 });
 
-test('declines: the three kinds, a past epoch ms; kept DECLINE_KEEP_MS; at most MAX_DECLINES, the newest', () => {
+test('declines: a module setting\'s are the one kind module (the runtime\'s), kept as told', () => {
+  const now = 1000000000000;
+  const t = createSessionTable({now: () => now});
+  assert.strictEqual(t.told({type: 'decline', kind: 'module', at: now}), true);
+  assert.deepStrictEqual(t.restore().declines, [{kind: 'module', at: now}]);
+});
+
+test('declines: the runtime\'s kinds, a past epoch ms; kept DECLINE_KEEP_MS; at most MAX_DECLINES, the newest', () => {
   let now = 1000000000000;
   const t = createSessionTable({now: () => now});
   assert.strictEqual(t.told({type: 'decline', kind: 'pack', at: now}), true);
