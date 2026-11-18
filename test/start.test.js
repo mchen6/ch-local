@@ -11,23 +11,26 @@ const path = require('node:path');
 const {fakeIo, tmp} = require('./fake-io');
 const {start, repoFromRemote} = require('../lib/start');
 const {main} = require('../bin/ch-local');
+const {storeModule, writeHome, setPackCredentials} = require('./store-helpers');
 
 const GITHUB = {name: 'github', transport: 'streamable-http', url: 'https://api.githubcopilot.com/mcp/',
   credential: {env: 'COUNTINGHOUSE_GITHUB_TOKEN', fallbackEnv: 'GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}};
 const SCENARIO = '@countinghouse/ch-pack-ci-failure-triage';
 
-// A home with ci-failure-triage installed: packs.json and the app's packages.
+// A home with ci-failure-triage installed: its modules in the module store,
+// modules.json, and the runtime in the app.
 function installedHome({remotes = [GITHUB], unreleased = false, other = false} = {}) {
   const home = tmp('ch-local-start-');
-  const pkgs = {[SCENARIO]: {role: 'scenario'}, '@countinghouse/ch-access-github': {role: 'part', remotes}, countinghouse: null, ...(other ? {'@countinghouse/ch-pack-other': {role: 'scenario'}} : {})};
-  for (const [name, countinghouse] of Object.entries(pkgs)) {
-    const at = path.join(home, 'app', 'node_modules', ...name.split('/'));
-    fs.mkdirSync(at, {recursive: true});
-    fs.writeFileSync(path.join(at, 'package.json'), JSON.stringify({name, version: '1.0.0', ...(countinghouse ? {countinghouse} : {})}));
-  }
-  fs.writeFileSync(path.join(home, 'packs.json'), JSON.stringify({runtime: {versions: {countinghouse: '1.0.0'}}, unreleased, packs: {
-    'ci-failure-triage': {packages: {[SCENARIO]: '1.0.0', '@countinghouse/ch-access-github': '1.0.0'}, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
-    ...(other ? {other: {packages: {'@countinghouse/ch-pack-other': '1.0.0'}, credentials: ['OTHER_TOKEN']}} : {})}}));
+  const app = path.join(home, 'app', 'node_modules', 'countinghouse');
+  fs.mkdirSync(app, {recursive: true});
+  fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({name: 'countinghouse', version: '1.0.0'}));
+  storeModule(home, SCENARIO, '1.0.0', {countinghouse: {role: 'scenario'}});
+  storeModule(home, '@countinghouse/ch-access-github', '1.0.0', {countinghouse: {role: 'part', remotes}});
+  if (other) storeModule(home, '@countinghouse/ch-pack-other', '1.0.0', {countinghouse: {role: 'scenario'}});
+  writeHome(home, {
+    'ci-failure-triage': {[SCENARIO]: '1.0.0', '@countinghouse/ch-access-github': '1.0.0'},
+    ...(other ? {other: {'@countinghouse/ch-pack-other': '1.0.0'}} : {})
+  }, {unreleased, credentials: {'ci-failure-triage': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], ...(other ? {other: ['OTHER_TOKEN']} : {})}});
   return home;
 }
 
@@ -100,7 +103,12 @@ test('start runs the profile: local store, enforce, the one store, no auth file,
   assert.ok(!fs.existsSync(runDir), 'removed when the runtime exits');
   // Inside the home, never the runtime's default ~/countinghouse_modules.
   assert.strictEqual(valueOf(args, '--modulePath'), path.join(home, 'modules'));
-  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--loadModule'), [path.join(home, 'app', 'node_modules', ...SCENARIO.split('/'))]);
+  // from the module store (#413 section 9.8): the scenario by --loadModule,
+  // each part by --partDir, under --modulesRoot
+  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--loadModule'), [path.join(home, 'module-store', ...SCENARIO.split('/'), '1.0.0')]);
+  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--partDir'), [path.join(home, 'module-store', '@countinghouse', 'ch-access-github', '1.0.0')]);
+  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--modulesRoot'), [path.join(home, 'module-store')]);
+  assert.ok(!args.includes('--packsRoot'));
   // countinghouse-stdio.js adds --stdio=true itself.
   for (const absent of ['--authConfigPath', '--usageDir', '--port', '--stdio', '--debug']) assert.ok(!args.includes(absent), absent);
 });
@@ -150,13 +158,16 @@ test('start gives the runtime remote credentials for the loaded packs\' remotes:
   assert.deepStrictEqual(f.spawned[0].remoteCredentials, {'https://api.githubcopilot.com': ['GITHUB_TOKEN']});
 });
 
-test('start refuses a listed package that is missing from the app, and starts nothing', async () => {
-  const home = installedHome();
-  fs.rmSync(path.join(home, 'app', 'node_modules', '@countinghouse', 'ch-access-github'), {recursive: true});
-  const f = io(home);
-  assert.strictEqual(await start({passThrough: []}, f), 1);
-  assert.strictEqual(f.spawned.length, 0);
-  assert.match(f.err, /ch-access-github is not installed.*ch-local install/);
+// #83's high review, 5: one pack with a module missing from the store is
+// not loaded, and said; the healthy packs still load
+test('a pack with a module missing from the module store is not loaded, and said; the others load', async () => {
+  const home = installedHome({other: true});
+  fs.rmSync(path.join(home, 'module-store', '@countinghouse', 'ch-access-github', '1.0.0'), {recursive: true});
+  const f = io(home, {env: {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'b'}});
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const loaded = f.spawned[0].args.filter((a, i, all) => all[i - 1] === '--loadModule');
+  assert.deepStrictEqual(loaded.map((d) => path.basename(path.dirname(d))), ['ch-pack-other']);
+  assert.match(f.err, /not loading ci-failure-triage: a module of it is not in the module store; run `ch-local install` again/);
 });
 
 test('the runtime gets the credential start named: a blank or unresolved variable before it is removed from its environment', async () => {
@@ -345,7 +356,7 @@ test('start loads every installed pack whose credential is set, one --loadModule
   const both = io(home, {env: {GITHUB_TOKEN: 'a', OTHER_TOKEN: 'b'}});
   assert.strictEqual(await start({passThrough: []}, both), 0, both.err);
   const args = both.spawned[0].args;
-  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--loadModule').map((d) => path.relative(path.join(home, 'app', 'node_modules'), d)),
+  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--loadModule').map((d) => path.relative(path.join(home, 'module-store'), path.dirname(d))),
     [path.join('@countinghouse', 'ch-pack-ci-failure-triage'), path.join('@countinghouse', 'ch-pack-other')]);
   const one = io(home, {env: {GITHUB_TOKEN: 'a'}});
   await start({passThrough: []}, one);
@@ -509,10 +520,8 @@ test('the environment fallback: with gh unavailable, GITHUB_TOKEN from the clien
 
 test('a pack that takes only GITHUB_TOKEN gets gh\'s token too, and with none it says it needs the GitHub token, once', async () => {
   const home = installedHome();
-  const packsJson = path.join(home, 'packs.json');
-  const record = JSON.parse(fs.readFileSync(packsJson, 'utf8'));
-  record.packs['ci-failure-triage'].credentials = ['GITHUB_TOKEN'];
-  fs.writeFileSync(packsJson, JSON.stringify(record));
+  // the release's pins give the pack GITHUB_TOKEN only
+  setPackCredentials(home, {'ci-failure-triage': ['GITHUB_TOKEN']});
   const token = madeToken();
   const f = withExec(io(home, {env: {}}), ghAnswers({status: 0, stdout: `${token}\n`, stderr: ''}));
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);

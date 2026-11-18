@@ -16,14 +16,17 @@ const {ALLOWED_ORIGINS} = require('../lib/allowlist');
 const GITHUB = {name: 'github', transport: 'streamable-http', url: 'https://api.githubcopilot.com/mcp/',
   credential: {env: 'COUNTINGHOUSE_GITHUB_TOKEN', fallbackEnv: 'GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}};
 
+// each package in a directory of its own, as the store holds it -> {name: dir}
 function app(packages) {
-  const dir = tmp('ch-local-app-');
+  const root = tmp('ch-local-store-');
+  const dirs = {};
   for (const [name, countinghouse] of Object.entries(packages)) {
-    const at = path.join(dir, 'node_modules', ...name.split('/'));
+    const at = path.join(root, ...name.split('/'), '1.0.0');
     fs.mkdirSync(at, {recursive: true});
     fs.writeFileSync(path.join(at, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse}));
+    dirs[name] = at;
   }
-  return dir;
+  return dirs;
 }
 
 test('ALLOWED_ORIGINS pins each token destination and the variables it may receive: today GitHub\'s MCP server only', () => {
@@ -31,26 +34,31 @@ test('ALLOWED_ORIGINS pins each token destination and the variables it may recei
   assert.ok(Object.isFrozen(ALLOWED_ORIGINS) && Object.values(ALLOWED_ORIGINS).every(Object.isFrozen));
 });
 
-test('installedPacks reads packs.json: every pack, its scenario (its first package), version, where its packages are, packages and credentials', () => {
+test('installedPacks reads modules.json: every pack, its scenario (by role), its version, its modules at their active versions, their store directories and its credentials', () => {
+  const {storeModule, writeHome, setPackCredentials} = require('./store-helpers');
+  const {layout} = require('../lib/home');
   const home = tmp('ch-local-home-');
-  const where = {packs: path.join(home, 'packs.json'), app: path.join(home, 'app'), packsDir: path.join(home, 'packs')};
-  // ci-failure-triage in its own tree (packs in place); other in the flat app of an earlier home
-  const {packKey} = require('../lib/pack-dir');
-  const key = packKey({'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0'});
-  fs.mkdirSync(path.join(home, 'packs', 'ci-failure-triage', key, 'node_modules'), {recursive: true});
+  const where = layout({COUNTINGHOUSE_HOME: home});
   assert.deepStrictEqual(installedPacks(where), []);
-  fs.writeFileSync(where.packs, JSON.stringify({runtime: {versions: {}}, packs: {
-    'ci-failure-triage': {packages: {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0'}, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
-    other: {packages: {'@countinghouse/ch-pack-other': '0.3.0'}, credentials: []}}}));
-  const tree = path.join(home, 'packs', 'ci-failure-triage', key);
-  assert.deepStrictEqual(installedPacks(where), [
-    {name: 'ci-failure-triage', scenario: '@countinghouse/ch-pack-ci-failure-triage', version: '0.1.0', base: tree,
-      dir: path.join(tree, 'node_modules', '@countinghouse', 'ch-pack-ci-failure-triage'),
-      packages: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
-    {name: 'other', scenario: '@countinghouse/ch-pack-other', version: '0.3.0', base: where.app,
-      dir: path.join(where.app, 'node_modules', '@countinghouse', 'ch-pack-other'),
-      packages: ['@countinghouse/ch-pack-other'], credentials: []}]);
-  fs.writeFileSync(where.packs, '{"not": "a record"}');
+  // the part first in its pack's list: the scenario is found by its role
+  storeModule(home, '@countinghouse/ch-access-github', '0.1.0', {countinghouse: {role: 'part'}});
+  storeModule(home, '@countinghouse/ch-pack-ci-failure-triage', '0.1.0', {countinghouse: {role: 'scenario'}});
+  storeModule(home, '@countinghouse/ch-pack-other', '0.3.0', {countinghouse: {role: 'scenario'}});
+  writeHome(home, {'ci-failure-triage': {'@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-pack-ci-failure-triage': '0.1.0'},
+    other: {'@countinghouse/ch-pack-other': '0.3.0'}});
+  setPackCredentials(home, {'ci-failure-triage': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], other: []});
+  const store = (n, v) => path.join(home, 'module-store', ...n.split('/'), v);
+  const io = {release: require('./fake-io').installedRelease(home)};
+  assert.deepStrictEqual(installedPacks(where, undefined, io), [
+    {name: 'ci-failure-triage', scenario: '@countinghouse/ch-pack-ci-failure-triage', version: '0.1.0',
+      modules: {'@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-pack-ci-failure-triage': '0.1.0'},
+      dirs: {'@countinghouse/ch-access-github': store('@countinghouse/ch-access-github', '0.1.0'), '@countinghouse/ch-pack-ci-failure-triage': store('@countinghouse/ch-pack-ci-failure-triage', '0.1.0')},
+      dir: store('@countinghouse/ch-pack-ci-failure-triage', '0.1.0'),
+      packages: ['@countinghouse/ch-access-github', '@countinghouse/ch-pack-ci-failure-triage'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
+    {name: 'other', scenario: '@countinghouse/ch-pack-other', version: '0.3.0',
+      modules: {'@countinghouse/ch-pack-other': '0.3.0'}, dirs: {'@countinghouse/ch-pack-other': store('@countinghouse/ch-pack-other', '0.3.0')},
+      dir: store('@countinghouse/ch-pack-other', '0.3.0'), packages: ['@countinghouse/ch-pack-other'], credentials: []}]);
+  fs.writeFileSync(where.modulesRecord, '{"not": "a record"}');
   assert.throws(() => installedPacks(where), /not a ch-local record/);
 });
 
@@ -62,8 +70,8 @@ test('declaredRemotes reads the installed packages\' countinghouse.remotes: orig
   assert.deepStrictEqual(declaredRemotes(bad, ['@x/y']), [{origin: null, variables: [], from: '@x/y'}], 'an unreadable URL is kept, to be refused');
   const odd = app({'@x/z': {remotes: [null, 'text', {name: 'r', url: 'https://api.githubcopilot.com/mcp/', credential: 'GITHUB_TOKEN'}]}});
   assert.deepStrictEqual(declaredRemotes(odd, ['@x/z']).map((r) => r.origin), [null, null, null], 'a remote or credential that is not an object is kept, to be refused');
-  assert.throws(() => declaredRemotes(dir, ['@countinghouse/not-installed']), /@countinghouse\/not-installed is not installed/, 'a listed package missing from the app is a broken install');
-  fs.writeFileSync(path.join(dir, 'node_modules', '@countinghouse', 'ch-step-redact', 'package.json'), '{"name": ');
+  assert.throws(() => declaredRemotes(dir, ['@countinghouse/not-installed']), /@countinghouse\/not-installed is not in the module store/, 'a listed module missing from the store is a broken install');
+  fs.writeFileSync(path.join(dir['@countinghouse/ch-step-redact'], 'package.json'), '{"name": ');
   assert.throws(() => declaredRemotes(dir, ['@countinghouse/ch-step-redact']), /ch-step-redact.*not readable/, 'a corrupt manifest is not "no remotes"');
 });
 
@@ -96,13 +104,14 @@ test('loadablePacks leaves out a pack missing a credential and names its variabl
 });
 
 test('a record whose pack names or versions are not a release\'s is refused: they become directory names', () => {
+  const {layout} = require('../lib/home');
   const home = tmp('ch-local-home-');
-  const where = {packs: path.join(home, 'packs.json'), app: path.join(home, 'app'), packsDir: path.join(home, 'packs')};
-  for (const packs of [{'../escape': {packages: {'@countinghouse/ch-pack-x': '0.1.0'}, credentials: []}},
-    {x: {packages: {'@countinghouse/ch-pack-x': '../../0.1.0'}, credentials: []}},
-    {x: {packages: {'../../evil': '0.1.0'}, credentials: []}}]) {
-    fs.writeFileSync(where.packs, JSON.stringify({runtime: {versions: {}}, packs}));
-    assert.throws(() => installedPacks(where), /not a ch-local record/, JSON.stringify(packs));
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  for (const [pack, modules] of [['../escape', {'@countinghouse/ch-pack-x': '0.1.0'}], ['x', {'@countinghouse/ch-pack-x': '../../0.1.0'}], ['x', {'../../evil': '0.1.0'}]]) {
+    const derived = Object.fromEntries(Object.entries(modules).map(([m, v]) => [m, {version: v, role: null}]));
+    fs.writeFileSync(where.modulesRecord, JSON.stringify({v: 2, runtime: {versions: {}}, release: null, unreleased: false,
+      packs: {[pack]: {from: {release: '1.0.0'}, modules}}, modules: derived, withdrawn: []}));
+    assert.throws(() => installedPacks(where), /not a ch-local record/, JSON.stringify([pack, modules]));
   }
 });
 

@@ -107,8 +107,7 @@ test('a development override is checked before the child (the allowlist drops it
   // an unreleased install, by its record
   const {h, where} = await home();
   setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
-  const rec = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'));
-  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify(Object.assign(rec, {unreleased: true})));
+  require('./store-helpers').editHome(h, (rec) => ({...rec, unreleased: true}));
   const out = await run(where, {status: 0, stdout: 'installed\n'}, Date.now());
   assert.deepStrictEqual([out.r.why, out.runs.length], ['override', 0]);
 });

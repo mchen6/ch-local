@@ -139,7 +139,7 @@ test('alive is required: a caller that leaves it out collects nothing (1)', () =
   place('@t/ch-pack-a', '1.0.0');
   recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
   assert.throws(() => collectStore(w), /alive is required/);
-  assert.throws(() => require('../lib/gc').collect(w), /alive is required/);
+  assert.throws(() => require('../lib/gc').keepOldTreesAside(w), /alive is required/);
   assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-pack-a', '1.0.0')));
 });
 
@@ -182,7 +182,8 @@ test('a run.json that cannot be read could be a live start\'s: nothing is collec
   const r = collectStore(w, {alive: () => true});
   assert.match(r.problem, /run\.json could not be read .*nothing was collected/);
   assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-x', '1.0.0')));
-  assert.match(require('../lib/gc').collect(w, {alive: () => true}).problem, /nothing was collected/);
+  fs.mkdirSync(w.packsDir, {recursive: true});
+  assert.match(require('../lib/gc').keepOldTreesAside(w, {alive: () => true}).problem, /nothing was collected/);
 });
 
 test('an incomplete version a live start loaded is kept, as placeModule refuses to replace it (2)', () => {
@@ -213,4 +214,16 @@ test('a kept rollback record that cannot be read stops collection; one that is n
   // readable, not a record: names nothing (rollback refuses it)
   assert.strictEqual(collectStore(w, {alive: () => false}).problem, undefined);
   assert.strictEqual(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-pack-a', '0.9.0')), false);
+});
+
+// the medium review of L1a-2, 5: two loaded packs holding a module at
+// different versions name both in run.json, and both are kept
+test('a live start that holds a module at two versions keeps both', () => {
+  const {w, place} = home();
+  place('@t/ch-step-x', '1.0.0'); place('@t/ch-step-x', '2.0.0'); place('@t/ch-pack-a', '1.0.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  run(w, {pid: 9, loaded: {'@t/ch-step-x': ['1.0.0', '2.0.0']}});
+  collectStore(w, {alive: (pid) => pid === 9, hostname: 'here'});
+  assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-x', '1.0.0')));
+  assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-x', '2.0.0')));
 });

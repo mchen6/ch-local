@@ -19,8 +19,8 @@ const H = 3600e3;
 const TO = '0.1.1';
 function home({autoUpgrade = true, installed = '0.1.0', packs = ['ci-failure-triage']} = {}) {
   const h = tmp('ch-auto-');
-  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: {'@countinghouse/ch-local': installed, countinghouse: '8.0.0'}},
-    packs: Object.fromEntries(packs.map((p) => [p, {packages: {}, credentials: []}]))}));
+  require('./store-helpers').writeHome(h, Object.fromEntries(packs.map((p) => [p, {[`@countinghouse/ch-pack-${p}`]: '0.1.0'}])),
+    {runtime: {'@countinghouse/ch-local': installed, countinghouse: '8.0.0'}});
   fs.writeFileSync(path.join(h, 'settings.json'), JSON.stringify({version: 1, values: {autoUpgrade}}));
   return h;
 }
@@ -303,60 +303,58 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
   const w = await world({at: new Date(now - 100 * H), edit: withdrawFrom('ci-failure-triage')});
   try {
     const h = home();
-    const entry = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8')).packs['ci-failure-triage'];
+
     assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
     const r = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(r.outcome, 'installed', r.line);
     assert.match(r.line, /upgraded ch-local 0\.1\.0 -> 0\.1\.1; ch-local rollback undoes it; pack ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it/);
-    const after = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'));
+    // it stays installed; the record's withdrawn list names its modules
+    // (#413 section 9.7)
+    const after = JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'));
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.1.1');
-    assert.deepStrictEqual(after.packs, {}, 'no longer an installed pack');
-    assert.deepStrictEqual(after.held, {'ci-failure-triage': {...entry, installedUnder: '0.1.0', withdrawn: true}}, 'held, marked withdrawn');
+    assert.deepStrictEqual(Object.keys(after.packs), ['ci-failure-triage'], 'still recorded');
+    assert.deepStrictEqual(after.withdrawn, ['@countinghouse/ch-pack-ci-failure-triage']);
     assert.deepStrictEqual(historyOf(h).filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', '0.1.1']]);
   } finally {
     await w.close();
   }
 });
 
-// The review of the held design: a home whose only pack an upgrade withdrew
-// still takes an automatic upgrade, runtime only; a release that lists the
-// pack again says how to add it back.
-test('a home whose only pack is held as withdrawn still upgrades automatically; a release listing it again says so', async() => {
+// Withdrawn by the record: a home whose one pack the record lists as
+// withdrawn still takes an automatic upgrade; a release that lists it again
+// brings it to its pins
+test('a home whose one pack the record lists as withdrawn still upgrades automatically; listed again, it is at the pins', async() => {
   const now = Date.now();
   const w = await world({at: new Date(now - 100 * H)});
   try {
-    const h = home({packs: []});
-    const f = path.join(h, 'packs.json');
-    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {'ci-failure-triage': {packages: {}, credentials: [], installedUnder: '0.0.9', withdrawn: true}}}));
+    const h = home();
+    require('./store-helpers').editHome(h, (r) => r, {release: {packs: {}}});
     assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
     const r = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(r.outcome, 'installed', r.line);
-    assert.match(r.line, /pack ci-failure-triage is in this release again: `ch-local add-pack ci-failure-triage` adds it back/);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8')).withdrawn, []);
+    assert.doesNotMatch(r.line, /adds it back/);
   } finally {
     await w.close();
   }
 });
 
-// The deep review of #77 (HIGH): an automatic upgrade of a home with another
-// pack installed keeps a withdrawn pack held, its entry and its tree.
-test('an automatic upgrade keeps a pack held as withdrawn: its entry and its tree', async() => {
+// The deep review of #77 (HIGH): an automatic upgrade of a home keeps a held
+// pack, its entry and its module versions.
+test('an automatic upgrade keeps a held pack: its entry and its module versions', async() => {
   const now = Date.now();
   const w = await world({at: new Date(now - 100 * H)});
   try {
     const h = home();
-    const {layout} = require('../lib/home');
-    const {packDir, packKey} = require('../lib/pack-dir');
-    const f = path.join(h, 'packs.json');
-    const gone = {packages: {'@countinghouse/ch-pack-gone': '1.0.0'}, credentials: [], installedUnder: '0.0.9', withdrawn: true};
-    fs.writeFileSync(f, JSON.stringify({...JSON.parse(fs.readFileSync(f, 'utf8')), held: {gone}}));
-    const tree = packDir(layout({COUNTINGHOUSE_HOME: h}), 'gone', packKey(gone.packages));
-    fs.mkdirSync(tree, {recursive: true});
-    fs.writeFileSync(path.join(tree, 'kept'), 'bytes');
+    const {storeModule, editHome} = require('./store-helpers');
+    const gone = {from: {release: '0.0.9'}, modules: {'@countinghouse/ch-pack-gone': '1.0.0'}};
+    const dir = storeModule(h, '@countinghouse/ch-pack-gone', '1.0.0', {countinghouse: {role: 'scenario'}, files: {kept: 'bytes'}});
+    editHome(h, (rec) => ({...rec, held: {gone}}));
     assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
     const r = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(r.outcome, 'installed', r.line);
-    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')).held, {gone});
-    assert.strictEqual(fs.readFileSync(path.join(tree, 'kept'), 'utf8'), 'bytes');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8')).held, {gone});
+    assert.strictEqual(fs.readFileSync(path.join(dir, 'kept'), 'utf8'), 'bytes');
   } finally {
     await w.close();
   }

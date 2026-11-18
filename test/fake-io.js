@@ -52,13 +52,32 @@ const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 
 // The shipped allowlist, its packs those the home's record lists (null
 // with no home, or none installed: the shipped one, then).
+// A pack's credentials are the variables its modules' remotes declare, read
+// from the store as a release's pins are written from the manifests.
 function installedRelease(home) {
   if (typeof home !== 'string' || home === '') return null;
+  const fs = require('node:fs');
+  const path = require('node:path');
   let record;
-  try { record = JSON.parse(require('node:fs').readFileSync(require('node:path').join(home, 'packs.json'), 'utf8')); } catch (e) { return null; }
+  try { record = JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8')); } catch (e) { return null; }
   const {ALLOWLIST} = require('../lib/allowlist');
+  const declared = (name, version) => {
+    try {
+      const m = JSON.parse(fs.readFileSync(path.join(home, 'module-store', ...name.split('/'), version, 'package.json'), 'utf8'));
+      const remotes = m.countinghouse != null && Array.isArray(m.countinghouse.remotes) ? m.countinghouse.remotes : [];
+      return remotes.flatMap((r) => (r != null && r.credential != null ? [r.credential.env, r.credential.fallbackEnv] : [])).filter((v) => typeof v === 'string' && v !== '');
+    } catch (e) {
+      return [];
+    }
+  };
+  // a test's own pins credentials, when it gave them (test/store-helpers.js)
+  let given = {};
+  try { given = JSON.parse(fs.readFileSync(path.join(home, 'test-pack-credentials.json'), 'utf8')); } catch (e) { given = {}; }
   const packs = {};
-  for (const [name, p] of Object.entries(record.packs || {})) packs[name] = {packages: Object.keys(p.packages || {}), credentials: Array.isArray(p.credentials) ? p.credentials : []};
+  for (const [name, p] of Object.entries(record.packs || {})) {
+    const modules = Object.keys(p.modules || {});
+    packs[name] = {packages: modules, credentials: Array.isArray(given[name]) ? given[name] : [...new Set(modules.flatMap((m) => declared(m, p.modules[m])))]};
+  }
   return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}};
 }
 
