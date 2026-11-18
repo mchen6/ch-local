@@ -74,18 +74,16 @@ const npm = (version = '0.2.0') => (cmd, args, {cwd}) => {
   return {status: 0, stdout: '', stderr: ''};
 };
 
-const record = (home) => JSON.parse(fs.readFileSync(path.join(home, 'packs.json'), 'utf8'));
-// A package's directory: in the tree of the recorded pack that has it
-// (<home>/packs/<pack>/<version>/node_modules; packs in place, part 2), the
-// first such pack unless `pack` is named; in the flat app when no recorded
-// pack has it (what a test checks is gone).
-const pkgDir = (home, name, pack = null) => {
+const record = (home) => JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8'));
+// A package's directory: in the module store at the version the record has
+// active (<home>/module-store/<name>/<version>; #413 section 9.1); under the
+// app when the record has no such module (what a test checks is gone).
+const pkgDir = (home, name) => {
   let rec = null;
   try { rec = record(home); } catch (e) { rec = null; }
-  const packs = (rec != null) ? rec.packs : {};
-  const owner = pack != null ? pack : Object.keys(packs).find((p) => packs[p].packages[name] != null);
-  if (owner == null || packs[owner] == null) return path.join(home, 'app', 'node_modules', ...name.split('/'));
-  return path.join(home, 'packs', owner, require('../lib/pack-dir').packKey(packs[owner].packages), 'node_modules', ...name.split('/'));
+  const m = rec != null && rec.modules != null ? rec.modules[name] : null;
+  if (m == null) return path.join(home, 'app', 'node_modules', ...name.split('/'));
+  return path.join(home, 'module-store', ...name.split('/'), m.version);
 };
 
 module.exports = {release, npm, pkgDir, record, integrityOf, RUNTIME, PACKAGES};
