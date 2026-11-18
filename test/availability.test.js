@@ -195,3 +195,23 @@ test('a module that cannot load for another reason is never asked its credential
   assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-step-z, which is not installed');
   assert.ok(!asked.includes(A));
 });
+
+// the high review of L2a's medium round, 3: the credential is that of the
+// packs that turn the module on, never another (off) pack's token
+test('pack seams: a module on by a pack needing no credential is never refused for an off pack\'s token', () => {
+  const {packSeams} = require('../lib/pack-seams');
+  const seams = packSeams({installed: [{name: 'a', credentials: []}, {name: 'b', credentials: ['B_TOKEN']}], settings: {version: 1, values: {'pack.b': false}}, ceiling: {state: 'none'}, env: {}, credentialReason: (v) => `set ${v.join(' or ')}`});
+  const unit = {};
+  assert.strictEqual(seams.credential(A, ['a', 'b'], unit), null);
+  assert.deepStrictEqual(unit.credentials, []);
+});
+
+// the high review of L2a's medium round, 8: callees first, so a caller
+// whose callee lacks its credential reports that, and is never asked its own
+test('credentials are asked callees first: the caller reports its callee\'s missing credential', () => {
+  const {where, record} = home({calls: {[A]: ['scenario', ['ch-step-x/s.go', 'ch-pack-b/s.go']]}});
+  const asked = [];
+  const av = availability(where, record, {release: releaseOf(PACKS), seams: {...NONE, credential: (m) => { asked.push(m); return m === B ? 'set B_TOKEN' : 'set A_TOKEN'; }}});
+  assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-pack-b, which is not available (set B_TOKEN)');
+  assert.deepStrictEqual(asked, [B]);
+});

@@ -128,3 +128,19 @@ test('withdrawnPacks: the packs the release does not list; an unreleased install
   assert.strictEqual(withdrawnLine('gone'), 'pack gone was withdrawn in this release and was not started; `ch-local remove-pack gone` removes it');
 });
 
+
+// whose record this is (#413 section 9.8): one rule for start and the
+// applier, by full semver precedence (the Reviewer's high review of L2a's
+// medium round, 4 and 5)
+test('recordRelease: same, newer or older, prereleases included both ways', () => {
+  const {recordRelease} = require('../lib/packs');
+  const io = (v) => ({release: {release: {version: v}}});
+  const rec = (v) => ({release: v == null ? null : {version: v}});
+  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0')).state, 'same');
+  assert.strictEqual(recordRelease(rec(null), io('1.2.0')).state, 'same');
+  assert.strictEqual(recordRelease(rec('1.3.0'), io('1.2.0')).state, 'newer');
+  assert.strictEqual(recordRelease(rec('1.1.9'), io('1.2.0')).state, 'older');
+  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0-rc.1')).state, 'newer');
+  assert.strictEqual(recordRelease(rec('1.2.0-rc.1'), io('1.2.0')).state, 'older');
+  assert.strictEqual(recordRelease(rec('1.2.0-rc.2'), io('1.2.0-rc.1')).state, 'newer');
+});

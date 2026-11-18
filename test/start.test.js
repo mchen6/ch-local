@@ -404,6 +404,7 @@ test('a record of another release is started by the record, not by this start\'s
   const args = f.spawned[0].args;
   assert.strictEqual(args.filter((a) => a === '--loadModule').length, 1, f.err);
   assert.ok(!/this release pins/.test(f.err), f.err);
+  assert.match(f.err, /ch-local was upgraded to 9\.9\.9; restart your client to use it/);
 });
 
 // the medium review of the high round, 1: a record older than this
@@ -418,6 +419,7 @@ test('a record older than this ch-local is judged by this release\'s pins', asyn
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(f.spawned[0].args.filter((a) => a === '--loadModule').length, 0, f.err);
   assert.match(f.err, /this release pins no version of it; run `ch-local install` again/);
+  assert.match(f.err, /this home was installed by an earlier ch-local; run `ch-local install` to bring the home to /);
 });
 
 test('every start of an unreleased install says so in one stderr line', async () => {
