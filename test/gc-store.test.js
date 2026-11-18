@@ -20,7 +20,7 @@ function home() {
   const w = layout({COUNTINGHOUSE_HOME: tmp('ch-gcstore-')});
   const place = (name, version) => {
     const bytes = packageTgz({name, version, countinghouse: {role: roleOf(name)}});
-    return store.placeModule(w, name, bytes, {version, integrity: store.integrityOf(bytes)}, {inUse: () => false}).dir;
+    return store.placeModule(w, name, bytes, {version, integrity: require('../lib/integrity').integrityOf(bytes)}, {inUse: () => false}).dir;
   };
   return {w, place};
 }
@@ -169,4 +169,48 @@ test('a marker that is a link is no marker: the version is incomplete, and goes 
   collectStore(w, {alive: () => false});
   assert.strictEqual(fs.existsSync(dir), false, 'incomplete: collected');
   assert.strictEqual(fs.existsSync(real), true, 'the link\'s target is not touched');
+});
+
+// #82's medium review of the high fixes
+test('a run.json that cannot be read could be a live start\'s: nothing is collected, and why is said (1)', () => {
+  const {w, place} = home();
+  place('@t/ch-pack-a', '1.0.0'); place('@t/ch-step-x', '1.0.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  const dir = path.join(w.run, 'here-1-0a1b2c3d');
+  fs.mkdirSync(dir, {recursive: true});
+  fs.writeFileSync(path.join(dir, 'run.json'), '{"loaded": ');
+  const r = collectStore(w, {alive: () => true});
+  assert.match(r.problem, /run\.json could not be read .*nothing was collected/);
+  assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-x', '1.0.0')));
+  assert.match(require('../lib/gc').collect(w, {alive: () => true}).problem, /nothing was collected/);
+});
+
+test('an incomplete version a live start loaded is kept, as placeModule refuses to replace it (2)', () => {
+  const {w, place} = home();
+  const dir = place('@t/ch-step-x', '1.0.0');
+  place('@t/ch-pack-a', '1.0.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  fs.rmSync(`${dir}.json`);
+  run(w, {pid: 7, loaded: {'@t/ch-step-x': '1.0.0'}});
+  const r = collectStore(w, {alive: (pid) => pid === 7, hostname: 'here'});
+  assert.ok(r.kept.some((k) => k.dir === dir && k.why === 'running (incomplete)'));
+  assert.ok(fs.existsSync(dir));
+});
+
+test('a kept rollback record that cannot be read stops collection; one that is not a record names nothing (3)', {skip: process.platform === 'win32' || process.getuid() === 0}, () => {
+  const {w, place} = home();
+  place('@t/ch-pack-a', '1.0.0'); place('@t/ch-pack-a', '0.9.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  fs.mkdirSync(path.dirname(w.previousModulesRecord), {recursive: true});
+  fs.writeFileSync(w.previousModulesRecord, '{}');
+  fs.chmodSync(w.previousModulesRecord, 0o000);
+  try {
+    assert.match(collectStore(w, {alive: () => false}).problem, /previous.*modules\.json could not be read/);
+    assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-pack-a', '0.9.0')));
+  } finally {
+    fs.chmodSync(w.previousModulesRecord, 0o644);
+  }
+  // readable, not a record: names nothing (rollback refuses it)
+  assert.strictEqual(collectStore(w, {alive: () => false}).problem, undefined);
+  assert.strictEqual(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-pack-a', '0.9.0')), false);
 });

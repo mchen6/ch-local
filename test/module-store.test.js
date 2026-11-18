@@ -15,7 +15,7 @@ const {tmp} = require('./fake-io');
 const where = () => layout({COUNTINGHOUSE_HOME: tmp('ch-store-')});
 function tarball(name, version, extra = {}) {
   const bytes = packageTgz({name, version, countinghouse: {role: 'part'}, ...extra}, {'index.js': `module.exports = ${JSON.stringify(version)};\n`});
-  return {bytes, pin: {version, integrity: store.integrityOf(bytes)}};
+  return {bytes, pin: {version, integrity: require('../lib/integrity').integrityOf(bytes)}};
 }
 
 test('a placed version is its directory and then its marker; a scoped name is two directories', () => {
@@ -182,6 +182,20 @@ test('an incomplete version still at its path is asked about too: in use, it is 
 test('start loads none of collection\'s or the store\'s code (10)', () => {
   const r = require('node:child_process').spawnSync(process.execPath, ['-e',
     "require('./lib/start'); const loaded = Object.keys(require.cache).map((k) => require('node:path').basename(k)); console.log(JSON.stringify(['gc.js', 'module-store.js', 'module-record.js'].filter((f) => loaded.includes(f))))"],
+  {cwd: path.join(__dirname, '..'), encoding: 'utf8'});
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.deepStrictEqual(JSON.parse(r.stdout.trim()), []);
+});
+
+// #82's medium review of the high fixes
+test('a version that ends in a dot or holds an empty identifier is refused: Windows drops a trailing dot (4)', () => {
+  for (const v of ['1.0.0-a.', '1.0.0-a..b', '1.0.0+b.']) assert.strictEqual(store.storeVersion(v), false, v);
+  assert.strictEqual(store.storeVersion('1.0.0-a.b'), true);
+});
+
+test('a reader of modules.json loads none of the store\'s code (8)', () => {
+  const r = require('node:child_process').spawnSync(process.execPath, ['-e',
+    "require('./lib/module-record'); const loaded = Object.keys(require.cache).map((k) => require('node:path').basename(k)); console.log(JSON.stringify(['module-store.js', 'unpack.js', 'tar.js'].filter((f) => loaded.includes(f))))"],
   {cwd: path.join(__dirname, '..'), encoding: 'utf8'});
   assert.strictEqual(r.status, 0, r.stderr);
   assert.deepStrictEqual(JSON.parse(r.stdout.trim()), []);
