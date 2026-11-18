@@ -290,6 +290,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     check('build from tarballs', true);
 
     const installIo = {env: launcherEnv(home), node, version: process.version, platform: process.platform, homedir: os.homedir,
+      alive: require('../lib/run-liveness').processAlive, hostname: os.hostname(),
       stdout: {write: () => {}}, stderr: io.stderr, exec: async (cmd, a, {cwd}) => dogfood.run(cmd, a, {cwd}),
       fetch: async () => { throw new Error('acceptance: install makes no network call of its own'); }};
     const code = await require('../lib/install').install({pack: dogfood.PACK, from: built.release, unreleasedPins: built.pinsFile}, installIo);
