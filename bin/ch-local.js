@@ -250,7 +250,7 @@ function realIo() {
     // Read when used: a directory removed under a shell makes process.cwd()
     // throw, and only start needs it (null: git runs wherever it is).
     get cwd() { try { return process.cwd(); } catch (err) { return null; } },
-    alive: (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
+    alive: require('../lib/run-liveness').processAlive,
     hostname: os.hostname(),
     exit: (code) => process.exit(code),
     // a signal this process takes and does nothing with (ch-local daemon:

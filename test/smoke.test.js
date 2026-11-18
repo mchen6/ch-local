@@ -33,6 +33,7 @@ const integrityOf = (file) => 'sha512-' + crypto.createHash('sha512').update(fs.
 const realIo = (env) => {
   const io = {
     out: '', err: '', env, node: process.execPath, version: process.version, platform: process.platform, homedir: os.homedir,
+    alive: require('../lib/run-liveness').processAlive, hostname: os.hostname(),
     stdout: {write: (s) => { io.out += s; }}, stderr: {write: (s) => { io.err += s; }},
     exec: async (cmd, args, {cwd}) => spawnSync(cmd, args, {cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024}),
     fetch: async () => { throw new Error('no network from the launcher in this test'); }

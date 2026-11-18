@@ -202,6 +202,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const installIo = {
       env,
       node: process.execPath, version: process.version, platform: process.platform, homedir: os.homedir,
+      alive: require('../lib/run-liveness').processAlive, hostname: os.hostname(),
       stdout: io.stdout, stderr: io.stderr,
       exec: async (cmd, a, {cwd}) => run(cmd, a, {cwd}),
       fetch: async () => { throw new Error('dogfood: install makes no network call of its own'); }

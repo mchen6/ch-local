@@ -21,6 +21,7 @@ test('a real install of this launcher runs from <home>/bin/ch-local.js', {timeou
   try {
     const io = {
       out: '', err: '', env: {COUNTINGHOUSE_HOME: home}, node: process.execPath, version: process.version, platform: process.platform, homedir: os.homedir,
+      alive: require('../lib/run-liveness').processAlive, hostname: os.hostname(),
       stdout: {write: (s) => { io.out += s; }}, stderr: {write: (s) => { io.err += s; }},
       exec: async (cmd, args, {cwd}) => spawnSync(cmd, args, {cwd, encoding: 'utf8'}),
       fetch: async () => { throw new Error('no network'); }
