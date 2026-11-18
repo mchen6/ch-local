@@ -8,6 +8,16 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+
+// A run's failure as the assertion says it: the failed checks first (each
+// FAIL line with the start of its detail), then the run's tail. CI keeps
+// neither a run's report file nor its whole output.
+function failureText(text) {
+  const lines = text.split('\n');
+  const failed = [];
+  for (let i = 0; i < lines.length; i++) if (/^FAIL /.test(lines[i])) failed.push(lines.slice(i, i + 4).join('\n').slice(0, 1500));
+  return `${failed.join('\n')}\n--- the run's last lines ---\n${text.slice(-2500)}`;
+}
 const {tmp} = require('./fake-io');
 const acceptance = require('../scripts/acceptance');
 
@@ -157,7 +167,7 @@ test('the whole acceptance run', {timeout: 1200000, skip: SRC == null && 'CH_ACC
   const out = {text: '', write(s) { this.text += s; }};
   const code = await acceptance.main(['--src', SRC, ...pairs(process.env.CH_ACCEPTANCE_CLONES, '--clone'), ...pairs(process.env.CH_ACCEPTANCE_REFS, '--ref'), '--report', reportFile], {stdout: out, stderr: out});
   // The exit code first: a preflight that fails writes no report.
-  assert.strictEqual(code, 0, out.text.slice(-4000));
+  assert.strictEqual(code, 0, failureText(out.text));
   const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
   assert.strictEqual(report.ok, true);
   assert.ok(report.checks.length >= 15, `${report.checks.length} checks`);
@@ -316,7 +326,7 @@ test('the shared runtime through the native shim', {timeout: 2400000, skip: SRC 
   const out = {text: '', write(s) { this.text += s; }};
   const code = await shared.main(['--src', SRC, ...pairs(process.env.CH_ACCEPTANCE_CLONES, '--clone'), ...pairs(process.env.CH_ACCEPTANCE_REFS, '--ref'), '--report', reportFile],
     {stdout: out, stderr: out});
-  assert.strictEqual(code, 0, out.text.slice(-4000));
+  assert.strictEqual(code, 0, failureText(out.text));
   const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
   assert.strictEqual(report.ok, true, JSON.stringify(report.checks.filter((c) => !c.ok)));
 });
