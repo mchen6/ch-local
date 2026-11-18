@@ -200,3 +200,32 @@ test('a reader of modules.json loads none of the store\'s code (8)', () => {
   assert.strictEqual(r.status, 0, r.stderr);
   assert.deepStrictEqual(JSON.parse(r.stdout.trim()), []);
 });
+
+// #82's acceptance: the marker's open on a platform with no O_NOFOLLOW
+// (Windows): never undefined in the flags; the opened file must be the one
+// lstat checked
+test('without O_NOFOLLOW (Windows) a marker is read by lstat, open and fstat, and one swapped in between is unknown', (t) => {
+  const w = where();
+  const {bytes, pin} = tarball('weather-tool', '1.2.0');
+  store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => false});
+  const flags = [];
+  const open = fs.openSync;
+  t.mock.method(fs, 'openSync', (f, fl, ...rest) => { flags.push(fl); return open(f, fl, ...rest); });
+  assert.strictEqual(store.readMarker(w, 'weather-tool', '1.2.0', {noFollow: undefined}).integrity, pin.integrity);
+  assert.ok(flags.length > 0 && flags.every((f) => Number.isInteger(f)), JSON.stringify(flags));
+  // swapped between the lstat and the open
+  const file = store.markerFile(w, 'weather-tool', '1.2.0');
+  const lstat = fs.lstatSync;
+  let swapped = false;
+  t.mock.method(fs, 'lstatSync', (f, o) => {
+    const st = lstat(f, o);
+    if (f === file && !swapped) {
+      swapped = true;
+      const copy = fs.readFileSync(file);
+      fs.renameSync(file, `${file}.aside`);   // the old inode kept alive, so the new one differs
+      fs.writeFileSync(file, copy);
+    }
+    return st;
+  });
+  assert.throws(() => store.readMarker(w, 'weather-tool', '1.2.0', {noFollow: undefined}), (e) => e.unknown === true && /could not be read \(ECHANGED\)/.test(e.message));
+});
