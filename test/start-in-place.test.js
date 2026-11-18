@@ -1088,3 +1088,44 @@ test('another release\'s record: a module moved back is stopped with its callers
     await s.done;
   }
 });
+
+// the medium review of L2a, 3: a module without its credential is told in
+// start's words, once, by start and the applier together
+test('a module added without its credential is told once, in start\'s words', async () => {
+  const s = await running({env: {GITHUB_TOKEN: 'secret'}});
+  try {
+    // the running release: the one installed, whose pins give other OTHER_TOKEN
+    s.f.release = s.r.allow;
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    const line = 'not loading ch-pack-other: set OTHER_TOKEN in the environment your client starts from';
+    await until(() => notices(s).some(([, t]) => t === line));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.strictEqual(notices(s).filter(([, t]) => /^not loading ch-pack-other/.test(t)).length, 1, JSON.stringify(notices(s)));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium review of L2a, 4: a stop told while the record cannot be read
+// keeps the module out at the version seen next, never lets it in
+test('module-stopped while the record cannot be read: the module stays out at the version seen next', async () => {
+  const s = await running();
+  try {
+    const file = path.join(s.home, 'modules.json');
+    const good = fs.readFileSync(file);
+    fs.writeFileSync(file, '{');
+    s.ask({type: 'module-stopped', name: '@countinghouse/ch-pack-other', code: 'MODULE_SUSPENDED', when: 'restart'});
+    await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.change === 'stopped'));
+    fs.writeFileSync(file, good);
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    await new Promise((r) => setTimeout(r, 200));
+    assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'), 'kept out');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});

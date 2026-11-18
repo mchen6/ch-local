@@ -125,3 +125,32 @@ test('the credential is asked last, of what would otherwise load only', () => {
   availability(where, record, {release: releaseOf(PACKS), seams: {...NONE, off: (m) => (m === A ? 'off' : null), credential: (m) => { asked.push(m); return null; }}});
   assert.deepStrictEqual(asked, [B]);
 });
+
+// the medium review of L2a, 1: a pack whose modules declare no role is
+// never past its seams: its first module is its scenario, the rest parts
+test('a pack whose modules declare no role: its first is top-level and goes through the pack\'s seams; the others are parts', () => {
+  const N = '@t/n-main';
+  const M = '@t/n-helper';
+  const packs = {n: {[N]: '1.0.0', [M]: '1.0.0'}};
+  const dir = tmp('ch-avail-');
+  const where = layout({COUNTINGHOUSE_HOME: dir});
+  storeModule(dir, N, '1.0.0', {countinghouse: {calls: ['n-helper/s.go']}});
+  storeModule(dir, M, '1.0.0');
+  const record = writeHome(dir, packs);
+  const av = availability(where, record, {release: releaseOf(packs), seams: {...NONE, off: (m, p) => (p.includes('n') ? 'it is turned off' : null)}});
+  assert.deepStrictEqual(av.units, []);
+  assert.deepStrictEqual([...av.unavailable.keys()], [N]);
+  assert.strictEqual(av.unavailable.get(N).kind, 'off');
+  const on = availability(where, record, {release: releaseOf(packs), seams: NONE});
+  assert.deepStrictEqual(on.units.map((u) => [u.name, u.packs, Object.keys(u.modules).sort()]), [[N, ['n'], [M, N].sort()]]);
+});
+
+// the medium review of L2a, 2: a cycle never caches a module available
+// that reaches an unavailable one
+test('a cycle that reaches a module not installed leaves every module of it unavailable', () => {
+  const {where, record} = home({calls: {[A]: ['scenario', ['ch-pack-b/s.go', 'ch-step-z/s.go']], [B]: ['scenario', ['ch-pack-a/s.go']]}});
+  const av = availability(where, record, {release: releaseOf(PACKS), seams: NONE});
+  assert.deepStrictEqual(av.units, []);
+  assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-step-z, which is not installed');
+  assert.strictEqual(av.unavailable.get(B).line, 'not loading ch-pack-b: it calls ch-pack-a, which calls ch-step-z, which is not installed');
+});
