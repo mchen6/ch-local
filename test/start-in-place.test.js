@@ -46,6 +46,10 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs, clientAncestry});
+  // the running ch-local is the one the home holds (the npm stub's 0.2.0); a
+  // test makes this process stale by giving it another (lib/packs.js
+  // recordRelease)
+  f.selfVersion = '0.2.0';
   // release: the running release's allowlist, for a withdrawn pack's tests (else the shipped one)
   // (by default fakeIo's: the packs the home holds are listed)
   if (running_release != null) f.release = running_release;
@@ -1064,11 +1068,15 @@ test('module-stopped at start (its plan refused): never loaded in place; a fresh
 // loaded; unloads what the record withdrew or moved back, with the modules
 // that call it; still unloads what is turned off or removed; loads and
 // reloads nothing, and says so once.
+// the home upgraded under this process: the process is made older than
+// the home's ch-local (0.2.0), and the record is the new release's
 const otherRelease = (opts) => { const r = release(opts); r.allow = {...r.allow, release: {version: '9.9.9', security: null}}; return r; };
-const UPGRADED = 'ch-local was upgraded to 9.9.9; restart your client to use it. Until then this session keeps the tools it has.';
+const stale = (s) => { s.f.selfVersion = '0.1.9'; };
+const UPGRADED = 'ch-local in this home is now 0.2.0 (upgraded); restart your client to use it';
 test('another release\'s record: a module moved up is not reloaded, a new one not loaded; said once', async () => {
   const s = await running();
   try {
+    stale(s);
     const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
     await until(() => s.f.err.includes(UPGRADED));
@@ -1090,6 +1098,7 @@ test('another release\'s record: a module moved back is stopped with its callers
     assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
     await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
     // the release just installed pins ch-access-github lower than this start loaded
+    stale(s);
     const r2 = otherRelease({versions: {'@countinghouse/ch-access-github': '0.0.9'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
     const back = 'ch-access-github was moved back to 0.0.9 by the release just installed; it is stopped here until this client restarts; ch-pack-ci-failure-triage calls it and is stopped with it';
@@ -1186,6 +1195,7 @@ test('module-stopped while the record cannot be read: kept out at the last recor
 test('another release\'s record: a withdrawn module refused twice is told "restart now" once', async () => {
   const s = await running({answer: (m) => (m.type === 'unload' ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true})});
   try {
+    stale(s);
     editRecord(s.home, (r) => ({...r, release: {version: '9.9.9', security: null}}), {release: {packs: {}}});
     await until(() => s.requests.filter((m) => m.type === 'unload' && m.name === SCENARIO).length === 2);
     await until(() => notices(s).some(([, t]) => /could not be stopped in place: restart your client now/.test(t)));
@@ -1268,6 +1278,7 @@ test('another release\'s record: a module no longer a pack\'s top-level module i
   try {
     assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
     await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+    stale(s);
     editRecord(s.home, (r) => {
       const {other, ...packs} = r.packs;
       return {...r, release: {version: '9.9.9', security: null}, packs: {...packs, 'ci-failure-triage': {...packs['ci-failure-triage'], modules: {...packs['ci-failure-triage'].modules, ...other.modules}}}};
@@ -1284,6 +1295,7 @@ test('another release\'s record: a module no longer a pack\'s top-level module i
 test('another release\'s record: a caller of a withdrawn part refused twice names the part and the release just installed', async () => {
   const s = await running({answer: (m) => (m.type === 'unload' ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true})});
   try {
+    stale(s);
     editRecord(s.home, (r) => ({...r, release: {version: '9.9.9', security: null}}),
       {release: {packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-step-redact']}}}});
     await until(() => notices(s).some(([, t]) => /could not be stopped in place/.test(t)));
@@ -1368,7 +1380,7 @@ test('a record older than this ch-local, while running: judged by this release, 
   const s = await running();
   try {
     editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
-    const line = `this home was installed by an earlier ch-local; run \`ch-local install\` to bring the home to ${require('../lib/allowlist').ALLOWLIST.release.version}`;
+    const line = `this home's record is not this ch-local's release; run \`ch-local install\` to bring the home to ${require('../lib/allowlist').ALLOWLIST.release.version}`;
     await until(() => notices(s).some(([, t]) => t === line));
     // not frozen: a pack added loads
     assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
@@ -1392,6 +1404,7 @@ test('another release\'s record: a caller whose callee is turned off is unloaded
   const s = await running({home});
   try {
     assert.ok(loadsPack(s), 'ci-failure-triage loads with other installed');
+    stale(s);
     editRecord(home, (rec) => ({...rec, release: {version: '9.9.9', security: null}}));
     await settled(s, {'pack.other': false});
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
@@ -1413,6 +1426,7 @@ test('another release\'s record: a caller whose callee is no longer installed is
   const s = await running({home});
   try {
     assert.ok(loadsPack(s));
+    stale(s);
     editRecord(home, (rec) => { const {other, ...packs} = rec.packs; return {...rec, release: {version: '9.9.9', security: null}, packs}; });
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === SCENARIO));
@@ -1449,6 +1463,27 @@ test('a reload to a prerelease of the version loaded says "rolled back"', async 
     const r2 = release({versions: {[SCENARIO]: '0.1.0-rc.1'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
     await until(() => s.requests.some((m) => m.type === 'reload' && m.notice === 'ch-pack-ci-failure-triage rolled back 0.1.0 → 0.1.0-rc.1'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the Reviewer on L2a: a release rollback under a running process makes it
+// stale; frozen, it says so once and never unloads what the rollback
+// brought back as pin mismatches
+test('a home rolled back under a running start: "ch-local in this home is now <v> (rolled back)", once; nothing unloaded as a pin mismatch', async () => {
+  const s = await running();
+  try {
+    // this process is the later release; the home's ch-local is the earlier
+    s.f.selfVersion = '0.2.1';
+    editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
+    const line = 'ch-local in this home is now 0.2.0 (rolled back); restart your client to use it';
+    await until(() => notices(s).some(([, t]) => t === line));
+    await settled(s);
+    assert.strictEqual(notices(s).filter(([, t]) => t === line).length, 1);
+    assert.ok(!s.requests.some((m) => m.type === 'unload'), JSON.stringify(s.requests.filter((m) => m.type === 'unload')));
+    assert.ok(!notices(s).some(([, t]) => /this release pins|run `ch-local install`/.test(t)));
   } finally {
     s.end();
     await s.done;

@@ -392,11 +392,16 @@ test('a top-level module two packs record is loaded once; each part of its closu
 
 // the high review of L2a, 3: a start older than the record (a daemon or
 // binary from before an upgrade) judges it by none of its own pins
-test('a record of another release is started by the record, not by this start\'s pins', async () => {
+test('a start the home was upgraded under is started by the record, not by its own pins', async () => {
   const home = installedHome();
   const {editHome} = require('./store-helpers');
   editHome(home, (r) => ({...r, release: {version: '9.9.9', security: null}}));
+  // the home's ch-local is 9.9.9, this process 0.1.0: stale, so frozen
+  const self = path.join(home, 'app', 'node_modules', '@countinghouse', 'ch-local');
+  fs.mkdirSync(self, {recursive: true});
+  fs.writeFileSync(path.join(self, 'package.json'), JSON.stringify({name: '@countinghouse/ch-local', version: '9.9.9'}));
   const f = io(home);
+  f.selfVersion = '0.1.0';
   // this start's own pins name none of the record's versions
   const {ALLOWLIST} = require('../lib/allowlist');
   f.release = {...ALLOWLIST, packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-access-github'], credentials: ['GITHUB_TOKEN']}}, pins: {}};
@@ -404,12 +409,12 @@ test('a record of another release is started by the record, not by this start\'s
   const args = f.spawned[0].args;
   assert.strictEqual(args.filter((a) => a === '--loadModule').length, 1, f.err);
   assert.ok(!/this release pins/.test(f.err), f.err);
-  assert.match(f.err, /ch-local was upgraded to 9\.9\.9; restart your client to use it/);
+  assert.match(f.err, /ch-local in this home is now 9\.9\.9 \(upgraded\); restart your client to use it/);
 });
 
 // the medium review of the high round, 1: a record older than this
 // ch-local (an upgrade not yet installed) is judged by this release's pins
-test('a record older than this ch-local is judged by this release\'s pins', async () => {
+test('a record of another release under the home\'s own ch-local is judged by this release\'s pins', async () => {
   const home = installedHome();
   const {editHome} = require('./store-helpers');
   editHome(home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
@@ -419,7 +424,7 @@ test('a record older than this ch-local is judged by this release\'s pins', asyn
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(f.spawned[0].args.filter((a) => a === '--loadModule').length, 0, f.err);
   assert.match(f.err, /this release pins no version of it; run `ch-local install` again/);
-  assert.match(f.err, /this home was installed by an earlier ch-local; run `ch-local install` to bring the home to /);
+  assert.match(f.err, /this home's record is not this ch-local's release; run `ch-local install` to bring the home to /);
 });
 
 test('every start of an unreleased install says so in one stderr line', async () => {

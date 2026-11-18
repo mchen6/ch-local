@@ -24,6 +24,10 @@ function fakeIo({env = {}, answers = [], exec, fetch, version = 'v24.21.0', home
     // no start of a test is alive unless a test says so (collection needs
     // the answer: lib/gc.js)
     alive: () => false,
+    // the running ch-local's version (lib/packs.js recordRelease): not known
+    // unless a test says, since a test home's app holds the npm stub's
+    // ch-local, not this package
+    selfVersion: null,
     stdout: {write: (s) => { io.out += s; }},
     stderr: {write: (s) => { io.err += s; }},
     ask: async (q) => { io.asked.push(q); return answers.length > 0 ? answers.shift() : ''; },

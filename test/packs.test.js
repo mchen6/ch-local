@@ -129,18 +129,35 @@ test('withdrawnPacks: the packs the release does not list; an unreleased install
 });
 
 
-// whose record this is (#413 section 9.8): one rule for start and the
-// applier, by full semver precedence (the Reviewer's high review of L2a's
-// medium round, 4 and 5)
-test('recordRelease: same, newer or older, prereleases included both ways', () => {
+// whose home this is (#413 section 9.8): one rule for start and the
+// applier, asked first of the running ch-local, then of the record, by full
+// semver precedence (the Reviewer on L2a)
+test('recordRelease: stale (upgraded or rolled back), same, or another release\'s record', () => {
   const {recordRelease} = require('../lib/packs');
-  const io = (v) => ({release: {release: {version: v}}});
+  const {layout} = require('../lib/home');
+  const where = (installed) => {
+    const w = layout({COUNTINGHOUSE_HOME: tmp('ch-whose-')});
+    if (installed != null) {
+      const d = path.join(w.app, 'node_modules', '@countinghouse', 'ch-local');
+      fs.mkdirSync(d, {recursive: true});
+      fs.writeFileSync(path.join(d, 'package.json'), JSON.stringify({version: installed}));
+    }
+    return w;
+  };
+  const io = (self, ours = self) => ({selfVersion: self, release: {release: {version: ours}}});
   const rec = (v) => ({release: v == null ? null : {version: v}});
-  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0')).state, 'same');
-  assert.strictEqual(recordRelease(rec(null), io('1.2.0')).state, 'same');
-  assert.strictEqual(recordRelease(rec('1.3.0'), io('1.2.0')).state, 'newer');
-  assert.strictEqual(recordRelease(rec('1.1.9'), io('1.2.0')).state, 'older');
-  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0-rc.1')).state, 'newer');
-  assert.strictEqual(recordRelease(rec('1.2.0-rc.1'), io('1.2.0')).state, 'older');
-  assert.strictEqual(recordRelease(rec('1.2.0-rc.2'), io('1.2.0-rc.1')).state, 'newer');
+  // (a) the home's ch-local is not this process's: stale, by semver both ways
+  assert.deepStrictEqual((({state, how}) => [state, how])(recordRelease(rec('1.3.0'), io('1.2.0'), where('1.3.0'))), ['stale', 'upgraded']);
+  assert.deepStrictEqual((({state, how}) => [state, how])(recordRelease(rec('1.1.0'), io('1.2.0'), where('1.1.0'))), ['stale', 'rolled back']);
+  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0-rc.1'), where('1.2.0')).how, 'upgraded');
+  assert.strictEqual(recordRelease(rec('1.2.0-rc.1'), io('1.2.0'), where('1.2.0-rc.1')).how, 'rolled back');
+  // (b) the home's own ch-local, its release's record (or unknowns): same
+  assert.strictEqual(recordRelease(rec('1.2.0'), io('1.2.0'), where('1.2.0')).state, 'same');
+  assert.strictEqual(recordRelease(rec(null), io('1.2.0'), where('1.2.0')).state, 'same');
+  assert.strictEqual(recordRelease(rec('1.2.0'), io(null, '1.2.0'), where('9.0.0')).state, 'same', 'the running version not known: never stale');
+  // (c) the home's own ch-local, another release's record, either way: other;
+  // versions that do not parse too (fail closed)
+  assert.strictEqual(recordRelease(rec('1.3.0'), io('1.2.0'), where('1.2.0')).state, 'other');
+  assert.strictEqual(recordRelease(rec('1.1.0'), io('1.2.0'), where(null)).state, 'other');
+  assert.strictEqual(recordRelease(rec('v1.3'), io('1.2.0'), where('1.2.0')).state, 'other');
 });
