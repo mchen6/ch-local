@@ -407,3 +407,24 @@ test('a full upgrade keeps a held pack: its entry and its module versions', asyn
     s.done();
   }
 });
+
+// the medium review of L1a-2, 1: a pack the record lists as withdrawn is no
+// pack an upgrade serves, so one live pack beside it still upgrades
+test('a home with one pack and one the record lists as withdrawn upgrades: not "several packs"', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const {editHome} = require('./store-helpers');
+  editHome(s.home, (r) => ({...r, packs: {...r.packs, gone: {from: {release: '0.0.9'}, modules: {'@countinghouse/ch-pack-gone': '1.0.0'}}}}),
+    {release: {packs: {'ci-failure-triage': {packages: Object.keys(recordOf(s.home).packs['ci-failure-triage'].modules)}}}});
+  assert.deepStrictEqual(recordOf(s.home).withdrawn, ['@countinghouse/ch-pack-gone']);
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0/);
+    assert.ok(!historyOf(s.home).some((e) => e.outcome === 'several-packs'));
+    assert.ok(recordOf(s.home).packs.gone != null, 'the withdrawn pack stays recorded');
+  } finally {
+    await w.close();
+    s.done();
+  }
+});

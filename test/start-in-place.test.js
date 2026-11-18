@@ -839,3 +839,28 @@ test('a withdrawn pack whose unload is refused is tried once more, then the clie
     await s.done;
   }
 });
+
+// the medium review of L1a-2, 6: on a shared runtime a session's load-pack is
+// refused only after every other check: a withdrawn pack is told as such,
+// and one already on answers as before
+test('on a shared runtime a withdrawn pack\'s load-pack is told it is withdrawn, not the settings line; one already on answers {}', async () => {
+  const {s, reply} = await sharedWithCiOff();
+  try {
+    withdrawHeld(s.home, 'ci-failure-triage');
+    await new Promise((r) => setTimeout(r, 500));   // the watcher's apply has run
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
+    await until(() => notices(s).some(([, t]) => /ci-failure-triage was withdrawn in this release/.test(t)));
+    assert.ok(!notices(s).some(([, t]) => /is turned on for every session/.test(t)), 'not the settings line');
+  } finally {
+    s.end();
+    await s.done;
+  }
+  const on = await running({shared: true, env: {}, ghToken: `t${require('node:crypto').randomBytes(12).toString('hex')}`});
+  try {
+    const reply = async (msg) => { on.ask(msg); await until(() => on.requests.some((m) => m.id === msg.id)); return on.requests.find((m) => m.id === msg.id); };
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r2', ok: true}, 'on already');
+  } finally {
+    on.end();
+    await on.done;
+  }
+});

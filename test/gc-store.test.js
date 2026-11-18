@@ -214,3 +214,15 @@ test('a kept rollback record that cannot be read stops collection; one that is n
   assert.strictEqual(collectStore(w, {alive: () => false}).problem, undefined);
   assert.strictEqual(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-pack-a', '0.9.0')), false);
 });
+
+// the medium review of L1a-2, 5: two loaded packs holding a module at
+// different versions name both in run.json, and both are kept
+test('a live start that holds a module at two versions keeps both', () => {
+  const {w, place} = home();
+  place('@t/ch-step-x', '1.0.0'); place('@t/ch-step-x', '2.0.0'); place('@t/ch-pack-a', '1.0.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  run(w, {pid: 9, loaded: {'@t/ch-step-x': ['1.0.0', '2.0.0']}});
+  collectStore(w, {alive: (pid) => pid === 9, hostname: 'here'});
+  assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-x', '1.0.0')));
+  assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-x', '2.0.0')));
+});

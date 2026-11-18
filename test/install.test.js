@@ -611,3 +611,29 @@ test('no lock-order deadlock (the review of #35): an install while the daemon ho
 
 // Held packs are never dropped by an install (the deep review of #77), and
 // each one's mark follows the release installed (its /code-review medium).
+
+// the medium review of L1a-2
+test('a record that cannot be read is refused: nothing installed, no pack dropped, the rollback target kept (7)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  fs.mkdirSync(path.join(h, 'previous'), {recursive: true});
+  fs.writeFileSync(path.join(h, 'previous', 'keep'), 'the rollback target');
+  fs.writeFileSync(path.join(h, 'modules.json'), '{"v": 2');
+  const again = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'other', from: r.from}, again, r.allow), 1);
+  assert.match(again.err, /not a ch-local record.*nothing was installed/);
+  assert.strictEqual(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'), '{"v": 2', 'untouched');
+  assert.ok(fs.existsSync(path.join(h, 'previous', 'keep')));
+});
+
+test('a held pack this release lists is said: add-pack brings it back; one an earlier ch-local held with no packages is not migrated (2, 4)', async () => {
+  const r = release(); const h = home();
+  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
+    packs: {'ci-failure-triage': {packages: Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0'])), credentials: []}},
+    held: {other: {packages: {'@countinghouse/ch-pack-other': '0.3.0'}, credentials: [], installedUnder: '0.9.0'}, empty: {packages: {}, credentials: [], installedUnder: '0.9.0'}}}));
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  assert.deepStrictEqual(Object.keys(record(h).held), ['other'], 'the empty entry is not migrated');
+  assert.match(io.out, /pack other is in this release again: `ch-local add-pack other` adds it back/);
+});

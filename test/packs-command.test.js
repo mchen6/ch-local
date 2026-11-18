@@ -352,3 +352,14 @@ test('remove-pack of a withdrawn pack removes it from the rollback\'s kept recor
   assert.deepStrictEqual(kept.packs, {});
   assert.deepStrictEqual(kept.modules, {});
 });
+
+// the medium review of L1a-2, 3: a held pack the running release lists is
+// told as one add-pack brings back, never as one this release lacks
+test('status of a held pack this release lists says add-pack brings it back', async () => {
+  const s = await installed();
+  require('./store-helpers').editHome(s.home, (r) => ({...r, held: {other: {from: {release: '0.9.0'}, modules: {'@countinghouse/ch-pack-other': '0.3.0'}}}}));
+  const io = s.io();
+  assert.strictEqual(await status({}, io), 0, io.err);
+  assert.match(io.out, /other: in this release again, not started until added: `ch-local add-pack other` adds it back/);
+  assert.doesNotMatch(io.out, /this release does not have it/);
+});
