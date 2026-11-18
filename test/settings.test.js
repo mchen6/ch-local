@@ -177,6 +177,133 @@ test('a setting this ch-local does not know is ignored, with a warning; the file
   assert.strictEqual(read.error, undefined);
 });
 
+// L0 (module-level configuration design, 2026-11-18, section 4.2: both
+// writers keep names they do not know). The runtime's settings tool writes
+// module.* values into the same file; a terminal set or reset must never
+// erase them, nor any other name a newer runtime writes.
+const KEPT = {'module.@acme/weather-tool.units': 'imperial', 'module.weather-tool.maxResults': 40, someNewSetting: {nested: [1, 2]}};
+const settingsFile = (home) => path.join(home, 'settings.json');
+const writeSettings = (home, values) => fs.writeFileSync(settingsFile(home), JSON.stringify({version: 1, values}, null, 2) + '\n');
+const storedValues = (home) => JSON.parse(fs.readFileSync(settingsFile(home), 'utf8')).values;
+
+test('L0: settings set keeps every name this ch-local does not know, exactly as stored', async () => {
+  const home = tmp('ch-home-');
+  writeSettings(home, {...KEPT, locale: 'zh'});
+  const got = await cli(home, 'settings', 'set', 'requestTimeout', '20s');
+  assert.strictEqual(got.code, 0, got.io.err);
+  assert.deepStrictEqual(storedValues(home), {...KEPT, locale: 'zh', requestTimeout: 20000});
+  // and again, through the library, as the start's applier and the tool's peers use it
+  setSetting(layout({COUNTINGHOUSE_HOME: home}), 'locale', 'en', {by: 'cli'});
+  assert.deepStrictEqual(storedValues(home), {...KEPT, locale: 'en', requestTimeout: 20000});
+});
+
+test('L0: a bare settings reset removes every known name and keeps the rest; the reset is recorded as before', async () => {
+  const home = tmp('ch-home-');
+  writeSettings(home, {...KEPT, locale: 'zh', requestTimeout: 20000});
+  const reset = await cli(home, 'settings', 'reset');
+  assert.strictEqual(reset.code, 0, reset.io.err);
+  assert.deepStrictEqual(storedValues(home), KEPT);
+  assert.deepStrictEqual((({setting, change}) => ({setting, change}))(history(home).pop()), {setting: '*', change: 'reset'});
+  const read = readSettings(layout({COUNTINGHOUSE_HOME: home}));
+  assert.strictEqual(read.error, undefined, 'the file it leaves is a valid one');
+  assert.deepStrictEqual(read.values, {});
+});
+
+test('L0: a reset of a file with only names this ch-local knows removes it, as before', async () => {
+  const home = tmp('ch-home-');
+  writeSettings(home, {locale: 'zh'});
+  const reset = await cli(home, 'settings', 'reset');
+  assert.strictEqual(reset.code, 0, reset.io.err);
+  assert.ok(!fs.existsSync(settingsFile(home)));
+});
+
+test('L0: a reset of a file whose known value is not allowed keeps the unknown names and drops the rest', async () => {
+  const home = tmp('ch-home-');
+  writeSettings(home, {...KEPT, requestTimeout: 1});
+  const read = readSettings(layout({COUNTINGHOUSE_HOME: home}));
+  assert.match(read.error, /requestTimeout/, 'still a bad file: nothing of it is applied');
+  assert.deepStrictEqual(read.values, {});
+  const reset = await cli(home, 'settings', 'reset');
+  assert.strictEqual(reset.code, 0, reset.io.err);
+  assert.deepStrictEqual(storedValues(home), KEPT);
+});
+
+test('L0: a reset of a file that is not a readable version 1 settings file removes it whole, as before', async () => {
+  for (const text of ['{not json', JSON.stringify({version: 2, values: KEPT}), JSON.stringify([1])]) {
+    const home = tmp('ch-home-');
+    fs.writeFileSync(settingsFile(home), text);
+    const reset = await cli(home, 'settings', 'reset');
+    assert.strictEqual(reset.code, 0, reset.io.err);
+    assert.ok(!fs.existsSync(settingsFile(home)), text);
+  }
+});
+
+test('L0: names kept by a set or a reset are never reported as edits made outside ch-local', async () => {
+  const {outsideEdits} = require('../lib/outside-edits');
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  writeSettings(home, {...KEPT, locale: 'zh'});
+  await cli(home, 'settings', 'set', 'requestTimeout', '20s');
+  await cli(home, 'settings', 'reset');
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
+});
+
+test('L0: a set keeps the file\'s own order of names; a name new to the file goes last', async () => {
+  const home = tmp('ch-home-');
+  writeSettings(home, {locale: 'zh', 'module.a.b': 1, requestTimeout: 20000});
+  assert.strictEqual((await cli(home, 'settings', 'set', 'locale', 'en')).code, 0);
+  assert.deepStrictEqual(Object.keys(storedValues(home)), ['locale', 'module.a.b', 'requestTimeout']);
+  assert.strictEqual((await cli(home, 'settings', 'set', 'upgradeCheck', 'weekly')).code, 0);
+  assert.deepStrictEqual(Object.keys(storedValues(home)), ['locale', 'module.a.b', 'requestTimeout', 'upgradeCheck']);
+});
+
+test('L0: a settings file that is there but cannot be read is never removed by a reset; nothing is recorded', async () => {
+  const home = tmp('ch-home-');
+  fs.mkdirSync(settingsFile(home));   // read fails (EISDIR), as a held file can on Windows
+  const reset = await cli(home, 'settings', 'reset');
+  assert.strictEqual(reset.code, 1, reset.io.err);
+  assert.match(reset.io.err, /cannot be read .*nothing was changed/);
+  assert.ok(fs.statSync(settingsFile(home)).isDirectory(), 'left as it was');
+  assert.ok(!fs.existsSync(path.join(home, 'history.jsonl')) || !/"reset"/.test(fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8')));
+});
+
+test('L0: a reset whose write fails is recorded as not made: the values before it stand for the outside-edit check', () => {
+  const atomic = require('../lib/atomic');
+  const settingsPath = require.resolve('../lib/settings');
+  const real = atomic.writeAtomic;
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  setSetting(where, 'requestTimeout', '20s', {by: 'cli'});
+  const raw = JSON.parse(fs.readFileSync(settingsFile(home), 'utf8'));
+  writeSettings(home, {...raw.values, 'module.a.b': 1});
+  delete require.cache[settingsPath];
+  atomic.writeAtomic = () => { throw Object.assign(new Error('no space'), {code: 'ENOSPC'}); };
+  try {
+    const fresh = require('../lib/settings');
+    assert.throws(() => fresh.resetSettings(where, {by: 'cli'}), {code: 'ENOSPC'});
+  } finally {
+    atomic.writeAtomic = real;
+    delete require.cache[settingsPath];
+    require('../lib/settings');
+  }
+  assert.deepStrictEqual(storedValues(home), {requestTimeout: 20000, 'module.a.b': 1}, 'the file as it was');
+  assert.deepStrictEqual((({setting, change, problem}) => ({setting, change, problem}))(history(home).pop()), {setting: '*', change: 'not made', problem: 'ENOSPC'});
+  const {outsideEdits} = require('../lib/outside-edits');
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'no edit reported: the reset was not made');
+});
+
+test('L0: module.* names are expected and not warned about; any other unknown name still is; every read returns kept', () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  writeSettings(home, {'module.a.b': 1, locale: 'zh'});
+  assert.strictEqual(readSettings(where).warning, undefined);
+  writeSettings(home, {'module.a.b': 1, someNewSetting: 2});
+  assert.match(readSettings(where).warning, /someNewSetting/);
+  assert.doesNotMatch(readSettings(where).warning, /module\.a\.b/);
+  fs.writeFileSync(settingsFile(home), '{not json');
+  assert.deepStrictEqual(readSettings(where).kept, {});
+});
+
 test('the settings lock: a fresh one, even empty, is waited for and never taken; a stale one is cleared', () => {
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});

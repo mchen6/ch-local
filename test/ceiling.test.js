@@ -316,7 +316,7 @@ test('the review of #18: settings reset is the loosenings it implies: bound by t
   assert.strictEqual(readSettings(where).values.maxOutputBytes, 8 * MiB, 'nothing changed');
   const no = await run(home, ['settings', 'reset'], {answers: ['n']});
   assert.strictEqual(no.code, 1);
-  assert.deepStrictEqual(no.io.asked, ['Reset every setting to its default? This loosens: maxOutputBytes 8MiB -> 16MiB, pack.other off -> on. [y/N] ']);
+  assert.deepStrictEqual(no.io.asked, ['Reset every setting to its default? This loosens: maxOutputBytes 8MiB -> 16MiB, pack.other off -> on. (A module\'s settings are kept.) [y/N] ']);
   // the ceiling first: a loosening it refuses refuses the reset, unasked
   reader(home, trusted({maxOutputBytes: 12 * MiB}));
   const above = await run(home, ['settings', 'reset']);
