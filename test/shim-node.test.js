@@ -288,7 +288,10 @@ const WHY_V = require('./vectors/conditions-why.json').conditionsWhy;
 const whyOk = (w) => {
   const hidden = new RegExp(`[${WHY_V.hiddenClass}]`, 'u');
   return w != null && typeof w === 'object' && !Array.isArray(w) && WHY_V.reasons.includes(w.reason) && Object.keys(w).every((k) => k === 'reason' || k === 'at')
-    && (w.at === undefined || (typeof w.at === 'string' && w.at.startsWith('~/') && Array.from(w.at).length <= 200 && !hidden.test(w.at) && !w.at.split('/').includes('..')));
+    // its segments split on "/": none empty, none "..", and no backslash
+    // anywhere (a separator on Windows, where the runtime reads this)
+    && (w.at === undefined || (typeof w.at === 'string' && w.at.startsWith('~/') && Array.from(w.at).length <= 200 && !hidden.test(w.at) &&
+      !w.at.includes('\\') && w.at.slice(2).split('/').every((seg) => seg !== '' && seg !== '..')));
 };
 
 test('conditions: the why holds to the shared vectors: the vectors\' own cases, the closed reasons, and every why whyOf makes', () => {
@@ -302,6 +305,26 @@ test('conditions: the why holds to the shared vectors: the vectors\' own cases, 
       const w = conditions.whyOf({mayElicit: false, why, at}, u);
       assert.ok(whyOk(w), JSON.stringify(w));
     }
+  }
+});
+
+// on every OS, Windows included: a place several levels under the home is
+// sent with "/" between its segments, never the platform's separator, and
+// with no empty segment (countinghouse's tightened conditionsWhy rule)
+test('conditions: whyOf sends a nested place as ~/a/b/c on every OS: "/" between segments, no backslash, no empty segment', () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-why-nest-')));
+  try {
+    const deep = path.join(home, '.claude', 'plugins', 'cache', 'm', 'settings.json');
+    fs.mkdirSync(path.dirname(deep), {recursive: true});
+    fs.writeFileSync(deep, '{}');
+    const hook = 'client hook present';
+    const w = conditions.whyOf({why: hook, at: deep}, home);
+    assert.deepStrictEqual(w, {reason: hook, at: '~/.claude/plugins/cache/m/settings.json'});
+    assert.ok(whyOk(w));
+    // the home itself is no place under it
+    assert.deepStrictEqual(conditions.whyOf({why: hook, at: home}, home), {reason: hook});
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
   }
 });
 
