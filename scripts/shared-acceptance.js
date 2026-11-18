@@ -370,6 +370,19 @@ async function cancelChecks({cancelled, control, holdMs, controlHoldMs, check}) 
     `exited ${k.exitMs} ms after the close; answers ${JSON.stringify(k.answers).slice(0, 600)}`);
 }
 
+// A requestState as the runtime mints it: versioned (`v<n>.<payload>.<mac>`)
+// and opaque. Its payload is sealed (countinghouse #412, F2-4), so a client
+// cannot read it: no JSON object in it (v1's payload was JSON in the clear),
+// and none of `names` (the question's, the asking module's). This pins the
+// privacy, not the version number. The padding (a payload's length tells
+// nothing of who asked) is countinghouse's own test (mcp-contract 10).
+function opaqueState(state, names) {
+  const m = typeof state === 'string' ? /^v\d+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+$/.exec(state) : null;
+  if (m == null) return false;
+  const text = Buffer.from(m[1], 'base64url').toString('latin1');
+  return !/\{"[a-z]+"\s*:/.test(text) && !names.some((n) => text.includes(n));
+}
+
 // (b2) ctx.ask through the shim (MCP completeness M13). call(extra) -> the
 // answer to tools/call of the fixture's ask, with `extra` in its params (a
 // retry's requestState and inputResponses).
@@ -379,7 +392,7 @@ async function askChecks({call, what, check}) {
   const asked = r != null && r.inputRequests != null ? r.inputRequests.answer : null;
   const ok = check('(b2) the handler\'s declared question comes back through the shim as an InputRequiredResult (a form)', r != null && r.resultType === 'input_required' &&
     asked != null && asked.method === 'elicitation/create' && asked.params != null && asked.params.mode === 'form' &&
-    typeof asked.params.message === 'string' && asked.params.message.includes(`Proceed with ${what}?`) && typeof r.requestState === 'string' && /^v1\./.test(r.requestState),
+    typeof asked.params.message === 'string' && asked.params.message.includes(`Proceed with ${what}?`) && opaqueState(r.requestState, ['answer'].concat(ACCEPT_PACKAGES)),
     JSON.stringify(first).slice(0, 1000));
   if (!ok) return;
   const accept = (state) => ({requestState: state, inputResponses: {answer: {action: 'accept', content: {yes: true}}}});
@@ -390,7 +403,11 @@ async function askChecks({call, what, check}) {
   const codeOf = (x) => (x != null && x.result != null && x.result._meta != null ? x.result._meta['countinghouse/code'] : null);
   const again = await call(accept(r.requestState));
   check('(b2) the state is used once: the same retry again is refused', codeOf(again) === 'ASK_STATE_INVALID', JSON.stringify(again).slice(0, 1000));
-  const tampered = `${r.requestState.slice(0, -1)}${r.requestState.endsWith('A') ? 'B' : 'A'}`;
+  // tampered: a fresh state (never used, so only its MAC can refuse it)
+  // with its last character changed
+  const fresh = await call({});
+  const freshState = fresh != null && fresh.result != null ? fresh.result.requestState : null;
+  const tampered = typeof freshState === 'string' ? `${freshState.slice(0, -1)}${freshState.endsWith('A') ? 'B' : 'A'}` : 'none';
   const forged = await call(accept(tampered));
   check('(b2) a tampered state is refused, and nothing is answered for it', forged != null && forged.result != null && forged.result.isError === true &&
     String(codeOf(forged) || '').startsWith('ASK_STATE'), JSON.stringify(forged).slice(0, 1000));
