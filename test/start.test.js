@@ -158,13 +158,16 @@ test('start gives the runtime remote credentials for the loaded packs\' remotes:
   assert.deepStrictEqual(f.spawned[0].remoteCredentials, {'https://api.githubcopilot.com': ['GITHUB_TOKEN']});
 });
 
-test('start refuses a listed module that is missing from the module store, and starts nothing', async () => {
-  const home = installedHome();
+// #83's high review, 5: one pack with a module missing from the store is
+// not loaded, and said; the healthy packs still load
+test('a pack with a module missing from the module store is not loaded, and said; the others load', async () => {
+  const home = installedHome({other: true});
   fs.rmSync(path.join(home, 'module-store', '@countinghouse', 'ch-access-github', '1.0.0'), {recursive: true});
-  const f = io(home);
-  assert.strictEqual(await start({passThrough: []}, f), 1);
-  assert.strictEqual(f.spawned.length, 0);
-  assert.match(f.err, /ch-access-github is not in the module store.*ch-local install/);
+  const f = io(home, {env: {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'b'}});
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const loaded = f.spawned[0].args.filter((a, i, all) => all[i - 1] === '--loadModule');
+  assert.deepStrictEqual(loaded.map((d) => path.basename(path.dirname(d))), ['ch-pack-other']);
+  assert.match(f.err, /not loading ci-failure-triage: a module of it is not in the module store; run `ch-local install` again/);
 });
 
 test('the runtime gets the credential start named: a blank or unresolved variable before it is removed from its environment', async () => {

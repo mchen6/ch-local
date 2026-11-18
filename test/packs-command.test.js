@@ -363,3 +363,15 @@ test('status of a held pack this release lists says add-pack brings it back', as
   assert.match(io.out, /other: in this release again, not started until added: `ch-local add-pack other` adds it back/);
   assert.doesNotMatch(io.out, /this release does not have it/);
 });
+
+// #83's high review, 3: a withdrawn pack's old part never blocks a live pack
+test('add-pack is not blocked by a part only a withdrawn pack holds at another version', async () => {
+  const s = await installed();
+  const {editHome} = require('./store-helpers');
+  // a withdrawn pack recording ch-step-other at a version this release does not pin
+  editHome(s.home, (r) => ({...r, packs: {...r.packs, old: {from: {release: '0.0.9'}, modules: {'@countinghouse/ch-pack-old': '0.1.0', '@countinghouse/ch-step-other': '0.1.9'}}}}),
+    {release: {packs: {'ci-failure-triage': {packages: Object.keys(record(s.home).packs['ci-failure-triage'].modules)}}}});
+  const io = s.io();
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, io, s.r.allow), 0, io.err);
+  assert.strictEqual(record(s.home).packs.other.modules['@countinghouse/ch-step-other'], '0.2.0');
+});

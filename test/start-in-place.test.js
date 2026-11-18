@@ -900,3 +900,24 @@ test('on a shared runtime a withdrawn pack\'s load-pack is told it is withdrawn,
     await on.done;
   }
 });
+
+// #83's high review, 1: a part two loaded packs share moves in ONE reload
+// naming both (countinghouse refuses a part's version change unless every
+// top-level module holding it is named)
+test('an upgrade of a part two loaded packs share is one reload naming both packs', async () => {
+  const s = await running();
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+  await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+  const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+  await until(() => s.requests.some((m) => m.type === 'reload'));
+  await new Promise((r) => setTimeout(r, 300));
+  const reloads = s.requests.filter((m) => m.type === 'reload');
+  assert.strictEqual(reloads.length, 1, JSON.stringify(reloads));
+  assert.deepStrictEqual(reloads[0].names.slice().sort(), ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-pack-other']);
+  assert.strictEqual(reloads[0].dirs['@countinghouse/ch-step-redact'], path.join(s.home, 'module-store', '@countinghouse', 'ch-step-redact', '0.2.0'));
+  holdsToTheVectors(s.requests);
+  await until(() => s.history().filter((h) => h.change === 'updated').length === 2);
+  s.end();
+  await s.done;
+});

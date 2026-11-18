@@ -142,3 +142,17 @@ test('a module version the store would refuse is refused in the record too (5)',
     assert.throws(() => rec.writeModulesRecord(w, base(p(v)), {roleOf, release: RELEASE_V1}), /not valid \(packs\)/, v);
   }
 });
+
+// #83's high review, 2 [security]: a withdrawn pack's newer version never
+// overrides what a release pins for a live pack
+test('a module\'s active version comes from the live packs: a withdrawn pack\'s higher version is not it', () => {
+  const w = where();
+  const live = {from: {release: '0.9.0'}, modules: {'@countinghouse/ch-pack-ci-failure-triage': '0.5.0', '@countinghouse/ch-access-github': '1.1.0'}};
+  const gone = {from: {release: '0.8.0'}, modules: {'@countinghouse/ch-pack-old': '0.1.0', '@countinghouse/ch-access-github': '2.0.0'}};
+  const release = {packs: {'ci-failure-triage': {packages: Object.keys(live.modules)}}};
+  const r = rec.writeModulesRecord(w, base({'ci-failure-triage': live, old: gone}), {roleOf, release});
+  assert.deepStrictEqual(r.withdrawn, ['@countinghouse/ch-pack-old']);
+  assert.strictEqual(r.modules['@countinghouse/ch-access-github'].version, '1.1.0', 'the security release\'s pin, not the withdrawn pack\'s 2.0.0');
+  assert.strictEqual(r.modules['@countinghouse/ch-pack-old'].version, '0.1.0', 'a module only a withdrawn pack records keeps its version (never loaded)');
+  assert.strictEqual(rec.readModulesRecord(w).modules['@countinghouse/ch-access-github'].version, '1.1.0', 'the reader derives the same');
+});

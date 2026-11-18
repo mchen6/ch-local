@@ -613,7 +613,9 @@ test('no lock-order deadlock (the review of #35): an install while the daemon ho
 // each one's mark follows the release installed (its /code-review medium).
 
 // the medium review of L1a-2
-test('a record that cannot be read is refused: nothing installed, no pack dropped, the rollback target kept (7)', async () => {
+// #83's high review, 4: a record that cannot be read is set aside, named,
+// and the install starts a new one; the rollback target is kept
+test('a record that cannot be read is set aside and named; the install goes on, the rollback target kept', async () => {
   const r = release(); const h = home();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await run(r, io), 0, io.err);
@@ -621,10 +623,97 @@ test('a record that cannot be read is refused: nothing installed, no pack droppe
   fs.writeFileSync(path.join(h, 'previous', 'keep'), 'the rollback target');
   fs.writeFileSync(path.join(h, 'modules.json'), '{"v": 2');
   const again = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
-  assert.strictEqual(await install({pack: 'other', from: r.from}, again, r.allow), 1);
-  assert.match(again.err, /not a ch-local record.*nothing was installed/);
-  assert.strictEqual(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'), '{"v": 2', 'untouched');
-  assert.ok(fs.existsSync(path.join(h, 'previous', 'keep')));
+  assert.strictEqual(await install({pack: 'other', from: r.from}, again, r.allow), 0, again.err);
+  const aside = fs.readdirSync(h).filter((n) => n.startsWith('modules.json.unreadable-'));
+  assert.strictEqual(aside.length, 1);
+  assert.strictEqual(fs.readFileSync(path.join(h, aside[0]), 'utf8'), '{"v": 2', 'kept as it was');
+  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')}, and this install starts a new one: add the other packs again with \`ch-local add-pack\``));
+  assert.deepStrictEqual(Object.keys(record(h).packs), ['other']);
+  assert.ok(fs.existsSync(path.join(h, 'previous', 'keep')), 'the rollback target kept');
+});
+
+test('a home an earlier development launcher made (installed.json only) is installed over, as before (4)', async () => {
+  const r = release(); const h = home();
+  fs.writeFileSync(path.join(h, 'installed.json'), JSON.stringify({pack: 'ci-failure-triage', versions: {}, credentials: []}));
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  assert.ok(!fs.existsSync(path.join(h, 'installed.json')));
+  assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
+});
+
+// #83's high review, 6 and 7: the migration places every migrated pack's
+// modules from its old tree, under development pins too, and needs no
+// other pack's tarball
+test('migration places every pack\'s modules from its old tree: the named pack\'s tarballs only, development pins too (6, 7)', async () => {
+  const r = release(); const h = home();
+  const oldPack = (pack, pkgs) => {
+    const {packKey} = require('../lib/gc');
+    const tree = path.join(h, 'packs', pack, packKey(pkgs), 'node_modules');
+    for (const [name, version] of Object.entries(pkgs)) {
+      const dir = path.join(tree, ...name.split('/'));
+      fs.mkdirSync(dir, {recursive: true});
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name, version, countinghouse: {role: name.includes('ch-pack-') ? 'scenario' : 'part'}}));
+    }
+  };
+  const triage = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
+  const other = {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'};
+  oldPack('ci-failure-triage', triage);
+  oldPack('other', other);
+  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
+    packs: {'ci-failure-triage': {packages: triage, credentials: []}, other: {packages: other, credentials: []}}}));
+  // --from holds the runtime and ci-failure-triage's modules only
+  for (const n of ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-other']) fs.rmSync(path.join(r.from, require('../lib/unpack').tarballName(n, other[n])));
+  const f = path.join(tmp('ch-pins-'), 'pins.json');
+  fs.writeFileSync(f, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile}));
+  const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
+  const rec = record(h);
+  assert.deepStrictEqual(Object.keys(rec.packs).sort(), ['ci-failure-triage', 'other']);
+  for (const [n, v] of Object.entries(other)) assert.ok(fs.existsSync(path.join(h, 'module-store', ...n.split('/'), `${v}.json`)), `${n} placed from its old tree`);
+  const digest = require('node:crypto').createHash('sha256').update(fs.readFileSync(f)).digest('hex').slice(0, 16);
+  assert.deepStrictEqual(rec.packs.other.from, {unreleased: digest}, 'stamped with the development pins');
+});
+
+// #83's high review, 8: a version the record names is never placed over
+// with other contents, and nothing is placed before that is known
+test('other contents under a version the record names are refused before anything is placed (8)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  // a development pins file that rebuilt ch-step-redact 0.1.0 with other bytes
+  const rebuilt = release({extra: {'@countinghouse/ch-step-redact': {description: 'rebuilt'}}});
+  const f = path.join(tmp('ch-pins-'), 'pins.json');
+  fs.writeFileSync(f, JSON.stringify({pins: rebuilt.pins, runtimeLockfile: rebuilt.lockfile}));
+  const before = fs.readFileSync(path.join(h, 'module-store', '@countinghouse', 'ch-step-redact', '0.1.0', 'package.json'), 'utf8');
+  const dev = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: rebuilt.from, unreleasedPins: f}, dev, {...rebuilt.allow, pins: {}, runtime: {...rebuilt.allow.runtime, lockfile: null}}), 1);
+  assert.match(dev.err, /ch-step-redact 0\.1\.0 is installed with other contents; a changed module takes a new version.*nothing was installed/);
+  assert.strictEqual(fs.readFileSync(path.join(h, 'module-store', '@countinghouse', 'ch-step-redact', '0.1.0', 'package.json'), 'utf8'), before, 'not replaced');
+});
+
+// #83's high review, 9: a kept packs.json (a migrating install keeps the
+// release before's record so) names no rollback target, since rollback
+// refuses it: its old trees are collected once no start from before names
+// them, and a later install that keeps modules.json removes it
+test('the trees a kept packs.json names are collected; a later kept modules.json removes it (9)', async () => {
+  const h = home();
+  const {packKey, collect} = require('../lib/gc');
+  const triage = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
+  const tree = path.join(h, 'packs', 'ci-failure-triage', packKey(triage));
+  fs.mkdirSync(path.join(tree, 'node_modules'), {recursive: true});
+  fs.mkdirSync(path.join(h, 'previous'), {recursive: true});
+  fs.writeFileSync(path.join(h, 'previous', 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {'ci-failure-triage': {packages: triage, credentials: []}}}));
+  const {layout} = require('../lib/home');
+  collect(layout({COUNTINGHOUSE_HOME: h}), {alive: () => false, hostname: 'here'});
+  assert.ok(!fs.existsSync(tree), 'not kept for a rollback that refuses it');
+  // an install of the same release keeps previous/, and its kept modules.json replaces the packs.json
+  const r = release(); r.allow.release = {version: '0.2.0', security: null};
+  assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  const r2 = release(); r2.allow.release = {version: '0.3.0', security: null};
+  assert.strictEqual(await run(r2, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  assert.ok(fs.existsSync(path.join(h, 'previous', 'modules.json')));
+  assert.ok(!fs.existsSync(path.join(h, 'previous', 'packs.json')));
 });
 
 test('a held pack this release lists is said: add-pack brings it back; one an earlier ch-local held with no packages is not migrated (2, 4)', async () => {
