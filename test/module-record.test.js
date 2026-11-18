@@ -133,3 +133,12 @@ test('two versions equal but for build metadata: the same one is active whatever
   const two = rec.writeModulesRecord(w, base({y: p('1.0.0+b'), x: p('1.0.0+a')}, {unreleased: true}), {roleOf});
   assert.strictEqual(one.modules['weather-tool'].version, two.modules['weather-tool'].version);
 });
+
+// #82's high review, 5: a record never names a version the store refuses
+test('a module version the store would refuse is refused in the record too (5)', () => {
+  const w = where();
+  const p = (v) => ({'ci-failure-triage': {from: {release: '0.9.0'}, modules: {'@countinghouse/ch-step-redact': v}}});
+  for (const v of ['1.0.0-RC.1', '1.0.0-rc.json', '1.0.0-x.new-ab12cd34']) {
+    assert.throws(() => rec.writeModulesRecord(w, base(p(v)), {roleOf, release: RELEASE_V1}), /not valid \(packs\)/, v);
+  }
+});

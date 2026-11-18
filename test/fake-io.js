@@ -21,6 +21,9 @@ function fakeIo({env = {}, answers = [], exec, fetch, version = 'v24.21.0', home
     version,
     platform: process.platform,
     homedir: () => homedir,
+    // no start of a test is alive unless a test says so (collection needs
+    // the answer: lib/gc.js)
+    alive: () => false,
     stdout: {write: (s) => { io.out += s; }},
     stderr: {write: (s) => { io.err += s; }},
     ask: async (q) => { io.asked.push(q); return answers.length > 0 ? answers.shift() : ''; },

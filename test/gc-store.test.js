@@ -49,7 +49,7 @@ test('every version a pack records is kept, the lower one too; one nothing names
   place('@t/ch-step-x', '1.0.0'); place('@t/ch-step-x', '2.0.0'); place('@t/ch-step-x', '0.9.0');
   place('@gone/ch-step-y', '1.0.0');
   recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0', '@t/ch-step-x': '1.0.0'}}, b: {from, modules: {'@t/ch-pack-b': '1.0.0', '@t/ch-step-x': '2.0.0'}}});
-  const r = collectStore(w);
+  const r = collectStore(w, {alive: () => false});
   assert.deepStrictEqual(names(w), ['@t/ch-pack-a/1.0.0', '@t/ch-pack-a/1.0.0.json', '@t/ch-pack-b/1.0.0', '@t/ch-pack-b/1.0.0.json',
     '@t/ch-step-x/1.0.0', '@t/ch-step-x/1.0.0.json', '@t/ch-step-x/2.0.0', '@t/ch-step-x/2.0.0.json']);
   assert.ok(r.removed.some((p) => p.endsWith(path.join('ch-step-x', '0.9.0'))));
@@ -65,7 +65,7 @@ test('a held pack\'s versions and the rollback\'s kept record\'s are kept, said 
   const prev = rec.writeModulesRecord({modulesRecord: w.previousModulesRecord}, {runtime: {versions: {}}, release: {version: '0.8.0', security: null}, unreleased: false,
     packs: {a: {from: {release: '0.8.0'}, modules: {'@t/ch-pack-a': '0.8.0'}}}}, {roleOf, release: RELEASE});
   assert.ok(prev);
-  const r = collectStore(w);
+  const r = collectStore(w, {alive: () => false});
   const why = Object.fromEntries(r.kept.map((k) => [path.relative(w.moduleStore, k.dir), k.why]));
   assert.deepStrictEqual(why, {[path.join('@t', 'ch-pack-a', '0.8.0')]: 'rollback', [path.join('@t', 'ch-pack-a', '1.0.0')]: 'current', [path.join('@t', 'ch-pack-b', '0.5.0')]: 'held'});
   assert.deepStrictEqual(r.removed, []);
@@ -103,7 +103,7 @@ test('staging and trash leftovers, a version with no marker, a marker with no ve
   fs.writeFileSync(path.join(path.dirname(dir), '0.4.0.json'), '{}');
   fs.writeFileSync(path.join(w.moduleStore, 'stray.txt'), 'x');
   fs.mkdirSync(path.join(w.moduleStore, 'Not A Name'));
-  collectStore(w);
+  collectStore(w, {alive: () => false});
   assert.deepStrictEqual(names(w), ['@t/ch-pack-a/1.0.0', '@t/ch-pack-a/1.0.0.json']);
 });
 
@@ -111,7 +111,7 @@ test('a record that cannot be read collects nothing, and says why', () => {
   const {w, place} = home();
   place('@t/ch-pack-a', '1.0.0');
   fs.writeFileSync(w.modulesRecord, '{');
-  const r = collectStore(w);
+  const r = collectStore(w, {alive: () => false});
   assert.match(r.problem, /not a ch-local record/);
   assert.deepStrictEqual(names(w), ['@t/ch-pack-a/1.0.0', '@t/ch-pack-a/1.0.0.json']);
 });
@@ -128,7 +128,45 @@ test('a version whose marker cannot be removed is reported kept, and the rest is
   fs.rmSync(`${x}.json`);
   fs.mkdirSync(`${x}.json`);
   fs.writeFileSync(path.join(`${x}.json`, 'held'), 'x');
-  const r = collectStore(w);
+  const r = collectStore(w, {alive: () => false});
   assert.ok(r.kept.some((k) => k.dir === x && /could not remove/.test(k.why)), JSON.stringify(r.kept));
   assert.strictEqual(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-z')), false, 'the pass went on');
+});
+
+// #82's high review
+test('alive is required: a caller that leaves it out collects nothing (1)', () => {
+  const {w, place} = home();
+  place('@t/ch-pack-a', '1.0.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  assert.throws(() => collectStore(w), /alive is required/);
+  assert.throws(() => require('../lib/gc').collect(w), /alive is required/);
+  assert.ok(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-pack-a', '1.0.0')));
+});
+
+test('a marker that cannot be read is unknown, and unknown is kept: never deleted on a read error (2)', {skip: process.platform === 'win32' || process.getuid() === 0}, () => {
+  const {w, place} = home();
+  const dir = place('@t/ch-step-x', '1.0.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  place('@t/ch-pack-a', '1.0.0');
+  fs.chmodSync(`${dir}.json`, 0o000);
+  try {
+    const r = collectStore(w, {alive: () => false});
+    assert.ok(r.kept.some((k) => k.dir === dir && /could not be read \(EACCES\)/.test(k.why)), JSON.stringify(r.kept));
+    assert.ok(fs.existsSync(dir));
+  } finally {
+    fs.chmodSync(`${dir}.json`, 0o644);
+  }
+});
+
+test('a marker that is a link is no marker: the version is incomplete, and goes with its link (6)', () => {
+  const {w, place} = home();
+  const dir = place('@t/ch-pack-a', '1.0.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  const real = path.join(w.home, 'marker-elsewhere.json');
+  fs.renameSync(`${dir}.json`, real);
+  fs.symlinkSync(real, `${dir}.json`);
+  assert.strictEqual(store.isComplete(w, '@t/ch-pack-a', '1.0.0'), false);
+  collectStore(w, {alive: () => false});
+  assert.strictEqual(fs.existsSync(dir), false, 'incomplete: collected');
+  assert.strictEqual(fs.existsSync(real), true, 'the link\'s target is not touched');
 });

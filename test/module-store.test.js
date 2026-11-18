@@ -132,8 +132,57 @@ test('a version path that is a link or a file, beside a right marker, is not tak
   fs.renameSync(dir, elsewhere);
   fs.symlinkSync(elsewhere, dir, 'dir');
   assert.strictEqual(store.isComplete(w, 'weather-tool', '1.2.0'), false);
-  const r = store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => { throw new Error('not asked for an incomplete version'); }});
+  // something is at its path: asked (#82's high review, 4); not in use, placed
+  const asked = [];
+  const r = store.placeModule(w, 'weather-tool', bytes, pin, {inUse: (n, v) => { asked.push(`${n}@${v}`); return false; }});
+  assert.deepStrictEqual(asked, ['weather-tool@1.2.0']);
   assert.strictEqual(r.placed, true);
   assert.strictEqual(fs.lstatSync(dir).isDirectory(), true);
   assert.strictEqual(fs.existsSync(path.join(elsewhere, 'package.json')), true, 'a link\'s target is never deleted through it');
+});
+
+// #82's high review
+test('a marker that cannot be read refuses the place: unknown is never taken for missing (2)', {skip: process.platform === 'win32' || process.getuid() === 0}, () => {
+  const w = where();
+  const a = tarball('weather-tool', '1.2.0');
+  const b = tarball('weather-tool', '1.2.0', {description: 'built again'});
+  store.placeModule(w, 'weather-tool', a.bytes, a.pin, {inUse: () => false});
+  const file = store.markerFile(w, 'weather-tool', '1.2.0');
+  fs.chmodSync(file, 0o000);
+  try {
+    assert.throws(() => store.placeModule(w, 'weather-tool', b.bytes, b.pin, {inUse: () => false}), (e) => e.unknown === true && /could not be read \(EACCES\)/.test(e.message));
+    assert.throws(() => store.isComplete(w, 'weather-tool', '1.2.0'), /could not be read/);
+  } finally {
+    fs.chmodSync(file, 0o644);
+  }
+  assert.strictEqual(store.readMarker(w, 'weather-tool', '1.2.0').integrity, a.pin.integrity, 'unchanged');
+});
+
+test('a version with an upper-case letter is refused: on a case-insensitive file system it would share another\'s directory (3)', () => {
+  const w = where();
+  assert.strictEqual(store.storeVersion('1.0.0-RC.1'), false);
+  assert.strictEqual(store.storeVersion('1.0.0+Build'), false);
+  assert.strictEqual(store.storeVersion('1.0.0-rc.1'), true);
+  assert.throws(() => store.versionDir(w, 'weather-tool', '1.0.0-RC.1'), /not a version/);
+});
+
+test('an incomplete version still at its path is asked about too: in use, it is refused (4)', () => {
+  const w = where();
+  const {bytes, pin} = tarball('weather-tool', '1.2.0');
+  const {dir} = store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => false});
+  fs.rmSync(store.markerFile(w, 'weather-tool', '1.2.0'));
+  const asked = [];
+  assert.throws(() => store.placeModule(w, 'weather-tool', bytes, pin, {inUse: (n, v) => { asked.push(`${n}@${v}`); return true; }}),
+    /weather-tool 1\.2\.0 is incomplete in the module store and a running client uses it; stop it and run this again/);
+  assert.deepStrictEqual(asked, ['weather-tool@1.2.0']);
+  assert.ok(fs.existsSync(path.join(dir, 'package.json')), 'not touched');
+});
+
+// (lib/unpack.js still comes through lib/pack-dir.js until L1a-2 removes it)
+test('start loads none of collection\'s or the store\'s code (10)', () => {
+  const r = require('node:child_process').spawnSync(process.execPath, ['-e',
+    "require('./lib/start'); const loaded = Object.keys(require.cache).map((k) => require('node:path').basename(k)); console.log(JSON.stringify(['gc.js', 'module-store.js', 'module-record.js'].filter((f) => loaded.includes(f))))"],
+  {cwd: path.join(__dirname, '..'), encoding: 'utf8'});
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.deepStrictEqual(JSON.parse(r.stdout.trim()), []);
 });
