@@ -114,3 +114,22 @@ test('an interrupted rollback is finished first', () => {
   fs.writeFileSync(w.journal, '{}');
   assert.throws(() => rec.readModulesRecord(w), /a rollback was interrupted; run `ch-local rollback` to finish it/);
 });
+
+// the medium review of L1a-1
+test('a released record is written only with its release\'s pins, and roleOf is required (2)', () => {
+  const w = where();
+  assert.throws(() => rec.writeModulesRecord(w, base({'ci-failure-triage': triage()}), {roleOf}), /written with its release's pins/);
+  assert.throws(() => rec.writeModulesRecord(w, base({'ci-failure-triage': triage()}), {roleOf, release: null}), /written with its release's pins/);
+  assert.throws(() => rec.writeModulesRecord(w, base({'ci-failure-triage': triage()})), /roleOf is required/);
+  assert.strictEqual(fs.existsSync(w.modulesRecord), false);
+  // a development record needs none: nothing is withdrawn there
+  assert.deepStrictEqual(rec.writeModulesRecord(w, base({'ci-failure-triage': triage()}, {unreleased: true}), {roleOf}).withdrawn, []);
+});
+
+test('two versions equal but for build metadata: the same one is active whatever the packs\' order (7)', () => {
+  const w = where();
+  const p = (v) => ({from: {unreleased: '0123456789abcdef'}, modules: {'weather-tool': v}});
+  const one = rec.writeModulesRecord(w, base({x: p('1.0.0+a'), y: p('1.0.0+b')}, {unreleased: true}), {roleOf});
+  const two = rec.writeModulesRecord(w, base({y: p('1.0.0+b'), x: p('1.0.0+a')}, {unreleased: true}), {roleOf});
+  assert.strictEqual(one.modules['weather-tool'].version, two.modules['weather-tool'].version);
+});

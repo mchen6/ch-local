@@ -21,7 +21,7 @@ function tarball(name, version, extra = {}) {
 test('a placed version is its directory and then its marker; a scoped name is two directories', () => {
   const w = where();
   const {bytes, pin} = tarball('@countinghouse/ch-access-github', '0.2.0');
-  const r = store.placeModule(w, '@countinghouse/ch-access-github', bytes, pin, {now: () => new Date('2026-12-01T10:00:00.000Z')});
+  const r = store.placeModule(w, '@countinghouse/ch-access-github', bytes, pin, {inUse: () => false, now: () => new Date('2026-12-01T10:00:00.000Z')});
   assert.strictEqual(r.placed, true);
   assert.strictEqual(r.dir, path.join(w.moduleStore, '@countinghouse', 'ch-access-github', '0.2.0'));
   assert.strictEqual(fs.readFileSync(path.join(r.dir, 'index.js'), 'utf8'), 'module.exports = "0.2.0";\n');
@@ -36,7 +36,7 @@ test('a placed version is its directory and then its marker; a scoped name is tw
 test('a second place of the same version neither unpacks nor touches the directory', () => {
   const w = where();
   const {bytes, pin} = tarball('weather-tool', '1.2.0');
-  const first = store.placeModule(w, 'weather-tool', bytes, pin);
+  const first = store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => false});
   const old = new Date('2020-01-01T00:00:00Z');
   fs.utimesSync(first.dir, old, old);
   fs.utimesSync(path.join(first.dir, 'index.js'), old, old);
@@ -49,13 +49,13 @@ test('a second place of the same version neither unpacks nor touches the directo
 test('a version directory with no marker is incomplete, and is placed again whole', () => {
   const w = where();
   const {bytes, pin} = tarball('weather-tool', '1.2.0');
-  const {dir} = store.placeModule(w, 'weather-tool', bytes, pin);
+  const {dir} = store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => false});
   // a crash between the rename and the marker
   fs.rmSync(store.markerFile(w, 'weather-tool', '1.2.0'));
   fs.writeFileSync(path.join(dir, 'stray.js'), 'half of something');
   assert.strictEqual(store.isComplete(w, 'weather-tool', '1.2.0'), false);
   assert.throws(() => store.readStoredManifest(w, 'weather-tool', '1.2.0'), /not in the module store/);
-  assert.strictEqual(store.placeModule(w, 'weather-tool', bytes, pin).placed, true);
+  assert.strictEqual(store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => false}).placed, true);
   assert.strictEqual(fs.existsSync(path.join(dir, 'stray.js')), false);
   assert.strictEqual(store.isComplete(w, 'weather-tool', '1.2.0'), true);
 });
@@ -63,7 +63,7 @@ test('a version directory with no marker is incomplete, and is placed again whol
 test('a marker that is not this version\'s, or not readable, is no marker', () => {
   const w = where();
   const {bytes, pin} = tarball('weather-tool', '1.2.0');
-  store.placeModule(w, 'weather-tool', bytes, pin);
+  store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => false});
   const file = store.markerFile(w, 'weather-tool', '1.2.0');
   fs.writeFileSync(file, JSON.stringify({name: 'weather-tool', version: '1.2.1', integrity: pin.integrity, placedAt: 'x'}));
   assert.strictEqual(store.readMarker(w, 'weather-tool', '1.2.0'), null);
@@ -76,7 +76,7 @@ test('other contents under one version: replaced when no running start uses it, 
   const a = tarball('weather-tool', '1.2.0');
   const b = tarball('weather-tool', '1.2.0', {description: 'built again'});
   assert.notStrictEqual(a.pin.integrity, b.pin.integrity);
-  const {dir} = store.placeModule(w, 'weather-tool', a.bytes, a.pin);
+  const {dir} = store.placeModule(w, 'weather-tool', a.bytes, a.pin, {inUse: () => false});
   const asked = [];
   assert.throws(() => store.placeModule(w, 'weather-tool', b.bytes, b.pin, {inUse: (n, v) => { asked.push(`${n}@${v}`); return true; }}),
     /weather-tool 1\.2\.0 is installed with other contents and a running client uses it; stop it and run this again/);
@@ -91,11 +91,11 @@ test('other contents under one version: replaced when no running start uses it, 
 test('bytes that are not the pin\'s, a manifest that is not the pinned one, and npm dependencies are refused with nothing placed', () => {
   const w = where();
   const a = tarball('weather-tool', '1.2.0');
-  assert.throws(() => store.placeModule(w, 'weather-tool', a.bytes, {version: '1.2.0', integrity: tarball('weather-tool', '1.2.1').pin.integrity}), /integrity is not the pinned one/);
+  assert.throws(() => store.placeModule(w, 'weather-tool', a.bytes, {version: '1.2.0', integrity: tarball('weather-tool', '1.2.1').pin.integrity}, {inUse: () => false}), /integrity is not the pinned one/);
   const wrong = tarball('weather-tool', '1.2.1');
-  assert.throws(() => store.placeModule(w, 'weather-tool', wrong.bytes, {version: '1.2.0', integrity: wrong.pin.integrity}), /package\.json is weather-tool@1\.2\.1/);
+  assert.throws(() => store.placeModule(w, 'weather-tool', wrong.bytes, {version: '1.2.0', integrity: wrong.pin.integrity}, {inUse: () => false}), /package\.json is weather-tool@1\.2\.1/);
   const deps = tarball('weather-tool', '1.2.0', {dependencies: {lodash: '4.0.0'}});
-  assert.throws(() => store.placeModule(w, 'weather-tool', deps.bytes, deps.pin), /declares npm dependencies/);
+  assert.throws(() => store.placeModule(w, 'weather-tool', deps.bytes, deps.pin, {inUse: () => false}), /declares npm dependencies/);
   const left = fs.existsSync(path.join(w.moduleStore, 'weather-tool')) ? fs.readdirSync(path.join(w.moduleStore, 'weather-tool')) : [];
   assert.deepStrictEqual(left, [], 'no stage, no version, no marker');
 });
@@ -105,4 +105,35 @@ test('a name or version that is not a release\'s is refused before any path is m
   assert.throws(() => store.versionDir(w, '../escape', '1.0.0'), /not a package name/);
   assert.throws(() => store.versionDir(w, 'weather-tool', '1.0.0/../../x'), /not a version/);
   assert.throws(() => store.versionDir(w, '@scope/../x', '1.0.0'), /not a package name/);
+});
+
+// the medium review of L1a-1
+test('inUse is required: a caller that leaves it out replaces nothing (1)', () => {
+  const w = where();
+  const {bytes, pin} = tarball('weather-tool', '1.2.0');
+  assert.throws(() => store.placeModule(w, 'weather-tool', bytes, pin), /inUse is required/);
+  assert.strictEqual(fs.existsSync(path.join(w.moduleStore, 'weather-tool')), false);
+});
+
+test('a version that ends in .json or holds .new- or .trash- is refused: it would be another\'s marker or staging name (4)', () => {
+  const w = where();
+  for (const v of ['1.0.0-rc.json', '1.2.0-beta.new-ab12cd34', '1.2.0-x.trash-11223344']) {
+    assert.throws(() => store.versionDir(w, 'weather-tool', v), /not a version/, v);
+    assert.strictEqual(store.storeVersion(v), false, v);
+  }
+  assert.strictEqual(store.storeVersion('1.0.0-rc.1+build.7'), true);
+});
+
+test('a version path that is a link or a file, beside a right marker, is not taken as installed: it is placed again (5)', () => {
+  const w = where();
+  const {bytes, pin} = tarball('weather-tool', '1.2.0');
+  const {dir} = store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => false});
+  const elsewhere = path.join(w.home, 'elsewhere');
+  fs.renameSync(dir, elsewhere);
+  fs.symlinkSync(elsewhere, dir, 'dir');
+  assert.strictEqual(store.isComplete(w, 'weather-tool', '1.2.0'), false);
+  const r = store.placeModule(w, 'weather-tool', bytes, pin, {inUse: () => { throw new Error('not asked for an incomplete version'); }});
+  assert.strictEqual(r.placed, true);
+  assert.strictEqual(fs.lstatSync(dir).isDirectory(), true);
+  assert.strictEqual(fs.existsSync(path.join(elsewhere, 'package.json')), true, 'a link\'s target is never deleted through it');
 });

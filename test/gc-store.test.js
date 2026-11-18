@@ -20,7 +20,7 @@ function home() {
   const w = layout({COUNTINGHOUSE_HOME: tmp('ch-gcstore-')});
   const place = (name, version) => {
     const bytes = packageTgz({name, version, countinghouse: {role: roleOf(name)}});
-    return store.placeModule(w, name, bytes, {version, integrity: store.integrityOf(bytes)}).dir;
+    return store.placeModule(w, name, bytes, {version, integrity: store.integrityOf(bytes)}, {inUse: () => false}).dir;
   };
   return {w, place};
 }
@@ -114,4 +114,21 @@ test('a record that cannot be read collects nothing, and says why', () => {
   const r = collectStore(w);
   assert.match(r.problem, /not a ch-local record/);
   assert.deepStrictEqual(names(w), ['@t/ch-pack-a/1.0.0', '@t/ch-pack-a/1.0.0.json']);
+});
+
+// the medium review of L1a-1, 3: a marker that cannot be removed is said, and
+// the pass goes on
+test('a version whose marker cannot be removed is reported kept, and the rest is still collected', () => {
+  const {w, place} = home();
+  place('@t/ch-pack-a', '1.0.0');
+  const x = place('@t/ch-step-x', '1.0.0');
+  place('@t/ch-step-z', '1.0.0');
+  recordWith(w, {a: {from, modules: {'@t/ch-pack-a': '1.0.0'}}});
+  // a marker rmSync refuses (a directory, where a file was)
+  fs.rmSync(`${x}.json`);
+  fs.mkdirSync(`${x}.json`);
+  fs.writeFileSync(path.join(`${x}.json`, 'held'), 'x');
+  const r = collectStore(w);
+  assert.ok(r.kept.some((k) => k.dir === x && /could not remove/.test(k.why)), JSON.stringify(r.kept));
+  assert.strictEqual(fs.existsSync(path.join(w.moduleStore, '@t', 'ch-step-z')), false, 'the pass went on');
 });
