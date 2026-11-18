@@ -99,7 +99,7 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   const done = start({passThrough: ['--locale', 'zh']}, f);
   for (let i = 0; end == null && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.ok(!args.some((a) => a.includes(`${path.sep}other${path.sep}`)), 'other is off: not loaded');
-  assert.match(f.err, /not loading other: it is turned off/);
+  assert.match(f.err, /not loading ch-pack-other: it is turned off/);
   assert.deepStrictEqual(args.slice(args.indexOf('--maxOutputBytes'), args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(32 * 1024 * 1024)]);
   assert.strictEqual(args.filter((a) => a === '--locale').length, 1, 'the client\'s own --locale only');
   // none stored: the default, passed all the same (the two caps always are,
@@ -113,7 +113,7 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   assert.deepStrictEqual(requests[1], {type: 'set', name: 'requestTimeout', value: 15, id: requests[1].id});
   assert.strictEqual((await cli(home, 'settings', 'set', 'pack.ci-failure-triage', 'off')).code, 0);
   for (let i = 0; requests.length < 3 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
-  assert.deepStrictEqual([requests[2].type, requests[2].name, requests[2].notice], ['unload', '@countinghouse/ch-pack-ci-failure-triage', 'ci-failure-triage turned off']);
+  assert.deepStrictEqual([requests[2].type, requests[2].name, requests[2].notice], ['unload', '@countinghouse/ch-pack-ci-failure-triage', 'ch-pack-ci-failure-triage turned off']);
   end(0);
   await done;
 });

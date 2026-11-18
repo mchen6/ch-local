@@ -375,3 +375,23 @@ test('add-pack is not blocked by a part only a withdrawn pack holds at another v
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, io, s.r.allow), 0, io.err);
   assert.strictEqual(record(s.home).packs.other.modules['@countinghouse/ch-step-other'], '0.2.0');
 });
+
+// A module a running client's runtime stopped for good (module-stopped:
+// #413 sections 7.3 and 9.9; L2a): status shows it, with its code, from
+// that start's run.json; a start no longer running shows nothing.
+test('status shows a module a running client stopped, with its code; a dead start\'s run.json is not read', async () => {
+  const s = await installed();
+  const {hostTag} = require('../lib/gc');
+  const writeRun = (pid) => {
+    const dir = path.join(s.home, 'run', `r${pid}`);
+    fs.mkdirSync(dir, {recursive: true});
+    fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({pid, host: hostTag('box-1'), loaded: {}, stopped: {'@countinghouse/ch-pack-ci-failure-triage': 'MODULE_SUSPENDED'}}));
+  };
+  writeRun(4242);
+  const live = Object.assign(s.io({GITHUB_TOKEN: 'secret'}), {hostname: 'box-1', alive: (pid) => pid === 4242});
+  assert.strictEqual(await status({}, live), 0, live.err);
+  assert.match(live.out, /^ci-failure-triage 0\.1\.0\n  stopped in a running client \(MODULE_SUSPENDED\): restart that client\n/m);
+  const dead = Object.assign(s.io({GITHUB_TOKEN: 'secret'}), {hostname: 'box-1', alive: () => false});
+  assert.strictEqual(await status({}, dead), 0, dead.err);
+  assert.ok(!/stopped/.test(dead.out), dead.out);
+});

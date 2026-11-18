@@ -24,7 +24,7 @@ function installedHome({remotes = [GITHUB], unreleased = false, other = false} =
   const app = path.join(home, 'app', 'node_modules', 'countinghouse');
   fs.mkdirSync(app, {recursive: true});
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({name: 'countinghouse', version: '1.0.0'}));
-  storeModule(home, SCENARIO, '1.0.0', {countinghouse: {role: 'scenario'}});
+  storeModule(home, SCENARIO, '1.0.0', {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns']}});
   storeModule(home, '@countinghouse/ch-access-github', '1.0.0', {countinghouse: {role: 'part', remotes}});
   if (other) storeModule(home, '@countinghouse/ch-pack-other', '1.0.0', {countinghouse: {role: 'scenario'}});
   writeHome(home, {
@@ -167,7 +167,7 @@ test('a pack with a module missing from the module store is not loaded, and said
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   const loaded = f.spawned[0].args.filter((a, i, all) => all[i - 1] === '--loadModule');
   assert.deepStrictEqual(loaded.map((d) => path.basename(path.dirname(d))), ['ch-pack-other']);
-  assert.match(f.err, /not loading ci-failure-triage: a module of it is not in the module store; run `ch-local install` again/);
+  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which is missing from the module store; run `ch-local install` again/);
 });
 
 test('the runtime gets the credential start named: a blank or unresolved variable before it is removed from its environment', async () => {
@@ -300,7 +300,7 @@ test('start names the credential variable and never prints a value; with none pr
   const home = installedHome();
   const f = io(home);
   await start({passThrough: []}, f);
-  assert.match(f.err, /loading ci-failure-triage/);
+  assert.match(f.err, /loading ch-pack-ci-failure-triage/);
   assert.match(f.err, /GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com/);
   assert.ok(!(f.out + f.err).includes('secret'));
   assert.strictEqual(f.out, '', 'stdout is the MCP channel: start writes nothing there');
@@ -310,7 +310,7 @@ test('start names the credential variable and never prints a value; with none pr
   assert.ok(!none.spawned[0].args.includes('--loadModule'), 'the runtime starts with no pack');
   // why: gh gave no token and the environment has none (gh auth login, or the plaintext fallback)
   assert.match(none.err, /run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
-  assert.match(none.err, /not loading ci-failure-triage: it needs the GitHub token/);
+  assert.match(none.err, /not loading ch-pack-ci-failure-triage: it needs the GitHub token/);
 });
 
 test('start with nothing installed says to install, and starts nothing', async () => {
@@ -361,7 +361,67 @@ test('start loads every installed pack whose credential is set, one --loadModule
   const one = io(home, {env: {GITHUB_TOKEN: 'a'}});
   await start({passThrough: []}, one);
   assert.strictEqual(one.spawned[0].args.filter((a) => a === '--loadModule').length, 1);
-  assert.match(one.err, /not loading other: set OTHER_TOKEN/);
+  assert.match(one.err, /not loading ch-pack-other: set OTHER_TOKEN/);
+});
+
+// By module (#413 section 5.2; L2a): a top-level module two packs record is
+// loaded once, with one --partDir for each part of its closure; run.json
+// begins with nothing stopped.
+test('a top-level module two packs record is loaded once; each part of its closure gets one --partDir; run.json starts with nothing stopped', async () => {
+  const home = installedHome();
+  const {editHome} = require('./store-helpers');
+  editHome(home, (r) => ({...r, packs: {...r.packs, twin: {from: {release: '1.0.0'}, modules: {...r.packs['ci-failure-triage'].modules}}}}));
+  const {setPackCredentials} = require('./store-helpers');
+  setPackCredentials(home, {'ci-failure-triage': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], twin: ['GITHUB_TOKEN']});
+  let run = null;
+  const f = io(home, {env: {GITHUB_TOKEN: 'a'}});
+  const spawn = f.spawn;
+  f.spawn = (...a) => {
+    const runs = path.join(home, 'run');
+    for (const d of fs.readdirSync(runs)) { try { run = JSON.parse(fs.readFileSync(path.join(runs, d, 'run.json'), 'utf8')); } catch (e) { /* the daemon's */ } }
+    return spawn(...a);
+  };
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const args = f.spawned[0].args;
+  const named = (flag) => args.filter((a, i) => args[i - 1] === flag).map((d) => path.relative(path.join(home, 'module-store'), path.dirname(d)));
+  assert.deepStrictEqual(named('--loadModule'), [path.join('@countinghouse', 'ch-pack-ci-failure-triage')]);
+  assert.deepStrictEqual(named('--partDir'), [path.join('@countinghouse', 'ch-access-github')]);
+  assert.strictEqual(f.err.split('\n').filter((l) => /^ch-local: loading /.test(l)).length, 1);
+  assert.deepStrictEqual(run.stopped, {});
+});
+
+// the high review of L2a, 3: a start older than the record (a daemon or
+// binary from before an upgrade) judges it by none of its own pins
+test('a start the home was upgraded under is started by the record, not by its own pins', async () => {
+  const home = installedHome();
+  const {editHome} = require('./store-helpers');
+  // the home's ch-local (its record's) is 9.9.9, this process 0.1.0: stale
+  editHome(home, (r) => ({...r, release: {version: '9.9.9', security: null}, runtime: {versions: {...r.runtime.versions, '@countinghouse/ch-local': '9.9.9'}}}));
+  const f = io(home);
+  f.selfVersion = '0.1.0';
+  // this start's own pins name none of the record's versions
+  const {ALLOWLIST} = require('../lib/allowlist');
+  f.release = {...ALLOWLIST, packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-access-github'], credentials: ['GITHUB_TOKEN']}}, pins: {}};
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const args = f.spawned[0].args;
+  assert.strictEqual(args.filter((a) => a === '--loadModule').length, 1, f.err);
+  assert.ok(!/this release pins/.test(f.err), f.err);
+  assert.match(f.err, /ch-local in this home is now 9\.9\.9 \(upgraded\); restart your client to use it/);
+});
+
+// the medium review of the high round, 1: a record older than this
+// ch-local (an upgrade not yet installed) is judged by this release's pins
+test('a record of another release under the home\'s own ch-local is judged by this release\'s pins', async () => {
+  const home = installedHome();
+  const {editHome} = require('./store-helpers');
+  editHome(home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
+  const f = io(home);
+  const {ALLOWLIST} = require('../lib/allowlist');
+  f.release = {...ALLOWLIST, packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-access-github'], credentials: ['GITHUB_TOKEN']}}, pins: {}};
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(f.spawned[0].args.filter((a) => a === '--loadModule').length, 0, f.err);
+  assert.match(f.err, /this release pins no version of it; run `ch-local install` again/);
+  assert.match(f.err, /this home's record is not this ch-local's release; run `ch-local install` to bring the home to /);
 });
 
 test('every start of an unreleased install says so in one stderr line', async () => {
@@ -528,7 +588,7 @@ test('a pack that takes only GITHUB_TOKEN gets gh\'s token too, and with none it
   assert.ok(Object.values(f.spawned[0].env).includes(token));
   const g = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
   assert.strictEqual(await start({passThrough: []}, g), 0, g.err);
-  assert.match(g.err, /not loading ci-failure-triage: it needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`/);
+  assert.match(g.err, /not loading ch-pack-ci-failure-triage: it needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`/);
   assert.doesNotMatch(g.err, /set GITHUB_TOKEN in the environment your client starts from/);
 });
 
@@ -842,7 +902,7 @@ test('start --own-runtime tells why the session runs its own runtime: token, cre
   const value = `example-${require('node:crypto').randomBytes(6).toString('hex')}`;
   const cases = [
     [['--own-runtime-reason', 'token'], /^this session chooses a GitHub token the shared runtime doesn't hold, so it runs its own runtime$/],
-    [['--own-runtime-reason', 'credential'], /^this session runs its own runtime: other's OTHER_TOKEN comes from this session's environment, which the shared runtime doesn't hold$/],
+    [['--own-runtime-reason', 'credential'], /^this session runs its own runtime: ch-pack-other's OTHER_TOKEN comes from this session's environment, which the shared runtime doesn't hold$/],
     [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'the conditions check timed out after 10 s\u202e\n\u2028'], /^the client checks could not run \(the conditions check timed out after 10 s   \), so this session runs its own runtime$/],
     [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'gh\u00ad hid\u{e0041}\u{e0042}den\ufff9 text'], /^the client checks could not run \(gh  hid  den  text\), so this session runs its own runtime$/],
     [['--own-runtime-reason', 'later-reason'], /^this session can't share the runtime \(later-reason\), so it runs its own$/],
@@ -995,8 +1055,8 @@ test('start in session mode with no pack loadable: the shared runtime starts wit
   for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /no pack is loaded/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   assert.strictEqual(sent[0].type, 'restore', 'the restore is still the first request');
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => /^not loading ci-failure-triage: it needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`/.test(t)), told.join(' | '));
-  assert.ok(told.some((t) => /no pack is loaded this start/.test(t)), told.join(' | '));
+  assert.ok(told.some((t) => /^not loading ch-pack-ci-failure-triage: it needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`/.test(t)), told.join(' | '));
+  assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   end(0);
   await done;
 });
@@ -1015,9 +1075,9 @@ test('start in session mode never tells a session to set a pack\'s own credentia
   const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, restore: () => ({type: 'restore', sessions: [], declines: [], reset: []})}}, f);
   for (let i = 0; i < 100 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
   deliver({type: 'ready'});
-  for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /not loading other/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /not loading ch-pack-other/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => t === 'not loading other in the shared runtime: its credential (OTHER_TOKEN) comes only from a session\'s own environment, and a session whose client sets it runs its own runtime, with the pack'), told.join(' | '));
+  assert.ok(told.some((t) => t === 'not loading ch-pack-other: its credential (OTHER_TOKEN) comes only from a session\'s own environment, and a session whose client sets it runs its own runtime, with the module'), told.join(' | '));
   assert.ok(!told.some((t) => /set OTHER_TOKEN in the environment your client starts from/.test(t)));
   end(0);
   await done;

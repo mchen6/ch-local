@@ -24,6 +24,10 @@ function fakeIo({env = {}, answers = [], exec, fetch, version = 'v24.21.0', home
     // no start of a test is alive unless a test says so (collection needs
     // the answer: lib/gc.js)
     alive: () => false,
+    // the running ch-local's version (lib/packs.js recordRelease): not known
+    // unless a test says, since a test home's app holds the npm stub's
+    // ch-local, not this package
+    selfVersion: null,
     stdout: {write: (s) => { io.out += s; }},
     stderr: {write: (s) => { io.err += s; }},
     ask: async (q) => { io.asked.push(q); return answers.length > 0 ? answers.shift() : ''; },
@@ -78,7 +82,10 @@ function installedRelease(home) {
     const modules = Object.keys(p.modules || {});
     packs[name] = {packages: modules, credentials: Array.isArray(given[name]) ? given[name] : [...new Set(modules.flatMap((m) => declared(m, p.modules[m])))]};
   }
-  return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}};
+  // and it pins each recorded module at its version (a test home's are no
+  // shipped release's: #413 section 5.2's version check)
+  const pins = Object.fromEntries(Object.entries(record.modules || {}).map(([m, e]) => [m, {version: e.version}]));
+  return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}, pins: {...ALLOWLIST.pins, ...pins}};
 }
 
 module.exports = {fakeIo, tmp, FAKE_NODE, installedRelease};
