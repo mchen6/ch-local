@@ -1401,3 +1401,56 @@ test('another release\'s record: a caller whose callee is turned off is unloaded
     await s.done;
   }
 });
+
+// the medium review of the high round, 1: under a newer record, a caller
+// whose callee is no longer installed goes with it (the callee removed)
+test('another release\'s record: a caller whose callee is no longer installed is unloaded too', async () => {
+  const home = tmp('ch-home-');
+  const r = release({extra: {[SCENARIO]: {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact', 'ch-pack-other/otherService.go']}}}});
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  const s = await running({home});
+  try {
+    assert.ok(loadsPack(s));
+    editRecord(home, (rec) => { const {other, ...packs} = rec.packs; return {...rec, release: {version: '9.9.9', security: null}, packs}; });
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === SCENARIO));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium review of the high round, 2: a module unloaded with its reason
+// is never told that reason again once it is no longer loaded
+test('a module unloaded for a reason is not told it again at the next apply', async () => {
+  const s = await running();
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+    // its files go missing: unloaded, with the reason on the unload
+    fs.rmSync(path.join(s.home, 'module-store', '@countinghouse', 'ch-pack-other', '0.3.0.json'));
+    await settled(s);
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other' && /its files are missing/.test(m.notice)));
+    await settled(s);
+    assert.ok(!notices(s).some(([, t]) => /^not loading ch-pack-other/.test(t)), JSON.stringify(notices(s)));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium review of the high round, 5: one ordering in the notices too,
+// prereleases included
+test('a reload to a prerelease of the version loaded says "rolled back"', async () => {
+  const s = await running();
+  try {
+    const r2 = release({versions: {[SCENARIO]: '0.1.0-rc.1'}});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => s.requests.some((m) => m.type === 'reload' && m.notice === 'ch-pack-ci-failure-triage rolled back 0.1.0 → 0.1.0-rc.1'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
