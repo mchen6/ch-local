@@ -1,5 +1,5 @@
 {
-  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json moduleMessages, from countinghouse #429 (M4b): copied, never edited here",
+  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json moduleMessages, from countinghouse master (#429, M4b, merged): copied, never edited here",
   "moduleMessages": {
     "rule": "load names one top-level module (name) and reload one or more (names), each by its package name, with dirs: the absolute directory of each module of their closures, by package name, 1 to 64; credentials (optional) is the per-module allowance of the version 2 --remoteCredentials file, each environment name a slot, each package one dirs names. unload names one top-level module. A module-form message carries no scenario, pack, global or remoteCredentials. notice: module a package name or null, and text. reread: what is module-settings. module-stopped (the runtime to ch-local, unasked, no id): name, code, when start or restart",
     "packagePattern": "^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$",
