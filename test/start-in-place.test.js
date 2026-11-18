@@ -934,3 +934,21 @@ test('an install that moves a shared part and adds a pack reloads first, then lo
   s.end();
   await s.done;
 });
+
+// the Reviewer's check of #83's fixes, 6: each reload group is its own
+// request; packs that share nothing never fail together
+test('two packs whose moved modules do not overlap are reloaded apart: one refused, the other still applied', async () => {
+  const s = await running({answer: (m) => (m.type === 'reload' && m.names.includes('@countinghouse/ch-pack-ci-failure-triage') ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+  await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+  // ch-access-github is ci-failure-triage's only, ch-step-other the other's only
+  const r2 = release({versions: {'@countinghouse/ch-access-github': '0.1.1', '@countinghouse/ch-step-other': '0.2.1'}});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+  await until(() => s.requests.filter((m) => m.type === 'reload').length === 2);
+  const reloads = s.requests.filter((m) => m.type === 'reload').map((m) => m.names);
+  assert.deepStrictEqual(reloads.map((n) => n.length), [1, 1], JSON.stringify(reloads));
+  await until(() => s.history().some((h) => h.pack === 'other' && h.change === 'updated' && h.problem == null));
+  assert.ok(s.history().some((h) => h.pack === 'ci-failure-triage' && h.problem != null), 'ci-failure-triage refused alone');
+  s.end();
+  await s.done;
+});

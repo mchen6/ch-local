@@ -641,38 +641,36 @@ test('a home an earlier development launcher made (installed.json only) is insta
   assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
 });
 
-// #83's high review, 6 and 7: the migration places every migrated pack's
-// modules from its old tree, under development pins too, and needs no
-// other pack's tarball
-test('migration places every pack\'s modules from its old tree: the named pack\'s tarballs only, development pins too (6, 7)', async () => {
+// The Reviewer on #83: a migration reinstalls every pack packs.json lists
+// from these pins' integrity-checked tarballs, never from an earlier
+// ch-local's trees; under development pins --from must hold them all
+test('migration reinstalls every pack the record lists from the tarballs; development pins missing one are refused, naming it', async () => {
   const r = release(); const h = home();
-  const oldPack = (pack, pkgs) => {
-    const {packKey} = require('../lib/gc');
-    const tree = path.join(h, 'packs', pack, packKey(pkgs), 'node_modules');
-    for (const [name, version] of Object.entries(pkgs)) {
-      const dir = path.join(tree, ...name.split('/'));
-      fs.mkdirSync(dir, {recursive: true});
-      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name, version, countinghouse: {role: name.includes('ch-pack-') ? 'scenario' : 'part'}}));
-    }
-  };
   const triage = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
   const other = {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'};
-  oldPack('ci-failure-triage', triage);
-  oldPack('other', other);
-  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
-    packs: {'ci-failure-triage': {packages: triage, credentials: []}, other: {packages: other, credentials: []}}}));
-  // --from holds the runtime and ci-failure-triage's modules only
-  for (const n of ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-other']) fs.rmSync(path.join(r.from, require('../lib/unpack').tarballName(n, other[n])));
+  const old = JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
+    packs: {'ci-failure-triage': {packages: triage, credentials: []}, other: {packages: other, credentials: []}}});
+  fs.writeFileSync(path.join(h, 'packs.json'), old);
   const f = path.join(tmp('ch-pins-'), 'pins.json');
   fs.writeFileSync(f, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile}));
   const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
+  // --from without ch-step-other's tarball: refused, naming it, nothing changed
+  const missing = require('../lib/unpack').tarballName('@countinghouse/ch-step-other', '0.2.0');
+  const kept = fs.readFileSync(path.join(r.from, missing));
+  fs.rmSync(path.join(r.from, missing));
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
-  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 1);
+  assert.match(io.err, new RegExp(`@countinghouse/ch-step-other@0\\.2\\.0: no ${missing.replace(/[.]/g, '\\.')}`));
+  assert.strictEqual(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'), old, 'nothing changed');
+  // with it: every pack is installed from the tarballs, from the development pins
+  fs.writeFileSync(path.join(r.from, missing), kept);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io2, allow), 0, io2.err);
   const rec = record(h);
   assert.deepStrictEqual(Object.keys(rec.packs).sort(), ['ci-failure-triage', 'other']);
-  for (const [n, v] of Object.entries(other)) assert.ok(fs.existsSync(path.join(h, 'module-store', ...n.split('/'), `${v}.json`)), `${n} placed from its old tree`);
+  for (const [n, v] of Object.entries(other)) assert.strictEqual(JSON.parse(fs.readFileSync(path.join(h, 'module-store', ...n.split('/'), `${v}.json`), 'utf8')).integrity, r.pins[n].integrity, `${n} from its tarball`);
   const digest = require('node:crypto').createHash('sha256').update(fs.readFileSync(f)).digest('hex').slice(0, 16);
-  assert.deepStrictEqual(rec.packs.other.from, {unreleased: digest}, 'stamped with the development pins');
+  assert.deepStrictEqual(rec.packs.other.from, {unreleased: digest});
 });
 
 // #83's high review, 8: a version the record names is never placed over
@@ -739,57 +737,56 @@ test('an unreadable record is set aside only once the install is through: one re
   assert.deepStrictEqual(fs.readdirSync(h).filter((n) => n.includes('.unreadable-')), []);
 });
 
-function migratingHome(h) {
-  const {packKey} = require('../lib/gc');
-  const triage = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
-  const tree = path.join(h, 'packs', 'ci-failure-triage', packKey(triage), 'node_modules');
-  for (const n of TRIAGE) {
-    const dir = path.join(tree, ...n.split('/'));
-    fs.mkdirSync(dir, {recursive: true});
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: n, version: '0.1.0', countinghouse: {role: n.includes('ch-pack-') ? 'scenario' : 'part'}}));
-  }
-  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
-    packs: {'ci-failure-triage': {packages: triage, credentials: []}}}));
-  return tree;
-}
-
-test('a module a migration placed from its tree is marked so, and a later install of its pinned tarball replaces it (2, 3)', async () => {
+// the Reviewer's check of #83's fixes
+test('a record that cannot be read for an I/O error refuses the install, and drops no pack (4)', {skip: process.platform === 'win32' || process.getuid() === 0}, async () => {
   const r = release(); const h = home();
-  migratingHome(h);
-  // --from without ci-failure-triage's tarballs: taken from the tree
-  const from = r.from;
-  const saved = {};
-  for (const n of TRIAGE) { const f = path.join(from, require('../lib/unpack').tarballName(n, '0.1.0')); saved[n] = fs.readFileSync(f); fs.rmSync(f); }
   assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
-  const marker = (n) => JSON.parse(fs.readFileSync(path.join(h, 'module-store', ...n.split('/'), '0.1.0.json'), 'utf8'));
-  for (const n of TRIAGE) {
-    assert.strictEqual(marker(n).source, 'tree');
-    assert.notStrictEqual(marker(n).integrity, r.pins[n].integrity, 'its own hash, never the pin\'s');
+  const file = path.join(h, 'modules.json');
+  const before = fs.readFileSync(file, 'utf8');
+  fs.chmodSync(file, 0o000);
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await install({pack: 'other', from: r.from}, io, r.allow), 1);
+    assert.match(io.err, /is not readable \(EACCES\); nothing was installed/);
+  } finally {
+    fs.chmodSync(file, 0o644);
   }
-  for (const [n, bytes] of Object.entries(saved)) fs.writeFileSync(path.join(from, require('../lib/unpack').tarballName(n, '0.1.0')), bytes);
-  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
-  assert.strictEqual(await run(r, io), 0, io.err);
-  for (const n of TRIAGE) {
-    assert.strictEqual(marker(n).source, undefined, 'the tarball\'s now');
-    assert.strictEqual(marker(n).integrity, r.pins[n].integrity);
-  }
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before, 'untouched, never set aside');
+  assert.deepStrictEqual(fs.readdirSync(h).filter((n) => n.includes('.unreadable-')), []);
 });
 
-test('a link in an earlier ch-local\'s tree refuses the migration cleanly, nothing installed (9)', {skip: process.platform === 'win32'}, async () => {
+test('a set-aside that cannot move the record stops the install with nothing changed (5)', async (t) => {
   const r = release(); const h = home();
-  migratingHome(h);
-  // a held pack's module at a version these pins do not name: its tree is
-  // hashed (treeIntegrity), and holds a link to a directory
-  const {packKey} = require('../lib/gc');
-  const gone = {'@countinghouse/ch-step-gone': '1.0.0'};
-  const dir = path.join(h, 'packs', 'gone', packKey(gone), 'node_modules', '@countinghouse', 'ch-step-gone');
-  fs.mkdirSync(dir, {recursive: true});
-  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: '@countinghouse/ch-step-gone', version: '1.0.0'}));
-  fs.symlinkSync('/etc', path.join(dir, 'out'));
-  const rec = JSON.parse(fs.readFileSync(path.join(h, 'packs.json'), 'utf8'));
-  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({...rec, held: {gone: {packages: gone, credentials: [], installedUnder: '0.1.0'}}}));
+  assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  const file = path.join(h, 'modules.json');
+  fs.writeFileSync(file, '{"v": 2');
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (a, b) => { if (a === file) { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } return rename(a, b); });
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
-  assert.strictEqual(await run(r, io), 1);
-  assert.match(io.err, /is not a file or a directory; it is not placed; nothing was installed/);
-  assert.ok(fs.existsSync(path.join(h, 'packs.json')), 'the earlier record is still the home\'s');
+  assert.strictEqual(await install({pack: 'other', from: r.from}, io, r.allow), 1);
+  assert.match(io.err, /it could not be set aside \(EBUSY\); nothing was installed/);
+  t.mock.restoreAll();
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"v": 2', 'never overwritten');
 });
+
+// (8): a kept packs.json can survive an install of the same release, which
+// keeps previous/ as it was: it names no rollback target, and keeps nothing
+test('a kept packs.json that survives a same-release install is refused by rollback, and its trees are not kept (8)', async () => {
+  const h = home();
+  const r = release(); r.allow.release = {version: '0.2.0', security: null};
+  assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  const triage = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
+  const {packKey} = require('../lib/gc');
+  const tree = path.join(h, 'packs', 'ci-failure-triage', packKey(triage));
+  fs.mkdirSync(path.join(tree, 'node_modules'), {recursive: true});
+  fs.mkdirSync(path.join(h, 'previous', 'app'), {recursive: true});
+  fs.writeFileSync(path.join(h, 'previous', 'packs.json'), JSON.stringify({runtime: {versions: {}}, release: {version: '0.1.0', security: null}, packs: {'ci-failure-triage': {packages: triage, credentials: []}}}));
+  // the same release again: previous/ is kept as it is
+  assert.strictEqual(await run(r, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()})), 0);
+  assert.ok(fs.existsSync(path.join(h, 'previous', 'packs.json')), 'it survives');
+  assert.ok(!fs.existsSync(tree), 'its trees are not kept');
+  const rio = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}}), {interactive: true});
+  assert.strictEqual(await require('../lib/rollback').rollback({}, rio), 1);
+  assert.match(rio.err, /the kept release predates the module store, so it could not return you here; install it again instead/);
+});
+
