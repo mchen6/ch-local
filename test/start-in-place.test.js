@@ -514,13 +514,49 @@ function packMessageProblem(m) {
   if (m.type === 'notice') return (m.pack === undefined || packOk(m.pack)) ? null : 'pack';
   return null;
 }
+// The module form's own vectors (countinghouse's moduleMessages, copied):
+// what the runtime refuses, by reason token
+const MODULE_V = require('./vectors/module-messages.json').moduleMessages;
 const OLD_FIELDS = ['scenario', 'pack', 'global', 'remoteCredentials'];
+function moduleMessageProblem(m) {
+  const pkg = (n) => typeof n === 'string' && new RegExp(MODULE_V.packagePattern).test(n);
+  const isObj = (x) => x != null && typeof x === 'object' && !Array.isArray(x);
+  if (m.type === 'reload') {
+    if (!Array.isArray(m.names) || m.names.length === 0 || !m.names.every(pkg) || new Set(m.names).size !== m.names.length) return 'names';
+  } else if (['load', 'unload'].includes(m.type)) {
+    if (!pkg(m.name)) return 'name';
+  } else {
+    return null;
+  }
+  if (OLD_FIELDS.some((f) => f in m)) return 'old-field';
+  if (m.type === 'unload') return null;
+  const tops = m.type === 'reload' ? m.names : [m.name];
+  if (!isObj(m.dirs) || Object.keys(m.dirs).length === 0 || Object.keys(m.dirs).length > 64) return 'dirs';
+  if (!Object.entries(m.dirs).every(([n, d]) => pkg(n) && typeof d === 'string' && path.isAbsolute(d)) || !tops.every((t) => t in m.dirs)) return 'dirs';
+  if (m.credentials !== undefined) {
+    if (!isObj(m.credentials)) return 'credentials';
+    for (const [n, e] of Object.entries(m.credentials)) {
+      if (!(n in m.dirs) || !isObj(e) || !Object.values(e).every((v) => isObj(v) && Object.values(v).every((slot) => new RegExp(MODULE_V.slotPattern).test(slot)))) return 'credentials';
+    }
+  }
+  return null;
+}
 const holdsToTheVectors = (requests) => {
   for (const m of requests) {
-    if (['load', 'reload', 'unload'].includes(m.type)) assert.deepStrictEqual(OLD_FIELDS.filter((f) => f in m), [], JSON.stringify(m));
+    if (['load', 'reload', 'unload'].includes(m.type)) assert.strictEqual(moduleMessageProblem(m), null, JSON.stringify(m));
     else assert.strictEqual(packMessageProblem(m), null, JSON.stringify(m));
   }
 };
+
+test('the module messages\' vectors: each accepted load, reload and unload passes, each refused one fails for its reason', () => {
+  const kinds = new Set(['load', 'reload', 'unload']);
+  for (const {why, message} of MODULE_V.accepted.filter((e) => kinds.has(e.message.type))) {
+    // an absolute directory as the platform reads one (the vectors' are POSIX)
+    const m = message.dirs != null ? {...message, dirs: Object.fromEntries(Object.entries(message.dirs).map(([n, d]) => [n, path.resolve(d)]))} : message;
+    assert.strictEqual(moduleMessageProblem(m), null, why);
+  }
+  for (const {why, reason, message} of MODULE_V.refused.filter((e) => kinds.has(e.message.type))) assert.strictEqual(moduleMessageProblem(message), reason, why);
+});
 
 test('B3: the pack messages\' vectors: each accepted one passes, each refused one fails for its reason', () => {
   for (const {why, message} of PACK_V.accepted) assert.strictEqual(packMessageProblem(message), null, why);
