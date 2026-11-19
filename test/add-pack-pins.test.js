@@ -205,6 +205,31 @@ test('a Question B answer\'s history line says which question it answers', async
   assert.deepStrictEqual({question: line.question, from: line.from, to: line.to, answer: line.answer}, {question: 'B', from: '0.2.0', to: '0.1.0', answer: 'no'});
 });
 
+// The reviewer's high review of #94, 2: unknown is never "no callers".
+test('a breaking update whose callers cannot be read is refused, never taken for uncalled', async (t) => {
+  const r1 = release({versions: {[REDACT]: '0.1.0'}});
+  const r2 = release({versions: {[REDACT]: '0.2.0'}});
+  const store = (h, m, v, f) => path.join(h.home, 'module-store', ...m.split('/'), v, f);
+  await t.test('a caller\'s package.json unreadable', async () => {
+    const h = await devHome(r1);
+    fs.writeFileSync(store(h, CI, '0.1.0', 'package.json'), '{not json');
+    const before = snapshot(h.home);
+    const {code, io} = await h.add(r2, {interactive: true, answers: ['y']});
+    assert.strictEqual(code, 1);
+    assert.match(io.err, /cannot tell which modules call ch-step-redact: ch-pack-ci-failure-triage's package\.json cannot be read; nothing was installed/);
+    assert.deepStrictEqual(io.asked, []);
+    assert.strictEqual(snapshot(h.home), before);
+  });
+  await t.test('the module\'s own api.json missing', async () => {
+    const h = await devHome(r1);
+    fs.rmSync(store(h, REDACT, '0.1.0', 'api.json'));
+    const {code, io} = await h.inst(r2, {interactive: true, answers: ['y']});
+    assert.strictEqual(code, 1);
+    assert.match(io.err, /cannot tell which modules call ch-step-redact: ch-step-redact's api\.json cannot be read; nothing was installed/);
+    assert.deepStrictEqual(io.asked, []);
+  });
+});
+
 test('remove-pack: a module the pack raised goes back; one a remaining pack records stays, the line says which; settings untouched', async () => {
   const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
   const settings = path.join(h.home, 'settings.json');
