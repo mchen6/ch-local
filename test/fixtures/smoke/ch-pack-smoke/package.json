@@ -7,6 +7,9 @@
   "files": ["api.json", "schema.json", "handlers/"],
   "countinghouse": {
     "role": "scenario",
-    "calls": ["ch-step-smoke/shoutService.shout"]
+    "calls": ["ch-step-smoke/shoutService.shout"],
+    "settings": {
+      "defaultRepo": {"type": "string", "format": "repo", "title": "Default repository", "description": "owner/name used when a call names no repository."}
+    }
   }
 }
