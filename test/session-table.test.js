@@ -169,9 +169,12 @@ test('restore carries reset: the sessions a handoff took loosenings from, once (
 });
 
 // L3 (#413 section 10): a handoff from a daemon of the pack form keeps
-// the kind pack until M5b (the runtime refuses any other), and hands a
-// stale pack.* override on for the runtime to drop and tell.
-test('seed keeps the kind pack until M5b (the runtime takes no other); hands a stale pack.* override on for the runtime to drop and tell', () => {
+// the kind pack as it was told, and hands a stale pack.* override on for the
+// runtime to drop and tell. A runtime before M5b takes pack as it is; one
+// with M5b (countinghouse #449) maps it to enabled on restore, per row,
+// locks, declines and unanswered forms kept (the Reviewer's ruling), so
+// ch-local hands on what it was told and never rewrites a kind.
+test('seed keeps the kind pack as told, for the runtime to take or map; hands a stale pack.* override on for the runtime to drop and tell', () => {
   const t = createSessionTable({warn: () => {}});
   const at = Date.now();
   const state = {overrides: [
@@ -186,7 +189,7 @@ test('seed keeps the kind pack until M5b (the runtime takes no other); hands a s
   const s1 = out.sessions.find((s) => s.session === ID(1)).state;
   assert.deepStrictEqual(s1.overrides, [{name: 'requestTimeout', value: 20000, loosening: false, over: null, version: null},
     {name: 'pack.weather', value: false, loosening: false, over: null, version: '1.0.0'}], 'the tightening kept; the stale pack override handed on for the runtime');
-  assert.deepStrictEqual(s1.locks, ['pack', 'maxOutputBytes'], 'the kind pack as it is: the runtime refuses any other until M5b');
+  assert.deepStrictEqual(s1.locks, ['pack', 'maxOutputBytes'], 'the kind pack as it is: a runtime before M5b takes it, one with M5b maps it to enabled');
   assert.deepStrictEqual(out.sessions.find((s) => s.session === ID(2)).state.unanswered, ['pack']);
   assert.deepStrictEqual(out.declines.map((d) => d.kind), ['pack', 'module']);
   assert.deepStrictEqual(out.reset, [], 'the runtime tells it, naming the pack (packsDropped)');
@@ -197,5 +200,30 @@ test('the table takes the kind enabled from a runtime that sends it', () => {
   assert.strictEqual(t.told({type: 'decline', kind: 'enabled', at: Date.now()}), true);
   assert.strictEqual(t.told({type: 'session-resume', session: ID(1), hash: HASH}), true);
   assert.strictEqual(t.told({type: 'session-state', session: ID(1), state: {overrides: [], locks: ['enabled'], formsLeft: 2}}), true);
+});
+
+// M5b (countinghouse #449): a session that declined an enabled.* form, or
+// left one unanswered, or is locked from them, keeps that across a daemon's
+// handoff, as told: restored to the runtime, and seeded into the next
+// daemon's table and restored again, never dropped.
+test('a handoff keeps the kind enabled: a lock, an unanswered form and a decline, restored and seeded on as told', () => {
+  const at = Date.now();
+  const t = createSessionTable({warn: () => {}});
+  const locked = {overrides: [], locks: ['enabled'], formsLeft: 1};
+  const asking = {overrides: [], locks: [], unanswered: ['enabled'], formsLeft: 2};
+  t.told({type: 'session-resume', session: ID(1), hash: HASH});
+  t.told({type: 'session-state', session: ID(1), state: locked});
+  t.told({type: 'session-resume', session: ID(2), hash: HASH.replace(/f$/, 'e')});
+  t.told({type: 'session-state', session: ID(2), state: asking});
+  assert.strictEqual(t.told({type: 'decline', kind: 'enabled', at}), true);
+  const first = t.restore();
+  assert.deepStrictEqual(first.sessions, [{session: ID(1), resume: HASH, state: locked}, {session: ID(2), resume: HASH.replace(/f$/, 'e'), state: asking}]);
+  assert.deepStrictEqual(first.declines, [{kind: 'enabled', at}]);
+  // the next daemon: seeded with what this one handed on
+  const next = createSessionTable({warn: () => {}});
+  assert.deepStrictEqual(next.seed({sessions: first.sessions, declines: first.declines}), {kept: 2, loosened: 0});
+  const second = next.restore();
+  assert.deepStrictEqual(second.sessions, first.sessions);
+  assert.deepStrictEqual(second.declines, first.declines);
 });
 
