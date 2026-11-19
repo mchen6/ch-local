@@ -157,6 +157,23 @@ test('the shared vectors\' restoreRows (#270): each accepted row is kept as told
       assert.notDeepStrictEqual(out, c.row, `${c.why}: never handed on as it was`);
     }
   }
+  // mapped (M5b, countinghouse #449): a row of the kind pack is the
+  // runtime's to map to enabled (`taken`); ch-local hands it on as it was
+  // told, so a runtime before M5b takes it as it is (the Reviewer's ruling)
+  for (const c of V.mapped) {
+    const u = createSessionTable({warn: () => {}});
+    assert.strictEqual(u.told({type: 'session-resume', session: c.row.session, hash: c.row.resume}), true, c.why);
+    assert.strictEqual(u.told({type: 'session-state', session: c.row.session, state: c.row.state}), true, c.why);
+    assert.deepStrictEqual(u.restore().sessions, [c.row], `${c.why}: handed on as told`);
+  }
+  // rowDropped: a row naming a kind the runtime has none of is dropped by
+  // itself there; ch-local never keeps one (its kinds are the runtime's)
+  for (const c of V.rowDropped) {
+    const u = createSessionTable({warn: () => {}});
+    u.told({type: 'session-resume', session: c.row.session, hash: c.row.resume});
+    u.told({type: 'session-state', session: c.row.session, state: c.row.state});
+    assert.ok(!u.restore().sessions.some((r) => JSON.stringify(r.state) === JSON.stringify(c.row.state)), `${c.why}: never kept`);
+  }
 });
 
 test('restore carries reset: the sessions a handoff took loosenings from, once (the Reviewer\'s ruling on #35)', () => {
