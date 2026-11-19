@@ -868,3 +868,29 @@ test('a set-aside record that cannot be put back is named, where it is and what 
   assert.ok(aside != null);
   assert.match(io.err, new RegExp(`your previous record could not be put back \\(EBUSY\\): it is at .*${aside.replace(/[.]/g, '\\.')}; rename it to modules\\.json`));
 });
+
+// L3 (#413 section 10): the install that migrates the record moves each
+// pack.<name> to enabled.<its scenario module>, off winning, a history
+// line for each; one whose pack the home doesn't have is kept
+test('migration: pack.* settings become enabled.<module> in the same install, off winning; an unknown pack\'s is kept', async () => {
+  const r = release(); const h = home();
+  const packages = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
+  fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
+    packs: {'ci-failure-triage': {packages, credentials: []}}}));
+  fs.writeFileSync(path.join(h, 'settings.json'), JSON.stringify({version: 1, values: {
+    'pack.ci-failure-triage': false, 'enabled.@countinghouse/ch-pack-ci-failure-triage': true, 'pack.gone': false, locale: 'zh'}}));
+  // (pack.ci-failure-triage was recorded off: the move must clear that too)
+  fs.writeFileSync(path.join(h, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: true, new: false}) + '\n');
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const values = JSON.parse(fs.readFileSync(path.join(h, 'settings.json'), 'utf8')).values;
+  assert.deepStrictEqual(values, {'enabled.@countinghouse/ch-pack-ci-failure-triage': false, 'pack.gone': false, locale: 'zh'});
+  assert.match(io.out, /pack\.ci-failure-triage is now enabled\.@countinghouse\/ch-pack-ci-failure-triage/);
+  const lines = fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.ok(lines.some((l) => l.by === 'migration' && l.setting === 'pack.ci-failure-triage' && l.was === false), JSON.stringify(lines));
+  // what moved is no outside edit
+  const {outsideEdits} = require('../lib/outside-edits');
+  const {readSettings} = require('../lib/settings');
+  const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: h});
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)).filter((e) => /ci-failure-triage/.test(e.setting)), []);
+});
