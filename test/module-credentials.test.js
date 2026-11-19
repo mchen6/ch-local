@@ -213,3 +213,34 @@ test('the carry-over never undoes a change made since its read: a remove, or ano
   const held = store.withStoreLock(h, () => store.rebind(h, ACCESS, VAR, 'GITHUB_TOKEN', {origin: GH, source: 'stored', value: 'test-v2-value-6'}));
   assert.strictEqual(held.value, 'busy');
 });
+
+// the medium on #98's round 2: the store's lock is lib/lock.js's protocol,
+// and nothing is written in or beside a directory the store refuses
+test('the store lock: a dead holder\'s lock is cleared, a live one is never taken; a refused directory gets no lock written', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const {lockHost} = require('../lib/lock');
+  const {h} = homeOn020();
+  bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-7'));
+  const lock = path.join(store.paths(h).file, '..', 'credentials.lock');
+  // a holder on this host whose PID is dead: cleared, and the write goes on
+  fs.writeFileSync(lock, JSON.stringify({pid: 2147483646, host: lockHost(), at: new Date(0).toISOString()}));
+  bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-8'));
+  assert.ok(!fs.existsSync(lock), 'cleared, then released');
+  assert.strictEqual(store.readStore(h).modules.get(ACCESS).get('GITHUB_TOKEN').value, 'test-v2-value-8');
+  // a live holder (this process) is never taken, however old its lock
+  fs.writeFileSync(lock, JSON.stringify({pid: process.pid, host: lockHost(), at: new Date(0).toISOString()}));
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  fs.utimesSync(lock, old, old);
+  assert.strictEqual(store.rebind(h, ACCESS, 'GITHUB_TOKEN', VAR, stored(GH, 'test-v2-value-8')), 'busy');
+  assert.throws(() => store.bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-9'), {}), /under way/);
+  fs.rmSync(lock);
+  // the directory a link to elsewhere: refused before a lock is written there
+  if (process.platform !== 'win32') {
+    const other = homeOn020();
+    const elsewhere = tmp('ch-mc-elsewhere-');
+    fs.symlinkSync(elsewhere, store.paths(other.h).dir);
+    assert.throws(() => bind(other.h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-10')));
+    assert.deepStrictEqual(fs.readdirSync(elsewhere), [], 'nothing written there');
+  }
+});
