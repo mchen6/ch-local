@@ -1,0 +1,298 @@
+{
+  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json topLevelModules, at countinghouse 269ae6ac (#449, M5b: the top-level rule on own properties): copied, never edited here",
+  "topLevelModules": {
+    "rule": "a module is top-level when it is the scenario of a pack in packs: of that pack's modules (in their order), the first that modules gives role \"scenario\", else the pack's first module; and only when modules holds it. Every other module in modules is a part, whatever its role, and has no enabled.<module>. Only own properties are read (Object.hasOwn), so a name like \"constructor\" is a name like any other",
+    "cases": [
+      {
+        "why": "a pack's scenario and its part",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-pack-example": {
+              "version": "1.0.0",
+              "role": "scenario"
+            },
+            "@countinghouse/ch-step-example": {
+              "version": "0.2.0",
+              "role": "part"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "@countinghouse/ch-pack-example": "1.0.0",
+                "@countinghouse/ch-step-example": "0.2.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "@countinghouse/ch-pack-example"
+        ]
+      },
+      {
+        "why": "the scenario listed after its part",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-step-example": {
+              "version": "0.2.0",
+              "role": "part"
+            },
+            "@countinghouse/ch-pack-example": {
+              "version": "1.0.0",
+              "role": "scenario"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "@countinghouse/ch-step-example": "0.2.0",
+                "@countinghouse/ch-pack-example": "1.0.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "@countinghouse/ch-pack-example"
+        ]
+      },
+      {
+        "why": "a pack with no module of role scenario: its first module",
+        "record": {
+          "modules": {
+            "weather-tool": {
+              "version": "1.2.0",
+              "role": null
+            },
+            "@countinghouse/ch-step-example": {
+              "version": "0.2.0",
+              "role": null
+            }
+          },
+          "packs": {
+            "weather": {
+              "modules": {
+                "weather-tool": "1.2.0",
+                "@countinghouse/ch-step-example": "0.2.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "weather-tool"
+        ]
+      },
+      {
+        "why": "a module of role null in no pack is a part",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-pack-example": {
+              "version": "1.0.0",
+              "role": "scenario"
+            },
+            "weather-tool": {
+              "version": "1.2.0",
+              "role": null
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "@countinghouse/ch-pack-example": "1.0.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "@countinghouse/ch-pack-example"
+        ]
+      },
+      {
+        "why": "a module of role scenario in no pack is a part",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-pack-example": {
+              "version": "1.0.0",
+              "role": "scenario"
+            },
+            "weather-tool": {
+              "version": "1.2.0",
+              "role": "scenario"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "@countinghouse/ch-pack-example": "1.0.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "@countinghouse/ch-pack-example"
+        ]
+      },
+      {
+        "why": "a pack's scenario that modules does not hold: none",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-step-example": {
+              "version": "0.2.0",
+              "role": "part"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "@countinghouse/ch-pack-example": "1.0.0",
+                "@countinghouse/ch-step-example": "0.2.0"
+              }
+            }
+          }
+        },
+        "topLevel": []
+      },
+      {
+        "why": "a scenario of one pack that another lists too: top-level once",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-pack-example": {
+              "version": "1.0.0",
+              "role": "scenario"
+            },
+            "weather-tool": {
+              "version": "1.2.0",
+              "role": "scenario"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "@countinghouse/ch-pack-example": "1.0.0"
+              }
+            },
+            "weather": {
+              "modules": {
+                "weather-tool": "1.2.0",
+                "@countinghouse/ch-pack-example": "1.0.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "@countinghouse/ch-pack-example",
+          "weather-tool"
+        ]
+      },
+      {
+        "why": "two of role scenario in one pack: the first",
+        "record": {
+          "modules": {
+            "weather-tool": {
+              "version": "1.2.0",
+              "role": "scenario"
+            },
+            "@countinghouse/ch-pack-example": {
+              "version": "1.0.0",
+              "role": "scenario"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "weather-tool": "1.2.0",
+                "@countinghouse/ch-pack-example": "1.0.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "weather-tool"
+        ]
+      },
+      {
+        "why": "a pack with no modules",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-pack-example": {
+              "version": "1.0.0",
+              "role": "scenario"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {}
+            }
+          }
+        },
+        "topLevel": []
+      },
+      {
+        "why": "a pack listing \"constructor\" first, which modules does not hold: none, the other a part",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-step-example": {
+              "version": "0.2.0",
+              "role": null
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "constructor": "1.0.0",
+                "@countinghouse/ch-step-example": "0.2.0"
+              }
+            }
+          }
+        },
+        "topLevel": []
+      },
+      {
+        "why": "a module named \"constructor\", held and of role scenario: top-level",
+        "record": {
+          "modules": {
+            "constructor": {
+              "version": "1.0.0",
+              "role": "scenario"
+            },
+            "@countinghouse/ch-step-example": {
+              "version": "0.2.0",
+              "role": "part"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "@countinghouse/ch-step-example": "0.2.0",
+                "constructor": "1.0.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "constructor"
+        ]
+      },
+      {
+        "why": "a pack named \"constructor\"",
+        "record": {
+          "modules": {
+            "weather-tool": {
+              "version": "1.2.0",
+              "role": null
+            }
+          },
+          "packs": {
+            "constructor": {
+              "modules": {
+                "weather-tool": "1.2.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "weather-tool"
+        ]
+      }
+    ]
+  }
+}

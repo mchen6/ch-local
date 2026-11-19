@@ -567,7 +567,11 @@ test('B3: a load and an unload from the settings are in the module form; the unl
     const unload = s.requests.find((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other');
     assert.ok(!('pack' in unload) && !('global' in unload));
     // its notice rides on the unload, which the runtime tells before the pack
-    // goes; no separate notice tagged with the pack follows it
+    // goes; no separate notice tagged with the pack follows it. The wording
+    // is a contract: countinghouse's module-control (#449, M5b, storedOff)
+    // builds the all-sessions off notice from an unload whose notice ends
+    // " turned off" while the settings have the module off, so a change here
+    // would silently drop that notice; exactly "<short name> turned off"
     assert.strictEqual(unload.notice, 'ch-pack-other turned off');
     assert.ok(!s.requests.some((m) => m.type === 'notice' && m.pack === 'other' && /turned off|removed/.test(m.text)), JSON.stringify(s.requests.filter((m) => m.type === 'notice')));
     holdsToTheVectors(s.requests);
