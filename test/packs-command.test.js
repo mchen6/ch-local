@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // Many packs in one home (plan Task 12b; reviewer, 2026-11-12): add-pack,
 // remove-pack and status, over a home that install made.
 const test = require('node:test');

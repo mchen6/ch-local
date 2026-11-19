@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // ch-local start --stdio (plan Task 11; reviewer, 2026-11-12): the
 // single-identity profile of LM1 with every installed pack whose credential is
 // present, the one per-user store, the sandbox never off, the remote

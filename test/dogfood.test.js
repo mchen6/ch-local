@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // scripts/dogfood.js (reviewer, 2026-11-12): pack 1 for our own sessions, from
 // the current mains, into a home with --unreleased-pins. It prints the client
 // line with a placeholder for the token, never a value, and touches no client

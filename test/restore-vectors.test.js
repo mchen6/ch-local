@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // ch-local's restore against the runtime's rule, so the two can't drift
 // again: countinghouse's lib/session-transport/restore.js refuses a restore
 // whose keys are not exactly {id, type, sessions, declines, reset}

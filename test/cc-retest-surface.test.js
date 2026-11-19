@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // tools/cc-retest/surface.js: Claude Code's config surface per version, and
 // its diff against the last approved version's. No network: the registry and
 // its tarballs are stand-ins, built here.

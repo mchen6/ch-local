@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // lib/provenance.js (docs/development/auto-upgrade.md, "Provenance: exactly
 // what is checked"): a version's two attestations, verified against a trusted
 // root by @sigstore/verify, then its identity, predicate and subject checked

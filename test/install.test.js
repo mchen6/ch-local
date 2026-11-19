@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // ch-local install --pack <name> --from <dir> [--unreleased-pins <file>]
 // (reviewer, 2026-11-12): the runtime by npm ci from its pinned lockfile into
 // <home>/app, then the pack's dependency-free packages unpacked beside it,

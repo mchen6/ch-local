@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // No command other than install and upgrade makes a network call (spec §2):
 // every lib file loads with the network stubbed to throw, and only
 // lib/registry.js may name a network module or fetch. lib/daemon.js names

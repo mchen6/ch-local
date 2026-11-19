@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // C4, the shim's Node side (countinghouse's shared-runtime design, #236,
 // sections 5, 6 and 10): shim.json as install writes it, each client's entry
 // naming the native shim with --home (or the per-session mode where there is

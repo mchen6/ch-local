@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 const test = require('node:test');
 const assert = require('node:assert');
 const {compareVersions} = require('../lib/semver-order');
