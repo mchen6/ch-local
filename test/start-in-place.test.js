@@ -327,7 +327,7 @@ test('while running: an outside edit is said and recorded once; a raise is sent 
   try {
   const where = layout({COUNTINGHOUSE_HOME: s.home});
   assert.strictEqual(where.app, path.join(s.home, 'app'), 'the reader where the runtime is installed');
-  ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 12 * 1024 * 1024, forbid: [], packs: [], conversation: true}});
+  ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 12 * 1024 * 1024, forbid: [], modules: [], conversation: true}});
   fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024, 'pack.ci-failure-triage': false}}));
   await until(() => s.requests.some((m) => m.type === 'unload'));
   await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'maxOutputBytes'));
@@ -413,7 +413,7 @@ test('never silent, told once: a clamp start found is not told again by the appl
   const {layout} = require('../lib/home');
   const s = await running({beforeStart: (home) => {
     const where = layout({COUNTINGHOUSE_HOME: home});
-    ceilingReader(home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 12 * 1024 * 1024, forbid: [], packs: null, conversation: true}});
+    ceilingReader(home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {maxOutputBytes: 12 * 1024 * 1024, forbid: [], conversation: true}});
     require('../lib/settings').setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
   }});
   try {
@@ -487,7 +487,7 @@ test('load-pack: an installed pack, off, allowed, at the version the form showed
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.strictEqual(count('unload'), 1, 'not unloaded by the next apply');
     // a ceiling that stops allowing it: unloaded
-    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: ['ci-failure-triage'], conversation: true}});
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'], conversation: true}});
     fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'en'}}));
     await until(() => count('unload') === 2);
   } finally {
@@ -638,7 +638,7 @@ test('load-pack refused: another version than the form showed, a pack the ceilin
   try {
     assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.2.0'}), {id: 'r1', ok: false, code: 'CONTROL_VERSION_CHANGED'});
     assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'nope', version: '1.0.0'}), {id: 'r2', ok: false, code: 'CONTROL_NOT_INSTALLED'});
-    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: ['ci-failure-triage'], conversation: true}});
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'], conversation: true}});
     assert.deepStrictEqual(await reply({id: 'r3', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r3', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
     assert.strictEqual(count('load'), 1, 'nothing loaded');
     ceilingReader(s.home, {state: 'none'});
@@ -655,13 +655,13 @@ test('load-pack refused: another version than the form showed, a pack the ceilin
 test('load-pack review: the ceiling turned against conversation, or untrusted: refused; a ceiling that unloads a this-start pack ends it (re-allowed, it stays off)', async () => {
   const {s, where, count, reply} = await withOtherOff();
   try {
-    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: null, conversation: false}});
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], conversation: false}});
     assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_CONVERSATION_OFF'});
     ceilingReader(s.home, {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'p'});
     assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r2', ok: false, code: 'CONTROL_CEILING_UNTRUSTED'});
     ceilingReader(s.home, {state: 'none'});
     assert.deepStrictEqual(await reply({id: 'r3', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r3', ok: true});
-    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], packs: ['ci-failure-triage'], conversation: true}});
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'], conversation: true}});
     fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
     await until(() => count('unload') === 2);
     ceilingReader(s.home, {state: 'none'});
@@ -1314,27 +1314,6 @@ test('another release\'s record: a caller of a withdrawn part refused twice name
   }
 });
 
-// the medium review of the high round, 6: unload-pack for this start's pack
-// whose module another pack keeps on answers {} and says why, never
-// CONTROL_UNLOAD_FAILED
-test('unload-pack while another pack keeps its module on: answered {}, and the session told which pack', async () => {
-  const {s, where, reply} = await withOtherOff();
-  try {
-    // twin records the same scenario module, turned off too
-    editRecord(s.home, (r) => ({...r, packs: {...r.packs, twin: {from: r.packs.other.from, modules: {...r.packs.other.modules}}}}));
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, 'pack.twin': false}}));
-    await settled(s, {'pack.other': false, 'pack.twin': false});
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
-    // twin turned on in the settings: other's own value unchanged
-    await settled(s, {'pack.other': false});
-    assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'other'}), {id: 'r2', ok: true});
-    await until(() => notices(s).some(([, t]) => t === 'ch-pack-other stays on: pack twin has it on (`ch-local settings set pack.twin off`)'));
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
 // the high review of L2a's medium round, 1: no answer (or a runtime gone)
 // may follow a reload the runtime took and runs, so the new closure stands
 test('module-stopped after a reload that got no answer: kept out at the new closure', async () => {
@@ -1350,34 +1329,6 @@ test('module-stopped after a reload that got no answer: kept out at the new clos
   } finally {
     s.end();
     await s.done;
-  }
-});
-
-// the high review of L2a's medium round, 2: a failed unload is never
-// reported as "stays on" for a pack the ceiling forbids
-test('unload-pack that fails while only a forbidden pack has the module on: CONTROL_UNLOAD_FAILED', async () => {
-  const ceilingModule = require('../lib/ceiling');
-  const {layout} = require('../lib/home');
-  const writeCeiling = (home) => {
-    ceilingModule.resetForTests();
-    const dir = path.join(layout({COUNTINGHOUSE_HOME: home}).app, 'node_modules', 'countinghouse', 'lib');
-    fs.mkdirSync(dir, {recursive: true});
-    fs.writeFileSync(path.join(dir, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify({state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], conversation: true, packs: ['ci-failure-triage', 'other']}})})};\n`);
-  };
-  let refuseUnloads = false;
-  const {s, where, reply} = await withOtherOff({beforeStart: writeCeiling, answer: (m) => (m.type === 'unload' && refuseUnloads ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
-  try {
-    editRecord(s.home, (r) => ({...r, packs: {...r.packs, twin: {from: r.packs.other.from, modules: {...r.packs.other.modules}}}}));
-    await settled(s, {'pack.other': false});
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
-    refuseUnloads = true;
-    const r = await reply({id: 'r2', type: 'unload-pack', name: 'other'});
-    assert.deepStrictEqual([r.ok, r.code], [false, 'CONTROL_UNLOAD_FAILED']);
-    assert.ok(!notices(s).some(([, t]) => /stays on/.test(t)));
-  } finally {
-    s.end();
-    await s.done;
-    ceilingModule.resetForTests();
   }
 });
 

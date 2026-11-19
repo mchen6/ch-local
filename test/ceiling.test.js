@@ -83,16 +83,16 @@ test('a value changed while the user was asked is not overwritten', async () => 
 
 test('the operator\'s ceiling, from the installed runtime\'s reader: above it, forbidden, or untrusted, refused before anything is asked', async () => {
   const home = tmp('ch-home-');
-  reader(home, trusted({maxOutputBytes: 8 * MiB, forbid: ['autoUpgrade'], packs: ['ci-failure-triage']}));
+  reader(home, trusted({maxOutputBytes: 8 * MiB, forbid: ['autoUpgrade'], modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact']}));
   const above = await run(home, ['settings', 'set', 'maxOutputBytes', '32MiB']);
   assert.strictEqual(above.code, 2);
   assert.match(above.io.err, /maxOutputBytes 32MiB is above the ceiling this machine's operator set \(at most 8MiB\); nothing was changed/);
   assert.deepStrictEqual(above.io.asked, []);
   const auto = await run(home, ['upgrade', '--auto', 'on']);
   assert.match(auto.io.err, /autoUpgrade cannot be changed to on on this machine: its operator's ceiling forbids it/);
-  assert.strictEqual((await run(home, ['settings', 'set', 'pack.other', 'off'], {interactive: false})).code, 0, 'turning one off is anyone\'s');
-  const pack = await run(home, ['settings', 'set', 'pack.other', 'on']);
-  assert.match(pack.io.err, /pack\.other cannot be changed to on on this machine/);
+  assert.strictEqual((await run(home, ['settings', 'set', 'enabled.@countinghouse/ch-pack-other', 'off'], {interactive: false})).code, 0, 'turning one off is anyone\'s');
+  const pack = await run(home, ['settings', 'set', 'enabled.@countinghouse/ch-pack-other', 'on']);
+  assert.match(pack.io.err, /enabled\.@countinghouse\/ch-pack-other cannot be changed to on on this machine/);
   // within it: asked, and made
   const within = await run(home, ['settings', 'set', 'maxOutputBytes', '8MiB'], {answers: ['y']});
   assert.strictEqual(within.code, 0, within.io.err);
@@ -289,19 +289,21 @@ test('the review of #18: the operator\'s allowlist of packs: an unlisted pack ne
   const r = release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
-  reader(home, trusted({packs: ['other']}));
+  reader(home, trusted({modules: ['@countinghouse/ch-pack-other']}));
   const s = await startOnce(home);
-  assert.match(s.err, /not loading ch-pack-ci-failure-triage: this machine's operator ceiling allows only other/);
+  assert.match(s.err, /not loading ch-pack-ci-failure-triage: its modules ch-pack-ci-failure-triage, ch-access-github, ch-step-redact are not on the operator's list/);
   assert.ok(s.args != null && !s.args.includes('--loadModule'), 'started, with no pack (#54: never ended for want of one)');
   // a history that says it was turned on changes nothing
   fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: false, new: true}) + '\n');
   assert.ok(!(await startOnce(home)).args.includes('--loadModule'));
   // installing a pack the list does not name is refused, before anything is written
   const fresh = tmp('ch-home-');
-  reader(fresh, trusted({packs: []}));
+  reader(fresh, trusted({modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-step-redact']}));
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: fresh}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 2);
-  assert.match(io.err, /the pack "ci-failure-triage" is not allowed on this machine: this machine's operator ceiling allows only no pack; nothing was installed/);
+  // every module of the pack checked before anything is fetched: one
+  // missing refuses it whole, naming it (#413 section 8)
+  assert.match(io.err, /the pack "ci-failure-triage" is not allowed on this machine: its module ch-access-github is not on the operator's list; nothing was installed/);
   assert.deepStrictEqual(io.execs, []);
 });
 
@@ -309,14 +311,14 @@ test('the review of #18: settings reset is the loosenings it implies: bound by t
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
   setSetting(where, 'maxOutputBytes', '8MiB', {by: 'cli'});
-  setSetting(where, 'pack.other', 'off', {by: 'cli'});
+  setSetting(where, 'enabled.@countinghouse/ch-pack-other', 'off', {by: 'cli'});
   const headless = await run(home, ['settings', 'reset'], {interactive: false});
   assert.strictEqual(headless.code, 2);
   assert.match(headless.io.err, /a reset that loosens a guarding setting is confirmed at a terminal/);
   assert.strictEqual(readSettings(where).values.maxOutputBytes, 8 * MiB, 'nothing changed');
   const no = await run(home, ['settings', 'reset'], {answers: ['n']});
   assert.strictEqual(no.code, 1);
-  assert.deepStrictEqual(no.io.asked, ['Reset every setting to its default? This loosens: maxOutputBytes 8MiB -> 16MiB, pack.other off -> on. (A module\'s settings are kept.) [y/N] ']);
+  assert.deepStrictEqual(no.io.asked, ['Reset every setting to its default? This loosens: maxOutputBytes 8MiB -> 16MiB, enabled.@countinghouse/ch-pack-other off -> on. (A module\'s settings are kept.) [y/N] ']);
   // the ceiling first: a loosening it refuses refuses the reset, unasked
   reader(home, trusted({maxOutputBytes: 12 * MiB}));
   const above = await run(home, ['settings', 'reset']);
@@ -402,7 +404,7 @@ test('the review of #18: uninstall --keep-data keeps settings.json with the hist
 test('the review of #18: a ceiling that cannot be trusted loads NO pack, and install refuses, naming the problem', async () => {
   const UNT = {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'packs is not a list of pack names'};
   assert.strictEqual(ceilingModule.packAllowed(UNT, 'ci-failure-triage'), false);
-  assert.match(ceilingModule.packRefusal(UNT, 'x'), /the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(packs is not a list of pack names\), so no pack loads/);
+  assert.match(ceilingModule.packRefusal(UNT, 'x'), /the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(packs is not a list of pack names\), so no module loads/);
   assert.strictEqual(ceilingModule.packAllowed({state: 'none'}, 'x'), true);
   const home = tmp('ch-home-');
   const r = release();
@@ -410,7 +412,7 @@ test('the review of #18: a ceiling that cannot be trusted loads NO pack, and ins
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   reader(home, UNT);
   const s = await startOnce(home);
-  assert.match(s.err, /not loading ch-pack-ci-failure-triage: the operator's ceiling file .* cannot be trusted \(packs is not a list of pack names\), so no pack loads/);
+  assert.match(s.err, /not loading ch-pack-ci-failure-triage: the operator's ceiling file .* cannot be trusted \(packs is not a list of pack names\), so no module loads/);
   assert.ok(s.args != null && !s.args.includes('--loadModule'), 'started, with no pack');
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 2);
@@ -437,4 +439,21 @@ test('the known-folder script names no cmdlet', () => {
   const {PROGRAMDATA_SCRIPT} = require('../lib/ceiling');
   const code = PROGRAMDATA_SCRIPT.replace(/'[^']*'/g, "''");
   assert.doesNotMatch(code, /\b[A-Z][a-z]+-[A-Z][A-Za-z]+\b/, code);
+});
+
+// the Reviewer's Q2 on L3: a ceiling that still holds "packs" is not
+// trusted (section 8): no module loads, and the reason names "modules"
+test('a ceiling that still holds "packs" is not trusted: no module loads, and the sentence names "modules"', async () => {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  reader(home, trusted({packs: ['ci-failure-triage']}));
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  const c = require('../lib/ceiling').ceilingFor(where, {platform: process.platform, env: {}});
+  assert.strictEqual(c.state, 'untrusted');
+  assert.match(c.problem, /it holds "packs", which is no longer read: list each module under "modules"/);
+  const s = await startOnce(home);
+  assert.ok(s.args != null && !s.args.includes('--loadModule'), 'no module loads');
+  assert.match(s.err, /cannot be trusted \(it holds "packs", which is no longer read: list each module under "modules"\), so no module loads/);
 });

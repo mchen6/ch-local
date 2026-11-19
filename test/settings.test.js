@@ -83,7 +83,7 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
-  assert.strictEqual((await cli(home, 'settings', 'set', 'pack.other', 'off')).code, 0);
+  assert.strictEqual((await cli(home, 'settings', 'set', 'enabled.@countinghouse/ch-pack-other', 'off')).code, 0);
   assert.strictEqual((await cli(home, 'settings', 'set', 'maxOutputBytes', '32MiB')).code, 0);
   require('./store-helpers').bindAccess(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home}, homedir: '/nowhere'});
@@ -106,13 +106,13 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   // none stored: the default, passed all the same (the two caps always are,
   // so the runtime's own default never governs: countinghouse #283)
   assert.deepStrictEqual(args.slice(args.indexOf('--requestTimeout'), args.indexOf('--requestTimeout') + 2), ['--requestTimeout', '30']);
-  assert.strictEqual((await cli(home, 'settings', 'set', 'pack.other', 'on')).code, 0);
+  assert.strictEqual((await cli(home, 'settings', 'set', 'enabled.@countinghouse/ch-pack-other', 'on')).code, 0);
   for (let i = 0; requests.length < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual([requests[0].type, requests[0].name], ['load', '@countinghouse/ch-pack-other']);
   assert.strictEqual((await cli(home, 'settings', 'set', 'requestTimeout', '15s')).code, 0);
   for (let i = 0; requests.length < 2 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual(requests[1], {type: 'set', name: 'requestTimeout', value: 15, id: requests[1].id});
-  assert.strictEqual((await cli(home, 'settings', 'set', 'pack.ci-failure-triage', 'off')).code, 0);
+  assert.strictEqual((await cli(home, 'settings', 'set', 'enabled.@countinghouse/ch-pack-ci-failure-triage', 'off')).code, 0);
   for (let i = 0; requests.length < 3 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual([requests[2].type, requests[2].name, requests[2].notice], ['unload', '@countinghouse/ch-pack-ci-failure-triage', 'ch-pack-ci-failure-triage turned off']);
   end(0);

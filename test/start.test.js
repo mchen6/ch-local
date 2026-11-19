@@ -1111,7 +1111,7 @@ test('a runtime of its own gets an allowlisted environment: no client credential
 test('start says where a key goes only for a module it loads this start', async () => {
   const home = installedHome({other: true});
   bindOther(home);
-  assert.strictEqual(await main(['settings', 'set', 'pack.other', 'off'], Object.assign(io(home), {stdout: {write: () => {}}})), 0);
+  assert.strictEqual(await main(['settings', 'set', 'enabled.@countinghouse/ch-pack-other', 'off'], Object.assign(io(home), {stdout: {write: () => {}}})), 0);
   const f = io(home);
   await start({passThrough: []}, f);
   assert.match(f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
