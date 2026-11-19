@@ -186,7 +186,7 @@ test('pack seams: allowed-but-off plus forbidden-but-on is off', () => {
   const {packSeams} = require('../lib/pack-seams');
   const seams = packSeams({settings: {version: 1, values: {'pack.a': false}}, ceiling: {state: 'trusted', ceiling: {modules: ['@countinghouse/ch-pack-a']}}});
   assert.strictEqual(seams.ceiling(A, ['a', 'b']), null);
-  assert.match(seams.off(A, ['a', 'b']), /it is turned off \(`ch-local settings set pack\.a on`\)/);
+  assert.match(seams.off(A, ['a', 'b']), /it is turned off \(`ch-local settings set enabled\.@t\/ch-pack-a on`\)/);
 });
 
 // the medium review of the high round, 8: the credential is asked only of
