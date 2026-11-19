@@ -291,7 +291,8 @@ test('the review of #18: the operator\'s allowlist of packs: an unlisted pack ne
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   reader(home, trusted({modules: ['@countinghouse/ch-pack-other']}));
   const s = await startOnce(home);
-  assert.match(s.err, /not loading ch-pack-ci-failure-triage: its modules ch-pack-ci-failure-triage, ch-access-github, ch-step-redact are not on the operator's list/);
+  // by module (L2b): the scenario itself is not on the list
+  assert.match(s.err, /not loading ch-pack-ci-failure-triage: it is not on the operator's list/);
   assert.ok(s.args != null && !s.args.includes('--loadModule'), 'started, with no pack (#54: never ended for want of one)');
   // a history that says it was turned on changes nothing
   fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: false, new: true}) + '\n');
