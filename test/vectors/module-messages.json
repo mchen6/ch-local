@@ -1,7 +1,7 @@
 {
-  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json moduleMessages, from countinghouse master d31cbcb5 (#430 merged, its `reread`): copied, never edited here",
+  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json moduleMessages, at countinghouse 099be25c (#449, M5b: an unload may carry reason off, for the runtime's own off text): copied, never edited here",
   "moduleMessages": {
-    "rule": "load names one top-level module (name) and reload one or more (names), each by its package name, with dirs: the absolute directory of each module of their closures, by package name, 1 to 64; credentials (optional) is the per-module allowance of the version 2 --remoteCredentials file, each environment name a slot, each package one dirs names. unload names one top-level module. A module-form message carries no scenario, pack, global or remoteCredentials. notice: module a package name or null, and text. reread: what is module-settings. module-stopped (the runtime to ch-local, unasked, no id): name, code, when start or restart",
+    "rule": "load names one top-level module (name) and reload one or more (names), each by its package name, with dirs: the absolute directory of each module of their closures, by package name, 1 to 64; credentials (optional) is the per-module allowance of the version 2 --remoteCredentials file, each environment name a slot, each package one dirs names. unload names one top-level module; its notice is told once, as given, under that module, unless it carries reason: \"off\" (the module turned off) and the runtime serves the settings tool (the single-identity profile with --settingsFile), when it tells every session its own off text instead: what went with it (the callers loaded at that unload; one unloaded before it is told by its own unload) and both ways back. reason is optional and not checked: any other value, or none, is the notice as given. A module-form message carries no scenario, pack, global or remoteCredentials. notice: module a package name or null, and text. reread: what is module-settings. module-stopped (the runtime to ch-local, unasked, no id): name, code, when start or restart",
     "packagePattern": "^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$",
     "slotPattern": "^COUNTINGHOUSE_CREDENTIAL_[1-9][0-9]{0,3}$",
     "accepted": [
@@ -81,6 +81,16 @@
         }
       },
       {
+        "why": "an unload of a module turned off, said so: the runtime tells every session its full off text",
+        "message": {
+          "id": 9,
+          "type": "unload",
+          "name": "@countinghouse/ch-pack-example",
+          "notice": "example turned off",
+          "reason": "off"
+        }
+      },
+      {
         "why": "a reread of the module settings",
         "message": {
           "id": 6,
@@ -94,7 +104,7 @@
           "id": 7,
           "type": "notice",
           "module": "@countinghouse/ch-pack-example",
-          "text": "example upgraded 1.0.0 → 1.1.0"
+          "text": "example upgraded 1.0.0 \u2192 1.1.0"
         }
       },
       {

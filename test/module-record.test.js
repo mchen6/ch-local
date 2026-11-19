@@ -19,10 +19,14 @@ const base = (packs, extra = {}) => ({runtime: {versions: {'@countinghouse/ch-lo
 const triage = (access = '0.2.0') => ({from: {release: '0.9.0'}, modules: {
   '@countinghouse/ch-pack-ci-failure-triage': '0.5.0', '@countinghouse/ch-access-github': access, '@countinghouse/ch-step-redact': '0.2.0'}});
 
+// a map as data: its entries, whatever its prototype
+const plain = (o) => JSON.parse(JSON.stringify(o));
+
 test('written and read back: the shape of section 9.2, modules and withdrawn derived', () => {
   const w = where();
   const written = rec.writeModulesRecord(w, base({'ci-failure-triage': triage()}), {roleOf, release: RELEASE_V1});
-  assert.deepStrictEqual(written.modules, {
+  // (the record's maps have no prototype, the root fix of #96: compared as data)
+  assert.deepStrictEqual(plain(written.modules), {
     '@countinghouse/ch-access-github': {version: '0.2.0', role: 'part'},
     '@countinghouse/ch-pack-ci-failure-triage': {version: '0.5.0', role: 'scenario'},
     '@countinghouse/ch-step-redact': {version: '0.2.0', role: 'part'}
@@ -30,9 +34,9 @@ test('written and read back: the shape of section 9.2, modules and withdrawn der
   assert.deepStrictEqual(written.withdrawn, []);
   const r = rec.readModulesRecord(w);
   assert.strictEqual(r.v, 2);
-  assert.deepStrictEqual(r.packs, written.packs);
-  assert.deepStrictEqual(r.modules, written.modules);
-  assert.deepStrictEqual(r.held, {});
+  assert.deepStrictEqual(plain(r.packs), plain(written.packs));
+  assert.deepStrictEqual(plain(r.modules), plain(written.modules));
+  assert.deepStrictEqual(plain(r.held), {});
   assert.strictEqual(rec.activeVersion(r, '@countinghouse/ch-access-github'), '0.2.0');
   assert.strictEqual(rec.activeVersion(r, 'weather-tool'), null);
 });
@@ -95,7 +99,7 @@ test('a held pack is recorded and kept apart: never in modules', () => {
   const held = {'weekly-report': {from: {release: '1.0.0'}, modules: {'@countinghouse/ch-pack-weekly-report': '0.3.0'}}};
   const r = rec.writeModulesRecord(w, base({'ci-failure-triage': triage()}, {held}), {roleOf, release: RELEASE_V1});
   assert.strictEqual(r.modules['@countinghouse/ch-pack-weekly-report'], undefined);
-  assert.deepStrictEqual(rec.readModulesRecord(w).held, held);
+  assert.deepStrictEqual(plain(rec.readModulesRecord(w).held), held);
 });
 
 test('nothing installed is null; only an earlier ch-local\'s packs.json says to install again; both there takes modules.json', () => {
