@@ -46,7 +46,7 @@ const until = async (cond, ms = 10000) => {
 // the tests here are given it read already (ch-local's intermittent
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, loadPackDeadlineMs, ghToken = null, home: reuse = null,
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, loadPackDeadlineMs, loadPackRuntimeWaitMs, ghToken = null, home: reuse = null,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
@@ -55,7 +55,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   if (reuse == null && bound != null) bindAccess(home, bound);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
-  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackDeadlineMs, clientAncestry});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackDeadlineMs, loadPackRuntimeWaitMs, clientAncestry});
   // the running ch-local is the one the home holds (the npm stub's 0.2.0); a
   // test makes this process stale by giving it another (lib/packs.js
   // recordRelease)
@@ -1500,8 +1500,8 @@ const reply2 = async (s, msg) => { s.ask(msg); await until(() => s.requests.some
 // the high review of #92, 2: an ask started past the deadline is refused
 // CONTROL_BUSY unsaid, and the runtime's undo of that load-pack (an
 // unload-pack for the same pack) is {} unsaid, even for a loaded module
-test('a load-pack started past the deadline is refused CONTROL_BUSY unsaid, and its undo unload-pack answers {} unsaid', async () => {
-  const s = await running({loadPackDeadlineMs: 0});
+test('a load-pack started past the runtime\'s wait is refused CONTROL_BUSY unsaid, and its undo unload-pack answers {} unsaid', async () => {
+  const s = await running({loadPackDeadlineMs: 0, loadPackRuntimeWaitMs: 0});
   try {
     await until(() => s.args() != null);
     assert.strictEqual(loadsPack(s), true);
@@ -1513,6 +1513,21 @@ test('a load-pack started past the deadline is refused CONTROL_BUSY unsaid, and 
     await new Promise((r) => setTimeout(r, 100));
     assert.strictEqual(notices(s).length, before, 'nothing said');
     assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 0, 'nothing unloaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on #92's high round, 1: a load-pack refused late but inside the
+// runtime's wait gets no undo, so a later unload-pack is never taken for one
+test('a load-pack refused CONTROL_BUSY inside the runtime\'s wait marks nothing: a later unload-pack is answered as itself', async () => {
+  const s = await running({loadPackDeadlineMs: 0, loadPackRuntimeWaitMs: 60000});
+  try {
+    await until(() => s.args() != null);
+    assert.strictEqual(loadsPack(s), true);
+    assert.deepStrictEqual(await reply2(s, {id: 'r51', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r51', ok: false, code: 'CONTROL_BUSY'});
+    assert.deepStrictEqual(await reply2(s, {id: 'r52', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r52', ok: false, code: 'CONTROL_BUSY'});
   } finally {
     s.end();
     await s.done;

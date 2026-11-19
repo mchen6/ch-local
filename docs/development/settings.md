@@ -235,12 +235,26 @@ runtime's exact-version tested list and the automated re-test.
 `lib/client-conditions-fixtures.js` (`LOCATIONS`, `plant()`) holds one
 fixture per source, for these tests and for that re-test.
 
-A pack confirmed in the dialog is loaded for this start only (`load-pack`):
-start checks that it is installed at the version the dialog showed, that
-the operator's ceiling allows it and that it is off, then loads it without
-writing `settings.json`, and records `turned on this start (confirmed in the
-client)` in the history. A later change to `settings.json` does not unload
-it; a ceiling that stops allowing it does. `unload-pack` turns it off again.
+A module is turned on and off for every session, at a terminal
+(`ch-local settings set enabled.<module> on|off`), never for one start.
+Until the runtime's settings tool writes `enabled.*` itself (countinghouse
+M5b), its `load-pack` and `unload-pack` asks from the dialog load and
+unload nothing; each is answered with what is true, and its line is said
+once per start:
+
+| answer | when |
+|---|---|
+| `CONTROL_NOT_INSTALLED`, nothing said | the name is not an installed pack's |
+| `CONTROL_PACK_NOT_ALLOWED` | withdrawn, or not on the operator's list |
+| `CONTROL_CEILING_UNTRUSTED` | the operator's ceiling file cannot be trusted |
+| `{}` | on already (`load-pack`), off already (`unload-pack`) |
+| `CONTROL_NOT_AVAILABLE` | on, but kept out: availability's reason, or stopped |
+| `CONTROL_USE_TERMINAL` | off (or on, to `unload-pack`): the `enabled.*` command said |
+| `CONTROL_BUSY`, nothing said | started 10 s or more after it came |
+
+The runtime undoes a `load-pack` it got no answer to (its 45 s wait) with
+an `unload-pack`; that one, within 60 s of the `load-pack` refused past the
+wait, is `{}` with nothing said.
 
 ## Limits
 
