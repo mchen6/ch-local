@@ -131,3 +131,56 @@ test('setSetting(enabled.<m>) from code obeys the same rules (a part refused, SE
   const h = await installed();
   assert.throws(() => setSetting(h.where, `enabled.${PART}`, 'off'), (e) => e.code === 'SETTING_IS_A_PART');
 });
+
+// the medium on L3, 2: turning a module on past a leftover pack.* off is a
+// loosening: asked at a terminal, refused without one
+test('on past a leftover pack.* off is a loosening: asked at a terminal, refused without one', async () => {
+  const h = await installed();
+  writeValues(h.home, {'pack.ci-failure-triage': false});
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h.home}}), {interactive: false});
+  assert.strictEqual(await main(['settings', 'set', `enabled.${SCENARIO}`, 'on'], io), 2);
+  assert.match(io.err, /loosens a guarding setting, which is confirmed at a terminal/);
+  assert.deepStrictEqual(fileValues(h.home), {'pack.ci-failure-triage': false}, 'nothing changed');
+  const on = await cli(h.home, 'settings', 'set', `enabled.${SCENARIO}`, 'on');
+  assert.strictEqual(on.code, 0, on.io.err);
+  assert.ok(on.io.asked.some((q) => /from off to on/.test(q)), on.io.asked.join(' | '));
+});
+
+// the medium on L3, 5: the "turned off" hint names a command that works
+test('a module turned off is said with the enabled.* command that turns it on', () => {
+  const {packSeams} = require('../lib/pack-seams');
+  const record = {packs: {p: {modules: {[SCENARIO]: '1.0.0'}}}, modules: {[SCENARIO]: {version: '1.0.0', role: 'scenario'}}};
+  const seams = packSeams({settings: {version: 1, values: {[`enabled.${SCENARIO}`]: false}}, ceiling: {state: 'none'}, record});
+  assert.strictEqual(seams.off(SCENARIO, ['p']), `it is turned off (\`ch-local settings set enabled.${SCENARIO} on\`)`);
+});
+
+// the medium on L3, 6: a write that fails after a leftover's removal line
+// undoes that line too, so no outside edit is reported for it
+test('a set whose write fails undoes the leftover pack.* removal in the history too', async () => {
+  const h = await installed();
+  writeValues(h.home, {'pack.ci-failure-triage': false});
+  fs.writeFileSync(path.join(h.home, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: true, new: false}) + '\n');
+  const atomic = require('../lib/atomic');
+  const settingsPath = require.resolve('../lib/settings');
+  const real = atomic.writeAtomic;
+  delete require.cache[settingsPath];
+  atomic.writeAtomic = () => { throw Object.assign(new Error('no space'), {code: 'ENOSPC'}); };
+  try {
+    const fresh = require('../lib/settings');
+    assert.throws(() => fresh.setSetting(h.where, `enabled.${SCENARIO}`, 'on', {mayLoosen: true}), {code: 'ENOSPC'});
+  } finally {
+    atomic.writeAtomic = real;
+    delete require.cache[settingsPath];
+    require('../lib/settings');
+  }
+  const {outsideEdits} = require('../lib/outside-edits');
+  assert.deepStrictEqual(outsideEdits(h.where, readSettings(h.where)), []);
+});
+
+// the medium on L3, 9: reset takes no setting of ch-local's own
+test('settings reset <a name of ch-local\'s own> is refused, saying what to run', async () => {
+  const h = await installed();
+  const r = await cli(h.home, 'settings', 'reset', `enabled.${SCENARIO}`);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.io.err, /settings reset takes no setting of ch-local's own/);
+});

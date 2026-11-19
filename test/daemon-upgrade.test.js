@@ -185,7 +185,8 @@ test('a daemon started with a handoff seeds its table from it; a bad handoff sta
     const handoff = encodeHandoff({type: 'restore', sessions: [{session: ID(3), resume: HASH, state: {overrides: [], locks: ['pack'], formsLeft: 1}}], declines: [{kind: 'pack', at: Date.now()}]});
     const done = daemon({home, handoff}, io, {run: s.run});
     const one = await s.nth(0);
-    assert.deepStrictEqual(one.restore.sessions, [{session: ID(3), resume: HASH, state: {overrides: [], locks: ['pack'], formsLeft: 1}}]);
+    // (the kind pack is enabled after a handoff: L3, #413 section 10)
+    assert.deepStrictEqual(one.restore.sessions, [{session: ID(3), resume: HASH, state: {overrides: [], locks: ['enabled'], formsLeft: 1}}]);
     assert.strictEqual(one.restore.declines.length, 1);
     // stopped while it was still starting: a stop, not a failure
     io.signal('SIGTERM');
@@ -320,7 +321,7 @@ test('(2) a crash during a ch-local upgrade\'s drain: the runtime running then i
   }
 });
 
-test('(3) a handoff never restores a loosening: confirmed loosenings and enabled packs are dropped; tightenings, packs off, locks and forms left are kept', async() => {
+test('(3) a handoff never restores a loosening: confirmed loosenings and every pack.* override are dropped; tightenings, locks (pack as enabled) and forms left are kept', async() => {
   const {home, io} = setup();
   try {
     const s = scripted(home);
@@ -333,7 +334,8 @@ test('(3) a handoff never restores a loosening: confirmed loosenings and enabled
     const handoff = encodeHandoff({type: 'restore', sessions: [{session: ID(5), resume: HASH, state}], declines: []});
     const done = daemon({home, handoff}, io, {run: s.run});
     const one = await s.nth(0);
-    assert.deepStrictEqual(one.restore.sessions[0].state, {overrides: [state.overrides[1], state.overrides[3]], locks: ['pack'], formsLeft: 1});
+    // (L3, #413 section 10: a pack off goes too, and the kind pack is enabled)
+    assert.deepStrictEqual(one.restore.sessions[0].state, {overrides: [state.overrides[1]], locks: ['enabled'], formsLeft: 1});
     assert.match(io.err, /1 session\(s\) lost loosenings/);
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);

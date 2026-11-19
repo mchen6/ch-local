@@ -231,3 +231,15 @@ test('outside edits: a terminal "on" that removes a leftover pack.* is not an ou
   assert.ok(edits[0].refused != null, 'refused by the ceiling');
   assert.match(said[0], /enabled\.@countinghouse\/ch-pack-ci-failure-triage was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: .*forbids it/);
 });
+
+// the medium on L3, 8: a reset never changes a value the ceiling fixes
+test('settings reset <m>[.<setting>] is refused for a setting the ceiling fixes', async () => {
+  const home = await installed({ceiling: {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], moduleSettings: {[`${SCENARIO}.units`]: {fixed: 'metric'}}}}});
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {[STORED('units')]: 'metric', [STORED('note')]: 'x'}}));
+  for (const target of ['ch-pack-ci-failure-triage.units', 'ch-pack-ci-failure-triage']) {
+    const r = await cli(home, ['settings', 'reset', target]);
+    assert.strictEqual(r.code, 2, target);
+    assert.match(r.io.err, /units for ch-pack-ci-failure-triage is fixed by this machine's operator ceiling; nothing was changed/);
+  }
+  assert.deepStrictEqual(fileValues(home), {[STORED('units')]: 'metric', [STORED('note')]: 'x'});
+});

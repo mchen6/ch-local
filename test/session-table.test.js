@@ -198,3 +198,13 @@ test('the table takes the kind enabled from a runtime that sends it', () => {
   assert.strictEqual(t.told({type: 'session-resume', session: ID(1), hash: HASH}), true);
   assert.strictEqual(t.told({type: 'session-state', session: ID(1), state: {overrides: [], locks: ['enabled'], formsLeft: 2}}), true);
 });
+
+// the medium on L3, 7: a kind locked as pack and unanswered as enabled is
+// one kind after the mapping: it stays locked, and the row is kept
+test('seed: a kind both locked (as pack) and unanswered (as enabled) stays locked, and the row is kept', () => {
+  const t = createSessionTable({warn: () => {}});
+  const state = {overrides: [], locks: ['pack'], unanswered: ['enabled'], formsLeft: 1};
+  assert.deepStrictEqual(t.seed({sessions: [{session: ID(1), resume: HASH, state}], declines: []}), {kept: 1, loosened: 0});
+  const s = t.restore().sessions[0].state;
+  assert.deepStrictEqual([s.locks, s.unanswered], [['enabled'], []]);
+});

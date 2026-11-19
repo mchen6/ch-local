@@ -457,3 +457,14 @@ test('a ceiling that still holds "packs" is not trusted: no module loads, and th
   assert.ok(s.args != null && !s.args.includes('--loadModule'), 'no module loads');
   assert.match(s.err, /cannot be trusted \(it holds "packs", which is no longer read: list each module under "modules"\), so no module loads/);
 });
+
+// the medium on L3, 1: the runtime's reader answers packs: null for a file
+// without it; that ceiling is trusted (only a list of packs makes it not)
+test('a ceiling the reader gives packs: null is trusted; only a list of packs makes it untrusted', () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  reader(home, trusted({maxOutputBytes: 8 * MiB, packs: null, modules: null}));
+  assert.strictEqual(require('../lib/ceiling').ceilingFor(where, {env: {}}).state, 'trusted');
+  reader(home, trusted({packs: []}));
+  assert.strictEqual(require('../lib/ceiling').ceilingFor(where, {env: {}}).state, 'untrusted');
+});

@@ -610,7 +610,7 @@ test('B3: on a shared runtime a session\'s load-pack is refused and the session 
   const {s, where, count, reply} = await sharedWithCiOff();
   try {
     assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
-    await until(() => notices(s).some(([, t]) => t === 'ci-failure-triage is turned on for every session: `ch-local settings set pack.ci-failure-triage on`'));
+    await until(() => notices(s).some(([, t]) => t === 'ci-failure-triage is turned on for every session: `ch-local settings set enabled.@countinghouse/ch-pack-ci-failure-triage on`'));
     assert.strictEqual(count('load'), 0, 'nothing loaded for the session');
     fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': true}}));
     await until(() => count('load') === 1);
