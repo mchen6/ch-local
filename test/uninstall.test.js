@@ -45,9 +45,9 @@ const RELEASE = {
 };
 const io = (s, answers) => Object.assign(fakeIo({env: {GITHUB_TOKEN: 'secret-value-123'}, homedir: s.user, answers}), {release: RELEASE});
 
-// the Reviewer's high review of #98's round 2, 6: every variable a stored
-// module's remotes name (more than one remote, a fallbackEnv), and GitHub's
-// earlier name while the store still holds a key under it
+// the Reviewer's high review of #98's round 2, 6, and its cut in round 3:
+// every variable a stored module's remotes name (more than one remote, a
+// fallbackEnv), and every variable the store holds a key under
 test('the credentials to revoke: every variable an installed module\'s remotes name, and every variable the store holds a key under', async () => {
   const s = setup();
   try {

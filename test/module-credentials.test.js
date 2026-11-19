@@ -167,7 +167,7 @@ test('the carry-over, a version 2 store: read under the declared name, never rew
   assert.ok(!read.bindings.get(ACCESS).has(VAR));
   assert.strictEqual(mc.stateOf(ACCESS, mc.declared(where, record(), ACCESS), read).state, 'ok', 'loaded, not "elsewhere"');
   // what a start says, each start while it applies
-  assert.deepStrictEqual(mc.carriedLines(read), ['ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it under GITHUB_TOKEN']);
+  assert.deepStrictEqual(mc.carriedLines(read), ['ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it again under GITHUB_TOKEN']);
   // nothing is rewritten: the store keeps the earlier name until the user adds it
   assert.deepStrictEqual([...store.readStore(h).modules.get(ACCESS).keys()], [VAR]);
   // a remove deletes the module's binding whatever its name: nothing carries it back
@@ -197,4 +197,14 @@ test('the carry-over is GitHub\'s rename only: a third-party module at another o
   bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-3'));
   assert.deepStrictEqual(mc.bindings(where, readModulesRecord(where)).carried, []);
   assert.strictEqual(mc.stateOf(THIRD, mc.declared(where, readModulesRecord(where), THIRD), mc.bindings(where, readModulesRecord(where))).state, 'elsewhere', 'added again, as L5a says');
+});
+
+// (the medium on #98's cut, 8: the case the dropped lock test also held)
+test('a credentials directory that is a link to elsewhere is refused, and nothing is written there', {skip: process.platform === 'win32'}, () => {
+  const fs = require('node:fs');
+  const {h} = homeOn020();
+  const elsewhere = tmp('ch-mc-elsewhere-');
+  fs.symlinkSync(elsewhere, store.paths(h).dir);
+  assert.throws(() => bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-10')));
+  assert.deepStrictEqual(fs.readdirSync(elsewhere), [], 'nothing written there');
 });

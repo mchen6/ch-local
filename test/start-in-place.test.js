@@ -1620,7 +1620,7 @@ test('a key stored under COUNTINGHOUSE_GITHUB_TOKEN: the pack loads, the start s
   const s = await running({bound: null, beforeStart: (home) => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: STORED})});
   try {
     assert.ok(loadsPack(s), 'loaded with the key read under GITHUB_TOKEN');
-    const line = 'ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it under GITHUB_TOKEN';
+    const line = 'ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it again under GITHUB_TOKEN';
     assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(line)).length, 1, s.f.err);
     assert.deepStrictEqual([...require('../lib/credential-store').readStore(s.home).modules.get(ACCESS).keys()], ['COUNTINGHOUSE_GITHUB_TOKEN'], 'never rewritten');
   } finally {
