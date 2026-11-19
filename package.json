@@ -22,7 +22,7 @@
     "clients/"
   ],
   "scripts": {
-    "test": "node --test \"test/*.test.js\""
+    "test": "node scripts/test.js"
   },
   "dependencies": {
     "@sigstore/bundle": "4.0.0",
