@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {fakeIo, tmp} = require('./fake-io');
-const {start, repoFromRemote} = require('../lib/start');
+const {start, repoFromRemote, readOrigin} = require('../lib/start');
 const {main} = require('../bin/ch-local');
 const {storeModule, writeHome, setPackCredentials} = require('./store-helpers');
 const credentialStore = require('../lib/credential-store');
@@ -258,7 +258,6 @@ test('start writes no device config, whatever the origin remote', async () => {
 });
 
 test('the origin is read from the repository\'s config: a worktree\'s .git file and commondir, no repository, an unreadable cwd', () => {
-  const {readOrigin} = require('../lib/start');
   // A worktree: .git is a file naming its gitdir, whose commondir holds the config.
   const main = tmp('ch-local-main-');
   fs.mkdirSync(path.join(main, '.git', 'worktrees', 'wt'), {recursive: true});

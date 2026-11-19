@@ -103,8 +103,8 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       // rev 3: its defaultRepo is no device config any more), then a
       // client's start in a repository whose origin is elsewhere: the
       // setting is what the scenario reads.
-      const set = require('node:child_process').spawnSync(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'settings', 'set', 'ch-pack-smoke.defaultRepo', 'octo/smoke'],
-        {env: {...process.env, COUNTINGHOUSE_HOME: home}, encoding: 'utf8', timeout: 60000});
+      const set = spawnSync(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'settings', 'set', 'ch-pack-smoke.defaultRepo', 'octo/smoke'],
+        {env: {...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'}, encoding: 'utf8', timeout: 60000});
       assert.strictEqual(set.status, 0, `${set.stdout}\n${set.stderr}`);
       const repo = path.join(work, 'repo');
       fs.mkdirSync(path.join(repo, '.git'), {recursive: true});
