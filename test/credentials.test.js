@@ -61,13 +61,13 @@ test('add at a terminal: shown where it goes before asking; stored for that modu
   const value = made();
   const f = io(h, {typed: value});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0, f.err);
-  assert.match(f.out, /^ch-access-github 1\.0\.0 declares one credential:\n {2}COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com \(its remote "github"\)\n/);
+  assert.match(f.err, /^ch-access-github 1\.0\.0 declares one credential:\n {2}COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com \(its remote "github"\)\n/);
   assert.match(f.prompts[0], /^COUNTINGHOUSE_GITHUB_TOKEN for ch-access-github \(input hidden\): $/);
   assert.deepStrictEqual(bound(h), {origin: ORIGIN, source: 'stored', value});
   assert.strictEqual(fs.statSync(path.join(h, 'credentials')).mode & 0o777, 0o700);
   assert.strictEqual(fs.statSync(path.join(h, 'credentials', 'credentials.json')).mode & 0o777, 0o600);
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(h, 'credentials', 'credentials.json'), 'utf8')).v, 2);
-  assert.match(f.out, /stored for ch-access-github: COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com; readable by this user only/);
+  assert.match(f.err, /stored for ch-access-github: COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com; readable by this user only/);
   assert.ok(!everything(h, f).includes(value), 'the value nowhere');
   assert.deepStrictEqual((({module, variable, origin, source, how, change}) => ({module, variable, origin, source, how, change}))(historyOf(h)[0]),
     {module: ACCESS, variable: VAR, origin: ORIGIN, source: 'stored', how: 'terminal', change: 'added'});
@@ -89,7 +89,7 @@ test('the gh offer: only at a terminal, with a gh login, for exactly https://api
   assert.match(yes.asked[0], /^Use your gh login's token for ch-access-github\? \[y\/N\] $/);
   assert.deepStrictEqual(bound(h), {origin: ORIGIN, source: 'gh'});
   assert.strictEqual(yes.prompts, undefined, 'no value asked');
-  assert.match(yes.out, /stored for ch-access-github: your gh login's token, asked at each start/);
+  assert.match(yes.err, /stored for ch-access-github: your gh login's token, asked at each start/);
   const no = io(h, {typed: made(), gh: made(), answers: ['']});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, no), 0, no.err);
   assert.strictEqual(bound(h).source, 'stored', 'the default is No: a value is asked');
@@ -128,7 +128,7 @@ test('standard input: --to is required and must be the declared origin; never re
   store.bind(other, ACCESS, VAR, {origin: 'https://old.example', source: 'stored', value: made()});
   const rebind = io(other, {terminal: false, stdin: made()});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, rebind), 2);
-  assert.match(rebind.err, /the credential stored for ch-access-github is for https:\/\/old\.example, and this version sends it to https:\/\/api\.githubcopilot\.com: run `ch-local credentials add ch-access-github` at a terminal to allow that\. Nothing was changed\./);
+  assert.match(rebind.err, /the credential stored for ch-access-github does not match this version: it sends its credential somewhere new \(https:\/\/api\.githubcopilot\.com; the stored one is for https:\/\/old\.example\); run `ch-local credentials add ch-access-github` at a terminal to allow that\. Nothing was changed\./);
   // two lines, or over 4096 bytes: refused
   for (const stdin of [`${made()}\n${made()}\n`, 'x'.repeat(4097)]) {
     const f = io(home(), {terminal: false, stdin});
@@ -143,7 +143,7 @@ test('at a terminal, a binding for another origin is named before asking, then r
   const value = made();
   const f = io(h, {typed: value});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0, f.err);
-  assert.match(f.out, /the stored credential for ch-access-github is for https:\/\/old\.example; this version sends it to https:\/\/api\.githubcopilot\.com/);
+  assert.match(f.err, /the stored credential for ch-access-github: it sends its credential somewhere new \(https:\/\/api\.githubcopilot\.com; the stored one is for https:\/\/old\.example\)/);
   assert.deepStrictEqual(bound(h), {origin: ORIGIN, source: 'stored', value});
   assert.strictEqual(historyOf(h).pop().change, 'replaced');
 });
@@ -400,8 +400,9 @@ test('remove: a key whose module is no longer installed is still removed, by its
   assert.strictEqual(store.readStore(h).modules.get('@countinghouse/ch-gone'), undefined);
   // an argument that names nothing stored is still never shown back
   const odd = io(h);
-  assert.strictEqual(await credentials({action: 'remove', name: 'ghp_lookslikeatoken'}, odd), 2);
-  assert.ok(!(odd.out + odd.err).includes('ghp_lookslikeatoken'));
+  const typedByMistake = made();
+  assert.strictEqual(await credentials({action: 'remove', name: typedByMistake}, odd), 2);
+  assert.ok(!(odd.out + odd.err).includes(typedByMistake));
 });
 
 // the /code-review medium on L5a, 4: --to is checked at a terminal too
@@ -423,4 +424,67 @@ test('add with a terminal on standard input but not both ways is refused: the ke
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, f), 2);
   assert.match(f.err, /typed only at a terminal both ways/);
   assert.strictEqual(bound(h), null);
+});
+
+// the Reviewer's high review of L5a, 2: the runtime's own grammar for a
+// variable (countinghouse lib/remote/declaration.js VARIABLE), copied
+test('the store takes every variable name the runtime takes: its grammar, copied and pinned', () => {
+  assert.strictEqual(store.VARIABLE.source, '^[A-Za-z_][A-Za-z0-9_]*$');
+  for (const v of ['lower_case', '_LEADING', `A${'B'.repeat(100)}`]) assert.ok(store.VARIABLE.test(v), v);
+  const h = home();
+  store.bind(h, ACCESS, 'lower_case', {origin: ORIGIN, source: 'stored', value: made()});
+  assert.ok(store.readStore(h).modules.get(ACCESS).has('lower_case'));
+});
+
+// the Reviewer's high review of L5a, 4: an empty or silent standard input
+test('standard input that held nothing, or stayed open and silent, is refused, nothing stored', async () => {
+  const h = home();
+  const empty = io(h, {terminal: false, stdin: ''});
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, empty), 2);
+  assert.match(empty.err, /standard input held no key/);
+  const silent = io(h, {terminal: false});
+  silent.readStdin = async () => { throw Object.assign(new Error('nothing ended standard input within 30 s'), {code: 'TIMEOUT'}); };
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, silent), 1);
+  assert.match(silent.err, /nothing ended standard input within 30 s: pipe the key in, one line, and close the input/);
+  assert.strictEqual(bound(h), null);
+});
+
+// the Reviewer's high review of L5a, 5: a renamed variable to the same
+// origin is said as that, not as somewhere new
+test('a stored key for another variable name at the same origin is named as a rename', async () => {
+  const h = home();
+  store.bind(h, ACCESS, 'OLD_NAME', {origin: ORIGIN, source: 'stored', value: made()});
+  const f = io(h, {terminal: false, stdin: `${made()}\n`});
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, f), 2);
+  assert.match(f.err, /it now names its credential COUNTINGHOUSE_GITHUB_TOKEN \(the stored key is OLD_NAME, for the same address, https:\/\/api\.githubcopilot\.com\)/);
+  assert.ok(!/somewhere new/.test(f.err));
+});
+
+// the Reviewer's high review of L5a, 7: install's end restarts once
+test('install\'s end asks for each module, then says the restart once for all of them', async () => {
+  const {askMissing} = require('../lib/credentials-command');
+  const h = home({extra: {'@countinghouse/ch-access-two': `${ORIGIN}/mcp/`}});
+  const f = io(h, {typed: made(), answers: ['n', 'n']});
+  await askMissing(f, [ACCESS, '@countinghouse/ch-access-two']);
+  assert.ok(bound(h) != null && bound(h, '@countinghouse/ch-access-two') != null);
+  assert.strictEqual(f.out.split('takes it at its client\'s next start').length - 1, 1, f.out);
+});
+
+// the Fable pass on L5a, F5: a gh login is only ever for GitHub's origin
+test('the store refuses an entry that pairs the gh login with another origin, at add and at read', () => {
+  const h = home();
+  assert.throws(() => store.bind(h, ACCESS, VAR, {origin: 'https://api.example.com', source: 'gh'}), /a gh login is only ever used for https:\/\/api\.githubcopilot\.com/);
+  fs.mkdirSync(path.join(h, 'credentials'), {recursive: true, mode: 0o700});
+  fs.writeFileSync(path.join(h, 'credentials', 'credentials.json'), JSON.stringify({v: 2, modules: {[ACCESS]: {[VAR]: {origin: 'https://api.example.com', source: 'gh'}}}}), {mode: 0o600});
+  assert.throws(() => store.readStore(h), /uses the gh login for https:\/\/api\.example\.com; it is only ever for https:\/\/api\.githubcopilot\.com/);
+});
+
+// the Fable pass on L5a, F2: where a key goes is said on standard error
+test('add says the variable and destination on standard error, never only on standard output', async () => {
+  const h = home();
+  const f = io(h, {typed: made()});
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0, f.err);
+  assert.match(f.err, /ch-access-github 1\.0\.0 declares one credential:\n {2}COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com/);
+  assert.match(f.err, /stored for ch-access-github: COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com/);
+  assert.ok(!/sent to/.test(f.out), f.out);
 });

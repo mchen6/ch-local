@@ -251,12 +251,19 @@ function realIo() {
     readHidden: (prompt) => require('../lib/hidden-input').readHidden(prompt),
     // standard input, read whole up to max bytes (credentials add --to: a
     // key piped in); more than max is cut there, and the caller refuses it
-    readStdin: (max) => new Promise((resolve, reject) => {
+    // at most `max` bytes, until the input ends; an open pipe that stays
+    // silent past timeoutMs is a TIMEOUT, never a wait forever (the
+    // Reviewer's high review of L5a, 4)
+    readStdin: (max, {timeoutMs = 30000} = {}) => new Promise((resolve, reject) => {
       const chunks = [];
       let size = 0;
+      const timer = setTimeout(() => {
+        process.stdin.destroy();
+        reject(Object.assign(new Error(`nothing ended standard input within ${timeoutMs / 1000} s`), {code: 'TIMEOUT'}));
+      }, timeoutMs);
       process.stdin.on('data', (c) => { if (size <= max) { chunks.push(c); size += c.length; } });
-      process.stdin.on('end', () => resolve(Buffer.concat(chunks).subarray(0, max).toString('utf8')));
-      process.stdin.on('error', reject);
+      process.stdin.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(chunks).subarray(0, max).toString('utf8')); });
+      process.stdin.on('error', (e) => { clearTimeout(timer); reject(e); });
     }),
     // Read when used: a directory removed under a shell makes process.cwd()
     // throw, and only start needs it (null: git runs wherever it is).

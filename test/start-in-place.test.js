@@ -1524,13 +1524,69 @@ test('a credential removed while running unloads the callers of its module, said
   try {
     await until(() => s.args() != null);
     require('../lib/credential-store').unbind(s.home, ACCESS);
-    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: restart your client';
+    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or restart your client';
     await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
     // a later change sends no second unload
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 1, JSON.stringify(s.requests));
     assert.strictEqual(s.history().filter((h) => h.notice === line).length, 1);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the Reviewer's high review of L5a, 3: a store that cannot be read for a
+// moment decides nothing; only a read that succeeds and differs unloads
+test('a credential store that cannot be read keeps what is loaded, says so once, and is read again', async () => {
+  const s = await running();
+  try {
+    await until(() => s.args() != null);
+    const file = path.join(s.home, 'credentials', 'credentials.json');
+    const good = fs.readFileSync(file);
+    fs.writeFileSync(file, '{not json');
+    await until(() => /the stored credentials could not be read/.test(s.f.err));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.ok(!s.requests.some((m) => m.type === 'unload'), JSON.stringify(s.requests));
+    fs.writeFileSync(file, good);
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.ok(!s.requests.some((m) => m.type === 'unload'), 'the good read matches: nothing unloaded');
+    assert.strictEqual(s.f.err.split('the stored credentials could not be read').length - 1, 1, s.f.err);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the Fable pass on L5a, F3: a binding present at start that got no slot
+// (gh gave nothing) keeps start's reason; it is never told "restart your
+// client" as if it were added since
+test('a gh binding gh gave no token for at start is not told to restart on a later change; it says how to provide it', async () => {
+  const s = await running({bound: 'gh'});
+  try {
+    await until(() => notices(s).some(([, t]) => /has no token from your gh login/.test(t)));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!notices(s).some(([, t]) => /was not started with/.test(t)), JSON.stringify(notices(s)));
+    assert.ok(!/was not started with/.test(s.f.err), s.f.err);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the Fable pass on L5a, F4: a credential unload the runtime refuses is
+// retried, then the sessions are told to restart now; never silent
+test('a credential unload the runtime refuses is retried, then told: restart your client now', async () => {
+  const s = await running({answer: (m) => (m.type === 'unload' ? {ok: false, code: 'BUSY'} : {ok: true})});
+  try {
+    await until(() => s.args() != null);
+    require('../lib/credential-store').unbind(s.home, ACCESS);
+    await until(() => s.requests.filter((m) => m.type === 'unload').length >= 2);
+    await until(() => notices(s).some(([, t]) => /could not be stopped in place after a credential was removed or changed: restart your client now to stop it/.test(t)));
   } finally {
     s.end();
     await s.done;

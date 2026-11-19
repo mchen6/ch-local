@@ -72,7 +72,7 @@ test('forStart: gh is asked once, and only when a binding\'s source is gh; its t
   assert.strictEqual(s.identities.get(ACCESS).source, 'gh');
   const none = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'gh is not logged in'})});
   assert.strictEqual(none.states.get(ACCESS).state, 'gh-gave-none');
-  assert.match(none.states.get(ACCESS).reason, /your gh login gave no token \(gh is not logged in\): run `gh auth login`, or `ch-local credentials add ch-access-github`/);
+  assert.match(none.states.get(ACCESS).reason, /your gh login gave no token at this start \(gh is not logged in\): run `gh auth login` and restart your client, or `ch-local credentials add ch-access-github`/);
   assert.ok(!('COUNTINGHOUSE_CREDENTIAL_1' in none.env));
 });
 

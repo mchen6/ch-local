@@ -19,6 +19,10 @@ entry after a Node upgrade. Every entry runs `<absolute node>
 No entry sets or forwards a credential: a module's credential is stored
 with `ch-local credentials add <module>`, bound to the one address the
 module declares, and a client's environment never supplies one.
+A session's own runtime starts from an allowlisted environment, never the
+client's whole one: `PATH`, the home and temporary directories, the locale
+and time zone, and `NODE_EXTRA_CA_CERTS`, plus each module's key in a slot
+of its own.
 Claude Desktop gets a note instead of an entry: its route is a `.mcpb` bundle
 that keeps the token in the OS keychain, not built yet.
 

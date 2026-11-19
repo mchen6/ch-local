@@ -194,12 +194,11 @@ test('a pack with a module missing from the module store is not loaded, and said
 // a planted slot name in the client's environment is never read as a key,
 // and a credential in the client's environment is never one (section 6.9)
 test('every inherited COUNTINGHOUSE_CREDENTIAL_* is removed before the slots; a client\'s own token variables are no credential', async () => {
-  const f = io(installedHome(), {env: {COUNTINGHOUSE_CREDENTIAL_1: 'planted-one', COUNTINGHOUSE_CREDENTIAL_7: 'planted-seven', GITHUB_TOKEN: 'from-the-client', OTHER: 'kept'}});
+  const f = io(installedHome(), {env: {COUNTINGHOUSE_CREDENTIAL_1: 'planted-one', COUNTINGHOUSE_CREDENTIAL_7: 'planted-seven', GITHUB_TOKEN: 'from-the-client'}});
   await start({passThrough: []}, f);
   const env = f.spawned[0].env;
   assert.strictEqual(env.COUNTINGHOUSE_CREDENTIAL_1, STORED);
   assert.ok(!('COUNTINGHOUSE_CREDENTIAL_7' in env), 'a planted slot name is gone');
-  assert.strictEqual(env.OTHER, 'kept');
   const named = Object.values(f.spawned[0].remoteCredentials.modules).flatMap((o) => Object.values(o).flatMap((v) => Object.keys(v)));
   assert.deepStrictEqual(named, [VAR], 'only the module\'s own declared variable, never a client variable');
 });
@@ -1094,4 +1093,38 @@ test('start in session mode: a runtime that ends during its restore never report
   assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_NO_ANSWER'})), 0, 'nor is no answer');
   assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_BAD_RESTORE'})), 1, 'an explicit refusal is');
   assert.strictEqual(await runWith((m, deliver) => deliver({id: m.id, ok: false, code: 'CONTROL_RESTORE_DONE'})), 1);
+});
+
+// the Reviewer's high review of L5a, 1: a runtime of its own starts from an
+// allowlist, never the client's whole environment
+test('a runtime of its own gets an allowlisted environment: no client credential of any name, whatever the modules declare', {skip: process.platform === 'win32' && 'the POSIX allowlist'}, async () => {
+  const f = io(installedHome(), {env: {PATH: '/usr/bin', HOME: '/home/dev', LANG: 'en_US.UTF-8', LC_ALL: 'C', TZ: 'UTC', TMPDIR: '/tmp',
+    NODE_EXTRA_CA_CERTS: '/etc/ca.pem', COUNTINGHOUSE_ACCEPTANCE: '1',
+    OPENAI_API_KEY: 'client-1', ANTHROPIC_API_KEY: 'client-2', GITHUB_TOKEN: 'client-3', GH_TOKEN: 'client-4', AWS_SECRET_ACCESS_KEY: 'client-5', SOME_OTHER: 'client-6', NODE_OPTIONS: '--require /tmp/x.js'}});
+  await start({passThrough: []}, f);
+  const {env} = f.spawned[0];
+  assert.deepStrictEqual(Object.keys(env).sort(), ['COUNTINGHOUSE_ACCEPTANCE', 'COUNTINGHOUSE_CREDENTIAL_1', 'HOME', 'LANG', 'LC_ALL', 'NODE_EXTRA_CA_CERTS', 'PATH', 'TMPDIR', 'TZ']);
+  assert.ok(!Object.values(env).some((v) => /^client-/.test(v)));
+});
+
+// the Reviewer's high review of L5a, 6: the "sends" line only for what loads
+test('start says where a key goes only for a module it loads this start', async () => {
+  const home = installedHome({other: true});
+  bindOther(home);
+  assert.strictEqual(await main(['settings', 'set', 'pack.other', 'off'], Object.assign(io(home), {stdout: {write: () => {}}})), 0);
+  const f = io(home);
+  await start({passThrough: []}, f);
+  assert.match(f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
+  assert.ok(!/sends OTHER_TOKEN/.test(f.err), f.err);
+  assert.ok('COUNTINGHOUSE_CREDENTIAL_2' in f.spawned[0].env, 'its slot is still given, for a later turn-on');
+});
+
+// #413 section 10: a token a client's configuration still sets is not read,
+// said once
+test('a COUNTINGHOUSE_GITHUB_TOKEN in the client\'s environment is said to be no longer read, once, and never used', async () => {
+  const f = io(installedHome({bound: null}), {env: {COUNTINGHOUSE_GITHUB_TOKEN: 'from-the-client'}});
+  await start({passThrough: []}, f);
+  assert.strictEqual(f.err.split('COUNTINGHOUSE_GITHUB_TOKEN in this client\'s environment is no longer read: run `ch-local credentials add ch-access-github`').length - 1, 1, f.err);
+  assert.ok(!Object.values(f.spawned[0].env).includes('from-the-client'));
+  assert.ok(!f.err.includes('from-the-client'));
 });

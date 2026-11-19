@@ -446,3 +446,17 @@ test('shim.json is 0600 whatever the umask', {skip: process.platform === 'win32'
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// the Reviewer's high review of L5a, 1, and the Fable pass, F1: a runtime of
+// its own starts from an allowlist, compared case-insensitively on Windows,
+// so neither a mixed-case token name nor a planted lower-case slot name
+// passes
+test('runtimeEnv: the allowlist only; on win32 by case-insensitive name, never a mixed-case token or a planted slot', () => {
+  const env = {Path: 'C:\\bin', USERPROFILE: 'C:\\Users\\dev', SystemRoot: 'C:\\Windows', LC_ALL: 'C', TZ: 'UTC', NODE_EXTRA_CA_CERTS: 'C:\\ca.pem',
+    Github_Token: 'client-1', countinghouse_credential_1: 'planted', OPENAI_API_KEY: 'client-2', NODE_OPTIONS: '--require x'};
+  const out = shimConfig.runtimeEnv(env, 'win32');
+  assert.deepStrictEqual(Object.keys(out).sort(), ['LC_ALL', 'NODE_EXTRA_CA_CERTS', 'PATH', 'SystemRoot', 'TZ', 'USERPROFILE']);
+  assert.ok(!Object.values(out).some((v) => v === 'client-1' || v === 'client-2' || v === 'planted'));
+  const posix = shimConfig.runtimeEnv({PATH: '/bin', HOME: '/h', github_token: 'x', COUNTINGHOUSE_TEST_FLAG: '1', CH_TEST_LATE_LOADS: '1', AWS_SECRET_ACCESS_KEY: 'y'}, 'linux');
+  assert.deepStrictEqual(Object.keys(posix).sort(), ['CH_TEST_LATE_LOADS', 'COUNTINGHOUSE_TEST_FLAG', 'HOME', 'PATH']);
+});
