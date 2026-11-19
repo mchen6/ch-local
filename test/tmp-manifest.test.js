@@ -223,13 +223,18 @@ test('the runner: a timed-out file whose child holds its pipes still finishes', 
       return new Promise(() => {});
     });`);
   const started = Date.now();
-  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), file], {cwd: ROOT, encoding: 'utf8', timeout: 60000,
-    env: envOf({CH_TEST_FILE_TIMEOUT_MS: '1500', CH_TEST_GRACE_MS: '500', CI: ''})});
-  assert.strictEqual(r.status, 1, r.stdout + r.stderr);
-  assert.match(r.stdout, /FAILED .*spawner\.test\.js: timed out/);
-  assert.ok(Date.now() - started < 30000, 'the runner did not wait on the held pipes');
-  // (the child it started, ended here: never left on the machine)
-  try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch (e) { /* gone */ }
+  try {
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), file], {cwd: ROOT, encoding: 'utf8', timeout: 60000,
+      env: envOf({CH_TEST_FILE_TIMEOUT_MS: '1500', CH_TEST_GRACE_MS: '500', CI: ''})});
+    assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /FAILED .*spawner\.test\.js: timed out/);
+    assert.ok(Date.now() - started < 30000, 'the runner did not wait on the held pipes');
+  } finally {
+    // (the child it started, ended here whatever failed: never left on the
+    // machine)
+    try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch (e) { /* gone */ }
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
 });
 
 test('a manifest with no first line: removed when its pid is gone and it names nothing; one naming directories it cannot prove is left', {skip: WIN32}, () => {

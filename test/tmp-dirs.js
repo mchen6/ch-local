@@ -37,9 +37,12 @@
 // runs there (the Reviewer's cut on #97: the leak fixed here was the Linux
 // machine's).
 //
-// Left as it is (the residual, the Reviewer's cut on #97): a detached daemon
-// a killed file started outlives the sweep of the home it used. A leaked
-// daemon stays the test's own teardown bug.
+// Left as it is (the residual, the Reviewer's cut on #97): only the file's
+// own pid is ended, so anything a killed file started (a server, a session
+// runtime, detached or not) outlives it, and the sweep may remove a home it
+// still uses. A leaked child stays the test's own teardown bug. A runner
+// killed outright (SIGKILL) leaves its files running: an outer kill of the
+// whole group (systemd's scope, `timeout`, a terminal's Ctrl-C) reaches them.
 //
 // Why: tests made tens of thousands of ch-* directories on a shared /tmp
 // and left them, until it ran out of inodes (the Reviewer, 11-19).
@@ -78,9 +81,14 @@ const sameWhere = (a, b) => {
   return a != null && keys.length > 0 && keys.every((k) => typeof a[k] === 'string' && a[k] !== '' && b[k] != null && a[k] === b[k]);
 };
 // whether a process is gone: signal 0 answers ESRCH (EPERM: it lives, as
-// another user's)
+// another user's), or it is a zombie, dead and not yet reaped (Linux)
+const zombie = (pid) => {
+  const raw = read(`/proc/${pid}/stat`);
+  return raw != null && raw.slice(raw.lastIndexOf(')') + 2, raw.lastIndexOf(')') + 3) === 'Z';
+};
 const gone = (pid) => {
-  try { process.kill(pid, 0); return false; } catch (err) { return err.code === 'ESRCH'; }
+  try { process.kill(pid, 0); } catch (err) { return err.code === 'ESRCH'; }
+  return zombie(pid);
 };
 const uid = typeof process.getuid === 'function' ? process.getuid() : null;
 // this user's (a bigint stat's uid is a BigInt)
@@ -209,8 +217,8 @@ if (global[KEY] == null) {
 
   // removes what this process made; a directory still in use (Windows, a
   // child still exiting) is tried for about 5 s, and one that cannot be
-  // removed is left, its manifest with it, for a later sweep (scripts/test.js
-  // then names it)
+  // removed is left, its manifest with it, for a later sweep (POSIX; on
+  // Windows there is none, and scripts/test.js names what is left)
   const removeMade = () => {
     let all = true;
     for (const dir of made) {
