@@ -1,5 +1,5 @@
 {
-  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json moduleMessages, at countinghouse 269ae6ac (#449, M5b: an unload may carry reason off, or calls with because, for the runtime's own text): copied, never edited here",
+  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json moduleMessages, at countinghouse 7ee831a8 (#455, M6: packMessages gone; a notice carrying a pack-form field refused, old-field): copied, never edited here",
   "moduleMessages": {
     "rule": "load names one top-level module (name) and reload one or more (names), each by its package name, with dirs: the absolute directory of each module of their closures, by package name, 1 to 64; credentials (optional) is the per-module allowance of the version 2 --remoteCredentials file, each environment name a slot, each package one dirs names. unload names one top-level module; its notice is told once, as given, on the next result of any tool, unless it carries reason: \"off\" (the module turned off), the runtime serves the settings tool (the single-identity profile with --settingsFile) and its settings file holds enabled.<name> false, when it tells every session its own off text instead: what went with it (the callers loaded at that unload; one unloaded before it is told by its own unload) and both ways back. With reason: \"calls\" and because: <the package it went with>, on such a runtime whose settings file holds enabled.<because> false, it tells \"<name> unloaded: it calls <because>, which is turned off for all your sessions (turning <because> on brings it back).\" reason and because are optional and not checked: any other value, or none, is the notice as given. A module-form message carries no scenario, pack, global or remoteCredentials. notice: module a package name or null, and text. reread: what is module-settings. module-stopped (the runtime to ch-local, unasked, no id): name, code, when start or restart",
     "packagePattern": "^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$",
@@ -241,6 +241,17 @@
             "@countinghouse/ch-pack-example": "/home/example/.countinghouse/module-store/@countinghouse/ch-pack-example/1.0.0"
           },
           "remoteCredentials": "/home/example/.countinghouse/run/start-1/remote-credentials.json"
+        }
+      },
+      {
+        "why": "a notice with a leftover pack field",
+        "reason": "old-field",
+        "message": {
+          "id": 20,
+          "type": "notice",
+          "module": null,
+          "text": "x",
+          "pack": "example"
         }
       },
       {
