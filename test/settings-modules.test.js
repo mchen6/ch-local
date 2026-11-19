@@ -56,7 +56,18 @@ async function installed({reader = true, ceiling = null} = {}) {
   if (reader) fs.writeFileSync(path.join(lib, 'module-settings.js'), READER);
   if (ceiling != null) {
     require('../lib/ceiling').resetForTests();
-    fs.writeFileSync(path.join(lib, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)})};\n`);
+    // the runtime reader's shape (countinghouse lib/settings-ceiling.js:
+    // moduleSettings {conversation, byModule: {pkg: {setting: rule}}}) and
+    // its own moduleSettingRule, as written there
+    fs.writeFileSync(path.join(lib, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)}),
+  moduleSettingRule: (c, pkg, setting) => {
+    const m = (c != null && c.state === 'trusted' && c.ceiling != null) ? c.ceiling.moduleSettings : null;
+    if (m == null) return null;
+    const own = (m.byModule[pkg] != null) ? m.byModule[pkg][setting] : undefined;
+    if (own != null && Object.prototype.hasOwnProperty.call(own, 'fixed')) return own;
+    if (m.conversation === false) return {conversation: false};
+    return own != null ? own : null;
+  }};\n`);
   }
   return home;
 }
@@ -139,7 +150,7 @@ test('a confirm: true setting asks at a terminal, with no --yes, and is refused 
 });
 
 test('the ceiling: a fixed value refuses every change; a ceiling confirm asks', async () => {
-  const fixed = await installed({ceiling: {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], moduleSettings: {[`${SCENARIO}.units`]: {fixed: 'metric'}, [`${SCENARIO}.note`]: {confirm: true}}}}});
+  const fixed = await installed({ceiling: {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], moduleSettings: {conversation: true, byModule: {[SCENARIO]: {units: {fixed: 'metric'}, note: {confirm: true}}}}}}});
   const r = await cli(fixed, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'imperial']);
   assert.strictEqual(r.code, 2);
   assert.match(r.io.err, /units for ch-pack-ci-failure-triage is fixed by this machine's operator ceiling; nothing was changed/);
@@ -234,7 +245,7 @@ test('outside edits: a terminal "on" that removes a leftover pack.* is not an ou
 
 // the medium on L3, 8: a reset never changes a value the ceiling fixes
 test('settings reset <m>[.<setting>] is refused for a setting the ceiling fixes', async () => {
-  const home = await installed({ceiling: {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], moduleSettings: {[`${SCENARIO}.units`]: {fixed: 'metric'}}}}});
+  const home = await installed({ceiling: {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], moduleSettings: {conversation: true, byModule: {[SCENARIO]: {units: {fixed: 'metric'}}}}}}});
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {[STORED('units')]: 'metric', [STORED('note')]: 'x'}}));
   for (const target of ['ch-pack-ci-failure-triage.units', 'ch-pack-ci-failure-triage']) {
     const r = await cli(home, ['settings', 'reset', target]);
@@ -254,4 +265,26 @@ test('the history cut counts code points: a surrogate pair is never split, and 6
   assert.strictEqual(cut.newSha256, crypto.createHash('sha256').update(JSON.stringify(v), 'utf8').digest('hex'));
   assert.deepStrictEqual(historyValue('new', `${'a'.repeat(63)}😀`), {new: `${'a'.repeat(63)}😀`}, '64 code points: whole');
   assert.deepStrictEqual(historyValue('new', 12345), {new: 12345}, 'only a string is cut');
+});
+
+// the Reviewer's high review of #90, 2: an untrusted ceiling fails closed
+test('under a ceiling that cannot be trusted, no module setting is changed, set or reset, saying why', async () => {
+  const home = await installed({ceiling: {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'it is not JSON'}});
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {[STORED('note')]: 'x'}}));
+  const set = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'imperial']);
+  assert.strictEqual(set.code, 2);
+  assert.match(set.io.err, /cannot be trusted \(it is not JSON\), so no module setting is changed/);
+  const reset = await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage']);
+  assert.strictEqual(reset.code, 2);
+  assert.deepStrictEqual(fileValues(home), {[STORED('note')]: 'x'});
+});
+
+// the Reviewer's high review of #90, 6: an unreadable file is said
+test('settings modules with a settings file that is not valid says so, never lists defaults as current', async () => {
+  const home = await installed();
+  fs.writeFileSync(path.join(home, 'settings.json'), '{not json');
+  const r = await cli(home, ['settings', 'modules']);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.io.err, /is not JSON; ch-local start refuses to start until it is fixed/);
+  assert.strictEqual(r.io.out, '');
 });
