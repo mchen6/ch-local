@@ -302,6 +302,26 @@ test('packs from different pins: one predicate for add-pack, install and remove-
   assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0'), b: {unreleased: 'd'}}), null), true, 'remove-pack: two pins');
 });
 
+// The medium review of the round, 4: a module the pre-lock table kept (not
+// read) that the lock now places is read then, as add-pack does: decided
+// again, not refused.
+test('install: a home that changed before the lock places what it now needs', async () => {
+  const table = require('../lib/pack-table');
+  const h = await devHome(release({versions: {[REDACT]: '0.1.1'}}));
+  const real = table.askAll;
+  table.askAll = async (...args) => {
+    const got = await real(...args);
+    // meanwhile, the pack that kept the newer ch-step-redact goes
+    assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, fakeIo({env: h.env})), 0);
+    return got;
+  };
+  let got;
+  try { got = await h.inst(release({versions: {[REDACT]: '0.1.0'}})); } finally { table.askAll = real; }
+  assert.strictEqual(got.code, 0, got.io.err);
+  assert.strictEqual(record(h.home).modules[REDACT].version, '0.1.0');
+  assert.ok(placed(h.home, REDACT, '0.1.0'));
+});
+
 // The reviewer's high review of #94, 2: unknown is never "no callers".
 test('a breaking update whose callers cannot be read is refused, never taken for uncalled', async (t) => {
   const r1 = release({versions: {[REDACT]: '0.1.0'}});
