@@ -297,7 +297,17 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     mark('installed');
     if (!check('install into a clean home', code === 0, `exit ${code}`)) return 1;
 
-    const off = spawnSync(node, [launcher, 'start', '--stdio', '--moduleSandbox', 'off'], {env: launcherEnv(home, {COUNTINGHOUSE_GITHUB_TOKEN: token}), input: '', encoding: 'utf8', timeout: 30000});
+    // The run's token is ch-access-github's credential, stored as a user
+    // with no terminal would (#413 sections 6.2 and 6.9; L5a): piped on
+    // standard input only, to the origin the module declares. It is never an
+    // argument, never in an environment, never echoed or logged; the
+    // command's own output names no value.
+    const added = spawnSync(node, [launcher, 'credentials', 'add', 'ch-access-github', '--to', GITHUB],
+      {env: launcherEnv(home), input: `${token}\n`, encoding: 'utf8', timeout: 30000});
+    if (!check('the run\'s token stored for ch-access-github, piped on standard input', added.status === 0 && !String(added.stdout + added.stderr).includes(token),
+      `exit ${added.status}: ${String(added.stderr).split(token).join('<token>').slice(-500)}`)) return 1;
+
+    const off = spawnSync(node, [launcher, 'start', '--stdio', '--moduleSandbox', 'off'], {env: launcherEnv(home), input: '', encoding: 'utf8', timeout: 30000});
     offStderr = String(off.stderr);
     check('start --moduleSandbox off is refused and starts no runtime', off.status === 2 && /--moduleSandbox off is not allowed/.test(off.stderr) && !/countinghouse serves MCP/.test(off.stderr), off.stderr);
 
@@ -317,7 +327,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     fs.writeFileSync(path.join(repo, '.git', 'config'), `[remote "origin"]\n\turl = https://github.com/${RECORDED_REPO}.git\n`);
     // In a process group of its own, so the runtime it starts ends with it (stopTree).
     child = spawn(node, [launcher, 'start', '--stdio'], {cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
-      env: launcherEnv(home, {COUNTINGHOUSE_GITHUB_TOKEN: token, CH_LOCAL_REMOTE_MAP: `${GITHUB}=http://127.0.0.1:${standIn.port}`, COUNTINGHOUSE_ACCEPTANCE: '1'})});
+      env: launcherEnv(home, {CH_LOCAL_REMOTE_MAP: `${GITHUB}=http://127.0.0.1:${standIn.port}`, COUNTINGHOUSE_ACCEPTANCE: '1'})});
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (d) => {
       stderr += d;
@@ -367,8 +377,9 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     child.stdin.end();
     const code2 = await Promise.race([exited, new Promise((r) => setTimeout(() => r('timeout'), 30000))]);
     check('the server exits when the client closes stdin', code2 !== 'timeout', String(code2));
+    // the store holds it (readable by this user only); no other file does
     const leaks = filesContaining(home, token);
-    check('the token is in no file under the home', leaks.length === 0, leaks.join(', '));
+    check('the token is in no file under the home but the credential store', leaks.length === 1 && leaks[0] === path.join('credentials', 'credentials.json'), leaks.join(', '));
     const usageFiles = fs.existsSync(path.join(home, 'store', 'usage')) ? fs.readdirSync(path.join(home, 'store', 'usage'), {recursive: true}).filter((f) => String(f).endsWith('.jsonl')) : [];
     const records = usageFiles.flatMap((f) => fs.readFileSync(path.join(home, 'store', 'usage', String(f)), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
     const serverRecords = records.filter((r) => r.server != null && r.bytesIn !== undefined);
