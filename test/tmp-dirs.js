@@ -143,14 +143,20 @@ const linesOf = (file) => {
 };
 // a listed directory removed only when it is still the one listed: this
 // user's, its device and inode, and a birth time both sides can tell and
-// the same -> whether nothing of it is left to keep the manifest for
+// the same -> whether nothing of it is left to keep the manifest for: true
+// once it is gone or proven another directory; false while it is there and
+// cannot be proven either way (no birth time on one side), so the manifest
+// is kept and the directory never orphaned (the medium on #97's third
+// round, 5)
 const removeListed = (e, under) => {
   if (!ours(e.dir, under)) return true;
-  if (typeof e.dev !== 'string' || typeof e.ino !== 'string' || typeof e.born !== 'string') return true;
   let st;
   try { st = lstatBig(e.dir); } catch (err) { return err.code === 'ENOENT'; }
+  if (!st.isDirectory() || !mineSt(st) || typeof e.dev !== 'string' || typeof e.ino !== 'string') return !st.isDirectory() || !mineSt(st);
+  if (String(st.dev) !== e.dev || String(st.ino) !== e.ino) return true;
   const born = bornOf(st);
-  if (!st.isDirectory() || !mineSt(st) || String(st.dev) !== e.dev || String(st.ino) !== e.ino || born == null || born !== e.born) return true;
+  if (typeof e.born !== 'string' || born == null) return false;
+  if (born !== e.born) return true;
   // (by path: a swap between the check and the removal is not guarded
   // against, and needn't be for a test's own directories)
   try { fs.rmSync(e.dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); return true; } catch (err) { return err.code === 'ENOENT'; }
@@ -188,7 +194,9 @@ function sweepStale(dir = os.tmpdir()) {
       // one killed before its first line names nothing: removed (its pid
       // gone); one of an earlier format lists directories it cannot prove:
       // left (the Reviewer's second high review of #97, 7)
-      if (dirs.length === 0 && pids.length === 0) { try { fs.rmSync(at, {recursive: true, force: true}); swept += 1; } catch (err) { /* next time */ } }
+      // (and a minute old: a writer in another pid namespace, its pid ESRCH
+      // here, may be between making it and writing its first line)
+      if (dirs.length === 0 && pids.length === 0 && Date.now() - st.mtimeMs > 60000) { try { fs.rmSync(at, {recursive: true, force: true}); swept += 1; } catch (err) { /* next time */ } }
       continue;
     }
     if (meta.pid !== pid || !sameWhere(meta.where, here) || typeof meta.tmpdir !== 'string') continue;
@@ -237,19 +245,23 @@ if (global[KEY] == null) {
   fs.promises.mkdtemp = async function(...args) { return keep(await promiseMade.apply(fs.promises, args)); };
 
   // A detached child (a daemon in a session of its own: handoff-io's,
-  // start's session runtimes) outlives a group kill: its pid and start time
-  // recorded, so a sweep ends it before removing what it uses (Linux; the
-  // Reviewer's second high review of #97, 4)
-  const rawSpawn = childProcess.spawn;
-  childProcess.spawn = function(...args) {
-    const child = rawSpawn.apply(childProcess, args);
-    const opts = args.find((a, i) => i > 0 && a != null && typeof a === 'object' && !Array.isArray(a));
-    if (opts != null && opts.detached === true && child.pid != null) {
+  // start's session runtimes started in this process) outlives a group kill:
+  // its pid and start time recorded, so a sweep ends it before removing what
+  // it uses (Linux; the Reviewer's second high review of #97, 4). spawn and
+  // fork, the two that take `detached`; a daemon a grandchild process starts
+  // (one without this preload) is not recorded.
+  const recordDetached = (child, opts) => {
+    if (opts != null && opts.detached === true && child != null && child.pid != null) {
       const st = procStat(child.pid);
       if (st != null) line({pid: child.pid, start: st.start});
     }
     return child;
   };
+  const optsOf = (args) => args.find((a, i) => i > 0 && a != null && typeof a === 'object' && !Array.isArray(a));
+  const rawSpawn = childProcess.spawn;
+  childProcess.spawn = function(...args) { return recordDetached(rawSpawn.apply(childProcess, args), optsOf(args)); };
+  const rawFork = childProcess.fork;
+  childProcess.fork = function(...args) { return recordDetached(rawFork.apply(childProcess, args), optsOf(args)); };
 
   // When the runner that started this file is gone (killed outright), the
   // file ends itself, its directories with it (a parent-death check: the

@@ -6,17 +6,14 @@
 // review of #97, 8).
 const KEY = Symbol.for('ch-local.test.running');
 module.exports = async function* running(source) {
-  const now = new Map();   // nesting -> name
+  const now = new Map();   // nesting + name -> name (siblings run at once: each its own)
   global[KEY] = now;
   for await (const event of source) {
     const d = event.data || {};
     // (test:dequeue: as a test begins; a file run as `node file` reports
     // test:start only when the test is done)
-    if (event.type === 'test:dequeue') {
-      for (const n of [...now.keys()]) if (n >= d.nesting) now.delete(n);
-      now.set(d.nesting, d.name);
-    } else if (event.type === 'test:pass' || event.type === 'test:fail') {
-      now.delete(d.nesting);
-    }
+    const key = `${d.nesting}\0${d.name}`;
+    if (event.type === 'test:dequeue') now.set(key, d.name);
+    else if (event.type === 'test:pass' || event.type === 'test:fail') now.delete(key);
   }
 };

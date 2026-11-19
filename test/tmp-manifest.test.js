@@ -96,33 +96,44 @@ test('a process killed by a signal mid-file: its manifest names what it made, an
   if (canTell) {
     assert.ok(dirs.every((d) => !fs.existsSync(d)), 'removed by the sweep');
     assert.ok(!fs.existsSync(manifest), 'and the manifest with them');
+  } else {
+    // (nothing it cannot prove is removed, and its manifest is kept)
+    assert.ok(dirs.every((d) => fs.existsSync(d)) && fs.existsSync(manifest));
+    for (const d of [...dirs, manifest]) fs.rmSync(d, {recursive: true, force: true});
   }
 });
 
 test('a dead pid\'s manifest is swept: its listed ch-* directories that are still the ones listed; nothing else it names is touched', () => {
   const mine = fs.mkdtempSync(path.join(PRIVATE, 'ch-mine-'));
   const reborn = fs.mkdtempSync(path.join(PRIVATE, 'ch-reborn-'));
-  const unnamed = fs.mkdtempSync(path.join(PRIVATE, 'ch-unnamed-'));
   const outside = fs.mkdtempSync(path.join(PRIVATE, 'other-'));
-  // reborn: listed, then made again (another directory between, so no
-  // inode is reused at once; its birth time differs where there is one)
-  const was = entry(reborn);
-  fs.rmSync(reborn, {recursive: true});
-  const between = fs.mkdtempSync(path.join(PRIVATE, 'between-'));
-  fs.mkdirSync(reborn);
-  const now = entry(reborn);
-  const at = staleManifest(DEAD, [JSON.stringify(entry(mine)), JSON.stringify(was), JSON.stringify(entry(outside)),
-    JSON.stringify({dir: unnamed}), JSON.stringify({...entry(mine), dir: path.join(PRIVATE, '..', 'ch-elsewhere')}), '{"dir": "cut sho']);
-  freshSweep();
-  if (canTell) assert.ok(!fs.existsSync(mine), 'the listed ch-* directory removed');
-  assert.ok(fs.existsSync(reborn), 'a directory made again at a listed path is no longer the one listed: left');
-  assert.notStrictEqual(now, null);
-  assert.ok(fs.existsSync(unnamed), 'a line with no device or inode: never removed');
-  assert.ok(fs.existsSync(outside), 'a listed directory that is no ch-* one is left');
-  if (canTell) assert.ok(!fs.existsSync(at), 'the manifest removed');
-  fs.rmSync(at, {recursive: true, force: true});
-  fs.rmSync(mine, {recursive: true, force: true});
-  for (const d of [reborn, unnamed, outside, between]) fs.rmSync(d, {recursive: true, force: true});
+  const unnamed = fs.mkdtempSync(path.join(PRIVATE, 'ch-unnamed-'));
+  const made = [mine, reborn, outside, unnamed];
+  const ats = [];
+  try {
+    // reborn: listed, then made again (another directory between, so no
+    // inode is reused at once; its birth time differs where there is one)
+    const was = entry(reborn);
+    fs.rmSync(reborn, {recursive: true});
+    made.push(fs.mkdtempSync(path.join(PRIVATE, 'between-')));
+    fs.mkdirSync(reborn);
+    const now = entry(reborn);
+    const at = staleManifest(DEAD, [JSON.stringify(entry(mine)), JSON.stringify(was), JSON.stringify(entry(outside)),
+      JSON.stringify({...entry(mine), dir: path.join(PRIVATE, '..', 'ch-elsewhere')}), '{"dir": "cut sho']);
+    // a line that names a directory with no device or inode: it cannot be
+    // proven, so it is never removed, and its manifest is kept
+    const unproven = staleManifest(DEAD, [JSON.stringify({dir: unnamed})]);
+    ats.push(at, unproven);
+    freshSweep();
+    if (canTell) assert.ok(!fs.existsSync(mine), 'the listed ch-* directory removed');
+    assert.ok(fs.existsSync(reborn), 'a directory made again at a listed path is no longer the one listed: left');
+    assert.ok(now.ino !== was.ino || now.born !== was.born || !canTell, 'the identity tells them apart');
+    assert.ok(fs.existsSync(outside), 'a listed directory that is no ch-* one is left');
+    if (canTell) assert.ok(!fs.existsSync(at), 'the manifest removed');
+    assert.ok(fs.existsSync(unnamed) && fs.existsSync(unproven), 'an unproven line: the directory left, its manifest kept');
+  } finally {
+    for (const d of [...made, ...ats]) fs.rmSync(d, {recursive: true, force: true});
+  }
 });
 
 test('a manifest from another boot or pid namespace, or with no where, is left alone', () => {
@@ -158,7 +169,9 @@ function hangingFile() {
   return file;
 }
 
-test('the runner: a file past its time is ended, FAILED as timed out, and what it made is swept', () => {
+// (where a birth time cannot be told, a sweep proves nothing and removes
+// nothing: these cases need one)
+test('the runner: a file past its time is ended, FAILED as timed out, and what it made is swept', {skip: !canTell && 'no birth time here'}, () => {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), hangingFile()], {cwd: ROOT, encoding: 'utf8', timeout: 60000,
     env: envOf({CH_TEST_FILE_TIMEOUT_MS: '1500', CH_TEST_GRACE_MS: '500', CI: ''})});
   assert.strictEqual(r.status, 1, r.stdout + r.stderr);
@@ -169,7 +182,7 @@ test('the runner: a file past its time is ended, FAILED as timed out, and what i
   assert.deepStrictEqual(manifests(), [], 'and its manifest');
 });
 
-test('the runner sent SIGTERM ends its files, sweeps what they made, and ends by that signal', async () => {
+test('the runner sent SIGTERM ends its files, sweeps what they made, and ends by that signal', {skip: !canTell && process.platform !== 'win32' && 'no birth time here'}, async () => {
   const runner = spawn(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), hangingFile()], {cwd: ROOT, env: envOf({CH_TEST_GRACE_MS: '500'}), stdio: 'ignore'});
   // (until its manifest lists it: a directory is made a moment before its
   // line is written, and one killed in between was never recorded)
@@ -195,7 +208,7 @@ test('the runner sent SIGTERM ends its files, sweeps what they made, and ends by
 // keeps the runner waiting nor outlives the file: the file's whole process
 // group (the whole tree on Windows) is ended (the medium on #97's second
 // round, 1 and 2)
-test('the runner: a timed-out file\'s child that holds its pipes is ended with it, and the runner still finishes', () => {
+test('the runner: a timed-out file\'s child that holds its pipes is ended with it, and the runner still finishes', {skip: !canTell && 'no birth time here'}, () => {
   const dir = fs.mkdtempSync(path.join(PRIVATE, 'fixture-'));
   const pidFile = path.join(dir, 'grandchild.pid');
   const file = path.join(dir, 'spawner.test.js');
@@ -221,13 +234,20 @@ test('the runner: a timed-out file\'s child that holds its pipes is ended with i
 
 test('a manifest with no first line: removed when its pid is gone and it names nothing; one naming directories it cannot prove is left', () => {
   const empty = path.join(PRIVATE, `.ch-local-tmp-${DEAD}-empty${process.pid}`);
+  const fresh = path.join(PRIVATE, `.ch-local-tmp-${DEAD}-fresh${process.pid}`);
   const older = path.join(PRIVATE, `.ch-local-tmp-${DEAD}-older${process.pid}`);
   const kept = fs.mkdtempSync(path.join(PRIVATE, 'ch-older-'));
   fs.mkdirSync(empty);
+  fs.mkdirSync(fresh);
+  // (a minute old: one younger may be a writer between its two steps)
+  const old = new Date(Date.now() - 120000);
+  fs.utimesSync(empty, old, old);
   fs.mkdirSync(older);
   fs.writeFileSync(path.join(older, 'dirs.jsonl'), JSON.stringify(entry(kept)) + '\n');
   freshSweep();
-  assert.ok(!fs.existsSync(empty), 'the empty one removed');
+  assert.ok(!fs.existsSync(empty), 'the empty one, a minute old, removed');
+  assert.ok(fs.existsSync(fresh), 'an empty one just made: left');
+  fs.rmSync(fresh, {recursive: true, force: true});
   assert.ok(fs.existsSync(older) && fs.existsSync(kept), 'the earlier format left, and what it names');
   for (const d of [older, kept]) fs.rmSync(d, {recursive: true, force: true});
 });
@@ -245,16 +265,22 @@ test('a detached daemon a killed file started is ended by the sweep before what 
   const c = spawn(process.execPath, ['--require', TMP_DIRS, '-e', script], {env: envOf(), stdio: ['ignore', 'pipe', 'inherit']});
   await dirsOf(c);
   const daemon = Number(fs.readFileSync(pidFile, 'utf8'));
-  c.kill('SIGKILL');
-  await ended(c);
-  let alive = true;
-  try { process.kill(daemon, 0); } catch (e) { alive = false; }
-  assert.strictEqual(alive, true, 'the daemon outlived its file');
-  freshSweep();
-  for (const until = Date.now() + 5000; alive && Date.now() < until;) { try { process.kill(daemon, 0); await new Promise((r) => setTimeout(r, 50)); } catch (e) { alive = false; } }
-  assert.strictEqual(alive, false, 'ended by the sweep');
-  fs.rmSync(pidFile, {force: true});
-  for (const n of chDirs()) if (n.startsWith('ch-daemonhome-')) fs.rmSync(path.join(PRIVATE, n), {recursive: true, force: true});
+  try {
+    c.kill('SIGKILL');
+    await ended(c);
+    let alive = true;
+    try { process.kill(daemon, 0); } catch (e) { alive = false; }
+    assert.strictEqual(alive, true, 'the daemon outlived its file');
+    freshSweep();
+    for (const until = Date.now() + 5000; alive && Date.now() < until;) { try { process.kill(daemon, 0); await new Promise((r) => setTimeout(r, 50)); } catch (e) { alive = false; } }
+    assert.strictEqual(alive, false, 'ended by the sweep');
+  } finally {
+    // (never a daemon left on the machine, whatever failed)
+    try { process.kill(daemon, 'SIGKILL'); } catch (e) { /* gone */ }
+    fs.rmSync(pidFile, {force: true});
+    for (const n of chDirs()) if (n.startsWith('ch-daemonhome-') || n.startsWith('ch-child-')) fs.rmSync(path.join(PRIVATE, n), {recursive: true, force: true});
+    for (const n of manifests()) fs.rmSync(path.join(PRIVATE, n), {recursive: true, force: true});
+  }
 });
 
 // The runner killed outright (SIGKILL, an OOM kill: no handler runs): its

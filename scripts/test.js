@@ -28,6 +28,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
+const {pathToFileURL} = require('node:url');
 
 const root = path.resolve(__dirname, '..');
 // the temporary directory the files are handed (theirs is the runner's)
@@ -37,8 +38,9 @@ const {PREFIX, MANIFEST_PREFIX, sweepStale} = require('../test/tmp-dirs');
 const FILE_TIMEOUT_MS = Number(process.env.CH_TEST_FILE_TIMEOUT_MS) > 0 ? Number(process.env.CH_TEST_FILE_TIMEOUT_MS) : 15 * 60 * 1000;
 // the files that run a whole release or a client end to end
 const LONG_FILES = new Set(['acceptance.test.js', 'dogfood.test.js']);
-// (within CI's 30-minute job: the Reviewer's second high review of #97, 8)
-const LONG_TIMEOUT_MS = Math.max(FILE_TIMEOUT_MS, 25 * 60 * 1000);
+// (within CI's 30-minute job: the Reviewer's second high review of #97, 8;
+// CH_TEST_LONG_TIMEOUT_MS for a job that allows more)
+const LONG_TIMEOUT_MS = Number(process.env.CH_TEST_LONG_TIMEOUT_MS) > 0 ? Number(process.env.CH_TEST_LONG_TIMEOUT_MS) : Math.max(FILE_TIMEOUT_MS, 25 * 60 * 1000);
 const GRACE_MS = Number(process.env.CH_TEST_GRACE_MS) > 0 ? Number(process.env.CH_TEST_GRACE_MS) : 10 * 1000;
 const DEFAULT_CONCURRENCY = Number(process.env.CH_TEST_CONCURRENCY) > 0 ? Number(process.env.CH_TEST_CONCURRENCY)
   : Math.max(1, (typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length) - 1);
@@ -66,9 +68,25 @@ const files = named.length > 0 ? named
 // (beside the spec reporter, scripts/test-running.js keeps the test running
 // now, for the watchdog to have named)
 const reporter = flags.some((f) => f.startsWith('--test-reporter')) ? []
-  : ['--test-reporter=spec', '--test-reporter-destination=stdout', `--test-reporter=${path.join(__dirname, 'test-running.js')}`, '--test-reporter-destination=stderr'];
+  // (a file URL: on Windows a bare C:\ path reads as a URL scheme to the
+  // ESM loader that loads reporters)
+  : ['--test-reporter=spec', '--test-reporter-destination=stdout', `--test-reporter=${pathToFileURL(path.join(__dirname, 'test-running.js')).href}`, '--test-reporter-destination=stderr'];
 
 const running = new Map();   // pid -> child
+// the processes in process group pgid now (Linux, from /proc), [] elsewhere
+const groupMembers = (pgid) => {
+  if (process.platform !== 'linux') return [];
+  let names = [];
+  try { names = fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n)); } catch (err) { return []; }
+  const out = [];
+  for (const n of names) {
+    let raw;
+    try { raw = fs.readFileSync(`/proc/${n}/stat`, 'utf8'); } catch (err) { continue; }
+    const rest = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
+    if (Number(rest[2]) === pgid && rest[0] !== 'Z') out.push(Number(n));
+  }
+  return out;
+};
 // A file and everything it started (a server, a `ch-local start` runtime):
 // its own process group (POSIX, spawned detached), the whole tree on Windows
 // (taskkill /T). Ended before its manifest is swept, so nothing still using
@@ -145,10 +163,11 @@ function runFile(file) {
       clearTimeout(watchdog);
       if (child.killTimer != null) clearTimeout(child.killTimer);
       running.delete(child.pid);
-      // what it started in its group, if anything survived it (POSIX: the
-      // group outlives its leader while a member lives; on Windows the tree
-      // is unreachable by pid once the file is gone)
-      if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch (err) { /* none left */ } }
+      // what it started in its group, if anything survived it: each process
+      // /proc shows still in that group, by its own pid (Linux), never the
+      // bare group id once its leader is gone (the medium on #97's third
+      // round, 8); elsewhere none is signalled after the file's exit
+      for (const member of groupMembers(child.pid)) { try { process.kill(member, 'SIGKILL'); } catch (err) { /* gone */ } }
       // (a file ended by a signal never reached 'exit': its manifest now)
       if (signal != null) sweepStale(tmp);
       const report = () => {
