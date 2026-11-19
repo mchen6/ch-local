@@ -98,6 +98,9 @@ const mineSt = (st) => uid == null || Number(st.uid) === uid;
 // is above 0 (the Reviewer's cut on #97: probed simply, once per process).
 // Without it a directory made again at a listed path (tmpfs reuses an inode
 // at once) cannot be told from the old one, so the sweep leaves it.
+// Where libuv has no statx it reports ctime as the birth time: a moved ctime
+// reads as made again, so the directory is left (fails safe: a leak, never a
+// wrong delete; the Reviewer, #97).
 let bornReal = null;
 function probeBorn() {
   if (bornReal != null) return bornReal;
