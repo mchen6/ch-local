@@ -46,7 +46,7 @@ const until = async (cond, ms = 10000) => {
 // the tests here are given it read already (ch-local's intermittent
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null,
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, loadPackDeadlineMs, ghToken = null, home: reuse = null,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
@@ -55,7 +55,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   if (reuse == null && bound != null) bindAccess(home, bound);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
-  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, clientAncestry});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackDeadlineMs, clientAncestry});
   // the running ch-local is the one the home holds (the npm stub's 0.2.0); a
   // test makes this process stale by giving it another (lib/packs.js
   // recordRelease)
@@ -1442,9 +1442,9 @@ test('a load-pack or unload-pack is answered with the enabled.* command and refu
   const {s, reply} = await withOtherOff();
   try {
     const before = s.requests.length;
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_USE_TERMINAL'});
     await until(() => notices(s).some(([, t]) => t === 'ch-pack-other is turned on for all your sessions at a terminal: run `ch-local settings set enabled.@countinghouse/ch-pack-other on`'));
-    assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r2', ok: false, code: 'CONTROL_NOT_THIS_START'});
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r2', ok: false, code: 'CONTROL_USE_TERMINAL'});
     await until(() => notices(s).some(([, t]) => t === 'ch-pack-ci-failure-triage is turned off for all your sessions at a terminal: run `ch-local settings set enabled.@countinghouse/ch-pack-ci-failure-triage off`'));
     assert.ok(!s.requests.slice(before).some((m) => m.type === 'load' || m.type === 'unload'), JSON.stringify(s.requests.slice(before)));
   } finally {
@@ -1466,6 +1466,53 @@ test('a load-pack or unload-pack naming no installed pack is refused unsaid; on 
     assert.strictEqual(notices(s).length, before, 'nothing said');
     assert.deepStrictEqual(await reply({id: 'r80', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r80', ok: true});
     assert.deepStrictEqual(await reply({id: 'r81', type: 'unload-pack', name: 'other'}), {id: 'r81', ok: true});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the high review of #92, 1 to 3: a module on but kept out for another
+// reason is answered with that reason, never "turn it on"; the runtime's
+// undo of an unanswered load-pack is {} unsaid; each line once per start
+test('load-pack: on but blocked says why, never the on command; each answer said once', async () => {
+  const s = await running({bound: null});   // on, but its credential is not stored
+  try {
+    await until(() => s.args() != null);
+    const before = notices(s).length;
+    assert.deepStrictEqual(await reply2(s, {id: 'r71', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r71', ok: false, code: 'CONTROL_NOT_AVAILABLE'});
+    await until(() => notices(s).length > before);
+    const said1 = notices(s).slice(before).map(([, t]) => t);
+    assert.ok(said1.every((t) => !/settings set enabled|loads at your client's next start/.test(t)), JSON.stringify(said1));
+    assert.ok(said1.some((t) => /^not loading ch-pack-ci-failure-triage/.test(t)), JSON.stringify(said1));
+    // asked again: refused again, said no more
+    const said = notices(s).length;
+    assert.deepStrictEqual(await reply2(s, {id: 'r72', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r72', ok: false, code: 'CONTROL_NOT_AVAILABLE'});
+    await new Promise((r) => setTimeout(r, 100));
+    assert.strictEqual(notices(s).length, said, 'said once');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+const reply2 = async (s, msg) => { s.ask(msg); await until(() => s.requests.some((m) => m.id === msg.id)); return s.requests.find((m) => m.id === msg.id); };
+
+// the high review of #92, 2: an ask started past the deadline is refused
+// CONTROL_BUSY unsaid, and the runtime's undo of that load-pack (an
+// unload-pack for the same pack) is {} unsaid, even for a loaded module
+test('a load-pack started past the deadline is refused CONTROL_BUSY unsaid, and its undo unload-pack answers {} unsaid', async () => {
+  const s = await running({loadPackDeadlineMs: 0});
+  try {
+    await until(() => s.args() != null);
+    assert.strictEqual(loadsPack(s), true);
+    const before = notices(s).length;
+    assert.deepStrictEqual(await reply2(s, {id: 'r61', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r61', ok: false, code: 'CONTROL_BUSY'});
+    assert.deepStrictEqual(await reply2(s, {id: 'r62', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r62', ok: true});
+    // a later unload-pack (no late load-pack before it) is past the deadline too
+    assert.deepStrictEqual(await reply2(s, {id: 'r63', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r63', ok: false, code: 'CONTROL_BUSY'});
+    await new Promise((r) => setTimeout(r, 100));
+    assert.strictEqual(notices(s).length, before, 'nothing said');
+    assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 0, 'nothing unloaded');
   } finally {
     s.end();
     await s.done;

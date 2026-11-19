@@ -405,7 +405,7 @@ test('the review of #18: uninstall --keep-data keeps settings.json with the hist
 test('the review of #18: a ceiling that cannot be trusted loads NO pack, and install refuses, naming the problem', async () => {
   const UNT = {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'packs is not a list of pack names'};
   assert.strictEqual(ceilingModule.packAllowed(UNT, 'ci-failure-triage'), false);
-  assert.match(ceilingModule.packRefusal(UNT, 'x'), /the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(packs is not a list of pack names\), so no module loads/);
+  assert.match(ceilingModule.modulesRefusal(UNT, ['x']), /the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(packs is not a list of pack names\), so no module loads/);
   assert.strictEqual(ceilingModule.packAllowed({state: 'none'}, 'x'), true);
   const home = tmp('ch-home-');
   const r = release();
