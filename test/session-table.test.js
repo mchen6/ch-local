@@ -76,6 +76,23 @@ test('a state with unanswered is kept; a bad unanswered, or an unknown key besid
   w.told({type: 'session-resume', session: ID(4), hash: HASH});
   assert.strictEqual(w.told({type: 'session-state', session: ID(4), state: Object.assign({}, STATE, {unanswered: ['other']})}), true);
   assert.deepStrictEqual(w.restore().sessions[0].state, STATE, 'the unknown kind out, its list with it');
+  // ...but only from a row good with it taken as a kind (the medium on #96's
+  // last round, 2): locked and unanswered at once, or unanswered with no
+  // form spent, still refuses the row
+  for (const st of [{overrides: [], locks: ['locale'], unanswered: ['locale'], formsLeft: 1}, {overrides: [], locks: [], unanswered: ['locale'], formsLeft: 3}]) {
+    const x = createSessionTable({warn: () => {}});
+    x.told({type: 'session-resume', session: ID(5), hash: HASH});
+    assert.strictEqual(x.told({type: 'session-state', session: ID(5), state: st}), false, JSON.stringify(st));
+    assert.deepStrictEqual(x.restore().sessions, []);
+  }
+  // said once, naming no session
+  const warned = [];
+  const y = createSessionTable({warn: (w) => warned.push(w)});
+  for (const n of [6, 7]) {
+    y.told({type: 'session-resume', session: ID(n), hash: HASH});
+    y.told({type: 'session-state', session: ID(n), state: {overrides: [], locks: ['locale'], formsLeft: 1}});
+  }
+  assert.strictEqual(warned.filter((w) => /doesn't know/.test(w)).length, 1, JSON.stringify(warned));
   for (const unanswered of [['other-kind'], ['pack', 'pack'], 'pack', [1], ['pack', 'maxOutputBytes', 'requestTimeout', 'pack'], ['other', 'other']]) {
     const u = createSessionTable({warn: () => {}});
     u.told({type: 'session-resume', session: ID(2), hash: HASH});

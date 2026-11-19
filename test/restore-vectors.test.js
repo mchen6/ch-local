@@ -10,7 +10,8 @@ require('./tmp-dirs');
 // restoreRows (test/vectors/restore-rows.json, copied from countinghouse):
 // every accepted row, told to the table, is restored exactly; every
 // refused one is not; a dropped one is handed on for the runtime to drop; a
-// mapped one (M5b) is handed on as told; a kindsDropped one is never kept.
+// mapped one (M5b) is handed on as told; a kindsDropped one is handed on
+// without its unknown kind, as the runtime takes it.
 const test = require('node:test');
 const assert = require('node:assert');
 const {createSessionTable} = require('../lib/session-table');
@@ -83,7 +84,7 @@ test('every refused vector row with a pack.* override is refused by a handoff to
 // to enabled, deduped, a lock winning (the vector's `taken`). ch-local
 // hands it on as it was told, by a runtime or by a previous daemon's
 // handoff, so a runtime before M5b takes it as it is (the Reviewer's
-// ruling: ch-local never rewrites a kind).
+// ruling: ch-local never maps a kind).
 test('every mapped vector row: told or seeded, handed on as it was, for the runtime to map', () => {
   for (const {why, row} of restoreRows.mapped) {
     const told = createSessionTable({warn: () => {}});
