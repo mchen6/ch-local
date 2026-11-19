@@ -1,7 +1,7 @@
 {
-  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json topLevelModules, at countinghouse a203166a (#449, M5b: the kind enabled; a restore maps pack to enabled per row and drops a row of an unknown kind by itself): copied, never edited here",
+  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json topLevelModules, at countinghouse 16acc975 (#449, M5b: the kind enabled; a restore maps pack to enabled per row and takes only an unknown kind out of a row; the top-level rule on own properties): copied, never edited here",
   "topLevelModules": {
-    "rule": "a module is top-level when it is the scenario of a pack in packs: of that pack's modules (in their order), the first that modules gives role \"scenario\", else the pack's first module; and only when modules holds it. Every other module in modules is a part, whatever its role, and has no enabled.<module>",
+    "rule": "a module is top-level when it is the scenario of a pack in packs: of that pack's modules (in their order), the first that modules gives role \"scenario\", else the pack's first module; and only when modules holds it. Every other module in modules is a part, whatever its role, and has no enabled.<module>. Only own properties are read (Object.hasOwn), so a name like \"constructor\" is a name like any other",
     "cases": [
       {
         "why": "a pack's scenario and its part",
@@ -225,6 +225,73 @@
           }
         },
         "topLevel": []
+      },
+      {
+        "why": "a pack listing \"constructor\" first, which modules does not hold: none, the other a part",
+        "record": {
+          "modules": {
+            "@countinghouse/ch-step-example": {
+              "version": "0.2.0",
+              "role": null
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "constructor": "1.0.0",
+                "@countinghouse/ch-step-example": "0.2.0"
+              }
+            }
+          }
+        },
+        "topLevel": []
+      },
+      {
+        "why": "a module named \"constructor\", held and of role scenario: top-level",
+        "record": {
+          "modules": {
+            "constructor": {
+              "version": "1.0.0",
+              "role": "scenario"
+            },
+            "@countinghouse/ch-step-example": {
+              "version": "0.2.0",
+              "role": "part"
+            }
+          },
+          "packs": {
+            "example": {
+              "modules": {
+                "@countinghouse/ch-step-example": "0.2.0",
+                "constructor": "1.0.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "constructor"
+        ]
+      },
+      {
+        "why": "a pack named \"constructor\"",
+        "record": {
+          "modules": {
+            "weather-tool": {
+              "version": "1.2.0",
+              "role": null
+            }
+          },
+          "packs": {
+            "constructor": {
+              "modules": {
+                "weather-tool": "1.2.0"
+              }
+            }
+          }
+        },
+        "topLevel": [
+          "weather-tool"
+        ]
       }
     ]
   }

@@ -10,7 +10,7 @@ require('./tmp-dirs');
 // restoreRows (test/vectors/restore-rows.json, copied from countinghouse):
 // every accepted row, told to the table, is restored exactly; every
 // refused one is not; a dropped one is handed on for the runtime to drop; a
-// mapped one (M5b) is handed on as told; a rowDropped one is never kept.
+// mapped one (M5b) is handed on as told; a kindsDropped one is never kept.
 const test = require('node:test');
 const assert = require('node:assert');
 const {createSessionTable} = require('../lib/session-table');
@@ -96,11 +96,13 @@ test('every mapped vector row: told or seeded, handed on as it was, for the runt
   }
 });
 
-// A row naming a kind the runtime has none of is dropped there by itself.
-// ch-local's kinds are the runtime's, so it never keeps one: neither told
-// nor seeded is it handed on, and nothing of its session is.
-test('every rowDropped vector row: never kept, told or seeded', () => {
-  for (const {why, row} of restoreRows.rowDropped) {
+// A kind the runtime has none of (of a kind's shape) is taken out of its
+// row there, the rest of the row kept (the vector's `taken`). ch-local's
+// kinds are the runtime's, so it is never told one by its own runtime, and
+// it keeps no row that names one: neither told nor seeded is it handed on.
+test('every kindsDropped vector row: never kept, told or seeded (the runtime would take it without the kind)', () => {
+  assert.ok(restoreRows.kindsDropped.length > 0);
+  for (const {why, row} of restoreRows.kindsDropped) {
     const told = createSessionTable({warn: () => {}});
     told.told({type: 'session-resume', session: row.session, hash: row.resume});
     assert.strictEqual(told.told({type: 'session-state', session: row.session, state: row.state}), false, `${why}: refused as told`);
