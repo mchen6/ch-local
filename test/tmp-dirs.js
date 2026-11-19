@@ -26,21 +26,25 @@
 //
 // A process killed by a signal (an outer `timeout`, a stopped run) never
 // reaches 'exit', and its directories stayed: whole files' worth at once.
-// So each process also keeps a manifest of what it made, MANIFEST_PREFIX +
-// its pid + '.json' in the temporary directory (a dotfile, so no ch-* count
-// sees it), rewritten as it makes each directory and removed with them at
-// 'exit'. sweepStale() takes only manifests whose process is gone (and this
-// user's), removes only the directories they list (each still a ch-*
-// directly under the temporary directory), then the manifest: the runner
-// cleaning up its own registered output, never a pattern sweep of /tmp.
-// scripts/test.js sweeps at its start and after its run (the Reviewer's
-// ruling, 11-19).
+// So each process also keeps a manifest of what it made: a directory of its
+// own, made by mkdtemp as MANIFEST_PREFIX + its pid + '-' + a random suffix
+// (owner-only, so nothing planted is followed, and never two processes'
+// alike), holding dirs.jsonl, one line appended per directory made: its path
+// and its device and inode (a kill mid-write loses at most that line). At
+// 'exit' the directories go, then the manifest, kept if one could not be
+// removed. sweepStale() takes only manifests whose process is gone (and this
+// user's), removes only the directories they list that are still the same
+// directory (its device and inode) and still a ch-* directly under the
+// temporary directory, then the manifest: the runner cleaning up its own
+// registered output, never a pattern sweep of /tmp. scripts/test.js sweeps
+// at its start and after its run (the Reviewer's ruling, 11-19).
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const PREFIX = 'ch-';
 const MANIFEST_PREFIX = '.ch-local-tmp-';
+const MANIFEST_NAME = new RegExp(`^${MANIFEST_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)-[A-Za-z0-9]+$`);
 const KEY = Symbol.for('ch-local.test.tmp-dirs');
 const ours = (dir) => {
   try {
@@ -48,49 +52,81 @@ const ours = (dir) => {
     return path.dirname(d) === path.resolve(os.tmpdir()) && path.basename(d).startsWith(PREFIX);
   } catch (err) { return false; }
 };
-const manifestOf = (pid) => path.join(os.tmpdir(), `${MANIFEST_PREFIX}${pid}.json`);
 // whether a process is gone: signal 0 answers ESRCH (EPERM: it lives, as
 // another user's)
 const gone = (pid) => {
   try { process.kill(pid, 0); return false; } catch (err) { return err.code === 'ESRCH'; }
 };
-// this user's file (POSIX; elsewhere the temporary directory is the user's)
+// this user's (POSIX; elsewhere the temporary directory is the user's)
 const mine = (file) => {
   if (typeof process.getuid !== 'function') return true;
-  try { return fs.statSync(file).uid === process.getuid(); } catch (err) { return false; }
+  try { return fs.lstatSync(file).uid === process.getuid(); } catch (err) { return false; }
 };
-// the manifests of processes that are gone: each listed directory still ours
-// removed, then the manifest -> the number of directories removed
+// a manifest's lines -> [{dir, dev, ino}] (a line cut short by a kill is
+// skipped)
+const linesOf = (file) => {
+  let raw = '';
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (err) { return []; }
+  const out = [];
+  for (const line of raw.split('\n')) {
+    try { const e = JSON.parse(line); if (e != null && typeof e.dir === 'string') out.push(e); } catch (err) { /* cut short */ }
+  }
+  return out;
+};
+// removes a listed directory when it is still the one listed -> whether it
+// is gone
+const removeListed = ({dir, dev, ino}) => {
+  if (!ours(dir)) return true;
+  let st;
+  try { st = fs.lstatSync(dir); } catch (err) { return err.code === 'ENOENT'; }
+  if (!st.isDirectory() || (dev != null && String(st.dev) !== String(dev)) || (ino != null && String(st.ino) !== String(ino))) return true;
+  try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); return true; } catch (err) { return false; }
+};
+// the manifests of processes that are gone: each listed directory still the
+// one listed removed, then the manifest (kept while one could not be) ->
+// the number of manifests swept
 function sweepStale() {
-  let removed = 0;
+  let swept = 0;
   let names = [];
   try { names = fs.readdirSync(os.tmpdir()); } catch (err) { return 0; }
   for (const name of names) {
-    const m = /^\.ch-local-tmp-(\d+)\.json$/.exec(name);
+    const m = MANIFEST_NAME.exec(name);
     if (m == null) continue;
     const pid = Number(m[1]);
-    const file = path.join(os.tmpdir(), name);
-    if (pid === process.pid || !gone(pid) || !mine(file)) continue;
-    let dirs = [];
-    try { const doc = JSON.parse(fs.readFileSync(file, 'utf8')); dirs = Array.isArray(doc.dirs) ? doc.dirs : []; } catch (err) { dirs = []; }
-    for (const dir of dirs) {
-      if (typeof dir !== 'string' || !ours(dir)) continue;
-      try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); removed += 1; } catch (err) { /* left: counted after the run */ }
-    }
-    try { fs.rmSync(file, {force: true}); } catch (err) { /* left: swept again next time */ }
+    const at = path.join(os.tmpdir(), name);
+    if (pid === process.pid || !gone(pid) || !mine(at)) continue;
+    let st;
+    try { st = fs.lstatSync(at); } catch (err) { continue; }
+    if (!st.isDirectory()) continue;
+    const all = linesOf(path.join(at, 'dirs.jsonl')).map(removeListed).every(Boolean);
+    if (!all) continue;
+    try { fs.rmSync(at, {recursive: true, force: true}); swept += 1; } catch (err) { /* swept again next time */ }
   }
-  return removed;
+  return swept;
 }
 if (global[KEY] == null) {
-  const made = new Set();
-  const manifest = manifestOf(process.pid);
-  const record = () => {
-    try { fs.writeFileSync(manifest, JSON.stringify({pid: process.pid, dirs: [...made]})); } catch (err) { /* no manifest: 'exit' still removes them */ }
+  const made = new Map();       // dir -> {dev, ino}
+  // made at the first directory, not at load: a process that makes none has
+  // no manifest (fs.mkdtempSync is taken before it is wrapped)
+  let manifest = null;
+  const syncMade = fs.mkdtempSync;
+  const record = (dir, st) => {
+    try {
+      if (manifest == null) manifest = syncMade.call(fs, path.join(os.tmpdir(), `${MANIFEST_PREFIX}${process.pid}-`));
+      fs.appendFileSync(path.join(manifest, 'dirs.jsonl'), `${JSON.stringify({dir, dev: String(st.dev), ino: String(st.ino)})}\n`, {mode: 0o600});
+    } catch (err) { /* no manifest: 'exit' still removes them */ }
   };
   // (resolved now: a later chdir never sends the removal elsewhere)
-  const keep = (dir) => { if (ours(dir)) { made.add(path.resolve(String(dir))); record(); } return dir; };
+  const keep = (dir) => {
+    if (!ours(dir)) return dir;
+    const d = path.resolve(String(dir));
+    let st = null;
+    try { st = fs.lstatSync(d); } catch (err) { st = null; }
+    made.set(d, st != null ? {dev: st.dev, ino: st.ino} : {});
+    if (st != null) record(d, st);
+    return dir;
+  };
 
-  const syncMade = fs.mkdtempSync;
   fs.mkdtempSync = function(...args) { return keep(syncMade.apply(fs, args)); };
   const cbMade = fs.mkdtemp;
   fs.mkdtemp = function(...args) {
@@ -104,16 +140,19 @@ if (global[KEY] == null) {
 
   // removes what this process made; a directory still in use (Windows, a
   // child still exiting) is tried for about 5 s, and one that cannot be
-  // removed is left (scripts/test.js then names it)
+  // removed is left, its manifest with it, for a later sweep (scripts/test.js
+  // then names it)
   const removeMade = () => {
-    for (const dir of made) {
-      try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); } catch (err) { /* left: counted after the run */ }
+    let all = true;
+    for (const dir of made.keys()) {
+      try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); } catch (err) { all = false; }
     }
     made.clear();
-    try { fs.rmSync(manifest, {force: true}); } catch (err) { /* swept as stale later */ }
+    if (all && manifest != null) { try { fs.rmSync(manifest, {recursive: true, force: true}); } catch (err) { /* swept as stale later */ } }
   };
   process.on('exit', removeMade);
-  global[KEY] = {removeMade, made, PREFIX, MANIFEST_PREFIX, manifestOf, sweepStale};
+  const manifestOf = () => manifest;
+  global[KEY] = {removeMade, made, PREFIX, MANIFEST_PREFIX, MANIFEST_NAME, manifestOf, sweepStale};
 }
 
 module.exports = global[KEY];

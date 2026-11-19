@@ -41,7 +41,10 @@ sweepStale();
 // (a hanging case fails within node:test, so its file goes on and reaches
 // 'exit', its directories removed: never left for an outer kill. 300 s,
 // unless a --test-timeout is given)
-const timeout = flags.some((f) => f.startsWith('--test-timeout')) ? [] : ['--test-timeout=300000'];
+// (and --test-force-exit: a timed-out case that left a handle open still
+// lets its process end, through 'exit': the medium, 3)
+const timeout = [...(flags.some((f) => f.startsWith('--test-timeout')) ? [] : ['--test-timeout=300000']),
+  ...(flags.includes('--test-force-exit') ? [] : ['--test-force-exit'])];
 const before = ours();
 const run = spawnSync(process.execPath, ['--require', path.join(root, 'test', 'tmp-dirs.js'), '--test', ...timeout, ...flags, ...files], {cwd: root, stdio: 'inherit'});
 // a file's process this run's runner ended by a signal left its manifest
