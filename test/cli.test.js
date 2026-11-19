@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // bin/ch-local.js snippet: stdout is the entry alone (pipe it), stderr says
 // which node was pinned and how to reprint.
 const test = require('node:test');

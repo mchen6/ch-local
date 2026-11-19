@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // The opt-in automatic upgrade check (packs in place, part 2, plan Task B4):
 // only with autoUpgrade on, at most once a day (or week) across starts,
 // never when upgradeCheck is never; what it finds, and a failure, said and

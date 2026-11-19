@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // The module store (module-level install, #413 section 9.1, L1a-1 Task 1):
 // one directory per module version, placed whole and then marked; a version
 // with the pin's integrity is never unpacked again; one with other contents

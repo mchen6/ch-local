@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // Packs in place (part 2, plan Task B3): a running start watches the home and
 // applies each pack change to its runtime over the control channel: load,
 // unload, reload, one at a time, each with its notice; every change in

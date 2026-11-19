@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // What an earlier ch-local left (#413 section 10; the Reviewer's ruling on
 // #83: nothing deleted): the pack trees under <home>/packs/ are kept aside
 // whole (packs.migrated-<time>) once no running start from before names one

@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/shim-install.js (the native shim for this platform, agreed with A and
 // the Reviewer): only this platform's @countinghouse/ch-shim-<os>-<arch>,
 // fetched by its shim.packages pin, checked by verifyRelease (shim.yml,

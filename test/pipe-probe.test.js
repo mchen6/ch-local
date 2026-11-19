@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/pipe-probe.js (the review of #39, F1): a daemon.json's pipe is probed
 // in PowerShell at Identification level, its owner checked as the native
 // shim checks it, then the PROVE. PowerShell is injected here; on Windows

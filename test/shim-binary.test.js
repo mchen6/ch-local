@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // shimFor (lib/shim-binary.js): outside a source checkout only the binary
 // install verified and placed is used. A ch-shim package Node's own lookup
 // by name could find (a parent directory's node_modules, $NODE_PATH) is never

@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/win-acl.js, as countinghouse's copy (#275) plus makePrivateDirs (C4c):
 // the scripts name no cmdlet, privateProblem's rule for directories, and on
 // Windows, the daemon's run directories made private.

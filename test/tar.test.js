@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/tar.js: a pack's or part's tarball unpacked without npm (they have no
 // dependencies, #43), strictly: regular files and directories under package/
 // only, no links, no .. and no absolute path, within a size cap. A refused

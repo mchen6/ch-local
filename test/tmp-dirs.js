@@ -44,8 +44,10 @@ if (global[KEY] == null) {
   fs.mkdtempSync = function(...args) { return keep(syncMade.apply(fs, args)); };
   const cbMade = fs.mkdtemp;
   fs.mkdtemp = function(...args) {
-    const cb = typeof args[args.length - 1] === 'function' ? args.pop() : null;
-    return cbMade.call(fs, ...args, (err, dir) => { if (err == null) keep(dir); if (cb != null) cb(err, dir); });
+    // no callback: Node's own error, never one made up (the medium, 3)
+    if (typeof args[args.length - 1] !== 'function') return cbMade.apply(fs, args);
+    const cb = args.pop();
+    return cbMade.call(fs, ...args, (err, dir) => { if (err == null) keep(dir); cb(err, dir); });
   };
   const promiseMade = fs.promises.mkdtemp;
   fs.promises.mkdtemp = async function(...args) { return keep(await promiseMade.apply(fs.promises, args)); };

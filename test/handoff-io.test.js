@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/handoff-io.js (C3b): the re-exec handoff's two ends, with real
 // processes. spawnDaemon starts `<node> <home>/bin/ch-local.js <args>` in its
 // own group, cwd the home, with the allowlist's environment and the bytes on

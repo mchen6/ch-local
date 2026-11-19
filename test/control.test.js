@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/control.js: start's side of the runtime's control channel. Requests
 // wait for the runtime's {type: 'ready'} (countinghouse #210), at most a
 // while for an older runtime that never says it; the teller says a text on

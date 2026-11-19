@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // ch-local add <client> writes the client's entry and records what it wrote;
 // uninstall removes exactly that.
 const test = require('node:test');

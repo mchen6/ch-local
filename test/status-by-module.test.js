@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // `status` by module (#413 rev 3 section 9.9; L1b-1): the modules first, each
 // with what it is (on with its tools, a part, or why it would not load, in
 // the sentence a start says), its credential, and a running client's word on

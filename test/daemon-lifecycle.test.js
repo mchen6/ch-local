@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // C3a: ch-local daemon's lifecycle (countinghouse's shared-runtime design,
 // #236, section 6): the session table handed to each runtime it starts; a
 // crashed runtime restarted at once, then after 1, 5 and 30 s, and after 5

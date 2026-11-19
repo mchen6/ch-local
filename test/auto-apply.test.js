@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/auto-apply.js, `ch-local upgrade --apply-auto` (docs/development/
 // auto-upgrade.md, "The child that applies it", "The 72-hour wait",
 // "Announcements"): it re-checks everything itself, then installs a newer

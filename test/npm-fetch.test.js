@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // The registry fetch (docs/development/auto-upgrade.md, "The trust chain",
 // step 2): a packument and a tarball from the registry only, each bounded in
 // size and time, the tarball's sha512 checked against dist.integrity and,

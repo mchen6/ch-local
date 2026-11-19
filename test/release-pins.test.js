@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/release-pins.json and lib/release-pins.js (docs/development/
 // auto-upgrade.md, "The trust chain", step 5): what a release pins, as data,
 // never code. The pins (each with its identity), the runtime lockfile, the

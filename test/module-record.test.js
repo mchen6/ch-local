@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // <home>/modules.json (module-level install, #413 section 9.2, L1a-1 Task
 // 2): the shape, its derived modules (the highest version any pack records,
 // with that version's role) and withdrawn list, and its checks.

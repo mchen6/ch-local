@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/session-table.js: ch-local daemon's in-memory session table (C3), in
 // the shapes agreed with countinghouse (#255, N3, #252 rev 2). The runtime
 // refuses a whole restore over one bad row, so the table keeps only what

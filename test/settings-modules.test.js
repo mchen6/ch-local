@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // L3 (#413 sections 4.2 and 4.3): a module's settings at a terminal.
 // `settings modules [<m>]`, `settings set <m>.<setting> [<value>]` (a value
 // prompted when left out), `settings reset <m>[.<setting>]`; the value is

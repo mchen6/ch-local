@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 // lib/npm-upgrade.js findUpgrade (docs/development/auto-upgrade.md, "The
 // trust chain", steps 1-5): the registry's latest ch-local, strict semver,
 // newer and of the same major; its tarball checked by its provenance against

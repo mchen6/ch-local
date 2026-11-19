@@ -1,5 +1,5 @@
 'use strict';
-require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
+require('./tmp-dirs');
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
