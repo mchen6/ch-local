@@ -9,7 +9,9 @@ require('./tmp-dirs');
 // acceptance run, M17). The rows are held to the shared vectors'
 // restoreRows (test/vectors/restore-rows.json, copied from countinghouse):
 // every accepted row, told to the table, is restored exactly; every
-// refused one is not.
+// refused one is not; a dropped one is handed on for the runtime to drop; a
+// mapped one (M5b) is handed on as told; a kindsDropped one is handed on
+// unchanged, for the runtime to take its unknown kind out.
 const test = require('node:test');
 const assert = require('node:assert');
 const {createSessionTable} = require('../lib/session-table');
@@ -76,4 +78,44 @@ test('every refused vector row with a pack.* override is refused by a handoff to
     t.seed({sessions: [row], declines: []});
     assert.deepStrictEqual(t.restore().sessions, [], why);
   }
+});
+
+// M5b (countinghouse #449): a row of the kind pack is the runtime's to map
+// to enabled, deduped, a lock winning (the vector's `taken`). ch-local
+// hands it on as it was told, by a runtime or by a previous daemon's
+// handoff, so a runtime before M5b takes it as it is (the Reviewer's
+// ruling: ch-local never maps a kind).
+test('every mapped vector row: told or seeded, handed on as it was, for the runtime to map', () => {
+  for (const {why, row} of restoreRows.mapped) {
+    const told = createSessionTable({warn: () => {}});
+    assert.strictEqual(told.told({type: 'session-resume', session: row.session, hash: row.resume}), true, why);
+    assert.strictEqual(told.told({type: 'session-state', session: row.session, state: row.state}), true, why);
+    assert.deepStrictEqual(told.restore().sessions, [row], `${why}: told, handed on as told`);
+    const seeded = createSessionTable({warn: () => {}});
+    assert.deepStrictEqual(seeded.seed({sessions: [row], declines: []}), {kept: 1, loosened: 0}, why);
+    assert.deepStrictEqual(seeded.restore().sessions, [row], `${why}: seeded, handed on as it was`);
+  }
+});
+
+// A kind the runtime has none of (of a kind's shape) is taken out of its
+// row there (the vector's `taken`). For ch-local such a kind is most likely
+// one a newer runtime knows and enforces, so it hands the row on exactly as
+// told, told or seeded, and a decline of it too: dropping what it doesn't
+// know is the runtime's job (the Reviewer's high review of #96).
+test('every kindsDropped vector row: told or seeded, handed on unchanged, for the runtime to take the unknown kind out', () => {
+  assert.ok(restoreRows.kindsDropped.length > 0);
+  for (const {why, row} of restoreRows.kindsDropped) {
+    const told = createSessionTable({warn: () => {}});
+    told.told({type: 'session-resume', session: row.session, hash: row.resume});
+    assert.strictEqual(told.told({type: 'session-state', session: row.session, state: row.state}), true, `${why}: kept as told`);
+    assert.deepStrictEqual(told.restore().sessions, [row], `${why}: told, handed on unchanged`);
+    const seeded = createSessionTable({warn: () => {}});
+    assert.deepStrictEqual(seeded.seed({sessions: [row], declines: []}), {kept: 1, loosened: 0}, why);
+    assert.deepStrictEqual(seeded.restore().sessions, [row], `${why}: seeded, handed on unchanged`);
+  }
+  // a decline of such a kind is kept and handed on
+  const t = createSessionTable({warn: () => {}});
+  const at = Date.now();
+  assert.strictEqual(t.told({type: 'decline', kind: 'locale', at}), true);
+  assert.deepStrictEqual(t.restore().declines, [{kind: 'locale', at}]);
 });

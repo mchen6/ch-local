@@ -10,6 +10,7 @@ const {createSessionTable, MAX_ROWS, MAX_DECLINES, DECLINE_KEEP_MS, EMPTY_STATE}
 
 const ID = (n) => n.toString(16).padStart(32, '0');
 const HASH = 'f'.repeat(64);
+const HASH2 = HASH.replace(/f$/, 'e');
 const STATE = {overrides: [{name: 'requestTimeout', value: 120000, loosening: true, over: 30000, version: null}], locks: ['pack'], formsLeft: 2};
 
 test('a fresh table restores empty', () => {
@@ -69,7 +70,23 @@ test('a state with unanswered is kept; a bad unanswered, or an unknown key besid
     const st = {overrides: [], locks: [], formsLeft: 0, unanswered};
     assert.strictEqual(k.told({type: 'session-state', session: ID(3), state: st}), true, JSON.stringify(unanswered));
   }
-  for (const unanswered of [['other'], ['pack', 'pack'], 'pack', [1], ['pack', 'maxOutputBytes', 'requestTimeout', 'pack']]) {
+  // a kind of a kind's shape ch-local has none of (one a newer runtime knows)
+  // is kept and handed on exactly as told: the runtime drops what it doesn't
+  // know (the Reviewer's high review of #96)
+  const w = createSessionTable({warn: () => {}});
+  w.told({type: 'session-resume', session: ID(4), hash: HASH});
+  const withOther = Object.assign({}, STATE, {unanswered: ['other']});
+  assert.strictEqual(w.told({type: 'session-state', session: ID(4), state: withOther}), true);
+  assert.deepStrictEqual(w.restore().sessions[0].state, withOther, 'handed on as told');
+  // the row is still judged whole: locked and unanswered at once, or
+  // unanswered with no form spent, refuses it
+  for (const st of [{overrides: [], locks: ['locale'], unanswered: ['locale'], formsLeft: 1}, {overrides: [], locks: [], unanswered: ['locale'], formsLeft: 3}]) {
+    const x = createSessionTable({warn: () => {}});
+    x.told({type: 'session-resume', session: ID(5), hash: HASH});
+    assert.strictEqual(x.told({type: 'session-state', session: ID(5), state: st}), false, JSON.stringify(st));
+    assert.deepStrictEqual(x.restore().sessions, []);
+  }
+  for (const unanswered of [['other-kind'], ['pack', 'pack'], 'pack', [1], ['pack', 'maxOutputBytes', 'requestTimeout', 'pack'], ['other', 'other']]) {
     const u = createSessionTable({warn: () => {}});
     u.told({type: 'session-resume', session: ID(2), hash: HASH});
     assert.strictEqual(u.told({type: 'session-state', session: ID(2), state: Object.assign({}, STATE, {unanswered})}), false, JSON.stringify(unanswered));
@@ -100,11 +117,11 @@ test('declines: a module setting\'s are the one kind module (the runtime\'s), ke
   assert.deepStrictEqual(t.restore().declines, [{kind: 'module', at: now}]);
 });
 
-test('declines: the runtime\'s kinds, a past epoch ms; kept DECLINE_KEEP_MS; at most MAX_DECLINES, the newest', () => {
+test('declines: the runtime\'s kinds (or a kind\'s shape, handed on), a past epoch ms; kept DECLINE_KEEP_MS; at most MAX_DECLINES, the newest', () => {
   let now = 1000000000000;
   const t = createSessionTable({now: () => now});
   assert.strictEqual(t.told({type: 'decline', kind: 'pack', at: now}), true);
-  for (const bad of [{kind: 'other', at: now}, {kind: 'pack', at: -5}, {kind: 'pack', at: 1.5}, {kind: 'pack', at: now + 61000}, {kind: 'pack', at: now, session: ID(1)}]) {
+  for (const bad of [{kind: 'other-kind', at: now}, {kind: '9lives', at: now}, {kind: 'pack', at: -5}, {kind: 'pack', at: 1.5}, {kind: 'pack', at: now + 61000}, {kind: 'pack', at: now, session: ID(1)}]) {
     assert.strictEqual(t.told(Object.assign({type: 'decline'}, bad)), false, JSON.stringify(bad));
   }
   assert.deepStrictEqual(t.restore().declines, [{kind: 'pack', at: now}]);
@@ -118,6 +135,16 @@ test('declines: the runtime\'s kinds, a past epoch ms; kept DECLINE_KEEP_MS; at 
 // takes the declines of two 30-minute windows: a lock runs 30 minutes from
 // its third decline, so declines at 0, 0 and 29 min lock until 59. A restart
 // at 31 must still be handed all three, or the lock ends 28 minutes early.
+test('past MAX_DECLINES, a decline of a kind ch-local doesn\'t know goes first: it never pushes out one that starts a lock', () => {
+  const t = createSessionTable({warn: () => {}});
+  const now = Date.now();
+  t.told({type: 'decline', kind: 'module', at: now - 5000});
+  for (let i = 0; i < MAX_DECLINES; i++) t.told({type: 'decline', kind: 'zzz', at: now - 4000});
+  const kept = t.restore().declines;
+  assert.strictEqual(kept.length, MAX_DECLINES);
+  assert.ok(kept.some((d) => d.kind === 'module'), 'the module decline kept');
+});
+
 test('declines are kept two windows (60 minutes): one 59 minutes old reaches a restart, one 61 minutes old does not', () => {
   let now = 1000000000000;
   const t = createSessionTable({now: () => now});
@@ -169,9 +196,12 @@ test('restore carries reset: the sessions a handoff took loosenings from, once (
 });
 
 // L3 (#413 section 10): a handoff from a daemon of the pack form keeps
-// the kind pack until M5b (the runtime refuses any other), and hands a
-// stale pack.* override on for the runtime to drop and tell.
-test('seed keeps the kind pack until M5b (the runtime takes no other); hands a stale pack.* override on for the runtime to drop and tell', () => {
+// the kind pack as it was told, and hands a stale pack.* override on for the
+// runtime to drop and tell. A runtime before M5b takes pack as it is; one
+// with M5b (countinghouse #449) maps it to enabled on restore, per row,
+// locks, declines and unanswered forms kept (the Reviewer's ruling), so
+// ch-local hands on what it was told and never rewrites a kind.
+test('seed keeps the kind pack as told, for the runtime to take or map; hands a stale pack.* override on for the runtime to drop and tell', () => {
   const t = createSessionTable({warn: () => {}});
   const at = Date.now();
   const state = {overrides: [
@@ -186,7 +216,7 @@ test('seed keeps the kind pack until M5b (the runtime takes no other); hands a s
   const s1 = out.sessions.find((s) => s.session === ID(1)).state;
   assert.deepStrictEqual(s1.overrides, [{name: 'requestTimeout', value: 20000, loosening: false, over: null, version: null},
     {name: 'pack.weather', value: false, loosening: false, over: null, version: '1.0.0'}], 'the tightening kept; the stale pack override handed on for the runtime');
-  assert.deepStrictEqual(s1.locks, ['pack', 'maxOutputBytes'], 'the kind pack as it is: the runtime refuses any other until M5b');
+  assert.deepStrictEqual(s1.locks, ['pack', 'maxOutputBytes'], 'the kind pack as it is: a runtime before M5b takes it, one with M5b maps it to enabled');
   assert.deepStrictEqual(out.sessions.find((s) => s.session === ID(2)).state.unanswered, ['pack']);
   assert.deepStrictEqual(out.declines.map((d) => d.kind), ['pack', 'module']);
   assert.deepStrictEqual(out.reset, [], 'the runtime tells it, naming the pack (packsDropped)');
@@ -197,5 +227,30 @@ test('the table takes the kind enabled from a runtime that sends it', () => {
   assert.strictEqual(t.told({type: 'decline', kind: 'enabled', at: Date.now()}), true);
   assert.strictEqual(t.told({type: 'session-resume', session: ID(1), hash: HASH}), true);
   assert.strictEqual(t.told({type: 'session-state', session: ID(1), state: {overrides: [], locks: ['enabled'], formsLeft: 2}}), true);
+});
+
+// M5b (countinghouse #449): a session that declined an enabled.* form, or
+// left one unanswered, or is locked from them, keeps that across a daemon's
+// handoff, as told: restored to the runtime, and seeded into the next
+// daemon's table and restored again, never dropped.
+test('a handoff keeps the kind enabled: a lock, an unanswered form and a decline, restored and seeded on as told', () => {
+  const at = Date.now();
+  const t = createSessionTable({warn: () => {}});
+  const locked = {overrides: [], locks: ['enabled'], formsLeft: 1};
+  const asking = {overrides: [], locks: [], unanswered: ['enabled'], formsLeft: 2};
+  t.told({type: 'session-resume', session: ID(1), hash: HASH});
+  t.told({type: 'session-state', session: ID(1), state: locked});
+  t.told({type: 'session-resume', session: ID(2), hash: HASH2});
+  t.told({type: 'session-state', session: ID(2), state: asking});
+  assert.strictEqual(t.told({type: 'decline', kind: 'enabled', at}), true);
+  const first = t.restore();
+  assert.deepStrictEqual(first.sessions, [{session: ID(1), resume: HASH, state: locked}, {session: ID(2), resume: HASH2, state: asking}]);
+  assert.deepStrictEqual(first.declines, [{kind: 'enabled', at}]);
+  // the next daemon: seeded with what this one handed on
+  const next = createSessionTable({warn: () => {}});
+  assert.deepStrictEqual(next.seed({sessions: first.sessions, declines: first.declines}), {kept: 2, loosened: 0});
+  const second = next.restore();
+  assert.deepStrictEqual(second.sessions, first.sessions);
+  assert.deepStrictEqual(second.declines, first.declines);
 });
 
