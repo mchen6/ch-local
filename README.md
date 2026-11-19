@@ -16,9 +16,9 @@ entry after a Node upgrade. Every entry runs `<absolute node>
 <home>/bin/ch-local.js start --stdio`, where
 `<home>` is `$COUNTINGHOUSE_HOME` (absolute) or `~/.countinghouse`.
 
-No entry sets the GitHub token. The server inherits it from the environment
-the client is started from. Only Codex's entry names the two variables, in
-`env_vars`, because Codex does not pass its environment on by default.
+No entry sets or forwards a credential: a module's credential is stored
+with `ch-local credentials add <module>`, bound to the one address the
+module declares, and a client's environment never supplies one.
 Claude Desktop gets a note instead of an entry: its route is a `.mcpb` bundle
 that keeps the token in the OS keychain, not built yet.
 
@@ -173,18 +173,16 @@ running. The daemon holds the runtime for every session of this user.
   the daemon's working directory, and be owned by this user with no group or
   world write. Its environment is `shim.json`'s allowlist (`PATH`, `HOME`,
   `LANG`, `TMPDIR`; on Windows their equivalents), never a client's.
-- **Its GitHub token is the one stored with `ch-local credentials add
-  github`, else `gh auth token`**, held in memory as
-  `COUNTINGHOUSE_GITHUB_TOKEN`. A `GITHUB_TOKEN` in a shell doesn't reach
-  it. A stored token added or removed while it runs restarts its runtime
-  once the calls in flight finish. With neither, the shared runtime has no
-  token, so a pack that needs one isn't loaded there. The runtime still starts, with ch-local's
-  own tools, and tells each session which pack isn't loaded and why (run
-  `gh auth login`), so the agent can say so. A session whose client chooses a token of
-  its own (`COUNTINGHOUSE_GITHUB_TOKEN`, or `GITHUB_TOKEN` with neither a
-  stored token nor a `gh` login) then differs from the daemon's, and runs
-  its own runtime. That
-  fails safe: no session gets another's token, or none silently.
+- **Its credentials are the store's.** Each module's key, stored with
+  `ch-local credentials add <module>` (or the gh login it was told to use,
+  asked with `gh auth token` at each start), goes to the runtime in a slot
+  of its own, `COUNTINGHOUSE_CREDENTIAL_<n>`, for that module and its
+  declared address only. A key added or removed while it runs restarts its
+  runtime once the calls in flight finish. A module without one isn't
+  loaded; the runtime still starts, with ch-local's own tools, and tells
+  each session which module isn't loaded and how to add its key, so the
+  agent can say so. No session's environment gives a credential, so no
+  session runs its own runtime for one.
 - **Installs and rollbacks are picked up while it runs.** `ch-local install`
   and `ch-local rollback` leave an upgrade request in
   `<home>/run/daemon/requests`. A daemon that's running then drains its

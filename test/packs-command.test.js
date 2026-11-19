@@ -108,14 +108,18 @@ test('remove-pack keeps a module version another pack records and collects the o
   assert.match(io2.err, /the pack "other" is not installed/);
 });
 
-test('status lists each pack with its tools and names a pack\'s missing variables, never a value', async () => {
+test('status lists each pack with its tools and each module\'s credential from the store, never a value', async () => {
   const s = await installed();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
   const io = s.io({GITHUB_TOKEN: 'secret'});
   assert.strictEqual(await status({}, io), 0, io.err);
-  assert.match(io.out, /^ci-failure-triage 0\.1\.0\n  tools: ci_failure_triage\n  credential: GITHUB_TOKEN\n/m);
-  assert.match(io.out, /^other 0\.3\.0\n  tools: ch_pack_other\n  not loaded: set OTHER_TOKEN in the environment/m);
-  assert.ok(!(io.out + io.err).includes('secret'));
+  assert.match(io.out, /^ci-failure-triage 0\.1\.0\n  tools: ci_failure_triage\n  not loaded: ch-access-github needs a credential: run `ch-local credentials add ch-access-github`\n/m);
+  assert.match(io.out, /^other 0\.3\.0\n  tools: ch_pack_other\n  credential: none needed\n/m);
+  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'});
+  const after = s.io();
+  await status({}, after);
+  assert.match(after.out, /^  credential: ch-access-github sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com \(stored\)$/m);
+  assert.ok(!(io.out + io.err + after.out).includes('secret') && !after.out.includes('test-stored-value-1'));
   assert.ok(!/hidden/.test(io.out), 'an action without a description is not a tool');
 });
 
@@ -146,16 +150,6 @@ test('a pack name that is an Object.prototype key is simply not installed', asyn
   const io = s.io();
   assert.strictEqual(await addPack({pack: 'constructor', from: r.from}, io, r.allow), 2);
   assert.match(io.err, /not in this ch-local release's allowlist/);
-});
-
-test('status says a pack that needs no credential is loaded, as start does', async () => {
-  const r = release();
-  r.allow.packs['ci-failure-triage'].credentials = [];
-  const s = await installed(r);
-  const io = s.io();
-  await status({}, io);
-  assert.match(io.out, /ci-failure-triage 0\.1\.0\n  tools: ci_failure_triage\n  credential: none needed\n/);
-  assert.ok(!/set  in/.test(io.out));
 });
 
 test('add-pack refuses pins whose runtime is not the installed one', async () => {

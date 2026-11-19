@@ -17,6 +17,12 @@ const {release, npm} = require('./install-helpers');
 // (the module form, #413 section 7.3)
 const named = (m) => (m.name != null ? m.name : (Array.isArray(m.names) ? m.names.join(',') : undefined));
 const editRecord = (...a) => require('./store-helpers').editHome(...a);
+const ACCESS = '@countinghouse/ch-access-github';
+const GH_ORIGIN = 'https://api.githubcopilot.com';
+// a test home's stored value (no real token's shape)
+const STORED = 'test-stored-value-1';
+const bindAccess = (home, source = 'stored') => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN',
+  source === 'gh' ? {origin: GH_ORIGIN, source: 'gh'} : {origin: GH_ORIGIN, source: 'stored', value: STORED});
 const TRIAGE_LOADED = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.1.0'};
 const until = async (cond, ms = 10000) => {
   for (const t = Date.now(); Date.now() - t < ms; await new Promise((r) => setTimeout(r, 20))) if (cond()) return;
@@ -25,7 +31,10 @@ const until = async (cond, ms = 10000) => {
 
 // A running start over an installed home, with a runtime that answers each
 // control request with `answer(msg)` (default ok) and runs until end().
-// env: start's credentials (a GitHub token and another by default)
+// env: start's environment (no credential: a credential is a module's own,
+// in the store, #413 section 6.9)
+// bound: ch-access-github's stored credential: 'stored' (a test value, the
+// default), 'gh' (its source gh: ghToken answers), or null (none)
 // shared: as ch-local daemon runs the shared runtime (a session with the home)
 // ghToken: what gh auth token answers (a shared runtime's GitHub token comes
 // from gh only), else gh is not logged in
@@ -38,11 +47,12 @@ const until = async (cond, ms = 10000) => {
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs, shared = false, ghToken = null, home: reuse = null,
-  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
+  env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  if (reuse == null && bound != null) bindAccess(home, bound);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs, clientAncestry});
@@ -102,13 +112,13 @@ test('start spawns its runtime with the control channel', async () => {
 // say what to do. Per-session start and the daemon's runtime alike (#54's
 // diagnosis: the daemon's runtime ended before it listened).
 test('no pack has its credential: the runtime starts with no pack, and the client is told which and why', async () => {
-  const s = await running({env: {}});
+  const s = await running({bound: null});
   try {
     assert.ok(!s.args().includes('--loadModule'), `no pack loaded: ${s.args().join(' ')}`);
     await until(() => [/not loading ch-pack-ci-failure-triage/, /no module is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
     const told = notices(s).map(([, t]) => t);
     const why = told.find((t) => /not loading ch-pack-ci-failure-triage/.test(t));
-    assert.match(why, /needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
+    assert.match(why, /it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`/);
     assert.doesNotMatch(why, /\(above\)/, 'self-contained: the client never saw a line above');
     assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   } finally {
@@ -776,7 +786,7 @@ test('a withdrawn pack is not started: told once (stderr and the client), its re
 });
 
 test('a released install started with CH_LOCAL_DEV=1 is still refused its withdrawn pack', async () => {
-  const s = await running({release: withdrawnRelease(), env: {GITHUB_TOKEN: 'secret', CH_LOCAL_DEV: '1'}});
+  const s = await running({release: withdrawnRelease(), env: {CH_LOCAL_DEV: '1'}});
   try {
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false);
@@ -789,7 +799,7 @@ test('a released install started with CH_LOCAL_DEV=1 is still refused its withdr
 
 test('an unreleased install is exempt, with CH_LOCAL_DEV=1 or without (the shared daemon never has it): the pack starts, the unreleased line said each time', async () => {
   const unreleased = (home) => editRecord(home, (r) => ({...r, unreleased: true}));
-  const dev = await running({release: withdrawnRelease(), beforeStart: unreleased, env: {GITHUB_TOKEN: 'secret', CH_LOCAL_DEV: '1'}});
+  const dev = await running({release: withdrawnRelease(), beforeStart: unreleased, env: {CH_LOCAL_DEV: '1'}});
   try {
     await until(() => dev.args() != null);
     assert.strictEqual(loadsPack(dev), true, JSON.stringify(dev.args()));
@@ -1118,18 +1128,16 @@ test('another release\'s record: a module moved back is stopped with its callers
 });
 
 // the medium review of L2a, 3: a module without its credential is told in
-// start's words, once, by start and the applier together
-test('a module added without its credential is told once, in start\'s words', async () => {
-  const s = await running({env: {GITHUB_TOKEN: 'secret'}});
+// start's words, once, by start and the applier together (L5a: the
+// credential is the called module's own, in the store)
+test('a pack whose module has no credential stored is told once, in start\'s words, through a later change', async () => {
+  const s = await running({bound: null});
   try {
-    // the running release: the one installed, whose pins give other OTHER_TOKEN
-    s.f.release = s.r.allow;
-    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
-    const line = 'not loading ch-pack-other: set OTHER_TOKEN in the environment your client starts from';
+    const line = 'not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`';
     await until(() => notices(s).some(([, t]) => t === line));
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
-    assert.strictEqual(notices(s).filter(([, t]) => /^not loading ch-pack-other/.test(t)).length, 1, JSON.stringify(notices(s)));
+    assert.strictEqual(notices(s).filter(([, t]) => /^not loading ch-pack-ci-failure-triage/.test(t)).length, 1, JSON.stringify(notices(s)));
   } finally {
     s.end();
     await s.done;
@@ -1401,6 +1409,7 @@ test('another release\'s record: a caller whose callee is turned off is unloaded
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  bindAccess(home);
   const s = await running({home});
   try {
     assert.ok(loadsPack(s), 'ci-failure-triage loads with other installed');
@@ -1423,6 +1432,7 @@ test('another release\'s record: a caller whose callee is no longer installed is
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  bindAccess(home);
   const s = await running({home});
   try {
     assert.ok(loadsPack(s));

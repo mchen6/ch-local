@@ -12,6 +12,17 @@ const {fakeIo, tmp} = require('./fake-io');
 const {start, repoFromRemote} = require('../lib/start');
 const {main} = require('../bin/ch-local');
 const {storeModule, writeHome, setPackCredentials} = require('./store-helpers');
+const credentialStore = require('../lib/credential-store');
+const ACCESS = '@countinghouse/ch-access-github';
+const VAR = 'COUNTINGHOUSE_GITHUB_TOKEN';
+const GH_ORIGIN = 'https://api.githubcopilot.com';
+// the value a test home's binding holds (no real token's shape)
+const STORED = 'test-stored-value-1';
+const OTHER = '@countinghouse/ch-pack-other';
+const OTHER_ORIGIN = 'https://api.other.example';
+const OTHER_REMOTE = {name: 'other', url: `${OTHER_ORIGIN}/mcp/`, credential: 'OTHER_TOKEN'};
+const bindOther = (home, value = 'test-stored-value-2') => credentialStore.bind(home, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value});
+const bindGh = (home) => credentialStore.bind(home, ACCESS, VAR, {origin: GH_ORIGIN, source: 'gh'});
 
 const GITHUB = {name: 'github', transport: 'streamable-http', url: 'https://api.githubcopilot.com/mcp/',
   credential: {env: 'COUNTINGHOUSE_GITHUB_TOKEN', fallbackEnv: 'GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}};
@@ -19,18 +30,22 @@ const SCENARIO = '@countinghouse/ch-pack-ci-failure-triage';
 
 // A home with ci-failure-triage installed: its modules in the module store,
 // modules.json, and the runtime in the app.
-function installedHome({remotes = [GITHUB], unreleased = false, other = false} = {}) {
+// bound: the value stored for ch-access-github's credential, to its
+// declared origin (null: none stored); boundTo: another origin to bind it to
+function installedHome({remotes = [GITHUB], unreleased = false, other = false, bound = STORED, boundTo = GH_ORIGIN} = {}) {
   const home = tmp('ch-local-start-');
   const app = path.join(home, 'app', 'node_modules', 'countinghouse');
   fs.mkdirSync(app, {recursive: true});
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({name: 'countinghouse', version: '1.0.0'}));
   storeModule(home, SCENARIO, '1.0.0', {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns']}});
   storeModule(home, '@countinghouse/ch-access-github', '1.0.0', {countinghouse: {role: 'part', remotes}});
-  if (other) storeModule(home, '@countinghouse/ch-pack-other', '1.0.0', {countinghouse: {role: 'scenario'}});
+  if (other) storeModule(home, '@countinghouse/ch-pack-other', '1.0.0', {countinghouse: {role: 'scenario', remotes: [OTHER_REMOTE]}});
   writeHome(home, {
     'ci-failure-triage': {[SCENARIO]: '1.0.0', '@countinghouse/ch-access-github': '1.0.0'},
     ...(other ? {other: {'@countinghouse/ch-pack-other': '1.0.0'}} : {})
   }, {unreleased, credentials: {'ci-failure-triage': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], ...(other ? {other: ['OTHER_TOKEN']} : {})}});
+  // a credential is the module's own, bound in the store (#413 section 6.3)
+  if (bound != null) credentialStore.bind(home, ACCESS, VAR, {origin: boundTo, source: 'stored', value: bound});
   return home;
 }
 
@@ -152,10 +167,15 @@ test('start passes through only the options known safe: --moduleSandbox audit|en
   assert.deepStrictEqual(g.spawned[0].args.slice(-1), ['--locale=en-US']);
 });
 
-test('start gives the runtime remote credentials for the loaded packs\' remotes: the variable it chose for each origin', async () => {
+// #413 section 6.4 (L5a): each usable binding gets a slot; the runtime's
+// --remoteCredentials is version 2, per module, origin and variable
+test('start gives the runtime its version 2 remote credentials: the module, its origin and variable, and the slot holding the stored value', async () => {
   const f = io(installedHome());
   await start({passThrough: []}, f);
-  assert.deepStrictEqual(f.spawned[0].remoteCredentials, {'https://api.githubcopilot.com': ['GITHUB_TOKEN']});
+  assert.deepStrictEqual(f.spawned[0].remoteCredentials, {version: 2, modules: {[ACCESS]: {[GH_ORIGIN]: {[VAR]: 'COUNTINGHOUSE_CREDENTIAL_1'}}}});
+  assert.strictEqual(f.spawned[0].env.COUNTINGHOUSE_CREDENTIAL_1, STORED);
+  assert.match(f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
+  assert.ok(!f.err.includes(STORED), 'never a value');
 });
 
 // #83's high review, 5: one pack with a module missing from the store is
@@ -163,33 +183,27 @@ test('start gives the runtime remote credentials for the loaded packs\' remotes:
 test('a pack with a module missing from the module store is not loaded, and said; the others load', async () => {
   const home = installedHome({other: true});
   fs.rmSync(path.join(home, 'module-store', '@countinghouse', 'ch-access-github', '1.0.0'), {recursive: true});
-  const f = io(home, {env: {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'b'}});
+  bindOther(home);
+  const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   const loaded = f.spawned[0].args.filter((a, i, all) => all[i - 1] === '--loadModule');
   assert.deepStrictEqual(loaded.map((d) => path.basename(path.dirname(d))), ['ch-pack-other']);
   assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which is missing from the module store; run `ch-local install` again/);
 });
 
-test('the runtime gets the credential start named: a blank or unresolved variable before it is removed from its environment', async () => {
-  const f = io(installedHome(), {env: {COUNTINGHOUSE_GITHUB_TOKEN: '${GITHUB_TOKEN}', GITHUB_TOKEN: 'real', OTHER: 'kept'}});
+// a planted slot name in the client's environment is never read as a key,
+// and a credential in the client's environment is never one (section 6.9)
+test('every inherited COUNTINGHOUSE_CREDENTIAL_* is removed before the slots; a client\'s own token variables are no credential', async () => {
+  const f = io(installedHome(), {env: {COUNTINGHOUSE_CREDENTIAL_1: 'planted-one', COUNTINGHOUSE_CREDENTIAL_7: 'planted-seven', GITHUB_TOKEN: 'from-the-client', OTHER: 'kept'}});
   await start({passThrough: []}, f);
-  assert.match(f.err, /sends GITHUB_TOKEN to/);
   const env = f.spawned[0].env;
-  assert.ok(!('COUNTINGHOUSE_GITHUB_TOKEN' in env), 'the placeholder would be sent first');
-  assert.strictEqual(env.GITHUB_TOKEN, 'real');
+  assert.strictEqual(env.COUNTINGHOUSE_CREDENTIAL_1, STORED);
+  assert.ok(!('COUNTINGHOUSE_CREDENTIAL_7' in env), 'a planted slot name is gone');
   assert.strictEqual(env.OTHER, 'kept');
-  assert.deepStrictEqual(f.spawned[0].remoteCredentials, {'https://api.githubcopilot.com': ['GITHUB_TOKEN']});
+  const named = Object.values(f.spawned[0].remoteCredentials.modules).flatMap((o) => Object.values(o).flatMap((v) => Object.keys(v)));
+  assert.deepStrictEqual(named, [VAR], 'only the module\'s own declared variable, never a client variable');
 });
 
-test('one consented variable per origin: the chosen one alone is listed and passed, every other allowed one removed', async () => {
-  const f = io(installedHome(), {env: {COUNTINGHOUSE_GITHUB_TOKEN: 'first', GITHUB_TOKEN: 'second'}});
-  await start({passThrough: []}, f);
-  assert.deepStrictEqual(f.spawned[0].remoteCredentials, {'https://api.githubcopilot.com': ['COUNTINGHOUSE_GITHUB_TOKEN']});
-  assert.strictEqual(f.spawned[0].env.COUNTINGHOUSE_GITHUB_TOKEN, 'first');
-  assert.ok(!('GITHUB_TOKEN' in f.spawned[0].env));
-  assert.match(f.err, /COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com/);
-  assert.ok(!/ GITHUB_TOKEN to/.test(f.err));
-});
 
 test('start sweeps this host\'s run directories whose start died, and nothing else', async () => {
   const home = installedHome();
@@ -219,21 +233,17 @@ test('start refuses every pass-through option not known safe, naming it, and sta
   }
 });
 
-test('start refuses a declared remote whose origin is not allowed, naming the package and origin, and starts nothing', async () => {
+// section 6.6: a binding is used only for the origin it was entered for; a
+// module that now declares another gets no key and is not loaded
+test('a module whose declared origin is not the one its key was stored for gets no key and is not loaded, and is told why', async () => {
   const home = installedHome({remotes: [{...GITHUB, url: 'https://collector.example/mcp/'}]});
   const f = io(home);
-  assert.strictEqual(await start({passThrough: []}, f), 1);
-  assert.strictEqual(f.spawned.length, 0);
-  assert.match(f.err, /@countinghouse\/ch-access-github.*https:\/\/collector\.example/);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.deepStrictEqual(f.spawned[0].remoteCredentials, {version: 2, modules: {}});
+  assert.ok(!('COUNTINGHOUSE_CREDENTIAL_1' in f.spawned[0].env));
+  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which sends its credential somewhere new: run `ch-local credentials add ch-access-github` again/);
 });
 
-test('start refuses a declared variable the origin is not pinned to receive, naming the package, origin and variable', async () => {
-  const home = installedHome({remotes: [{...GITHUB, credential: {...GITHUB.credential, fallbackEnv: 'AWS_SECRET_ACCESS_KEY'}}]});
-  const f = io(home);
-  assert.strictEqual(await start({passThrough: []}, f), 1);
-  assert.strictEqual(f.spawned.length, 0);
-  assert.match(f.err, /@countinghouse\/ch-access-github.*AWS_SECRET_ACCESS_KEY.*https:\/\/api\.githubcopilot\.com/);
-});
 
 test('start gives the runtime the defaultRepo device config from the origin remote, and removes it after', async () => {
   for (const origin of ['https://github.com/octo/widgets.git', 'git@github.com:octo/widgets.git', 'https://github.com/octo/widgets']) {
@@ -296,21 +306,20 @@ test('repoFromRemote reads owner/name from GitHub remotes and nothing else', () 
   assert.strictEqual(repoFromRemote('https://github.com/octo/.github'), 'octo/.github');
 });
 
-test('start names the credential variable and never prints a value; with none present it loads nothing and says why', async () => {
+test('start names the credential and never prints a value; with none stored it loads nothing that needs one, and says how to add it', async () => {
   const home = installedHome();
   const f = io(home);
   await start({passThrough: []}, f);
   assert.match(f.err, /loading ch-pack-ci-failure-triage/);
-  assert.match(f.err, /GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com/);
-  assert.ok(!(f.out + f.err).includes('secret'));
+  assert.match(f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
+  assert.ok(!(f.out + f.err).includes(STORED));
   assert.strictEqual(f.out, '', 'stdout is the MCP channel: start writes nothing there');
-  const none = io(home, {env: {}});
+  // none stored: a token in the client's environment is no credential (section 6.9)
+  const none = io(installedHome({bound: null}), {env: {GITHUB_TOKEN: 'from-the-client', COUNTINGHOUSE_GITHUB_TOKEN: 'from-the-client'}});
   assert.strictEqual(await start({passThrough: []}, none), 0, none.err);
   assert.strictEqual(none.spawned.length, 1);
-  assert.ok(!none.spawned[0].args.includes('--loadModule'), 'the runtime starts with no pack');
-  // why: gh gave no token and the environment has none (gh auth login, or the plaintext fallback)
-  assert.match(none.err, /run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
-  assert.match(none.err, /not loading ch-pack-ci-failure-triage: it needs the GitHub token/);
+  assert.ok(!none.spawned[0].args.includes('--loadModule'), 'the runtime starts with no module');
+  assert.match(none.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`/);
 });
 
 test('start with nothing installed says to install, and starts nothing', async () => {
@@ -351,17 +360,19 @@ test('after the runtime starts, SIGINT, SIGTERM and SIGHUP are forwarded to it o
   assert.strictEqual(f.signal, null, 'the handlers are removed when start returns');
 });
 
-test('start loads every installed pack whose credential is set, one --loadModule each', async () => {
+test('start loads every installed module whose credential is stored, one --loadModule each; one without says how to add it', async () => {
   const home = installedHome({other: true});
-  const both = io(home, {env: {GITHUB_TOKEN: 'a', OTHER_TOKEN: 'b'}});
+  bindOther(home);
+  const both = io(home);
   assert.strictEqual(await start({passThrough: []}, both), 0, both.err);
   const args = both.spawned[0].args;
   assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--loadModule').map((d) => path.relative(path.join(home, 'module-store'), path.dirname(d))),
     [path.join('@countinghouse', 'ch-pack-ci-failure-triage'), path.join('@countinghouse', 'ch-pack-other')]);
-  const one = io(home, {env: {GITHUB_TOKEN: 'a'}});
+  assert.deepStrictEqual(Object.keys(both.spawned[0].remoteCredentials.modules).sort(), [ACCESS, OTHER]);
+  const one = io(installedHome({other: true}));
   await start({passThrough: []}, one);
   assert.strictEqual(one.spawned[0].args.filter((a) => a === '--loadModule').length, 1);
-  assert.match(one.err, /not loading ch-pack-other: set OTHER_TOKEN/);
+  assert.match(one.err, /not loading ch-pack-other: it needs a credential \(OTHER_TOKEN, sent to https:\/\/api\.other\.example\): run `ch-local credentials add ch-pack-other`/);
 });
 
 // By module (#413 section 5.2; L2a): a top-level module two packs record is
@@ -485,15 +496,16 @@ test('CH_LOCAL_REMOTE_MAP is refused without CH_LOCAL_DEV=1, for an origin the l
 // The gates are environment variables, which a client's config can set too
 // (review of the acceptance branch): under a map, only an acceptance run's own
 // generated token is sent, so a real one never reaches whatever listens there.
-test('under CH_LOCAL_REMOTE_MAP a credential that is not an acceptance token is refused, and nothing starts', async () => {
-  const real = 'ghp_' + 'B'.repeat(36);
-  for (const name of ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']) {
-    const f = io(installedHome(), {env: {[name]: real, CH_LOCAL_DEV: '1', COUNTINGHOUSE_ACCEPTANCE: '1', CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://127.0.0.1:9745'}});
-    assert.strictEqual(await start({passThrough: []}, f), 2, name);
-    assert.match(f.err, /CH_LOCAL_REMOTE_MAP sends only an acceptance run's own token \(chacc_\.\.\.\)/);
-    assert.ok(!f.err.includes(real), 'the token is never printed');
-    assert.strictEqual(f.spawned.length, 0, name);
-  }
+test('under CH_LOCAL_REMOTE_MAP only an acceptance token gets a slot: another stored value is not given, and its module not loaded', async () => {
+  const mapEnv = {CH_LOCAL_DEV: '1', COUNTINGHOUSE_ACCEPTANCE: '1', CH_LOCAL_REMOTE_MAP: 'https://api.githubcopilot.com=http://127.0.0.1:9745'};
+  const f = io(installedHome(), {env: mapEnv});
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.ok(!('COUNTINGHOUSE_CREDENTIAL_1' in f.spawned[0].env), 'never a real key past the map');
+  assert.match(f.err, /under an acceptance run's origin map only an acceptance token is given/);
+  assert.ok(!f.err.includes(STORED), 'the value is never printed');
+  const acc = io(installedHome({bound: 'chacc_test_value_1'}), {env: mapEnv});
+  assert.strictEqual(await start({passThrough: []}, acc), 0, acc.err);
+  assert.strictEqual(acc.spawned[0].env.COUNTINGHOUSE_CREDENTIAL_1, 'chacc_test_value_1');
 });
 
 // The GitHub token from `gh auth token` (maintainer's decision, 2026-11-13):
@@ -516,8 +528,9 @@ const filesUnder = (dir) => {
 const ghLoggedIn = (f) => { f.exec = async(cmd) => (cmd === 'gh' ? {status: 0, stdout: 'gho_exampleexampleexample\n'} : {status: 0, stdout: ''}); return f; };
 const withExec = (f, exec) => { f.exec = async (cmd, args, opts) => { f.execs.push({cmd, args, opts}); return exec(cmd, args, opts); }; return f; };
 
-test('start asks gh for the GitHub token and gives it to the runtime in its environment only, never in a file or a line', async () => {
-  const home = installedHome();
+test('a binding whose source is gh: start asks gh once, gives its token in the slot only, never in a file or a line', async () => {
+  const home = installedHome({bound: null});
+  bindGh(home);
   const token = madeToken();
   const plain = madeToken();
   const f = withExec(io(home, {env: {GITHUB_TOKEN: plain, GH_TOKEN: plain}}), ghAnswers({status: 0, stdout: `${token}\n`, stderr: ''}));
@@ -530,67 +543,39 @@ test('start asks gh for the GitHub token and gives it to the runtime in its envi
   for (const v of ['GH_TOKEN', 'GITHUB_TOKEN']) assert.strictEqual(gh[0].opts.env[v], undefined, v);
   assert.ok(gh[0].opts.timeout > 0);
   const {env, remoteCredentials, config} = f.spawned[0];
-  assert.strictEqual(env.COUNTINGHOUSE_GITHUB_TOKEN, token);
-  assert.strictEqual(env.GITHUB_TOKEN, undefined, 'the plaintext fallback is not passed when gh gave a token');
-  assert.deepStrictEqual(Object.values(remoteCredentials), [['COUNTINGHOUSE_GITHUB_TOKEN']]);
-  assert.match(f.err, /GitHub token from `gh auth token`, held in memory/);
+  assert.strictEqual(env.COUNTINGHOUSE_CREDENTIAL_1, token);
+  assert.deepStrictEqual(remoteCredentials, {version: 2, modules: {[ACCESS]: {[GH_ORIGIN]: {[VAR]: 'COUNTINGHOUSE_CREDENTIAL_1'}}}});
+  assert.match(f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github \(your gh login's token, held in memory\)/);
   for (const text of [f.err, f.out, JSON.stringify(config), JSON.stringify(remoteCredentials), ...during, ...filesUnder(home)]) {
     assert.ok(!text.includes(token) && !text.includes(plain), 'no token value is written or said');
   }
+  // a stored binding: gh is not asked at all
+  const stored = withExec(io(installedHome()), ghAnswers({status: 0, stdout: `${madeToken()}\n`, stderr: ''}));
+  await start({passThrough: []}, stored);
+  assert.deepStrictEqual(stored.execs.filter((e) => e.cmd === 'gh'), []);
 });
 
-test('gh not installed and no token in the environment: no pack loads, and the message names gh auth login and the plaintext fallback', async () => {
-  const f = withExec(io(installedHome(), {env: {}}), ghAnswers({status: null, stdout: '', stderr: 'spawn gh ENOENT'}));
+test('a gh binding with gh not installed: its module is not loaded, and the message names gh auth login and credentials add', async () => {
+  const home = installedHome({bound: null});
+  bindGh(home);
+  const f = withExec(io(home, {env: {}}), ghAnswers({status: null, stdout: '', stderr: 'spawn gh ENOENT'}));
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.strictEqual(f.spawned.length, 1);
-  assert.ok(!f.spawned[0].args.includes('--loadModule'), 'the runtime starts with no pack');
-  assert.match(f.err, /gh, the GitHub CLI, was not found or did not answer/);
-  assert.match(f.err, /`gh auth login`/);
-  assert.match(f.err, /plaintext in that client's config/);
+  assert.ok(!f.spawned[0].args.includes('--loadModule'), 'the runtime starts with no module');
+  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which has no token from your gh login: run `gh auth login`, or `ch-local credentials add ch-access-github`/);
 });
 
-test('gh not logged in: a plain message naming gh auth login, and gh\'s own output is never repeated', async () => {
+test('a gh binding with gh not logged in: gh\'s own output is never repeated', async () => {
   const leaked = madeToken();
-  const f = withExec(io(installedHome(), {env: {}}), ghAnswers({status: 1, stdout: '', stderr: `no oauth token found for github.com ${leaked}`}));
+  const home = installedHome({bound: null});
+  bindGh(home);
+  const f = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: `no oauth token found for github.com ${leaked}`}));
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.match(f.err, /gh is not logged in to github\.com: run `gh auth login`/);
+  assert.match(f.err, /has no token from your gh login/);
   assert.ok(!f.err.includes(leaked) && !f.err.includes('no oauth token'), f.err);
 });
 
-test('an explicit COUNTINGHOUSE_GITHUB_TOKEN is the user\'s choice (often narrower than gh\'s): used as is, gh not asked, named as plaintext', async () => {
-  const plain = madeToken();
-  const f = withExec(io(installedHome(), {env: {COUNTINGHOUSE_GITHUB_TOKEN: plain}}), ghAnswers({status: 0, stdout: `${madeToken()}\n`, stderr: ''}));
-  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.strictEqual(f.spawned[0].env.COUNTINGHOUSE_GITHUB_TOKEN, plain);
-  assert.deepStrictEqual(f.execs.filter((e) => e.cmd === 'gh'), []);
-  assert.match(f.err, /using COUNTINGHOUSE_GITHUB_TOKEN from the environment; if a client's config sets it, it is stored there in plaintext/);
-  assert.ok(!f.err.includes(plain));
-});
 
-test('the environment fallback: with gh unavailable, GITHUB_TOKEN from the client\'s environment is used and named as plaintext', async () => {
-  const plain = madeToken();
-  for (const answer of [{status: null, stdout: '', stderr: ''}, {status: 1, stdout: '', stderr: ''}, {status: 0, stdout: 'not a token value\n', stderr: ''}]) {
-    const f = withExec(io(installedHome(), {env: {GITHUB_TOKEN: plain}}), ghAnswers(answer));
-    assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-    assert.strictEqual(f.spawned[0].env.GITHUB_TOKEN, plain);
-    assert.match(f.err, /using GITHUB_TOKEN from the environment; if a client's config sets it, it is stored there in plaintext/);
-    assert.ok(!f.err.includes(plain));
-  }
-});
 
-test('a pack that takes only GITHUB_TOKEN gets gh\'s token too, and with none it says it needs the GitHub token, once', async () => {
-  const home = installedHome();
-  // the release's pins give the pack GITHUB_TOKEN only
-  setPackCredentials(home, {'ci-failure-triage': ['GITHUB_TOKEN']});
-  const token = madeToken();
-  const f = withExec(io(home, {env: {}}), ghAnswers({status: 0, stdout: `${token}\n`, stderr: ''}));
-  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.ok(Object.values(f.spawned[0].env).includes(token));
-  const g = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
-  assert.strictEqual(await start({passThrough: []}, g), 0, g.err);
-  assert.match(g.err, /not loading ch-pack-ci-failure-triage: it needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`/);
-  assert.doesNotMatch(g.err, /set GITHUB_TOKEN in the environment your client starts from/);
-});
 
 // The review of ch-local #13's re-check.
 test('a settings file that is not valid stops start, saying why and how to fix it; nothing is spawned', async () => {
@@ -817,9 +802,9 @@ test('start in session mode takes its home from session.home, not the environmen
   const {args, env} = f.spawned[0];
   assert.strictEqual(valueOf(args, '--storePath'), path.join(home, 'store'), 'the home named, not ~/.countinghouse');
   assert.strictEqual(args[0], path.join(home, 'app', 'node_modules', 'countinghouse', 'framework.js'));
-  // the runtime's environment: the allowlist, and the one token start adds
-  assert.deepStrictEqual(Object.keys(env).sort(), ['COUNTINGHOUSE_GITHUB_TOKEN', 'HOME', 'PATH']);
-  assert.strictEqual(env.COUNTINGHOUSE_GITHUB_TOKEN, 'gho_exampleexampleexample');
+  // the runtime's environment: the allowlist, and the stored key's slot
+  assert.deepStrictEqual(Object.keys(env).sort(), ['COUNTINGHOUSE_CREDENTIAL_1', 'HOME', 'PATH']);
+  assert.strictEqual(env.COUNTINGHOUSE_CREDENTIAL_1, STORED);
 });
 
 test('start in session mode traps only SIGINT and SIGTERM, and runs the runtime in its own process group', async () => {
@@ -902,7 +887,8 @@ test('start --own-runtime tells why the session runs its own runtime: token, cre
   const value = `example-${require('node:crypto').randomBytes(6).toString('hex')}`;
   const cases = [
     [['--own-runtime-reason', 'token'], /^this session chooses a GitHub token the shared runtime doesn't hold, so it runs its own runtime$/],
-    [['--own-runtime-reason', 'credential'], /^this session runs its own runtime: ch-pack-other's OTHER_TOKEN comes from this session's environment, which the shared runtime doesn't hold$/],
+    // (no longer produced by this ch-local, still read from an older shim)
+    [['--own-runtime-reason', 'credential'], /^a pack credential in this session's environment isn't the shared runtime's, so it runs its own runtime$/],
     [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'the conditions check timed out after 10 s\u202e\n\u2028'], /^the client checks could not run \(the conditions check timed out after 10 s   \), so this session runs its own runtime$/],
     [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'gh\u00ad hid\u{e0041}\u{e0042}den\ufff9 text'], /^the client checks could not run \(gh  hid  den  text\), so this session runs its own runtime$/],
     [['--own-runtime-reason', 'later-reason'], /^this session can't share the runtime \(later-reason\), so it runs its own$/],
@@ -1037,7 +1023,7 @@ test('start in session mode sends the daemon\'s restore first, passes the table\
 // Now it starts with no pack (ch-local's own tools), its restore first as
 // ever, and the sessions are told which pack is not loaded and why.
 test('start in session mode with no pack loadable: the shared runtime starts with no pack, and tells why', {skip: process.platform === 'win32' && 'a socket path: Windows names a pipe'}, async () => {
-  const home = installedHome();
+  const home = installedHome({bound: null});
   const f = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: ''}));
   const sent = [];
   let deliver = null;
@@ -1055,15 +1041,15 @@ test('start in session mode with no pack loadable: the shared runtime starts wit
   for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /no pack is loaded/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   assert.strictEqual(sent[0].type, 'restore', 'the restore is still the first request');
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => /^not loading ch-pack-ci-failure-triage: it needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`/.test(t)), told.join(' | '));
+  assert.ok(told.some((t) => /^not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`/.test(t)), told.join(' | '));
   assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   end(0);
   await done;
 });
 
-test('start in session mode never tells a session to set a pack\'s own credential: it comes only from a session\'s environment, which runs its own runtime', {skip: process.platform === 'win32' && 'a socket path: Windows names a pipe'}, async () => {
+test('start in session mode says how to add a missing credential, never to set a variable in a client\'s environment', {skip: process.platform === 'win32' && 'a socket path: Windows names a pipe'}, async () => {
   const home = installedHome({other: true});
-  const f = ghLoggedIn(io(home, {env: {}}));
+  const f = io(home, {env: {}});
   const sent = [];
   let deliver = null;
   let end = null;
@@ -1077,8 +1063,8 @@ test('start in session mode never tells a session to set a pack\'s own credentia
   deliver({type: 'ready'});
   for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /not loading ch-pack-other/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => t === 'not loading ch-pack-other: its credential (OTHER_TOKEN) comes only from a session\'s own environment, and a session whose client sets it runs its own runtime, with the module'), told.join(' | '));
-  assert.ok(!told.some((t) => /set OTHER_TOKEN in the environment your client starts from/.test(t)));
+  assert.ok(told.some((t) => t === 'not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run `ch-local credentials add ch-pack-other`'), told.join(' | '));
+  assert.ok(!told.some((t) => /environment/.test(t)), told.join(' | '));
   end(0);
   await done;
 });

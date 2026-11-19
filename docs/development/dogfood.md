@@ -57,13 +57,13 @@ The script ends with the commands to run:
     claude mcp add --scope user countinghouse -- <node> <home>/bin/ch-local.js start --stdio
     claude --resume
 
-The launcher asks `gh auth token` for the token at each start and holds it in
-memory: no token goes into Claude Code's configuration or any file. gh's
-token can write to your repositories; for a fine-grained, read-only one, set
-it in `COUNTINGHOUSE_GITHUB_TOKEN` in the environment Claude Code starts from
-(plaintext there), and the launcher uses it instead. ch-local
-sends it only to GitHub's MCP server (`https://api.githubcopilot.com`, the
-one origin the launcher allows). With a home other than `~/.countinghouse`,
+`ch-local install` then asks for ch-access-github's credential: answer yes
+to its `gh` login offer, and each start asks `gh auth token` and holds the
+token in memory; no token goes into Claude Code's configuration or any file.
+gh's token can write to your repositories; for a fine-grained, read-only one,
+answer no and paste it (`ch-local credentials add ch-access-github` does the
+same later). ch-local sends it only to GitHub's MCP server
+(`https://api.githubcopilot.com`, the address the module declares). With a home other than `~/.countinghouse`,
 the line also passes `COUNTINGHOUSE_HOME`.
 
 The script then prints the `status` and `uninstall` commands for that home,

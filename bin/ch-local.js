@@ -29,7 +29,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
        ch-local settings [get | set <name> <value> | reset]
-       ch-local credentials [list | add github [--module <package>] | remove github]
+       ch-local credentials [list | add <module> [--to <origin>] | remove <module>]
        ch-local start --stdio [countinghouse options]
 `;
 
@@ -113,13 +113,13 @@ async function main(argv, io) {
       return await require('../lib/clients').add(rest[0], io);
     }
     if (command === 'credentials') {
-      const a = parse(rest, {values: ['--module']});
+      const a = parse(rest, {values: ['--to']});
       if (a == null) return usage();
       const [action = 'list', name, ...more] = a.positional;
-      if (more.length > 0 || (action === 'list' && (name !== undefined || a.values['--module'] !== undefined))) return usage();
+      if (more.length > 0 || (action === 'list' && (name !== undefined || a.values['--to'] !== undefined))) return usage();
       if ((action === 'add' || action === 'remove') && name === undefined) return usage();
-      if (action === 'remove' && a.values['--module'] !== undefined) return usage();
-      return await require('../lib/credentials-command').credentials({action, name, module: a.values['--module'] || null}, io);
+      if (action === 'remove' && a.values['--to'] !== undefined) return usage();
+      return await require('../lib/credentials-command').credentials({action, name, to: a.values['--to'] || null}, io);
     }
     if (command === 'uninstall') {
       const a = parse(rest, {flags: ['--keep-data']});
@@ -247,6 +247,15 @@ function realIo() {
     // A terminal both ways (credentials add: the prompt seen, the typing not)
     terminal: Boolean(process.stdin.isTTY && process.stderr.isTTY),
     readHidden: (prompt) => require('../lib/hidden-input').readHidden(prompt),
+    // standard input, read whole up to max bytes (credentials add --to: a
+    // key piped in); more than max is cut there, and the caller refuses it
+    readStdin: (max) => new Promise((resolve, reject) => {
+      const chunks = [];
+      let size = 0;
+      process.stdin.on('data', (c) => { if (size <= max) { chunks.push(c); size += c.length; } });
+      process.stdin.on('end', () => resolve(Buffer.concat(chunks).subarray(0, max).toString('utf8')));
+      process.stdin.on('error', reject);
+    }),
     // Read when used: a directory removed under a shell makes process.cwd()
     // throw, and only start needs it (null: git runs wherever it is).
     get cwd() { try { return process.cwd(); } catch (err) { return null; } },

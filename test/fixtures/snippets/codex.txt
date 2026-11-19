@@ -1,4 +1,3 @@
 [mcp_servers.countinghouse]
 command = "/usr/local/bin/node"
 args = ["/home/dev/.countinghouse/bin/ch-local.js", "start", "--stdio"]
-env_vars = ["COUNTINGHOUSE_GITHUB_TOKEN", "GITHUB_TOKEN"]

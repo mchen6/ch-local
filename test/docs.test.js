@@ -16,11 +16,14 @@ test('every client has an install page with its snippet command and a removal se
   }
 });
 
-test('every page with an entry says the token comes from the environment the client is started from', () => {
+// #413 section 6.9 (L5a): no page sends a user to a client environment for a
+// credential; each names credentials add
+test('every page with an entry says a credential is stored with credentials add, never taken from the client\'s environment', () => {
   for (const client of CLIENTS.filter((c) => c !== 'claude-desktop')) {
     const page = fs.readFileSync(path.join(DOCS, `${client}.md`), 'utf8');
-    assert.match(page, /environment\s+[^.]{1,30}?\s+is\s+started\s+from/, client);
-    assert.match(page, /dock/, client);
+    assert.match(page, /ch-local credentials add ch-access-github/, client);
+    assert.match(page, /a token in the\s+environment your client starts from is not used/, client);
+    assert.ok(!/GITHUB_TOKEN|env_vars/.test(page), client);
   }
 });
 

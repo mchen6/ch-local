@@ -17,26 +17,42 @@ under `mcpServers`:
 
 The entry has no `type` and no `env` ([Cursor's MCP docs](https://cursor.com/docs/context/mcp)).
 
-## Token
+## Credentials
 
-The launcher asks the GitHub CLI for the token each time it starts
-(`gh auth token`) and holds it in memory: log `gh` in once with
-`gh auth login`. No config entry sets a token, and none is written to a file.
-A token from `gh auth login` carries gh's scopes, which can write to your
-repositories. For a narrower one, set a fine-grained, read-only token
-(Actions read, Contents read) in `COUNTINGHOUSE_GITHUB_TOKEN`: when it is set,
-the launcher uses it and does not ask `gh`.
+A credential belongs to a module: the key, for that module's variable, to
+the one address the module declares. `ch-local install` and `add-pack` ask
+for each module that needs one at their end, or name it with no terminal;
+any time later, at a terminal:
 
-For headless or CI use, where `gh` is not logged in, the launcher falls back
-to `GITHUB_TOKEN` from the environment Cursor is started from. A token set
-in the environment is plaintext in that client's config, or wherever you set
-it. A client started from the dock or the Start menu may not find `gh` on the
-`PATH` your shell sets.
+```
+ch-local credentials add ch-access-github
+```
 
+It shows the variable and the address the key will be sent to before it asks
+anything, then reads the key with nothing shown as you type or paste it. For
+GitHub's MCP server (exactly `https://api.githubcopilot.com`) it first offers
+your `gh` login, if `gh` has one (default No): a yes stores no key, and each
+start asks `gh auth token` and holds it in memory. A token from
+`gh auth login` carries gh's scopes, which can write to your repositories; a
+fine-grained, read-only token (Actions read, Contents read) is narrower.
 
-Started from the dock, the Start menu or a desktop icon, Cursor does not
-see what your shell's profile sets: start it from a terminal (`cursor .`), or set
-the variable for your desktop session.
+The key is kept in `credentials/` in the ch-local home, readable by your user
+only. Another program running as your user can read that file, as it can read
+`gh`'s own token; ch-local doesn't use the system keychain yet.
+`ch-local credentials list` shows each module's variable, address and source,
+never a key; `ch-local credentials remove <module>` removes it. The shared
+runtime takes an added or removed key once its calls in flight finish; a
+session on a runtime of its own unloads a removed or changed one at once, and
+takes a new one at its client's next start.
+
+No client config entry sets or forwards a credential, and a token in the
+environment your client starts from is not used. A key is used only for the
+address it was added for: a module version that sends it somewhere else is
+not loaded until you add it again. Never paste a token into the conversation.
+
+For headless or CI use, pipe the key in and name the address:
+`ch-local credentials add ch-access-github --to https://api.githubcopilot.com`
+reads one line from standard input.
 
 ## Node
 
