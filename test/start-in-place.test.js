@@ -531,9 +531,19 @@ function moduleMessageProblem(m) {
 // (an unload has exactly the keys of an accepted unload vector: id 5, 9
 // "off" or 10 "calls" with because; A-reason)
 const keysOf = (m) => Object.keys(m).filter((k) => k !== 'id').sort().join(',');
+// what ch-local sends the runtime: the module form's own types; set (a
+// setting the runtime takes at once); and the session layer's own, each
+// with rules of its own (restore: the restoreRows vectors; drain and
+// idle-stop: the daemon's)
+const SENT_TYPES = new Set([...new Set(MODULE_V.accepted.map((e) => e.message.type))].filter((t) => t !== 'module-stopped').concat('set', 'restore', 'drain', 'idle-stop'));
 const UNLOAD_SHAPES = new Set(MODULE_V.accepted.filter((e) => e.message.type === 'unload').map((e) => keysOf(e.message)));
 const holdsToTheVectors = (requests) => {
   for (const m of requests) {
+    // (an answer to the runtime's own ask carries no type: not a message
+    // ch-local sends of itself)
+    if (m.type === undefined && typeof m.id === 'string' && typeof m.ok === 'boolean') continue;
+    // (a type the vectors don't define is never sent: the medium on L6, 4)
+    assert.ok(SENT_TYPES.has(m.type), `a message of a type the vectors define: ${JSON.stringify(m)}`);
     if (m.type === 'set') assert.strictEqual(setProblem(m), null, JSON.stringify(m));
     else assert.strictEqual(moduleMessageProblem(m), null, JSON.stringify(m));
     if (m.type === 'unload') {
@@ -1452,9 +1462,13 @@ test('L6: a load-pack or unload-pack is no request the applier answers: CONTROL_
     const said = notices(s).length;
     assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_UNKNOWN'});
     assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r2', ok: false, code: 'CONTROL_UNKNOWN'});
-    await new Promise((r) => setTimeout(r, 300));
+    // (ordered, never timed: an apply after the asks, its request awaited;
+    // anything the asks set going would have come before it: the medium on
+    // L6, 2)
+    await settled(s, {'pack.other': false});
     assert.ok(!s.requests.slice(before).some((m) => m.type === 'load' || m.type === 'unload'), JSON.stringify(s.requests.slice(before)));
-    assert.strictEqual(notices(s).length, said, 'nothing said');
+    assert.ok(!notices(s).slice(said).some(([, t]) => /turned (on|off)|cannot be turned on|enabled\./.test(t)), JSON.stringify(notices(s).slice(said)));
+    holdsToTheVectors(s.requests);
   } finally {
     s.end();
     await s.done;

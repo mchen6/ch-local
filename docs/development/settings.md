@@ -242,6 +242,16 @@ one start. The runtime sends no `load-pack` or `unload-pack` ask any more
 (M5b, and M6 removed the pack form), and ch-local answers none: one that
 came would be the control channel's `CONTROL_UNKNOWN`.
 
+What a session hears instead comes with the unload: a module turned off is
+unloaded with `reason: "off"`, and a caller that went with it with
+`reason: "calls"` and `because`. On a runtime that serves the settings tool
+with the module off in its settings file, each session is told the
+runtime's own text, with the way back (countinghouse's moduleMessages
+vectors, ids 9 and 10). Anywhere else, the unload's own notice is told
+(`<module> turned off`). A module the operator's ceiling refuses is
+unloaded with no reason, its notice saying the operator's settings don't
+allow it.
+
 ## Limits
 
 - `history.jsonl` is a record for the user, not a security boundary: the user
