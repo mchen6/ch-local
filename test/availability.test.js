@@ -212,3 +212,19 @@ test('credentials are asked callees first: the caller reports its callee\'s miss
   assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-pack-b, which is not available (set B_TOKEN)');
   assert.ok(!asked.includes(A), JSON.stringify(asked));
 });
+
+// A-reason (#449's moduleMessages id 10): a caller's unload names the module
+// turned off at the bottom of its chain (because), as the runtime checks
+// that module's enabled.* to tell its line
+test('a caller\'s chain names its root module: the callee itself, or through a part the module at the bottom', () => {
+  const off = {...NONE, off: (m) => (m === B ? 'it is turned off' : null)};
+  const direct = home({calls: {[A]: ['scenario', ['ch-pack-b/s.go']], [B]: ['scenario', []]}});
+  const d = availability(direct.where, direct.record, {release: releaseOf(PACKS), seams: off}).unavailable.get(A);
+  assert.deepStrictEqual([d.kind, d.root, d.rootModule], ['calls', 'off', B]);
+  // a calls the part x, which calls b, turned off: a's root is b, not x
+  const chain = home({calls: {[A]: ['scenario', ['ch-step-x/s.go']], [X]: ['part', ['ch-pack-b/s.go']], [B]: ['scenario', []]}});
+  const c = availability(chain.where, chain.record, {release: releaseOf(PACKS), seams: off}).unavailable.get(A);
+  assert.deepStrictEqual([c.kind, c.root, c.rootModule], ['calls', 'off', B]);
+  // a module unavailable for itself is its own root
+  assert.strictEqual(availability(chain.where, chain.record, {release: releaseOf(PACKS), seams: off}).unavailable.get(B).rootModule, B);
+});
