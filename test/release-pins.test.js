@@ -3,7 +3,8 @@ require('./tmp-dirs');
 // lib/release-pins.json and lib/release-pins.js (docs/development/
 // auto-upgrade.md, "The trust chain", step 5): what a release pins, as data,
 // never code. The pins (each with its identity), the runtime lockfile, the
-// packs' composition and credentials, and the allowed origins. A new
+// packs' modules, and each module's description (its credential, calls and
+// confirm settings: version 2, #413 section 9.3), the origins derived. A new
 // release's file is parsed from the verified bytes in memory; what it adds
 // that the user must agree to is listed.
 const test = require('node:test');
@@ -17,17 +18,19 @@ const SHA = `sha512-${'A'.repeat(86)}==`;
 const pin = (v = '1.2.3') => ({version: v, integrity: SHA, repository: 'mchen6/ch-pack-ci-failure-triage', repositoryId: 1000001, ownerId: 2000002, workflow: '.github/workflows/publish.yml', tag: `v${v}`});
 const problemOf = (doc) => parseReleasePins(doc).problem;
 
-test('the shipped file parses, and lib/allowlist.js reads its packs, origins and pins from it, unchanged for its callers', () => {
+test('the shipped file parses (version 2), and lib/allowlist.js reads its packs, descriptions, origins and pins from it, unchanged for its callers', () => {
   const r = parseReleasePins(shipped());
   assert.strictEqual(r.problem, undefined, r.problem);
-  const {ALLOWLIST, ALLOWED_ORIGINS} = require('../lib/allowlist');
+  const {ALLOWLIST, ALLOWED_ORIGINS, originsOf} = require('../lib/allowlist');
   assert.deepStrictEqual(ALLOWLIST.packs, r.pins.packs);
+  assert.deepStrictEqual(ALLOWLIST.modules, r.pins.modules);
   assert.deepStrictEqual(ALLOWLIST.runtime, r.pins.runtime);
   assert.deepStrictEqual(ALLOWLIST.pins, r.pins.pins);
-  assert.deepStrictEqual(ALLOWED_ORIGINS, r.pins.allowedOrigins);
   assert.strictEqual(ALLOWLIST.release.version, require('../package.json').version, 'the version is the package\'s');
-  assert.deepStrictEqual(ALLOWLIST.packs['ci-failure-triage'].credentials, ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']);
-  assert.deepStrictEqual(ALLOWED_ORIGINS['https://api.githubcopilot.com'], ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']);
+  // the origins are the descriptions' credentials, each with its variables
+  // (fallbackEnv is never described: section 6.1)
+  assert.deepStrictEqual(ALLOWED_ORIGINS, originsOf(r.pins.modules));
+  assert.deepStrictEqual(ALLOWED_ORIGINS['https://api.githubcopilot.com'], ['COUNTINGHOUSE_GITHUB_TOKEN']);
   assert.ok(Object.isFrozen(ALLOWED_ORIGINS) && Object.isFrozen(ALLOWLIST.packs['ci-failure-triage']), 'read-only');
 });
 
@@ -71,17 +74,26 @@ test('a pin carries its whole identity, a strict version and a sha512', () => {
   assert.match(String(problemOf(stranger)), /no package of this release/);
 });
 
-test('the packs, origins and runtime: exact shapes, nothing beyond them', () => {
+test('the packs, the module descriptions and the runtime: exact shapes, nothing beyond them', () => {
+  const ACCESS = '@countinghouse/ch-access-github';
+  const TRIAGE = '@countinghouse/ch-pack-ci-failure-triage';
   const cases = [
     (d) => { d.extra = 1; },
-    (d) => { d.v = 2; },
-    (d) => { d.packs['ci-failure-triage'].packages = []; },
-    (d) => { d.packs['ci-failure-triage'].credentials = ['lowercase']; },
-    (d) => { d.packs['ci-failure-triage'].script = 'x'; },
-    (d) => { d.packs['Bad Name'] = {packages: ['@countinghouse/x'], credentials: []}; },
-    (d) => { d.allowedOrigins['http://api.example.invalid'] = ['X_TOKEN']; },
-    (d) => { d.allowedOrigins['https://api.example.invalid/path'] = ['X_TOKEN']; },
-    (d) => { d.allowedOrigins['https://api.example.invalid'] = 'X_TOKEN'; },
+    (d) => { d.v = 1; },
+    (d) => { d.packs['ci-failure-triage'].modules = []; },
+    (d) => { d.packs['ci-failure-triage'].packages = d.packs['ci-failure-triage'].modules; },
+    (d) => { d.packs['ci-failure-triage'].credentials = []; },
+    (d) => { d.packs['Bad Name'] = {modules: ['@countinghouse/x']}; },
+    (d) => { d.allowedOrigins = {}; },
+    (d) => { d.modules[ACCESS].credentials[0].variable = 'not a-variable'; },
+    (d) => { d.modules[ACCESS].credentials[0].origin = 'http://api.example.invalid'; },
+    (d) => { d.modules[ACCESS].credentials[0].origin = 'https://api.example.invalid/path'; },
+    (d) => { d.modules[ACCESS].credentials.push({variable: 'X_TOKEN', origin: 'https://api.example.invalid'}); },
+    (d) => { d.modules[ACCESS].extra = 1; },
+    (d) => { d.modules['@countinghouse/ch-step-orphan'] = {credentials: [], calls: [], confirmSettings: {}}; },
+    (d) => { delete d.modules[ACCESS]; },
+    (d) => { d.modules[TRIAGE].calls.push('@countinghouse/ch-step-elsewhere'); },
+    (d) => { d.modules[TRIAGE].confirmSettings = {x: undefined, 'bad name': true}; },
     (d) => { d.runtime.packages = ['countinghouse']; },
     (d) => { d.runtime.lockfile = {lockfileVersion: 2, packages: {}}; },
     (d) => { d.release = {security: 'x'}; }
@@ -89,30 +101,51 @@ test('the packs, origins and runtime: exact shapes, nothing beyond them', () => 
   for (const [i, mutate] of cases.entries()) {
     const d = shipped();
     mutate(d);
-    assert.ok(problemOf(d) != null, `case ${i}`);
+    assert.ok(problemOf(d) != null, `case ${i}: ${String(mutate)}`);
   }
+  // a v1 document is refused with its own line (section 9.3)
+  const v1 = shipped();
+  v1.v = 1;
+  assert.match(String(problemOf(v1)), /version 2|v must be 2|\bv\b/);
 });
 
-test('what a new release adds that needs the user\'s yes: a package in an installed pack, a credential, an origin or a variable for one', () => {
+test('what a new release adds that needs the user\'s yes, for the installed packs: a module, a credential destination, a new caller of a key, a confirm setting changed', () => {
+  const ACCESS = '@countinghouse/ch-access-github';
+  const TRIAGE = '@countinghouse/ch-pack-ci-failure-triage';
+  const REDACT = '@countinghouse/ch-step-redact';
   const now = parseReleasePins(shipped()).pins;
-  const same = parseReleasePins(shipped()).pins;
-  assert.deepStrictEqual(additions(now, same, ['ci-failure-triage']), []);
+  assert.deepStrictEqual(additions(now, parseReleasePins(shipped()).pins, ['ci-failure-triage']), []);
   const next = shipped();
-  next.packs['ci-failure-triage'].packages.push('@countinghouse/ch-step-new');
-  next.packs['ci-failure-triage'].credentials.push('NEW_TOKEN');
-  next.allowedOrigins['https://api.githubcopilot.com'] = ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN', 'NEW_TOKEN'];
-  next.allowedOrigins['https://api.example.invalid'] = ['OTHER_TOKEN'];
-  next.packs['another-pack'] = {packages: ['@countinghouse/ch-pack-another'], credentials: []};
-  const found = additions(now, parseReleasePins(next).pins, ['ci-failure-triage']);
-  assert.deepStrictEqual(found.sort(), [
-    'a credential for ci-failure-triage: NEW_TOKEN',
-    'a package in ci-failure-triage: @countinghouse/ch-step-new',
-    'an origin: https://api.example.invalid',
-    'NEW_TOKEN sent to https://api.githubcopilot.com'
-  ].sort());
-  // a pack the user has not installed adds nothing to agree to; one removed asks nothing
+  next.packs['ci-failure-triage'].modules.push('@countinghouse/ch-step-new');
+  next.modules['@countinghouse/ch-step-new'] = {credentials: [], calls: [ACCESS], confirmSettings: {}};
+  next.modules[ACCESS].credentials = [{variable: 'COUNTINGHOUSE_GITHUB_TOKEN', origin: 'https://api.example.invalid'}];
+  next.packs['another-pack'] = {modules: ['@countinghouse/ch-pack-another']};
+  next.modules['@countinghouse/ch-pack-another'] = {credentials: [{variable: 'OTHER_TOKEN', origin: 'https://other.example.invalid'}], calls: [], confirmSettings: {}};
+  const parsed = parseReleasePins(next);
+  assert.strictEqual(parsed.problem, undefined, parsed.problem);
+  const found = additions(now, parsed.pins, ['ci-failure-triage']);
+  assert.deepStrictEqual(found.map((x) => [x.kind, x.module]), [
+    ['credential', ACCESS],
+    ['module', '@countinghouse/ch-step-new'],
+    ['keyCaller', '@countinghouse/ch-step-new']
+  ]);
+  assert.strictEqual(found[0].line, 'ch-access-github\'s key goes to https://api.example.invalid as COUNTINGHOUSE_GITHUB_TOKEN (was https://api.githubcopilot.com as COUNTINGHOUSE_GITHUB_TOKEN)');
+  assert.strictEqual(found[2].line, 'ch-step-new now calls ch-access-github, which holds a key');
+  assert.ok(!found.some((x) => x.module === '@countinghouse/ch-pack-another'), 'a pack the user has not installed adds nothing to agree to');
+  // a confirm setting: its mark gone, or its default changed
+  const withConfirm = shipped();
+  withConfirm.modules[REDACT].confirmSettings = {strict: true, depth: 3};
+  const before = parseReleasePins(withConfirm).pins;
+  const changed = shipped();
+  changed.modules[REDACT].confirmSettings = {depth: 4};
+  const c = additions(before, parseReleasePins(changed).pins, ['ci-failure-triage']);
+  assert.deepStrictEqual(c.map((x) => [x.kind, x.setting, x.now]), [['confirm', 'depth', {default: 4}], ['confirm', 'strict', null]]);
+  // anything removed asks nothing
   const fewer = shipped();
-  fewer.packs['ci-failure-triage'].packages.pop();
+  fewer.packs['ci-failure-triage'].modules = fewer.packs['ci-failure-triage'].modules.filter((m) => m !== '@countinghouse/ch-step-dedupe');
+  delete fewer.modules['@countinghouse/ch-step-dedupe'];
+  fewer.modules[TRIAGE].calls = fewer.modules[TRIAGE].calls.filter((m) => m !== '@countinghouse/ch-step-dedupe');
+  fewer.modules[ACCESS].credentials = [];
   assert.deepStrictEqual(additions(now, parseReleasePins(fewer).pins, ['ci-failure-triage']), []);
 });
 
@@ -153,7 +186,8 @@ test('identityChanges: self, or a pin of the runtime, an installed pack or the s
   const {identityChanges} = require('../lib/release-pins');
   const withPins = (edit) => {
     const d = shipped();
-    d.packs.other = {packages: ['@countinghouse/ch-pack-other'], credentials: []};
+    d.packs.other = {modules: ['@countinghouse/ch-pack-other']};
+    d.modules['@countinghouse/ch-pack-other'] = {credentials: [], calls: [], confirmSettings: {}};
     d.pins = {'@countinghouse/ch-pack-ci-failure-triage': pin(), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}), countinghouse: Object.assign(pin(), {repository: 'mchen6/countinghouse'})};
     if (edit) edit(d);
     const r = parseReleasePins(d);
@@ -180,7 +214,8 @@ test('identityChanges: self, or a pin of the runtime, an installed pack or the s
 test('the review of #48: a first pin for a name this install uses (the runtime, an installed pack, the shim) blocks; one for another pack does not', () => {
   const {identityChanges} = require('../lib/release-pins');
   const d = shipped();
-  d.packs.other = {packages: ['@countinghouse/ch-pack-other'], credentials: []};
+  d.packs.other = {modules: ['@countinghouse/ch-pack-other']};
+  d.modules['@countinghouse/ch-pack-other'] = {credentials: [], calls: [], confirmSettings: {}};
   const now = parseReleasePins(d).pins;
   d.pins = {countinghouse: Object.assign(pin(), {repository: 'mchen6/countinghouse'}), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}),
     '@countinghouse/ch-shim-linux-x64': Object.assign(pin(), {repository: 'mchen6/ch-local', workflow: '.github/workflows/shim.yml', tag: `shim-v${pin().version}`})};
