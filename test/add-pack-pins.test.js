@@ -141,6 +141,8 @@ test('install --pack under development pins meets the same table', async (t) => 
     const h = await devHome(release({versions: {[REDACT]: '0.1.1'}}));
     const {code, io} = await h.inst(release({versions: {[REDACT]: '0.1.0'}}));
     assert.strictEqual(code, 0, io.err);
+    // the same 'shares' output as add-pack's (the high review of #94, 10)
+    assert.match(io.out, /it shares ch-step-redact with the packs already installed/);
     assert.strictEqual(record(h.home).packs.other.modules[REDACT], '0.1.1');
     assert.strictEqual(record(h.home).modules[REDACT].version, '0.1.1');
     assert.ok(!placed(h.home, REDACT, '0.1.0'), 'the older version is not placed');
@@ -279,6 +281,23 @@ test('a module the pack never places needs no tarball, and each tarball is read 
   }
 });
 
+// The reviewer's high review of #94, 9: one predicate for "packs from
+// different pins", fed with the packs that stay beside the operation's.
+test('packs from different pins: one predicate for add-pack, install and remove-pack', () => {
+  const {fromOtherPins} = require('../lib/pack-table');
+  const rel = (v) => ({release: v});
+  const rec = (packs, withdrawn = []) => ({packs: Object.fromEntries(Object.entries(packs).map(([n, from]) => [n, {from, modules: {[`@x/${n}`]: '1.0.0'}}])), withdrawn});
+  assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}), rel('1.0.0')), false, 'one release');
+  assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}), rel('1.1.0')), true, 'another release');
+  assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}), {unreleased: 'd'}), true, 'development pins beside a released pack');
+  assert.strictEqual(fromOtherPins(rec({a: {unreleased: 'd'}}), rel('1.0.0')), true, 'a development home');
+  assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}), rel('1.1.0'), {except: ['a']}), false, 'the packs the operation brings to its pins are not compared');
+  assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}, ['@x/a']), rel('1.1.0')), false, 'a withdrawn pack never loads');
+  assert.strictEqual(fromOtherPins(rec({}), {unreleased: 'd'}), false, 'nothing beside it');
+  assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0'), b: rel('1.0.0')}), null), false, 'remove-pack: one release');
+  assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0'), b: {unreleased: 'd'}}), null), true, 'remove-pack: two pins');
+});
+
 // The reviewer's high review of #94, 2: unknown is never "no callers".
 test('a breaking update whose callers cannot be read is refused, never taken for uncalled', async (t) => {
   const r1 = release({versions: {[REDACT]: '0.1.0'}});
@@ -316,8 +335,10 @@ test('remove-pack: a module the pack raised goes back; one a remaining pack reco
   assert.strictEqual(record(h.home).modules[REDACT].version, '0.1.0');
   assert.ok(fs.readFileSync(settings).equals(bytes), 'the settings file byte for byte');
   // a module a remaining pack was installed with stays, said
+  // (from another pins file: one pins file throughout is one release's, and
+  // nothing is said, as in a released home)
   const k = await devHome(release({versions: {[REDACT]: '0.1.1'}}));
-  await k.add(release({versions: {[REDACT]: '0.1.1'}}));
+  await k.add(release({versions: {[REDACT]: '0.1.1', [OTHER]: '0.3.1'}}));
   const io2 = fakeIo({env: k.env});
   assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, io2), 0, io2.err);
   assert.match(io2.out, /^ch-step-redact stays at 0\.1\.1: the pack other was installed with it$/m);
