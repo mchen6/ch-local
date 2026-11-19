@@ -41,6 +41,11 @@ test('confirm settings: each one marked confirm, with its default, or null with 
   assert.deepStrictEqual(d.confirmSettings, {endpoint: null, shareStats: false});
 });
 
+test('a string setting is confirm as the runtime rules it, marked or not (countinghouse confirmRule; the medium on L5b, 5)', () => {
+  const d = describeModule(manifest({settings: {defaultRepo: {type: 'string'}, label: {type: 'string', default: 'x'}, on: {type: 'boolean', default: true}}}), toPackage);
+  assert.deepStrictEqual(d.confirmSettings, {defaultRepo: null, label: 'x'});
+});
+
 test('what cannot be described is a problem, never a guess', () => {
   const p = (ch) => describeModule(manifest(ch), toPackage).problem;
   assert.match(p({calls: ['nowhere/x']}), /calls nowhere, which is no module of this release/);

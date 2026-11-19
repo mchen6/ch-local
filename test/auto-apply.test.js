@@ -32,7 +32,7 @@ const historyOf = (h) => { try { return fs.readFileSync(path.join(h, 'history.js
 const run = (h, w, {now = Date.now(), env = {}, exec = npm(TO)} = {}) => {
   const io = fakeIo({env: Object.assign({COUNTINGHOUSE_HOME: h}, env), exec, fetch: (u, o) => globalThis.fetch(u, o)});
   const go = () => autoApply({io, now, fromNpm: w != null ? w.fromNpm : {}}).then((r) => Object.assign(r, {io}));
-  return w != null && w.pinsDoc != null ? asInstalled(w.pinsDoc.pins, go) : go();
+  return w != null && w.pinsDoc != null ? asInstalled(w.pinsDoc.pins, go, w.installed) : go();
 };
 
 test('off, or a development override: nothing fetched, the override named', async() => {
@@ -131,7 +131,7 @@ test('identity changes, a first pin, or additions block: announced, never instal
       const h = home();
       writeStampFile(h, {firstSeen: {[TO]: now - 200 * H}});
       const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(TO), fetch: (u, o) => globalThis.fetch(u, o)});
-      const r = await asInstalled(installedPins || w.pinsDoc.pins, () => autoApply({io, now, fromNpm: w.fromNpm}));
+      const r = await asInstalled(installedPins || w.pinsDoc.pins, () => autoApply({io, now, fromNpm: w.fromNpm}), w.installed);
       assert.strictEqual(r.outcome, 'needs-upgrade');
       assert.match(r.line, why);
       assert.match(r.line, /run ch-local upgrade/);

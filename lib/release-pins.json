@@ -66,7 +66,9 @@
         "@countinghouse/ch-step-redact",
         "@countinghouse/ch-step-report"
       ],
-      "confirmSettings": {}
+      "confirmSettings": {
+        "defaultRepo": null
+      }
     },
     "@countinghouse/ch-step-dedupe": {
       "credentials": [],

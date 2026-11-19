@@ -75,6 +75,11 @@ function describeRelease(release, pins, tarballs, {only = false} = {}) {
     if (d.problem != null) refuse(`${m} ${tarballs[m].version}: ${d.problem}`);
     modules[m] = d;
   }
+  // what it writes, held to the format the pins are read by: a description
+  // the parser would refuse is refused here, never written (the medium on
+  // L5b, 4)
+  const bad = require('../lib/release-pins').modulesProblem(modules, new Set(listed));
+  if (bad != null) refuse(bad);
   const packs = Object.fromEntries(Object.entries(release.packs).map(([p, e]) => [p, {modules: [...(e.modules || e.packages)]}]));
   return {packs, modules};
 }
@@ -84,11 +89,12 @@ function describeRelease(release, pins, tarballs, {only = false} = {}) {
 // which are never described) -> {<package>: description}. Throws a
 // StepError when one cannot be described. (dogfood and acceptance: their
 // --unreleased-pins file carries its own descriptions, lib/pins.js.)
-function describePinned(release, pins, dir) {
+function pinnedTarballs(release, pins, all) {
   const packModules = new Set(Object.values(release.packs).flatMap((p) => p.modules || []));
-  const all = readTarballs(dir);
-  const tarballs = Object.fromEntries(Object.entries(all).filter(([m]) => packModules.has(m) && pins[m] != null));
-  return describeRelease(release, pins, tarballs, {only: true}).modules;
+  return Object.fromEntries(Object.entries(all).filter(([m]) => packModules.has(m) && pins[m] != null));
+}
+function describePinned(release, pins, dir) {
+  return describeRelease(release, pins, pinnedTarballs(release, pins, readTarballs(dir)), {only: true}).modules;
 }
 
 function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePins = RELEASE_PINS} = {}) {
@@ -104,7 +110,11 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
     const release = JSON.parse(fs.readFileSync(releasePins, 'utf8'));
     const target = devFile != null ? devFile : releasePins;
     const doc = devFile != null ? JSON.parse(fs.readFileSync(devFile, 'utf8')) : release;
-    const described = describeRelease(release, doc.pins || {}, readTarballs(dir), {only: devFile != null});
+    // (a development file: only the pack modules it pins, the runtime's and
+    // ch-local's tarballs beside them, as install's --from holds them: the
+    // medium on L5b, 1)
+    const all = readTarballs(dir);
+    const described = describeRelease(release, doc.pins || {}, devFile != null ? pinnedTarballs(release, doc.pins || {}, all) : all, {only: devFile != null});
     const next = devFile != null ? {...doc, modules: described.modules} : {...doc, packs: described.packs, modules: described.modules};
     if (check) {
       const same = JSON.stringify(next.modules) === JSON.stringify(doc.modules) && (devFile != null || JSON.stringify(next.packs) === JSON.stringify(doc.packs));

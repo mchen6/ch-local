@@ -52,11 +52,14 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
   lockfile.packages[`node_modules/${SELF}`].version = version;
   lockfile.packages[`node_modules/${SELF}`].resolved = `file:tarballs/${tarballName(SELF, version)}`;
   doc.runtime.lockfile = lockfile;
+  // the release this home is on: the same packs and descriptions, before the
+  // test's edit (so only what a test changes is new: asInstalled)
+  const installed = JSON.parse(JSON.stringify({packs: doc.packs, modules: doc.modules}));
   if (edit != null) edit(doc);
   const selfBytes = packageTgz({name: SELF, version}, {'lib/release-pins.json': JSON.stringify(doc)});
   reg.publish(SELF, version, selfBytes, {latest: true});
   attest(SELF, version, selfBytes, Object.assign({}, signedAs || doc.self, {tag: `v${version}`}));
-  return {reg, pinsDoc: doc, selfIntegrity: sri(selfBytes),
+  return {reg, pinsDoc: doc, installed, selfIntegrity: sri(selfBytes),
     fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}, close: () => reg.close()};
 }
 
@@ -64,12 +67,17 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
 // exports swapped for the run): the shipped file pins nothing yet, so without
 // this every pin of a new release is a first pin, which blocks an automatic
 // upgrade (the review of #48)
-async function asInstalled(pins, fn) {
+// installed: {packs, modules}, the installed release's packs and
+// descriptions (a world's `installed`): without them the shipped file's are
+// used, and a test release's fixtures differ from the real modules (version
+// 2: each difference is an addition, which holds an automatic upgrade back)
+async function asInstalled(pins, fn, installed = null) {
   const id = require.resolve('../lib/allowlist');
   require(id);
   const mod = require.cache[id];
   const saved = mod.exports;
-  mod.exports = {ALLOWLIST: Object.assign({}, saved.ALLOWLIST, {pins}), ALLOWED_ORIGINS: saved.ALLOWED_ORIGINS};
+  const release = Object.assign({}, saved.ALLOWLIST, {pins}, installed || {});
+  mod.exports = {...saved, ALLOWLIST: release, ALLOWED_ORIGINS: installed != null ? saved.originsOf(installed.modules) : saved.ALLOWED_ORIGINS};
   try {
     return await fn();
   } finally {

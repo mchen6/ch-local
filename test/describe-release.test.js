@@ -78,3 +78,26 @@ test('--check: 0 when the file\'s descriptions match the tarballs, 1 when they d
   assert.match(differ.text, /differ from the tarballs/);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), stale, 'nothing written');
 });
+
+test('--unreleased-pins: the runtime\'s and ch-local\'s tarballs beside the modules are skipped, as install\'s --from holds them (the medium on L5b, 1)', () => {
+  const dir = dirOf(undefined, {'countinghouse-9.0.0.tgz': {name: RUNTIME, version: '9.0.0'}});
+  const at = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-dev-'));
+  const rel = path.join(at, 'release-pins.json');
+  const dev = path.join(at, 'pins.json');
+  fs.writeFileSync(rel, JSON.stringify({...release(), modules: DESCRIBED}));
+  fs.writeFileSync(dev, JSON.stringify({pins: {[RUNTIME]: {version: '9.0.0'}, [PACK]: {version: '0.5.0'}, [ACCESS]: {version: '0.2.0'}}, runtimeLockfile: {}}));
+  const err = {write: () => {}};
+  assert.strictEqual(main([dir, '--unreleased-pins', dev], {stdout: err, stderr: err, releasePins: rel}), 0);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(dev, 'utf8')).modules, DESCRIBED);
+});
+
+test('a description the pins\' format would refuse is refused by the step, never written (the medium on L5b, 4)', () => {
+  const saved = tarballs[PACK];
+  tarballs[PACK] = [{...saved[0], countinghouse: {role: 'scenario', calls: ['ch-access-x/xService.list'], settings: {share: {type: 'boolean', default: [1], confirm: true}}}}, saved[1]];
+  try {
+    const r = release();
+    assert.match(refusal(() => describeRelease(r, r.pins, readTarballs(dirOf()))), /share/);
+  } finally {
+    tarballs[PACK] = saved;
+  }
+});
