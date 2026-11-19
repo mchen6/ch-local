@@ -533,10 +533,18 @@ function moduleMessageProblem(m) {
   }
   return null;
 }
+// (an unload has exactly the keys of an accepted unload vector: id 5, 9
+// "off" or 10 "calls" with because; A-reason)
+const keysOf = (m) => Object.keys(m).filter((k) => k !== 'id').sort().join(',');
+const UNLOAD_SHAPES = new Set(MODULE_V.accepted.filter((e) => e.message.type === 'unload').map((e) => keysOf(e.message)));
 const holdsToTheVectors = (requests) => {
   for (const m of requests) {
     if (['load', 'reload', 'unload'].includes(m.type)) assert.strictEqual(moduleMessageProblem(m), null, JSON.stringify(m));
     else assert.strictEqual(packMessageProblem(m), null, JSON.stringify(m));
+    if (m.type === 'unload') {
+      assert.ok(UNLOAD_SHAPES.has(keysOf(m)), `an unload shaped as a vector: ${JSON.stringify(m)}`);
+      if ('reason' in m) assert.ok(m.reason === 'off' || (m.reason === 'calls' && typeof m.because === 'string'), JSON.stringify(m));
+    }
   }
 };
 
@@ -569,10 +577,14 @@ test('B3: a load and an unload from the settings are in the module form; the unl
     // its notice rides on the unload, which the runtime tells before the pack
     // goes; no separate notice tagged with the pack follows it. The wording
     // is a contract: countinghouse's module-control (#449, M5b, storedOff)
-    // builds the all-sessions off notice from an unload whose notice ends
-    // " turned off" while the settings have the module off, so a change here
-    // would silently drop that notice; exactly "<short name> turned off"
+    // builds the all-sessions off notice from an unload with reason "off"
+    // while the settings have the module off, and tells this notice as given
+    // anywhere else (a runtime not serving the settings tool); kept exactly
+    // "<short name> turned off"
     assert.strictEqual(unload.notice, 'ch-pack-other turned off');
+    // (A-reason: the runtime tells every session its own off text: #449 id 9)
+    assert.strictEqual(unload.reason, 'off');
+    assert.ok(!('because' in unload));
     assert.ok(!s.requests.some((m) => m.type === 'notice' && m.pack === 'other' && /turned off|removed/.test(m.text)), JSON.stringify(s.requests.filter((m) => m.type === 'notice')));
     holdsToTheVectors(s.requests);
   } finally {
@@ -1542,6 +1554,59 @@ test('a load-pack refused CONTROL_BUSY inside the runtime\'s wait marks nothing:
     assert.strictEqual(loadsPack(s), true);
     assert.deepStrictEqual(await reply2(s, {id: 'r51', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r51', ok: false, code: 'CONTROL_BUSY'});
     assert.deepStrictEqual(await reply2(s, {id: 'r52', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r52', ok: false, code: 'CONTROL_BUSY'});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// A-reason (#449's moduleMessages id 10): a caller unloaded with the module
+// turned off that it calls carries reason calls and because, that module
+test('a caller of a module turned off: its unload carries reason calls and because, the module turned off', async () => {
+  const home = tmp('ch-home-');
+  const r = release({extra: {[SCENARIO]: {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact', 'ch-pack-other/otherService.go']}}}});
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  // (other first: the scenario calls ch-pack-other)
+  assert.strictEqual(await install({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  bindAccess(home);
+  const s = await running({home});
+  try {
+    assert.ok(loadsPack(s));
+    await settled(s, {'pack.other': false});
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === SCENARIO));
+    const caller = s.requests.find((m) => m.type === 'unload' && m.name === SCENARIO);
+    assert.strictEqual(caller.reason, 'calls');
+    assert.strictEqual(caller.because, '@countinghouse/ch-pack-other');
+    assert.match(caller.notice, /^ch-pack-ci-failure-triage unloaded: it calls ch-pack-other, which is not available \(it is turned off/);
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
+    assert.strictEqual(s.requests.find((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other').reason, 'off');
+    holdsToTheVectors(s.requests);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// A-reason, the Reviewer: a module the operator's ceiling refuses sends no
+// reason (it may still be turned on), and its notice says why it can't
+// simply be turned back on
+test('a module the ceiling refuses: its unload carries no reason, and says the operator\'s settings don\'t allow it', async () => {
+  const s = await running();
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+    const {layout} = require('../lib/home');
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    // the operator's list: the triage pack's modules only
+    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], conversation: true,
+      modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact']}});
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {requestTimeout: 61000}}));
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
+    const unload = s.requests.find((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other');
+    assert.strictEqual(unload.notice, 'ch-pack-other turned off: the operator\'s settings don\'t allow it');
+    assert.ok(!('reason' in unload) && !('because' in unload), JSON.stringify(unload));
+    holdsToTheVectors(s.requests);
   } finally {
     s.end();
     await s.done;
