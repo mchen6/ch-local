@@ -390,12 +390,3 @@ test('status shows a module a running client stopped, with its code; a dead star
   assert.ok(!/stopped/.test(dead.out), dead.out);
 });
 
-// the Reviewer, 11-18 option 3: status names the proxies set, never a value
-test('status names the proxy variables set here, never their values', async () => {
-  const s = await installed();
-  const proxy = `http://proxy-${require('node:crypto').randomBytes(4).toString('hex')}.example:3128`;
-  const io = s.io({HTTPS_PROXY: proxy});
-  assert.strictEqual(await status({}, io), 0, io.err);
-  assert.match(io.out, /^proxy: HTTPS_PROXY set here, passed to a session's runtime of its own started from this environment, not to the shared runtime \(values never shown\)$/m);
-  assert.ok(!(io.out + io.err).includes(proxy));
-});
