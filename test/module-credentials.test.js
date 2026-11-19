@@ -33,8 +33,8 @@ const stored = (origin, value) => ({origin, source: 'stored', value});
 
 test('declared: the variable and origin of the one remote with a credential, from the active version', () => {
   const {where, record} = home();
-  assert.deepStrictEqual(mc.declared(where, record(), ACCESS), {variable: VAR, origin: GH, remote: 'r'});
-  assert.deepStrictEqual(mc.declared(where, record(), OTHER), {variable: 'OTHER_TOKEN', origin: OTHER_ORIGIN, remote: 'r'});
+  assert.deepStrictEqual(mc.declared(where, record(), ACCESS), {variable: VAR, origin: GH, remote: 'r', fallback: null});
+  assert.deepStrictEqual(mc.declared(where, record(), OTHER), {variable: 'OTHER_TOKEN', origin: OTHER_ORIGIN, remote: 'r', fallback: null});
 });
 
 test('forStart: one slot per usable binding, loaded or not; the version 2 file names module, origin, variable and slot; no value in it', async () => {
@@ -122,4 +122,11 @@ test('migrateV1: a version 1 entry reads as a binding to GitHub\'s origin under 
   const read = {values: new Map([['GITHUB_TOKEN', {module: ACCESS, value: 'test-v1-value'}]])};
   const out = mc.migrateV1(read, new Map([[ACCESS, {variable: VAR, origin: GH}]]));
   assert.deepStrictEqual(out.get(ACCESS).get(VAR), {origin: GH, source: 'stored', value: 'test-v1-value'});
+});
+
+// the /code-review medium on L5a, 1: a client's own token reaches no worker
+test('forStart: every variable an installed module declares, its fallback and the GitHub names included, is removed from the runtime\'s environment', async () => {
+  const {where, record} = home();
+  const s = await mc.forStart(where, record(), {env: {GITHUB_TOKEN: 'client', COUNTINGHOUSE_GITHUB_TOKEN: 'client', OTHER_TOKEN: 'client', PATH: '/bin'}, ghToken: async () => ({why: 'x'})});
+  assert.deepStrictEqual(s.env, {PATH: '/bin'});
 });

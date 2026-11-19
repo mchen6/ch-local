@@ -246,6 +246,8 @@ function realIo() {
     interactive: Boolean(process.stdin.isTTY),
     // A terminal both ways (credentials add: the prompt seen, the typing not)
     terminal: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+    // (a terminal on standard input alone: credentials add refuses it)
+    stdinIsTTY: Boolean(process.stdin.isTTY),
     readHidden: (prompt) => require('../lib/hidden-input').readHidden(prompt),
     // standard input, read whole up to max bytes (credentials add --to: a
     // key piped in); more than max is cut there, and the caller refuses it

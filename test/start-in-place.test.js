@@ -1515,3 +1515,24 @@ test('a home rolled back under a running start: a module moved back is stopped "
     await s.done;
   }
 });
+
+// #413 section 6.4; the /code-review medium on L5a, 5: a binding removed
+// while running unloads its module and its callers, told in the state's own
+// words, once
+test('a credential removed while running unloads the callers of its module, said as removed, once', async () => {
+  const s = await running();
+  try {
+    await until(() => s.args() != null);
+    require('../lib/credential-store').unbind(s.home, ACCESS);
+    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: restart your client';
+    await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
+    // a later change sends no second unload
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 1, JSON.stringify(s.requests));
+    assert.strictEqual(s.history().filter((h) => h.notice === line).length, 1);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});

@@ -382,3 +382,45 @@ test('the hidden reader: input that ends mid-prompt aborts and restores the term
   assert.deepStrictEqual(order, ['raw:true', 'prompt', 'raw:false']);
 });
 
+
+// the /code-review medium on L5a, 2: a key a removed module left is listed
+// and removable, also with nothing installed
+test('remove: a key whose module is no longer installed is still removed, by its full or short name', async () => {
+  const h = home();
+  store.bind(h, '@countinghouse/ch-gone', VAR, {origin: ORIGIN, source: 'stored', value: made()});
+  assert.strictEqual(await credentials({action: 'remove', name: 'ch-gone'}, io(h)), 0);
+  assert.strictEqual(store.readStore(h).modules.get('@countinghouse/ch-gone'), undefined);
+  // nothing installed at all
+  fs.rmSync(path.join(h, 'modules.json'));
+  store.bind(h, '@countinghouse/ch-gone', VAR, {origin: ORIGIN, source: 'stored', value: made()});
+  const f = io(h);
+  assert.strictEqual(await credentials({action: 'list'}, f), 0, f.err);
+  assert.match(f.out, /^ch-gone {2}COUNTINGHOUSE_GITHUB_TOKEN {2}https:\/\/api\.githubcopilot\.com {2}stored {2}\(not installed/m);
+  assert.strictEqual(await credentials({action: 'remove', name: '@countinghouse/ch-gone'}, io(h)), 0);
+  assert.strictEqual(store.readStore(h).modules.get('@countinghouse/ch-gone'), undefined);
+  // an argument that names nothing stored is still never shown back
+  const odd = io(h);
+  assert.strictEqual(await credentials({action: 'remove', name: 'ghp_lookslikeatoken'}, odd), 2);
+  assert.ok(!(odd.out + odd.err).includes('ghp_lookslikeatoken'));
+});
+
+// the /code-review medium on L5a, 4: --to is checked at a terminal too
+test('add at a terminal with --to another origin is refused before anything is asked', async () => {
+  const h = home();
+  const f = io(h, {typed: made()});
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: 'https://api.example.com'}, f), 2);
+  assert.match(f.err, /sends its credential to https:\/\/api\.githubcopilot\.com, not the address given/);
+  assert.strictEqual(f.prompts, undefined, 'nothing asked');
+  assert.strictEqual(bound(h), null);
+});
+
+// the /code-review medium on L5a, 3: a terminal on standard input whose
+// output is redirected would echo the key
+test('add with a terminal on standard input but not both ways is refused: the key would echo', async () => {
+  const h = home();
+  const f = io(h, {terminal: false, stdin: `${made()}\n`});
+  f.stdinIsTTY = true;
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, f), 2);
+  assert.match(f.err, /typed only at a terminal both ways/);
+  assert.strictEqual(bound(h), null);
+});
