@@ -166,3 +166,35 @@ test('restore carries reset: the sessions a handoff took loosenings from, once (
   assert.deepStrictEqual(t.restore().reset, [], 'told once: the next runtime is not told again');
   assert.deepStrictEqual(createSessionTable().restore(), {type: 'restore', sessions: [], declines: [], reset: []});
 });
+
+// L3 (#413 section 10): a handoff from a daemon of the pack form. The kind
+// pack becomes enabled in locks, unanswered and declines (a user who
+// declined a form three times stays locked out of the one that replaces
+// it); every pack.* override is dropped, on or off, and the session is
+// marked to be told once.
+test('seed maps the kind pack to enabled in locks, unanswered and declines; drops every pack.* override and marks the session', () => {
+  const t = createSessionTable({warn: () => {}});
+  const at = Date.now();
+  const state = {overrides: [
+    {name: 'pack.weather', value: false, loosening: false, over: null, version: '1.0.0'},
+    {name: 'requestTimeout', value: 20000, loosening: false, over: null, version: null}
+  ], locks: ['pack', 'maxOutputBytes'], unanswered: [], formsLeft: 1};
+  const other = {overrides: [], locks: [], unanswered: ['pack'], formsLeft: 2};
+  const r = t.seed({sessions: [{session: ID(1), resume: HASH, state}, {session: ID(2), resume: HASH.replace(/f$/, 'e'), state: other}],
+    declines: [{kind: 'pack', at}, {kind: 'pack', at}, {kind: 'module', at}]});
+  assert.deepStrictEqual(r, {kept: 2, loosened: 1});
+  const out = t.restore();
+  const s1 = out.sessions.find((s) => s.session === ID(1)).state;
+  assert.deepStrictEqual(s1.overrides, [{name: 'requestTimeout', value: 20000, loosening: false, over: null, version: null}], 'the pack override dropped, the tightening kept');
+  assert.deepStrictEqual(s1.locks, ['enabled', 'maxOutputBytes'], 'the lock still holds, as enabled');
+  assert.deepStrictEqual(out.sessions.find((s) => s.session === ID(2)).state.unanswered, ['enabled']);
+  assert.deepStrictEqual(out.declines.map((d) => d.kind), ['enabled', 'enabled', 'module']);
+  assert.deepStrictEqual(out.reset, [ID(1)], 'the session whose pack override went is told once');
+});
+
+test('the table takes the kind enabled from a runtime that sends it', () => {
+  const t = createSessionTable({warn: () => {}});
+  assert.strictEqual(t.told({type: 'decline', kind: 'enabled', at: Date.now()}), true);
+  assert.strictEqual(t.told({type: 'session-resume', session: ID(1), hash: HASH}), true);
+  assert.strictEqual(t.told({type: 'session-state', session: ID(1), state: {overrides: [], locks: ['enabled'], formsLeft: 2}}), true);
+});
