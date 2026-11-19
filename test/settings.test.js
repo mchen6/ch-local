@@ -85,7 +85,8 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
   assert.strictEqual((await cli(home, 'settings', 'set', 'pack.other', 'off')).code, 0);
   assert.strictEqual((await cli(home, 'settings', 'set', 'maxOutputBytes', '32MiB')).code, 0);
-  const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'o'}, homedir: '/nowhere'});
+  require('./store-helpers').bindAccess(home);
+  const f = fakeIo({env: {COUNTINGHOUSE_HOME: home}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}});
   const requests = [];
   let end = null;

@@ -7,7 +7,6 @@
 // (shim/tests/vectors/contract-2.json).
 const test = require('node:test');
 const assert = require('node:assert');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -233,7 +232,6 @@ function homeWithSecret() {
   fs.writeFileSync(path.join(run, 'secret'), `${SECRET.toString('hex')}\n`, {mode: 0o600});
   return home;
 }
-const mac = (token) => crypto.createHmac('sha256', SECRET).update(Buffer.concat([Buffer.from('ch-token'), Buffer.from(token, 'utf8')])).digest('base64');
 
 test('conditions: one JSON line; no interactive Claude Code session is "no"; the repo from cwd\'s origin', async() => {
   const home = homeWithSecret();
@@ -375,187 +373,29 @@ test('conditions: whyOf by real path: a home through a link keeps its places; a 
   }
 });
 
-test('conditions: a why that would take the line over the shim\'s 4 KiB is dropped, and the "no" still sent', async() => {
-  const home = homeWithSecret();
-  const user = tmpHome();
-  try {
-    const deep = path.join(user, ...Array.from({length: 4}, () => `${'\u{1F600}'.repeat(50)}`));
-    fs.mkdirSync(path.join(deep, '.claude'), {recursive: true});
-    fs.writeFileSync(path.join(deep, '.claude', 'settings.json'), JSON.stringify({hooks: {Elicitation: [{hooks: [{type: 'command', command: 'true'}]}]}}));
-    const packs = {};
-    const env = {CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDECODE: '1', CLAUDE_PROJECT_DIR: deep};
-    for (let i = 0; i < conditions.MAX_CREDENTIALS; i++) {
-      const name = `PACK_VAR_${String(i).padStart(2, '0')}_${'X'.repeat(60)}`;
-      packs[`p${i}`] = [name];
-      env[name] = `example-${i}`;
-    }
-    withPacks(home, packs);
-    const io = conditionsIo({env, cwd: deep});
-    io.homedir = () => user;
-    io.conditionsStopAt = user;
-    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
-    const line = JSON.parse(io.out);
-    assert.strictEqual(line.conditions, 'no');
-    assert.ok(!('why' in line), 'dropped, not a failure');
-    assert.strictEqual(Object.keys(line.credentials).length, conditions.MAX_CREDENTIALS);
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-    fs.rmSync(user, {recursive: true, force: true});
-  }
-});
-
-test('conditions: the token the environment chooses, as its keyed hash; gh asked only when it can change the answer', async() => {
-  const home = homeWithSecret();
-  const asked = (io) => io.execs.filter((e) => e.cmd === 'gh').length;
-  try {
-    // COUNTINGHOUSE_GITHUB_TOKEN is the user's explicit choice: gh can't change it
-    let io = conditionsIo({env: {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token', GITHUB_TOKEN: 'example-shell-token'}});
-    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0);
-    assert.strictEqual(JSON.parse(io.out).token, mac('example-narrow-token'));
-    assert.ok(!io.out.includes('example-narrow-token'));
-    assert.strictEqual(asked(io), 0);
-    // nothing set: none chosen, and gh isn't asked (null means the daemon's)
-    io = conditionsIo({env: {}});
-    await conditions.conditions({pid: 1, home}, io);
-    assert.strictEqual(JSON.parse(io.out).token, null);
-    assert.strictEqual(asked(io), 0);
-    // only GITHUB_TOKEN: gh decides. A gh login chooses nothing...
-    io = conditionsIo({env: {GITHUB_TOKEN: 'example-shell-token'}, gh: {status: 0, stdout: 'gho_exampleexampleexample\n'}});
-    await conditions.conditions({pid: 1, home}, io);
-    assert.strictEqual(JSON.parse(io.out).token, null);
-    assert.strictEqual(asked(io), 1);
-    // ...and gh not logged in leaves GITHUB_TOKEN the choice
-    io = conditionsIo({env: {GITHUB_TOKEN: 'example-shell-token'}, gh: {status: 1, stdout: ''}});
-    await conditions.conditions({pid: 1, home}, io);
-    assert.strictEqual(JSON.parse(io.out).token, mac('example-shell-token'));
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-// the pack credentials the client environment chooses (a session whose
-// choice the shared runtime lacks runs its own runtime), named by the
-// installed packs only: packs.json, as install writes it
-function withPacks(home, packs) {
-  require('./store-helpers').writeHome(home, Object.fromEntries(Object.keys(packs).map((n) => [n, {[`@countinghouse/ch-pack-${n}`]: '1.0.0'}])), {runtime: {countinghouse: '8.0.0'}});
-  packsRelease = {packs: Object.fromEntries(Object.entries(packs).map(([n, credentials]) => [n, {packages: [`@countinghouse/ch-pack-${n}`], credentials}]))};
-}
-const CRED_V = require('./vectors/credentials.json');
-
-test('conditions: a pack credential the environment chooses, by the installed packs\' names, as the vectors\' keyed hash; never its value', async() => {
-  const home = homeWithSecret();
-  try {
-    // SECRET is the vectors' own (32 bytes of 0x5a), so the MAC is theirs exactly
-    withPacks(home, {other: [CRED_V.credentialMac.name], ci: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']});
-    const io = conditionsIo({env: {[CRED_V.credentialMac.name]: CRED_V.credentialMac.value, UNDECLARED_TOKEN: 'example-undeclared', GITHUB_TOKEN: 'example-shell-token'}});
-    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
-    const line = JSON.parse(io.out);
-    assert.deepStrictEqual(line.credentials, {[CRED_V.credentialMac.name]: CRED_V.credentialMac.macB64}, 'only the declared one; the GitHub ones are token\'s');
-    assert.deepStrictEqual(JSON.parse(CRED_V.clientCredentials).credentials, line.credentials, 'the vectors\' client frame');
-    for (const v of [CRED_V.credentialMac.value, 'example-undeclared', 'example-shell-token']) assert.ok(!io.out.includes(v) && !io.err.includes(v), 'no value is printed');
-    assert.ok(!io.out.includes('UNDECLARED_TOKEN'), 'no name the environment offers');
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-test('conditions: no pack credential chosen, or no packs: no credentials key, and the secret is not read for them', async() => {
-  const home = homeWithSecret();
-  try {
-    let io = conditionsIo({env: {}});
-    await conditions.conditions({pid: 1, home}, io);
-    assert.ok(!('credentials' in JSON.parse(io.out)));
-    withPacks(home, {other: ['OTHER_TOKEN']});
-    io = conditionsIo({env: {OTHER_TOKEN: '${OTHER_TOKEN}'}});
-    await conditions.conditions({pid: 1, home}, io);
-    assert.ok(!('credentials' in JSON.parse(io.out)), 'an unresolved placeholder is no choice, as for start');
-    // no secret needed when nothing is hashed
-    fs.rmSync(path.join(home, 'run', 'daemon', 'secret'));
-    io = conditionsIo({env: {}});
-    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-test('conditions: start\'s precedence: a pack whose choice is a GitHub variable is token\'s, not a credential; a name the runtime would refuse fails the check', async() => {
-  const home = homeWithSecret();
-  try {
-    withPacks(home, {mixed: ['COUNTINGHOUSE_GITHUB_TOKEN', 'OTHER_TOKEN']});
-    let io = conditionsIo({env: {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token', OTHER_TOKEN: 'example-other'}});
-    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
-    assert.ok(!('credentials' in JSON.parse(io.out)), 'start would load it with the GitHub token');
-    io = conditionsIo({env: {OTHER_TOKEN: 'example-other'}});
-    await conditions.conditions({pid: 1, home}, io);
-    assert.deepStrictEqual(Object.keys(JSON.parse(io.out).credentials), ['OTHER_TOKEN'], 'with no GitHub token set, the other');
-    withPacks(home, {odd: ['MY-API-KEY']});
-    io = conditionsIo({env: {'MY-API-KEY': 'example-odd'}});
-    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
-    assert.strictEqual(io.out, '');
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-test('conditions: a line that would pass the shim\'s 4 KiB fails here, named, with no line', async() => {
-  const home = homeWithSecret();
-  try {
-    const packs = {};
-    const env = {};
-    for (let i = 0; i < conditions.MAX_CREDENTIALS; i++) {
-      const name = `PACK_VAR_${String(i).padStart(2, '0')}_${'X'.repeat(110)}`;
-      packs[`p${i}`] = [name];
-      env[name] = `example-${i}`;
-    }
-    withPacks(home, packs);
-    const io = conditionsIo({env});
-    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
-    assert.strictEqual(io.out, '');
-    assert.match(io.err, new RegExp(`over ${conditions.MAX_LINE_BYTES} bytes`));
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-test('conditions: more than 32 chosen pack credentials, or a record that cannot be read, is a failure: no line, a non-zero exit', async() => {
-  const home = homeWithSecret();
-  try {
-    const many = {};
-    const env = {};
-    for (let i = 0; i <= conditions.MAX_CREDENTIALS; i++) { many[`p${i}`] = [`EXAMPLE_${i}_TOKEN`]; env[`EXAMPLE_${i}_TOKEN`] = `example-${i}`; }
-    withPacks(home, many);
-    let io = conditionsIo({env});
-    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
-    assert.strictEqual(io.out, '');
-    fs.writeFileSync(path.join(home, 'modules.json'), '{not json');
-    io = conditionsIo({env: {}});
-    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
-    assert.strictEqual(io.out, '');
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-test('conditions: a gh that times out or cannot run is a failure, never "none chosen": no line, a non-zero exit', async() => {
-  const home = homeWithSecret();
-  try {
-    for (const gh of [{status: null, stdout: ''}, 'timeout']) {
-      const io = conditionsIo({env: {GITHUB_TOKEN: 'example-shell-token'}, gh: gh === 'timeout' ? new Promise(() => {}) : gh});
-      io.ghTimeoutMs = 100;
-      assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0, JSON.stringify(gh));
-      assert.strictEqual(io.out, '');
-    }
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-test('conditions: a chosen token with no readable secret, or a bad --for, is a failure: no line, a non-zero exit', async() => {
+// #413 section 6.9 (L5a): a credential is a module's own, in the store; a
+// client's environment never gives one, so the line chooses none
+test('conditions: token is null and no credentials, whatever the environment holds; gh is never asked; no value is printed', async() => {
   const home = tmpHome();
   try {
-    const io = conditionsIo({env: {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token'}});
-    assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0);
-    assert.strictEqual(io.out, '');
+    require('./store-helpers').writeHome(home, {other: {'@countinghouse/ch-pack-other': '1.0.0'}}, {runtime: {countinghouse: '8.0.0'}});
+    const env = {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token', GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: 'example-other'};
+    const io = conditionsIo({env, gh: {status: 0, stdout: 'example-gh-login-value\n'}});
+    // (no runtime secret in this home: nothing is hashed, so none is read)
+    assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
+    const line = JSON.parse(io.out);
+    assert.strictEqual(line.token, null);
+    assert.ok(!('credentials' in line));
+    assert.deepStrictEqual(io.execs.filter((e) => e.cmd === 'gh'), []);
+    for (const v of Object.values(env)) assert.ok(!io.out.includes(v) && !io.err.includes(v), 'no value is printed');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('conditions: a bad --for is a failure: no line, a non-zero exit', async() => {
+  const home = tmpHome();
+  try {
     const bad = conditionsIo({});
     assert.notStrictEqual(await conditions.conditions({pid: 'x', home}, bad), 0);
     assert.strictEqual(bad.out, '');
@@ -582,40 +422,6 @@ test('the CLI: ch-local conditions --for <pid> --home <abs>, both required', asy
 
 // ch-local #31's review -------------------------------------------------------
 
-test('conditions: the secret is read with the shim\'s checks: a 0777 directory, a 0666 secret, a symlink or a FIFO is a failure', {skip: process.platform === 'win32'}, async() => {
-  const cases = [
-    ['a 0777 directory', (run) => fs.chmodSync(run, 0o777)],
-    ['a 0666 secret', (run) => fs.chmodSync(path.join(run, 'secret'), 0o666)],
-    ['a symlinked secret', (run) => { const t = path.join(run, 'real'); fs.renameSync(path.join(run, 'secret'), t); fs.symlinkSync(t, path.join(run, 'secret')); }],
-    ['a FIFO at the secret\'s path', (run) => { fs.rmSync(path.join(run, 'secret')); require('node:child_process').execFileSync('mkfifo', ['-m', '600', path.join(run, 'secret')]); }]
-  ];
-  for (const [what, spoil] of cases) {
-    const home = homeWithSecret();
-    try {
-      spoil(path.join(home, 'run', 'daemon'));
-      const io = conditionsIo({env: {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token'}});
-      const started = Date.now();
-      assert.notStrictEqual(await conditions.conditions({pid: 1, home}, io), 0, what);
-      assert.strictEqual(io.out, '', what);
-      assert.ok(Date.now() - started < 2000, `${what}: never blocks`);
-    } finally {
-      fs.rmSync(home, {recursive: true, force: true});
-    }
-  }
-});
-
-test('conditions: gh runs in the home, never in the client\'s directory', async() => {
-  const home = homeWithSecret();
-  try {
-    const io = conditionsIo({env: {GITHUB_TOKEN: 'example-shell-token'}, cwd: os.tmpdir(), gh: {status: 1, stdout: ''}});
-    await conditions.conditions({pid: 1, home}, io);
-    const gh = io.execs.find((e) => e.cmd === 'gh');
-    assert.strictEqual(gh.cwd, home);
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
 test('shim.json is checked per platform, and a .cmd or .bat node is refused', () => {
   const posix = {node: '/usr/bin/node', chLocal: '/h/bin/ch-local.js', env: {PATH: '/usr/bin', HOME: '/home/u'}};
   assert.strictEqual(shimConfig.shimJsonProblem(posix, 'linux'), null);
@@ -639,4 +445,32 @@ test('shim.json is 0600 whatever the umask', {skip: process.platform === 'win32'
     process.umask(old);
     fs.rmSync(home, {recursive: true, force: true});
   }
+});
+
+// the Reviewer's high review of L5a, 1, and the Fable pass, F1: a runtime of
+// its own starts from an allowlist, compared case-insensitively on Windows,
+// so neither a mixed-case token name nor a planted lower-case slot name
+// passes
+test('runtimeEnv: the allowlist only; on win32 by case-insensitive name, never a mixed-case token or a planted slot', () => {
+  const env = {Path: 'C:\\bin', USERPROFILE: 'C:\\Users\\dev', SystemRoot: 'C:\\Windows', LC_ALL: 'C', TZ: 'UTC', NODE_EXTRA_CA_CERTS: 'C:\\ca.pem',
+    Github_Token: 'client-1', countinghouse_credential_1: 'planted', OPENAI_API_KEY: 'client-2', NODE_OPTIONS: '--require x'};
+  const out = shimConfig.runtimeEnv(env, 'win32');
+  assert.deepStrictEqual(Object.keys(out).sort(), ['LC_ALL', 'NODE_EXTRA_CA_CERTS', 'PATH', 'SystemRoot', 'TZ', 'USERPROFILE']);
+  assert.ok(!Object.values(out).some((v) => v === 'client-1' || v === 'client-2' || v === 'planted'));
+  // no test switch: a client never turns on the runtime's test-only delays
+  const posix = shimConfig.runtimeEnv({PATH: '/bin', HOME: '/h', github_token: 'x', COUNTINGHOUSE_TEST_REQUIRE_THREAD_FLAG: '1', COUNTINGHOUSE_TEST_RESTART_HOLD_MS: '9', CH_TEST_LATE_LOADS: '1', AWS_SECRET_ACCESS_KEY: 'y', HTTPS_PROXY: 'http://proxy.example:3128'}, 'linux');
+  assert.deepStrictEqual(Object.keys(posix).sort(), ['HOME', 'PATH']);
+  // a Windows runtime can run a .cmd: PATHEXT and ComSpec by any case
+  const win = shimConfig.runtimeEnv({Path: 'C:\\bin', pathext: '.COM;.EXE;.CMD', COMSPEC: 'C:\\Windows\\cmd.exe'}, 'win32');
+  assert.deepStrictEqual(Object.keys(win).sort(), ['ComSpec', 'PATH', 'PATHEXT']);
+});
+
+// the Reviewer's round 3, 8: on win32 the whole allowlist by any case; and
+// no proxy variable, by any case (countinghouse makes no call through a
+// proxy, so one would only be readable by a module that declares it)
+test('runtimeEnv: the locale and extras by any case on win32; never a proxy variable, by any case, on either platform', () => {
+  const win = shimConfig.runtimeEnv({Path: 'C:\\bin', lc_all: 'C', node_extra_ca_certs: 'C:\\ca.pem', https_proxy: 'http://proxy.example:3128', No_Proxy: 'localhost', HTTP_PROXY: 'x'}, 'win32');
+  assert.deepStrictEqual(Object.keys(win).sort(), ['PATH', 'lc_all', 'node_extra_ca_certs']);
+  const posix = shimConfig.runtimeEnv({PATH: '/bin', HTTPS_PROXY: 'http://proxy.example:3128', no_proxy: 'localhost', ALL_PROXY: 'x', NODE_USE_ENV_PROXY: '1'}, 'linux');
+  assert.deepStrictEqual(Object.keys(posix), ['PATH']);
 });

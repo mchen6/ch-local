@@ -175,13 +175,33 @@ test('an installed launcher whose version is not the pinned one is refused', asy
   assert.ok(!fs.existsSync(path.join(h, 'app')));
 });
 
-test('install names which credential variables are set and which are missing, never a value', async () => {
+// #413 section 6.2 (L5a): install's end asks for each of the pack's
+// modules that needs a credential and has none stored; with no terminal it
+// names the command; a client environment's token is never one
+test('install\'s end: with no terminal, each module that needs a credential is named with its command; never a value', async () => {
   const r = release(); const h = home();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, GITHUB_TOKEN: 'secret-value-123'}, exec: npm()});
   assert.strictEqual(await run(r, io), 0, io.err);
-  assert.match(io.out, /GITHUB_TOKEN is set/);
-  assert.match(io.out, /COUNTINGHOUSE_GITHUB_TOKEN is not set/);
+  assert.match(io.err, /^ch-access-github needs a credential: run `ch-local credentials add ch-access-github`$/m);
+  assert.ok(!/GITHUB_TOKEN/.test(io.out), 'no environment variable is named');
   assert.ok(!(io.out + io.err).includes('secret-value-123'));
+});
+
+test('install\'s end at a terminal: the add conversation stores the key; nothing entered skips the module, named', async () => {
+  const r = release(); const h = home();
+  const typed = 'test-typed-value-1';
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  Object.assign(io, {terminal: true, readHidden: async () => typed, ask: async () => 'n'});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  assert.match(io.err, /ch-access-github 0\.1\.0 declares one credential:\n  COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com/);
+  const stored = require('../lib/credential-store').readStore(h, {platform: io.platform});
+  assert.strictEqual(stored.modules.get('@countinghouse/ch-access-github').get('COUNTINGHOUSE_GITHUB_TOKEN').value, typed);
+  assert.ok(!(io.out + io.err).includes(typed), 'never echoed');
+  const h2 = home();
+  const skip = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm()});
+  Object.assign(skip, {terminal: true, readHidden: async () => '', ask: async () => 'n'});
+  assert.strictEqual(await run(release(), skip), 0, skip.err);
+  assert.match(skip.err, /ch-access-github is not loaded until it has one: run `ch-local credentials add ch-access-github`/);
 });
 
 // #413 section 9.4: install no longer drops the other packs; every installed

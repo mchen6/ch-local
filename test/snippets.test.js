@@ -41,15 +41,13 @@ test('Windows paths are escaped for JSON and TOML', () => {
   assert.ok(line.includes('"C:\\Users\\dev\\.countinghouse\\bin\\ch-local.js"'), line);
 });
 
-// Reviewer, PR #36: a stdio child inherits the client's environment, so an
-// env entry could only reduce what it sees. Only Codex, which does not forward
-// by default, names the variables.
-test('only Codex names the credential variables; no entry sets one', () => {
-  for (const client of ['claude-code', 'cursor', 'vscode']) {
+// Reviewer, PR #36: no entry sets a credential; and since L5a (#413 section
+// 6.9) none forwards one either: Codex's entry names no variable
+test('no entry sets or forwards a credential variable', () => {
+  for (const client of ['claude-code', 'cursor', 'vscode', 'codex']) {
     const {text} = snippet(client, POSIX);
-    assert.ok(!/TOKEN|--env|"env"/.test(text), client);
+    assert.ok(!/TOKEN|--env|"env"|env_vars/.test(text), client);
   }
-  assert.match(snippet('codex', POSIX).text, /^env_vars = \["COUNTINGHOUSE_GITHUB_TOKEN", "GITHUB_TOKEN"\]$/m);
 });
 
 test('no snippet carries a token', () => {

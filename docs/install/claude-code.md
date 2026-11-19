@@ -22,48 +22,42 @@ zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`
 `cmd.exe`, or use the plugin
 ([`claude mcp add`](https://code.claude.com/docs/en/mcp)).
 
-## Token
+## Credentials
 
-The packs that read GitHub need a token. The recommended one is a
-fine-grained, read-only token (Actions read, Contents read), stored once at a
-terminal:
+A credential belongs to a module: the key, for that module's variable, to
+the one address the module declares. `ch-local install` and `add-pack` ask
+for each module that needs one at their end, or name it with no terminal;
+any time later, at a terminal:
 
 ```
-ch-local credentials add github
+ch-local credentials add ch-access-github
 ```
 
-It asks for the token with nothing shown as you type or paste it, and keeps
-it in `credentials/` in the ch-local home, readable by your user only. Every
-session uses it, including the shared runtime that serves them all. Another
-program running as your user can read that file, as it can read `gh`'s own
-token; ch-local doesn't use the system keychain yet.
-`ch-local credentials list` shows what is stored (names only), and
-`ch-local credentials remove github` removes it. The shared runtime moves to
-a new or removed token once its calls in flight finish; a session that runs
-a runtime of its own takes it at its next start (restart that client). Every
-session sharing the runtime uses the token it then holds.
+It shows the variable and the address the key will be sent to before it asks
+anything, then reads the key with nothing shown as you type or paste it. For
+GitHub's MCP server (exactly `https://api.githubcopilot.com`) it first offers
+your `gh` login, if `gh` has one (default No): a yes stores no key, and each
+start asks `gh auth token` and holds it in memory. A token from
+`gh auth login` carries gh's scopes, which can write to your repositories; a
+fine-grained, read-only token (Actions read, Contents read) is narrower.
 
-Without a stored token, the launcher asks the GitHub CLI each time it starts
-(`gh auth token`) and holds the token in memory: log `gh` in once with
-`gh auth login`. A token from `gh auth login` carries gh's scopes, which can
-write to your repositories. No client config entry sets a token.
+The key is kept in `credentials/` in the ch-local home, readable by your user
+only. Another program running as your user can read that file, as it can read
+`gh`'s own token; ch-local doesn't use the system keychain yet.
+`ch-local credentials list` shows each module's variable, address and source,
+never a key; `ch-local credentials remove <module>` removes it. The shared
+runtime takes an added or removed key once its calls in flight finish; a
+session on a runtime of its own unloads a removed or changed one at once, and
+takes a new one at its client's next start.
 
-The order, the same everywhere: `COUNTINGHOUSE_GITHUB_TOKEN` set in the
-environment Claude Code is started from, then the stored token, then
-`gh auth token`, then `GITHUB_TOKEN`. A session whose environment sets a
-token the shared runtime doesn't hold runs a runtime of its own.
+No client config entry sets or forwards a credential, and a token in the
+environment your client starts from is not used. A key is used only for the
+address it was added for: a module version that sends it somewhere else is
+not loaded until you add it again. Never paste a token into the conversation.
 
-For headless or CI use, where `gh` is not logged in, the launcher falls back
-to `GITHUB_TOKEN` from the environment Claude Code is started from. A token set
-in the environment is plaintext in that client's config, or wherever you set
-it. A client started from the dock or the Start menu may not find `gh` on the
-`PATH` your shell sets.
-Never paste a token into the conversation.
-
-`claude` in a terminal sees your shell's profile. An IDE or desktop app that
-hosts Claude Code, started from the dock, the Start menu or a desktop icon,
-does not: start it from a terminal, or set the variable for your desktop
-session.
+For headless or CI use, pipe the key in and name the address:
+`ch-local credentials add ch-access-github --to https://api.githubcopilot.com`
+reads one line from standard input.
 
 ## Node
 

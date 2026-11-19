@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {tmp} = require('./fake-io');
-const {installedPacks, declaredRemotes, credentialUnion, loadablePacks} = require('../lib/packs');
+const {installedPacks, declaredRemotes} = require('../lib/packs');
 const {ALLOWED_ORIGINS} = require('../lib/allowlist');
 
 const GITHUB = {name: 'github', transport: 'streamable-http', url: 'https://api.githubcopilot.com/mcp/',
@@ -73,34 +73,6 @@ test('declaredRemotes reads the installed packages\' countinghouse.remotes: orig
   assert.throws(() => declaredRemotes(dir, ['@countinghouse/not-installed']), /@countinghouse\/not-installed is not in the module store/, 'a listed module missing from the store is a broken install');
   fs.writeFileSync(path.join(dir['@countinghouse/ch-step-redact'], 'package.json'), '{"name": ');
   assert.throws(() => declaredRemotes(dir, ['@countinghouse/ch-step-redact']), /ch-step-redact.*not readable/, 'a corrupt manifest is not "no remotes"');
-});
-
-test('credentialUnion merges one origin\'s variables across packages', () => {
-  const a = {origin: 'https://api.githubcopilot.com', variables: ['COUNTINGHOUSE_GITHUB_TOKEN'], from: 'x'};
-  const b = {origin: 'https://api.githubcopilot.com', variables: ['GITHUB_TOKEN', 'COUNTINGHOUSE_GITHUB_TOKEN'], from: 'y'};
-  assert.deepStrictEqual(credentialUnion([a, b], ALLOWED_ORIGINS), {credentials: {'https://api.githubcopilot.com': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}, refused: []});
-  assert.deepStrictEqual(credentialUnion([], ALLOWED_ORIGINS), {credentials: {}, refused: []});
-});
-
-test('credentialUnion refuses an origin outside ALLOWED_ORIGINS, naming the package and origin', () => {
-  const evil = {origin: 'https://collector.example', variables: ['GITHUB_TOKEN'], from: '@someone/ch-step-x'};
-  assert.deepStrictEqual(credentialUnion([evil], ALLOWED_ORIGINS).refused, [{from: '@someone/ch-step-x', origin: 'https://collector.example'}]);
-  assert.deepStrictEqual(credentialUnion([{origin: null, variables: [], from: '@x/y'}], ALLOWED_ORIGINS).refused, [{from: '@x/y', origin: null}]);
-});
-
-test('credentialUnion refuses a variable an allowed origin is not pinned to receive, naming the package, origin and variable', () => {
-  const sneaky = {origin: 'https://api.githubcopilot.com', variables: ['GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY'], from: '@someone/ch-step-x'};
-  assert.deepStrictEqual(credentialUnion([sneaky], ALLOWED_ORIGINS).refused,
-    [{from: '@someone/ch-step-x', origin: 'https://api.githubcopilot.com', variable: 'AWS_SECRET_ACCESS_KEY'}]);
-});
-
-test('loadablePacks leaves out a pack missing a credential and names its variables, never a value', () => {
-  const triage = {name: 'ci-failure-triage', credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']};
-  const other = {name: 'other', credentials: ['OTHER_TOKEN']};
-  const r = loadablePacks([triage, other], {GITHUB_TOKEN: 'secret', OTHER_TOKEN: '${OTHER_TOKEN}'});
-  assert.deepStrictEqual(r.load.map((p) => [p.name, p.credential]), [['ci-failure-triage', 'GITHUB_TOKEN']]);
-  assert.deepStrictEqual(r.missing, [{name: 'other', variables: ['OTHER_TOKEN']}]);
-  assert.ok(!JSON.stringify(r).includes('secret'));
 });
 
 test('a record whose pack names or versions are not a release\'s is refused: they become directory names', () => {

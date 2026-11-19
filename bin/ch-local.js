@@ -29,7 +29,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
        ch-local settings [get | set <name> <value> | reset]
-       ch-local credentials [list | add github [--module <package>] | remove github]
+       ch-local credentials [list | add <module> [--to <origin>] | remove <module>]
        ch-local start --stdio [countinghouse options]
 `;
 
@@ -113,13 +113,13 @@ async function main(argv, io) {
       return await require('../lib/clients').add(rest[0], io);
     }
     if (command === 'credentials') {
-      const a = parse(rest, {values: ['--module']});
+      const a = parse(rest, {values: ['--to']});
       if (a == null) return usage();
       const [action = 'list', name, ...more] = a.positional;
-      if (more.length > 0 || (action === 'list' && (name !== undefined || a.values['--module'] !== undefined))) return usage();
+      if (more.length > 0 || (action === 'list' && (name !== undefined || a.values['--to'] !== undefined))) return usage();
       if ((action === 'add' || action === 'remove') && name === undefined) return usage();
-      if (action === 'remove' && a.values['--module'] !== undefined) return usage();
-      return await require('../lib/credentials-command').credentials({action, name, module: a.values['--module'] || null}, io);
+      if (action === 'remove' && a.values['--to'] !== undefined) return usage();
+      return await require('../lib/credentials-command').credentials({action, name, to: a.values['--to'] || null}, io);
     }
     if (command === 'uninstall') {
       const a = parse(rest, {flags: ['--keep-data']});
@@ -246,7 +246,48 @@ function realIo() {
     interactive: Boolean(process.stdin.isTTY),
     // A terminal both ways (credentials add: the prompt seen, the typing not)
     terminal: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+    // (a terminal on standard input alone: credentials add refuses it)
+    stdinIsTTY: Boolean(process.stdin.isTTY),
     readHidden: (prompt) => require('../lib/hidden-input').readHidden(prompt),
+    // standard input, read whole up to max bytes (credentials add --to: a
+    // key piped in); more than max is cut there, and the caller refuses it
+    // at most `max` bytes, until the input ends or closes; an open pipe
+    // that sends nothing for timeoutMs is a TIMEOUT, never a wait forever
+    // (the Reviewer's high review of L5a, 4). The wait restarts with each
+    // piece that arrives: a slow producer (a password manager's prompt) is
+    // not cut off while it is sending.
+    readStdin: (max, {timeoutMs = 60000} = {}) => new Promise((resolve, reject) => {
+      const chunks = [];
+      let size = 0;
+      let done = false;
+      let timer = null;
+      const finish = (fn, v) => { if (done) return; done = true; clearTimeout(timer); fn(v); };
+      const arm = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          process.stdin.destroy();
+          finish(reject, Object.assign(new Error(`standard input sent nothing for ${timeoutMs / 1000} s`), {code: 'TIMEOUT'}));
+        }, timeoutMs);
+      };
+      arm();
+      const text = () => Buffer.concat(chunks).subarray(0, max).toString('utf8');
+      // past max, no more waiting for an end that may never come (`yes |`):
+      // refused as too long at once (the Reviewer's round 3, 7)
+      process.stdin.on('data', (c) => {
+        if (done) return;
+        chunks.push(c);
+        size += c.length;
+        if (size > max) {
+          process.stdin.destroy();
+          finish(reject, Object.assign(new Error(`standard input held more than ${max} bytes`), {code: 'TOO_LONG'}));
+          return;
+        }
+        arm();
+      });
+      process.stdin.on('end', () => finish(resolve, text()));
+      process.stdin.on('close', () => finish(resolve, text()));
+      process.stdin.on('error', (e) => finish(reject, e));
+    }),
     // Read when used: a directory removed under a shell makes process.cwd()
     // throw, and only start needs it (null: git runs wherever it is).
     get cwd() { try { return process.cwd(); } catch (err) { return null; } },

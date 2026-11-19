@@ -76,7 +76,8 @@ test('start writes run.json naming its host, pid and every module version it loa
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
   const {start} = require('../lib/start');
   const seen = [];
-  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'x', OTHER_TOKEN: 'y'}}), {hostname: 'here', pid: 4242, alive: () => true, cwd: home});
+  require('./store-helpers').bindAccess(home);
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {hostname: 'here', pid: 4242, alive: () => true, cwd: home});
   io.spawn = () => {
     const runs = fs.readdirSync(path.join(home, 'run'));
     seen.push(JSON.parse(fs.readFileSync(path.join(home, 'run', runs[0], 'run.json'), 'utf8')));

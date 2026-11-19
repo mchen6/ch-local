@@ -17,6 +17,12 @@ const {release, npm} = require('./install-helpers');
 // (the module form, #413 section 7.3)
 const named = (m) => (m.name != null ? m.name : (Array.isArray(m.names) ? m.names.join(',') : undefined));
 const editRecord = (...a) => require('./store-helpers').editHome(...a);
+const ACCESS = '@countinghouse/ch-access-github';
+const GH_ORIGIN = 'https://api.githubcopilot.com';
+// a test home's stored value (no real token's shape)
+const STORED = 'test-stored-value-1';
+const bindAccess = (home, source = 'stored') => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN',
+  source === 'gh' ? {origin: GH_ORIGIN, source: 'gh'} : {origin: GH_ORIGIN, source: 'stored', value: STORED});
 const TRIAGE_LOADED = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.1.0'};
 const until = async (cond, ms = 10000) => {
   for (const t = Date.now(); Date.now() - t < ms; await new Promise((r) => setTimeout(r, 20))) if (cond()) return;
@@ -25,7 +31,10 @@ const until = async (cond, ms = 10000) => {
 
 // A running start over an installed home, with a runtime that answers each
 // control request with `answer(msg)` (default ok) and runs until end().
-// env: start's credentials (a GitHub token and another by default)
+// env: start's environment (no credential: a credential is a module's own,
+// in the store, #413 section 6.9)
+// bound: ch-access-github's stored credential: 'stored' (a test value, the
+// default), 'gh' (its source gh: ghToken answers), or null (none)
 // shared: as ch-local daemon runs the shared runtime (a session with the home)
 // ghToken: what gh auth token answers (a shared runtime's GitHub token comes
 // from gh only), else gh is not logged in
@@ -38,11 +47,12 @@ const until = async (cond, ms = 10000) => {
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs, shared = false, ghToken = null, home: reuse = null,
-  env = {GITHUB_TOKEN: 'secret', OTHER_TOKEN: 'other-secret'}, clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
+  env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  if (reuse == null && bound != null) bindAccess(home, bound);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
   Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs, clientAncestry});
@@ -102,13 +112,13 @@ test('start spawns its runtime with the control channel', async () => {
 // say what to do. Per-session start and the daemon's runtime alike (#54's
 // diagnosis: the daemon's runtime ended before it listened).
 test('no pack has its credential: the runtime starts with no pack, and the client is told which and why', async () => {
-  const s = await running({env: {}});
+  const s = await running({bound: null});
   try {
     assert.ok(!s.args().includes('--loadModule'), `no pack loaded: ${s.args().join(' ')}`);
     await until(() => [/not loading ch-pack-ci-failure-triage/, /no module is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
     const told = notices(s).map(([, t]) => t);
     const why = told.find((t) => /not loading ch-pack-ci-failure-triage/.test(t));
-    assert.match(why, /needs the GitHub token: store a read-only one with `ch-local credentials add github`, or run `gh auth login`, or for headless or CI use set COUNTINGHOUSE_GITHUB_TOKEN/);
+    assert.match(why, /it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`/);
     assert.doesNotMatch(why, /\(above\)/, 'self-contained: the client never saw a line above');
     assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   } finally {
@@ -776,7 +786,7 @@ test('a withdrawn pack is not started: told once (stderr and the client), its re
 });
 
 test('a released install started with CH_LOCAL_DEV=1 is still refused its withdrawn pack', async () => {
-  const s = await running({release: withdrawnRelease(), env: {GITHUB_TOKEN: 'secret', CH_LOCAL_DEV: '1'}});
+  const s = await running({release: withdrawnRelease(), env: {CH_LOCAL_DEV: '1'}});
   try {
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false);
@@ -789,7 +799,7 @@ test('a released install started with CH_LOCAL_DEV=1 is still refused its withdr
 
 test('an unreleased install is exempt, with CH_LOCAL_DEV=1 or without (the shared daemon never has it): the pack starts, the unreleased line said each time', async () => {
   const unreleased = (home) => editRecord(home, (r) => ({...r, unreleased: true}));
-  const dev = await running({release: withdrawnRelease(), beforeStart: unreleased, env: {GITHUB_TOKEN: 'secret', CH_LOCAL_DEV: '1'}});
+  const dev = await running({release: withdrawnRelease(), beforeStart: unreleased, env: {CH_LOCAL_DEV: '1'}});
   try {
     await until(() => dev.args() != null);
     assert.strictEqual(loadsPack(dev), true, JSON.stringify(dev.args()));
@@ -1118,18 +1128,16 @@ test('another release\'s record: a module moved back is stopped with its callers
 });
 
 // the medium review of L2a, 3: a module without its credential is told in
-// start's words, once, by start and the applier together
-test('a module added without its credential is told once, in start\'s words', async () => {
-  const s = await running({env: {GITHUB_TOKEN: 'secret'}});
+// start's words, once, by start and the applier together (L5a: the
+// credential is the called module's own, in the store)
+test('a pack whose module has no credential stored is told once, in start\'s words, through a later change', async () => {
+  const s = await running({bound: null});
   try {
-    // the running release: the one installed, whose pins give other OTHER_TOKEN
-    s.f.release = s.r.allow;
-    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
-    const line = 'not loading ch-pack-other: set OTHER_TOKEN in the environment your client starts from';
+    const line = 'not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`';
     await until(() => notices(s).some(([, t]) => t === line));
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
-    assert.strictEqual(notices(s).filter(([, t]) => /^not loading ch-pack-other/.test(t)).length, 1, JSON.stringify(notices(s)));
+    assert.strictEqual(notices(s).filter(([, t]) => /^not loading ch-pack-ci-failure-triage/.test(t)).length, 1, JSON.stringify(notices(s)));
   } finally {
     s.end();
     await s.done;
@@ -1401,6 +1409,7 @@ test('another release\'s record: a caller whose callee is turned off is unloaded
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  bindAccess(home);
   const s = await running({home});
   try {
     assert.ok(loadsPack(s), 'ci-failure-triage loads with other installed');
@@ -1423,6 +1432,7 @@ test('another release\'s record: a caller whose callee is no longer installed is
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  bindAccess(home);
   const s = await running({home});
   try {
     assert.ok(loadsPack(s));
@@ -1500,6 +1510,157 @@ test('a home rolled back under a running start: a module moved back is stopped "
       packs: {...r.packs, 'ci-failure-triage': {...r.packs['ci-failure-triage'], modules: {...r.packs['ci-failure-triage'].modules, '@countinghouse/ch-step-redact': '0.0.9'}}}}));
     const back = 'ch-step-redact was moved back to 0.0.9 by the rollback just made; it is stopped here until this client restarts; ch-pack-ci-failure-triage calls it and is stopped with it';
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === SCENARIO && m.notice === back));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// #413 section 6.4; the /code-review medium on L5a, 5: a binding removed
+// while running unloads its module and its callers, told in the state's own
+// words, once
+test('a credential removed while running unloads the callers of its module, said as removed, once', async () => {
+  const s = await running();
+  try {
+    await until(() => s.args() != null);
+    require('../lib/credential-store').unbind(s.home, ACCESS);
+    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or restart your client';
+    await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
+    // a later change sends no second unload
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 1, JSON.stringify(s.requests));
+    assert.strictEqual(s.history().filter((h) => h.notice === line).length, 1);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the Reviewer's high review of L5a, 3: a store that cannot be read for a
+// moment decides nothing; only a read that succeeds and differs unloads
+// (a read that fails, EACCES here; a file read and found wrong is a read,
+// and decides)
+test('a credential store that cannot be read keeps what is loaded, says so once, and is read again', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const s = await running();
+  try {
+    await until(() => s.args() != null);
+    const file = path.join(s.home, 'credentials', 'credentials.json');
+    fs.chmodSync(file, 0o000);
+    await until(() => /the stored credentials could not be read/.test(s.f.err));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.ok(!s.requests.some((m) => m.type === 'unload'), JSON.stringify(s.requests));
+    fs.chmodSync(file, 0o600);
+    await new Promise((r) => setTimeout(r, 2500));
+    assert.ok(!s.requests.some((m) => m.type === 'unload'), 'the good read matches: nothing unloaded');
+    assert.strictEqual(s.f.err.split('the stored credentials could not be read').length - 1, 1, s.f.err);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the Fable pass on L5a, F3: a binding present at start that got no slot
+// (gh gave nothing) keeps start's reason; it is never told "restart your
+// client" as if it were added since
+test('a gh binding gh gave no token for at start is not told to restart on a later change; it says how to provide it', async () => {
+  const s = await running({bound: 'gh'});
+  try {
+    await until(() => notices(s).some(([, t]) => /has no token from your gh login/.test(t)));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!notices(s).some(([, t]) => /was not started with/.test(t)), JSON.stringify(notices(s)));
+    assert.ok(!/was not started with/.test(s.f.err), s.f.err);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the Fable pass on L5a, F4: a credential unload the runtime refuses is
+// retried, then the sessions are told to restart now; never silent
+test('a credential unload the runtime refuses is retried, then told: restart your client now', async () => {
+  const s = await running({answer: (m) => (m.type === 'unload' ? {ok: false, code: 'BUSY'} : {ok: true})});
+  try {
+    await until(() => s.args() != null);
+    require('../lib/credential-store').unbind(s.home, ACCESS);
+    await until(() => s.requests.filter((m) => m.type === 'unload').length >= 2);
+    await until(() => notices(s).some(([, t]) => /could not be stopped in place after a credential was removed or changed: restart your client now to stop it/.test(t)));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// A home with both packs installed, ch-step-other (in other's closure)
+// declaring a credential of its own, and both modules' keys stored.
+const OTHER_STEP = '@countinghouse/ch-step-other';
+const OTHER_ORIGIN = 'https://api.other.example';
+async function twoCredentialed({otherOff = false} = {}) {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: home}, () => '/nowhere');
+  const record = require('../lib/module-record').readModulesRecord(where);
+  const manifestOf = (m) => path.join(require('../lib/store-paths').versionDir(where, m, record.modules[m].version), 'package.json');
+  const edit = (m, fn) => { const f = manifestOf(m); const p = JSON.parse(fs.readFileSync(f, 'utf8')); fn(p); fs.writeFileSync(f, JSON.stringify(p)); };
+  edit(OTHER_STEP, (p) => { p.countinghouse.remotes = [{name: 'o', url: `${OTHER_ORIGIN}/mcp/`, credential: 'OTHER_TOKEN'}]; });
+  bindAccess(home);
+  require('../lib/credential-store').bind(home, OTHER_STEP, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: 'test-stored-value-2'});
+  if (otherOff) fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
+  return {home, r, edit};
+}
+
+// the Reviewer's high review of L5a's round 2: while the store cannot be
+// read, a module whose declaration is unchanged keeps its key; one whose
+// declaration changed meanwhile is not usable (the medium on the high
+// round, 2)
+test('an unreadable store: an unchanged declaration keeps its key, a changed one is unloaded with its callers', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const t = await twoCredentialed();
+  const s = await running({home: t.home});
+  try {
+    await until(() => s.args() != null);
+    assert.ok(s.args().filter((a) => a === '--loadModule').length === 2, s.args().join(' '));
+    fs.chmodSync(path.join(t.home, 'credentials', 'credentials.json'), 0o000);
+    // ch-access-github now names another variable: its last good state no
+    // longer stands; ch-step-other's declaration is untouched
+    t.edit(ACCESS, (p) => { p.countinghouse.remotes[0].credential = {env: 'RENAMED_TOKEN', header: 'Authorization', scheme: 'Bearer'}; });
+    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === SCENARIO));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.ok(!s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-other'), JSON.stringify(s.requests));
+    const why = s.requests.find((m) => m.type === 'unload' && named(m) === SCENARIO).notice;
+    assert.match(why, /the stored credentials are not used \(.*could not be read/);
+  } finally {
+    fs.chmodSync(path.join(t.home, 'credentials', 'credentials.json'), 0o600);
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on the high round, 5: a module loaded after start gets its
+// "sends" line when its key first goes, once
+test('a module turned on while running says where its key goes, once, when it loads', async () => {
+  const t = await twoCredentialed({otherOff: true});
+  const s = await running({home: t.home});
+  try {
+    await until(() => s.args() != null);
+    const line = 'sends OTHER_TOKEN to https://api.other.example for ch-step-other';
+    assert.ok(!s.f.err.includes(line), 'not said at start: it does not load');
+    assert.match(s.f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
+    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true}}));
+    await until(() => s.requests.some((m) => m.type === 'load' && named(m) === '@countinghouse/ch-pack-other'));
+    const load = s.requests.find((m) => m.type === 'load' && named(m) === '@countinghouse/ch-pack-other');
+    assert.deepStrictEqual(load.credentials, {[OTHER_STEP]: {[OTHER_ORIGIN]: {OTHER_TOKEN: 'COUNTINGHOUSE_CREDENTIAL_2'}}});
+    await until(() => s.f.err.includes(line));
+    // a later change says it no more
+    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true, locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.strictEqual(s.f.err.split(line).length - 1, 1, s.f.err);
   } finally {
     s.end();
     await s.done;
