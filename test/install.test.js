@@ -12,7 +12,7 @@ const path = require('node:path');
 const {install} = require('../lib/install');
 const {ALLOWLIST} = require('../lib/allowlist');
 const {fakeIo, tmp} = require('./fake-io');
-const {release, npm, pkgDir, record, RUNTIME} = require('./install-helpers');
+const {devModules, release, npm, pkgDir, record, RUNTIME} = require('./install-helpers');
 
 const TRIAGE = ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'];
 const run = (r, io, args = {}) => install({pack: 'ci-failure-triage', from: r.from, ...args}, io, r.allow);
@@ -460,8 +460,8 @@ test('no --from: one package whose provenance fails stops the install, naming it
 test('this launcher pins no release yet, and says so; its runtime is ch-local and countinghouse', async () => {
   assert.deepStrictEqual(ALLOWLIST.runtime.packages, ['@countinghouse/ch-local', 'countinghouse']);
   assert.deepStrictEqual(Object.keys(ALLOWLIST.packs), ['ci-failure-triage']);
-  const triage = ALLOWLIST.packs['ci-failure-triage'].packages;
-  assert.strictEqual(triage[0], '@countinghouse/ch-pack-ci-failure-triage', 'the scenario first');
+  const triage = ALLOWLIST.packs['ci-failure-triage'].modules;
+  assert.ok(triage.includes('@countinghouse/ch-pack-ci-failure-triage'));
   assert.ok(triage.includes('@countinghouse/ch-access-github'));
   // The usage report is the runtime's built-in countinghouse_usage_report: nothing installs ch-report (reviewer, 2026-11-11).
   assert.ok(!triage.includes('@countinghouse/ch-report'));
@@ -473,7 +473,14 @@ test('this launcher pins no release yet, and says so; its runtime is ch-local an
 });
 
 // --unreleased-pins (reviewer, 2026-11-12): development only.
-const pinsFile = (r, body) => { const f = path.join(tmp('ch-pins-'), 'pins.json'); fs.writeFileSync(f, typeof body === 'string' ? body : JSON.stringify(body)); return f; };
+// (with the descriptions the step writes for what it pins, unless the body
+// gives its own)
+const pinsFile = (r, body) => {
+  const f = path.join(tmp('ch-pins-'), 'pins.json');
+  const full = typeof body === 'string' || body.modules !== undefined || body.pins == null || Array.isArray(body.pins) ? body : {...body, modules: devModules(r.allow, body.pins)};
+  fs.writeFileSync(f, typeof full === 'string' ? full : JSON.stringify(full));
+  return f;
+};
 
 test('--unreleased-pins installs with its pins and lockfile, records the home as unreleased and says so', async () => {
   const r = release(); const h = home();
@@ -679,7 +686,7 @@ test('migration reinstalls every pack the record lists from the tarballs; develo
     packs: {'ci-failure-triage': {packages: triage, credentials: []}, other: {packages: other, credentials: []}}});
   fs.writeFileSync(path.join(h, 'packs.json'), old);
   const f = path.join(tmp('ch-pins-'), 'pins.json');
-  fs.writeFileSync(f, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile}));
+  fs.writeFileSync(f, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile, modules: devModules(r.allow, r.pins)}));
   const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
   // --from without ch-step-other's tarball: refused, naming it, nothing changed
   const missing = require('../lib/unpack').tarballName('@countinghouse/ch-step-other', '0.2.0');
@@ -709,7 +716,7 @@ test('other contents under a version the record names are refused before anythin
   // a development pins file that rebuilt ch-step-redact 0.1.0 with other bytes
   const rebuilt = release({extra: {'@countinghouse/ch-step-redact': {description: 'rebuilt'}}});
   const f = path.join(tmp('ch-pins-'), 'pins.json');
-  fs.writeFileSync(f, JSON.stringify({pins: rebuilt.pins, runtimeLockfile: rebuilt.lockfile}));
+  fs.writeFileSync(f, JSON.stringify({pins: rebuilt.pins, runtimeLockfile: rebuilt.lockfile, modules: devModules(rebuilt.allow, rebuilt.pins)}));
   const before = fs.readFileSync(path.join(h, 'module-store', '@countinghouse', 'ch-step-redact', '0.1.0', 'package.json'), 'utf8');
   const dev = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: rebuilt.from, unreleasedPins: f}, dev, {...rebuilt.allow, pins: {}, runtime: {...rebuilt.allow.runtime, lockfile: null}}), 1);
@@ -838,7 +845,7 @@ test('under development pins a pack the pins do not pin is not carried over, wit
   // (its --from holds what it pins: a tarball no pin names is refused)
   for (const n of ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-other']) fs.rmSync(path.join(r.from, require('../lib/unpack').tarballName(n, r.pins[n].version)));
   const f = path.join(tmp('ch-pins-'), 'pins.json');
-  fs.writeFileSync(f, JSON.stringify({pins, runtimeLockfile: r.lockfile}));
+  fs.writeFileSync(f, JSON.stringify({pins, runtimeLockfile: r.lockfile, modules: devModules(r.allow, pins)}));
   const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);

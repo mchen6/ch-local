@@ -37,7 +37,12 @@ function setup() {
   return {user, home, done: () => fs.rmSync(user, {recursive: true, force: true})};
 }
 // the running release's pins give each pack its credentials
-const RELEASE = {packs: {'ci-failure-triage': {credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}, other: {credentials: ['OTHER_TOKEN', 'GITHUB_TOKEN']}}};
+// (pins version 2: a pack's credentials are its modules' descriptions')
+const described = (variable) => ({credentials: variable == null ? [] : [{variable, origin: 'https://api.githubcopilot.com'}], calls: [], confirmSettings: {}});
+const RELEASE = {
+  packs: {'ci-failure-triage': {modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github']}, other: {modules: ['@countinghouse/ch-pack-other']}},
+  modules: {'@countinghouse/ch-pack-ci-failure-triage': described(null), '@countinghouse/ch-access-github': described('COUNTINGHOUSE_GITHUB_TOKEN'), '@countinghouse/ch-pack-other': described('OTHER_TOKEN')}
+};
 const io = (s, answers) => Object.assign(fakeIo({env: {GITHUB_TOKEN: 'secret-value-123'}, homedir: s.user, answers}), {release: RELEASE});
 
 test('uninstall lists the home directory and deletes nothing without a yes', async () => {
@@ -60,7 +65,8 @@ test('on yes everything under the home goes, and the credentials to revoke are n
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 0, u.err);
     assert.ok(!fs.existsSync(s.home));
-    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, GITHUB_TOKEN, OTHER_TOKEN/i, 'every installed pack\'s, once each');
+    // (the variables the pack's modules are described with: pins version 2)
+    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, OTHER_TOKEN\n/i, 'every installed pack\'s, once each');
     assert.ok(!(u.out + u.err).includes('secret-value-123'));
   } finally {
     s.done();
@@ -122,7 +128,7 @@ test('a home whose packs were all removed still names the release\'s credentials
     fs.writeFileSync(path.join(s.home, 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {}}));
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 0, u.err);
-    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, GITHUB_TOKEN/i);
+    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN/i);
   } finally {
     s.done();
   }

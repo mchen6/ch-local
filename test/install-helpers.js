@@ -24,9 +24,24 @@ const PACKAGES = {
 // friendlyName: the module's short name, which countinghouse.calls name it by
 const api = (tool, friendly = tool) => JSON.stringify({device: {friendlyName: friendly, serviceList: {'urn:x:serviceID:s': {actionList: [{name: tool, description: `the ${tool} tool`}, {name: 'hidden'}]}}}});
 
-function release({versions = {}, extra = {}} = {}) {
+// describe: {package: description} in place of what the release step would
+// write (lib/describe-module.js over the tarball's own manifest), for a
+// release whose description differs from what it ships
+const {describeModule} = require('../lib/describe-module');
+const describeAll = (manifests, describe) => {
+  const friendly = new Map(Object.keys(manifests).map((n) => [n.replace(/^@[^/]+\//, ''), n]));
+  return Object.fromEntries(Object.entries(manifests).map(([n, m]) => {
+    if (Object.prototype.hasOwnProperty.call(describe, n)) return [n, describe[n]];
+    const d = describeModule(m, friendly);
+    if (d.problem != null) throw new Error(`the test release cannot describe ${n}: ${d.problem}`);
+    return [n, d];
+  }));
+};
+
+function release({versions = {}, extra = {}, describe = {}} = {}) {
   const from = tmp('ch-release-');
   const pins = {};
+  const manifests = {};
   for (const [name, pinned] of RUNTIME) {
     // versions may move a runtime package too (but ch-local's own, which the
     // npm stub installs at its fixed version)
@@ -38,7 +53,8 @@ function release({versions = {}, extra = {}} = {}) {
   for (const [name, [v, countinghouse]] of Object.entries(PACKAGES)) {
     const version = versions[name] || v;
     const tool = name === '@countinghouse/ch-pack-ci-failure-triage' ? 'ci_failure_triage' : name.split('/')[1].replace(/-/g, '_');
-    const bytes = packageTgz({name, version, countinghouse, ...(extra[name] || {})}, {'api.json': api(tool, name.replace(/^@[^/]+\//, '')), 'lib/index.js': `// ${name}\n`});
+    manifests[name] = {name, version, countinghouse, ...(extra[name] || {})};
+    const bytes = packageTgz(manifests[name], {'api.json': api(tool, name.replace(/^@[^/]+\//, '')), 'lib/index.js': `// ${name}\n`});
     fs.writeFileSync(path.join(from, tarballName(name, version)), bytes);
     pins[name] = {version, integrity: integrityOf(bytes)};
   }
@@ -50,9 +66,11 @@ function release({versions = {}, extra = {}} = {}) {
   const allow = {
     runtime: {packages: RUNTIME.map(([n]) => n), lockfile},
     packs: {
-      'ci-failure-triage': {packages: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
-      other: {packages: ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-redact', '@countinghouse/ch-step-other'], credentials: ['OTHER_TOKEN']}
+      'ci-failure-triage': {modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact']},
+      other: {modules: ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-redact', '@countinghouse/ch-step-other']}
     },
+    // what the release step writes (pins version 2: #413 section 9.3)
+    modules: describeAll(manifests, describe),
     pins
   };
   return {from, allow, pins, lockfile};
@@ -87,4 +105,8 @@ const pkgDir = (home, name) => {
   return path.join(home, 'module-store', ...name.split('/'), m.version);
 };
 
-module.exports = {release, npm, pkgDir, record, integrityOf, RUNTIME, PACKAGES};
+// a development pins file's descriptions: the release's, of the pack
+// modules pins names (what describe-release.js --unreleased-pins writes)
+const devModules = (allow, pins) => Object.fromEntries(Object.entries(allow.modules).filter(([m]) => Object.prototype.hasOwnProperty.call(pins, m)));
+
+module.exports = {release, npm, pkgDir, record, integrityOf, devModules, RUNTIME, PACKAGES};

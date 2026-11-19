@@ -1,5 +1,5 @@
 {
-  "v": 1,
+  "v": 2,
   "release": {
     "security": {
       "fixes": "loosening a guarding setting is confirmed at a terminal and bound by the operator's ceiling (countinghouse part 3)"
@@ -30,7 +30,7 @@
   },
   "packs": {
     "ci-failure-triage": {
-      "packages": [
+      "modules": [
         "@countinghouse/ch-pack-ci-failure-triage",
         "@countinghouse/ch-access-github",
         "@countinghouse/ch-step-redact",
@@ -40,18 +40,69 @@
         "@countinghouse/ch-step-dedupe",
         "@countinghouse/ch-step-owner-hint",
         "@countinghouse/ch-step-report"
-      ],
-      "credentials": [
-        "COUNTINGHOUSE_GITHUB_TOKEN",
-        "GITHUB_TOKEN"
       ]
     }
   },
-  "allowedOrigins": {
-    "https://api.githubcopilot.com": [
-      "COUNTINGHOUSE_GITHUB_TOKEN",
-      "GITHUB_TOKEN"
-    ]
+  "modules": {
+    "@countinghouse/ch-access-github": {
+      "credentials": [
+        {
+          "variable": "COUNTINGHOUSE_GITHUB_TOKEN",
+          "origin": "https://api.githubcopilot.com"
+        }
+      ],
+      "calls": [],
+      "confirmSettings": {}
+    },
+    "@countinghouse/ch-pack-ci-failure-triage": {
+      "credentials": [],
+      "calls": [
+        "@countinghouse/ch-access-github",
+        "@countinghouse/ch-step-dedupe",
+        "@countinghouse/ch-step-error-patterns",
+        "@countinghouse/ch-step-failure-signature",
+        "@countinghouse/ch-step-log-clean",
+        "@countinghouse/ch-step-owner-hint",
+        "@countinghouse/ch-step-redact",
+        "@countinghouse/ch-step-report"
+      ],
+      "confirmSettings": {}
+    },
+    "@countinghouse/ch-step-dedupe": {
+      "credentials": [],
+      "calls": [],
+      "confirmSettings": {}
+    },
+    "@countinghouse/ch-step-error-patterns": {
+      "credentials": [],
+      "calls": [],
+      "confirmSettings": {}
+    },
+    "@countinghouse/ch-step-failure-signature": {
+      "credentials": [],
+      "calls": [],
+      "confirmSettings": {}
+    },
+    "@countinghouse/ch-step-log-clean": {
+      "credentials": [],
+      "calls": [],
+      "confirmSettings": {}
+    },
+    "@countinghouse/ch-step-owner-hint": {
+      "credentials": [],
+      "calls": [],
+      "confirmSettings": {}
+    },
+    "@countinghouse/ch-step-redact": {
+      "credentials": [],
+      "calls": [],
+      "confirmSettings": {}
+    },
+    "@countinghouse/ch-step-report": {
+      "credentials": [],
+      "calls": [],
+      "confirmSettings": {}
+    }
   },
   "pins": {}
 }
