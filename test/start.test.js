@@ -3,14 +3,14 @@ require('./tmp-dirs');
 // ch-local start --stdio (plan Task 11; reviewer, 2026-11-12): the
 // single-identity profile of LM1 with every installed pack whose credential is
 // present, the one per-user store, the sandbox never off, the remote
-// credentials as the union of the loaded packs' remotes, and the defaultRepo
-// device config from the working directory's origin.
+// credentials as the union of the loaded packs' remotes, and no device config
+// (the scenario's defaultRepo is its own setting: #413 rev 3, P1 and P3).
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {fakeIo, tmp} = require('./fake-io');
-const {start, repoFromRemote} = require('../lib/start');
+const {start, repoFromRemote, readOrigin} = require('../lib/start');
 const {main} = require('../bin/ch-local');
 const {storeModule, writeHome, setPackCredentials} = require('./store-helpers');
 const credentialStore = require('../lib/credential-store');
@@ -245,21 +245,19 @@ test('a module whose declared origin is not the one its key was stored for gets 
 });
 
 
-test('start gives the runtime the defaultRepo device config from the origin remote, and removes it after', async () => {
-  for (const origin of ['https://github.com/octo/widgets.git', 'git@github.com:octo/widgets.git', 'https://github.com/octo/widgets']) {
-    const home = installedHome();
-    const f = io(home, {origin});
-    await start({passThrough: []}, f);
-    // The runtime keys a device config by the package name (module-manager getModuleInfoFromPath).
-    assert.deepStrictEqual(f.spawned[0].config, {'@countinghouse/ch-pack-ci-failure-triage.json': {defaultRepo: 'octo/widgets'}}, origin);
-    assert.deepStrictEqual(f.execs.filter((e) => e.cmd === 'git'), [], 'no git process: the config is read');
+// #413 rev 3 (after P1 and P3): the scenario reads defaultRepo as its own
+// setting, so start writes no device config; --deviceConfigPath still names
+// the start's own empty directory, so the runtime never reads one from
+// anywhere else (section 9.8).
+test('start writes no device config, whatever the origin remote', async () => {
+  for (const origin of ['https://github.com/octo/widgets.git', null]) {
+    const f = io(installedHome(), {origin});
+    assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+    assert.deepStrictEqual(f.spawned[0].config, {}, String(origin));
   }
-  const f = io(installedHome(), {origin: null});
-  assert.strictEqual(await start({passThrough: []}, f), 0, 'no origin: the pack asks for repo instead');
-  assert.deepStrictEqual(f.spawned[0].config, {});
 });
 
-test('the origin is read from the repository\'s config: a worktree\'s .git file and commondir, no repository, an unreadable cwd', async () => {
+test('the origin is read from the repository\'s config: a worktree\'s .git file and commondir, no repository, an unreadable cwd', () => {
   // A worktree: .git is a file naming its gitdir, whose commondir holds the config.
   const main = tmp('ch-local-main-');
   fs.mkdirSync(path.join(main, '.git', 'worktrees', 'wt'), {recursive: true});
@@ -267,14 +265,8 @@ test('the origin is read from the repository\'s config: a worktree\'s .git file 
   fs.writeFileSync(path.join(main, '.git', 'worktrees', 'wt', 'commondir'), '../..\n');
   const wt = tmp('ch-local-wt-');
   fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(main, '.git', 'worktrees', 'wt')}\n`);
-  const a = io(installedHome(), {cwd: wt});
-  await start({passThrough: []}, a);
-  assert.deepStrictEqual(Object.values(a.spawned[0].config), [{defaultRepo: 'octo/from-worktree'}]);
-  for (const cwd of [tmp('ch-local-norepo-'), null, '/does/not/exist']) {
-    const b = io(installedHome(), {cwd});
-    assert.strictEqual(await start({passThrough: []}, b), 0, b.err);
-    assert.deepStrictEqual(b.spawned[0].config, {}, String(cwd));
-  }
+  assert.strictEqual(repoFromRemote(readOrigin(wt)), 'octo/from-worktree');
+  for (const cwd of [tmp('ch-local-norepo-'), null, '/does/not/exist']) assert.strictEqual(repoFromRemote(readOrigin(cwd)), null, String(cwd));
 });
 
 test('originUrl reads only [remote "origin"] url, and ignores other sections and remotes', () => {

@@ -10,7 +10,7 @@ require('./tmp-dirs');
 // origin is on GitHub). It then speaks MCP over stdio: initialize, tools/list
 // (exactly the tool, countinghouse_usage_report and countinghouse_settings,
 // which the runtime lists under --settingsFile since countinghouse #183), and one tools/call,
-// which answers through the step, with the launcher's defaultRepo and a
+// which answers through the step, with its own setting defaultRepo and a
 // receipt of zero server calls.
 //
 // It needs a countinghouse tarball: CH_SMOKE_RUNTIME_TGZ=<path>. CI's smoke
@@ -99,10 +99,16 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       const allow = {runtime, packs: {smoke: {packages: [SCENARIO, STEP], credentials: []}}, pins: {}};
       assert.strictEqual(await install({pack: 'smoke', from, unreleasedPins: pinsFile}, io, allow), 0, io.err);
 
-      // A client's start, in a repository whose origin is on GitHub.
+      // The scenario's own setting, set as a user does at a terminal (#413
+      // rev 3: its defaultRepo is no device config any more), then a
+      // client's start in a repository whose origin is elsewhere: the
+      // setting is what the scenario reads.
+      const set = spawnSync(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'settings', 'set', 'ch-pack-smoke.defaultRepo', 'octo/smoke'],
+        {env: {...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'}, encoding: 'utf8', timeout: 60000});
+      assert.strictEqual(set.status, 0, `${set.stdout}\n${set.stderr}`);
       const repo = path.join(work, 'repo');
       fs.mkdirSync(path.join(repo, '.git'), {recursive: true});
-      fs.writeFileSync(path.join(repo, '.git', 'config'), '[remote "origin"]\n\turl = git@github.com:octo/smoke.git\n');
+      fs.writeFileSync(path.join(repo, '.git', 'config'), '[remote "origin"]\n\turl = git@github.com:octo/elsewhere.git\n');
       let stderr = '';
       child = spawn(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'start', '--stdio'], {cwd: repo, env: {...process.env, COUNTINGHOUSE_HOME: home}, stdio: ['pipe', 'pipe', 'pipe']});
       child.stderr.on('data', (d) => { stderr += d; });
@@ -129,7 +135,7 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       const result = called.result;
       assert.ok(result != null && result.isError === false, JSON.stringify(called).slice(0, 2000) + `\n--- stderr ---\n${stderr.slice(-4000)}`);
       const OUTPUT = {shout: 'HELLO', defaultRepo: 'octo/smoke'};
-      assert.deepStrictEqual(result.structuredContent, OUTPUT, 'through the step, with the launcher\'s defaultRepo');
+      assert.deepStrictEqual(result.structuredContent, OUTPUT, 'through the step, with its own setting defaultRepo');
       assert.strictEqual(result.content.length, 2);
       const text = JSON.stringify(OUTPUT);
       assert.deepStrictEqual(result._meta['countinghouse/receipt'], {calls: 0, linesIn: 0, bytesIn: 0, linesOut: 1, bytesOut: Buffer.byteLength(text), servers: []});
