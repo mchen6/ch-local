@@ -1,4 +1,7 @@
 'use strict';
+// (CI runs this file on its own: its ch-* temporary directories are
+// removed at its end as npm test's are; test/tmp-dirs.js)
+require('./tmp-dirs');
 // The smoke test (reviewer, 2026-11-12): the profile end to end with the real
 // runtime and no network call from it. A fixture pack with no remotes (one
 // scenario, one step, one tool) and this launcher are packed, installed with
