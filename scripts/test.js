@@ -10,15 +10,19 @@
 //                                     is a node flag, --test-name-pattern
 //                                     say, passed to each file)
 //
-// The watchdog (the Reviewer's high review of #97): a file still running
-// after CH_TEST_FILE_TIMEOUT_MS (15 minutes; LONG_FILES 25) is asked which
-// test it is in (SIGUSR2, POSIX), then sent SIGTERM,
-// then SIGKILL after GRACE_MS, is FAILED (timed out), and its manifest is
-// swept. No --test-timeout (it caps a parent's own longer hook and subtest
-// timeouts) and no --test-force-exit (it turns an error thrown after a test
-// into a pass, and hides a leaked server): a leak or a hang stays visible.
-// The runner itself, sent SIGTERM or SIGINT (an outer `timeout`, a
-// systemd-run stop), ends its files the same way, sweeps, and re-raises.
+// The watchdog (the Reviewer's rulings on #97): a file still running after
+// CH_TEST_FILE_TIMEOUT_MS (15 minutes; LONG_FILES 60) is sent SIGTERM, then
+// SIGKILL after GRACE_MS (to its own pid, while it lives), is FAILED (timed
+// out), and its manifest is swept. No --test-timeout (it caps a parent's own
+// longer hook and subtest timeouts) and no --test-force-exit (it turns an
+// error thrown after a test into a pass, and hides a leaked server): a leak
+// or a hang stays visible. Files stay in the runner's process group, so an
+// outer kill of the group reaches them as before. The runner, sent SIGTERM
+// or SIGINT, ends its files the same way, sweeps, and re-raises.
+//
+// On Windows the watchdog and each file's exit-time removal are all: no
+// manifest is written and no sweep runs there (the Reviewer's cut on #97:
+// the leak fixed here was the Linux machine's).
 //
 // In CI (CI=true) a run that leaves any ch-* directory or manifest fails,
 // naming them (the Reviewer, 11-19: /tmp ran out of inodes from leftovers).
@@ -28,7 +32,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
-const {pathToFileURL} = require('node:url');
 
 const root = path.resolve(__dirname, '..');
 // the temporary directory the files are handed (theirs is the runner's)
@@ -38,9 +41,7 @@ const {PREFIX, MANIFEST_PREFIX, sweepStale} = require('../test/tmp-dirs');
 const FILE_TIMEOUT_MS = Number(process.env.CH_TEST_FILE_TIMEOUT_MS) > 0 ? Number(process.env.CH_TEST_FILE_TIMEOUT_MS) : 15 * 60 * 1000;
 // the files that run a whole release or a client end to end
 const LONG_FILES = new Set(['acceptance.test.js', 'dogfood.test.js']);
-// (within CI's 30-minute job: the Reviewer's second high review of #97, 8;
-// CH_TEST_LONG_TIMEOUT_MS for a job that allows more)
-const LONG_TIMEOUT_MS = Number(process.env.CH_TEST_LONG_TIMEOUT_MS) > 0 ? Number(process.env.CH_TEST_LONG_TIMEOUT_MS) : Math.max(FILE_TIMEOUT_MS, 25 * 60 * 1000);
+const LONG_TIMEOUT_MS = Math.max(FILE_TIMEOUT_MS, 60 * 60 * 1000);
 const GRACE_MS = Number(process.env.CH_TEST_GRACE_MS) > 0 ? Number(process.env.CH_TEST_GRACE_MS) : 10 * 1000;
 const DEFAULT_CONCURRENCY = Number(process.env.CH_TEST_CONCURRENCY) > 0 ? Number(process.env.CH_TEST_CONCURRENCY)
   : Math.max(1, (typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length) - 1);
@@ -65,51 +66,17 @@ const files = named.length > 0 ? named
   : fs.readdirSync(path.join(root, 'test')).filter((n) => n.endsWith('.test.js')).sort().map((n) => path.join('test', n));
 // a file run as its own process (node:test runs its tests in it), so the
 // watchdog's pid is the file's own
-// (beside the spec reporter, scripts/test-running.js keeps the test running
-// now, for the watchdog to have named)
-const reporter = flags.some((f) => f.startsWith('--test-reporter')) ? []
-  // (a file URL: on Windows a bare C:\ path reads as a URL scheme to the
-  // ESM loader that loads reporters)
-  : ['--test-reporter=spec', '--test-reporter-destination=stdout', `--test-reporter=${pathToFileURL(path.join(__dirname, 'test-running.js')).href}`, '--test-reporter-destination=stderr'];
+const reporter = flags.some((f) => f.startsWith('--test-reporter')) ? [] : ['--test-reporter=spec'];
 
 const running = new Map();   // pid -> child
-// the processes in process group pgid now (Linux, from /proc), [] elsewhere
-const groupMembers = (pgid) => {
-  if (process.platform !== 'linux') return [];
-  let names = [];
-  try { names = fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n)); } catch (err) { return []; }
-  const out = [];
-  for (const n of names) {
-    let raw;
-    try { raw = fs.readFileSync(`/proc/${n}/stat`, 'utf8'); } catch (err) { continue; }
-    const rest = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
-    if (Number(rest[2]) === pgid && rest[0] !== 'Z') out.push(Number(n));
-  }
-  return out;
-};
-// A file and everything it started (a server, a `ch-local start` runtime):
-// its own process group (POSIX, spawned detached), the whole tree on Windows
-// (taskkill /T). Ended before its manifest is swept, so nothing still using
-// a directory loses it (the medium on #97's second round, 2).
-const signalTree = (child, sig) => {
-  if (child.pid == null) return;
-  if (process.platform === 'win32') {
-    // (only while the file lives: after its exit the tree is unreachable by
-    // its pid, and the pid may be another's; descendants may survive here)
-    if (child.exitCode != null || child.signalCode != null) return;
-    try { require('node:child_process').spawnSync('taskkill', ['/pid', String(child.pid), '/T', ...(sig === 'SIGKILL' ? ['/F'] : [])], {stdio: 'ignore', windowsHide: true}); } catch (err) { /* gone */ }
-    return;
-  }
-  try { process.kill(-child.pid, sig); } catch (err) { try { child.kill(sig); } catch (e) { /* gone */ } }
-};
-// SIGTERM, then SIGKILL after the grace (at once when `now`); the delayed
-// one is cleared when the child exits, so no pid is signalled after its
-// 'exit' (the Reviewer's second high review of #97, 2)
+// SIGTERM, then SIGKILL after the grace (at once when `now`), each to the
+// file's own pid and only while it lives; the delayed one is cleared when it
+// exits, so no pid is signalled after its 'exit'
+const alive = (child) => child.exitCode == null && child.signalCode == null;
 const end = (child, now = false) => {
-  if (child.exitCode != null || child.signalCode != null) return;
-  if (now) { signalTree(child, 'SIGKILL'); return; }
-  signalTree(child, 'SIGTERM');
-  if (child.killTimer == null) child.killTimer = setTimeout(() => { if (child.exitCode == null && child.signalCode == null) signalTree(child, 'SIGKILL'); }, GRACE_MS);
+  if (!alive(child)) return;
+  try { child.kill(now ? 'SIGKILL' : 'SIGTERM'); } catch (err) { /* gone */ }
+  if (!now && child.killTimer == null) child.killTimer = setTimeout(() => { if (alive(child)) { try { child.kill('SIGKILL'); } catch (err) { /* gone */ } } }, GRACE_MS);
 };
 
 // A file's output, as it comes: each line under its file's name when files
@@ -135,9 +102,7 @@ function runFile(file) {
     let settled = false;
     const finish = (r) => { if (settled) return; settled = true; resolve(r); };
     if (!tagged) process.stdout.write(`\n# ${file}\n`);
-    // (CH_TEST_RUNNER_PID: the file ends itself if this runner is gone)
-    const child = spawn(process.execPath, ['--require', TMP_DIRS, ...reporter, ...flags, file],
-      {cwd: root, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', env: {...process.env, CH_TEST_RUNNER_PID: String(process.pid)}});
+    const child = spawn(process.execPath, ['--require', TMP_DIRS, ...reporter, ...flags, file], {cwd: root, stdio: ['ignore', 'pipe', 'pipe']});
     let said = false;
     const fail = (why) => { if (said) return; said = true; process.stdout.write(`\nFAILED ${file}: ${why}\n`); };
     // (a spawn that fails, EMFILE say, may never emit 'close': failed now)
@@ -150,24 +115,13 @@ function runFile(file) {
     relay(file, child.stdout);
     relay(file, child.stderr);
     let timedOut = false;
-    // past its time: asked which test it is in, then ended
-    const watchdog = setTimeout(() => {
-      timedOut = true;
-      if (process.platform === 'win32') { end(child); return; }
-      try { child.kill('SIGUSR2'); } catch (err) { /* gone */ }
-      setTimeout(() => end(child), 1000).unref();
-    }, limit);
+    const watchdog = setTimeout(() => { timedOut = true; end(child); }, limit);
     // resolved on 'exit', not 'close': something the file started that
     // still holds its pipes never keeps the runner waiting (the medium, 1)
     child.once('exit', (code, signal) => {
       clearTimeout(watchdog);
       if (child.killTimer != null) clearTimeout(child.killTimer);
       running.delete(child.pid);
-      // what it started in its group, if anything survived it: each process
-      // /proc shows still in that group, by its own pid (Linux), never the
-      // bare group id once its leader is gone (the medium on #97's third
-      // round, 8); elsewhere none is signalled after the file's exit
-      for (const member of groupMembers(child.pid)) { try { process.kill(member, 'SIGKILL'); } catch (err) { /* gone */ } }
       // (a file ended by a signal never reached 'exit': its manifest now)
       if (signal != null) sweepStale(tmp);
       const report = () => {

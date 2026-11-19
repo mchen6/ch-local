@@ -33,6 +33,9 @@ const manifestOf = (pid) => {
   return name == null ? null : path.join(PRIVATE, name);
 };
 const listed = (pid) => fs.readFileSync(path.join(manifestOf(pid), 'dirs.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.dir != null).map((e) => e.dir);
+// (Windows: no manifest and no sweep there, the exit-time removal and the
+// watchdog only: the Reviewer's cut on #97)
+const WIN32 = process.platform === 'win32' && 'no manifest or sweep on Windows';
 // a pid no system gives out (Linux's pid_max is at most 2^22): gone, never
 // reused while the test runs
 const DEAD = 2147483646;
@@ -84,7 +87,7 @@ test('a file that ends normally leaves no ch-* directory and no manifest', async
   assert.strictEqual(manifestOf(c.pid), null, 'and its manifest');
 });
 
-test('a process killed by a signal mid-file: its manifest names what it made, and the sweep removes exactly that', async () => {
+test('a process killed by a signal mid-file: its manifest names what it made, and the sweep removes exactly that', {skip: WIN32}, async () => {
   const c = child(2, {wait: true});
   const dirs = await dirsOf(c);
   assert.deepStrictEqual(listed(c.pid).sort(), dirs.map((d) => path.resolve(d)).sort());
@@ -103,7 +106,7 @@ test('a process killed by a signal mid-file: its manifest names what it made, an
   }
 });
 
-test('a dead pid\'s manifest is swept: its listed ch-* directories that are still the ones listed; nothing else it names is touched', () => {
+test('a dead pid\'s manifest is swept: its listed ch-* directories that are still the ones listed; nothing else it names is touched', {skip: WIN32}, () => {
   const mine = fs.mkdtempSync(path.join(PRIVATE, 'ch-mine-'));
   const reborn = fs.mkdtempSync(path.join(PRIVATE, 'ch-reborn-'));
   const outside = fs.mkdtempSync(path.join(PRIVATE, 'other-'));
@@ -136,7 +139,7 @@ test('a dead pid\'s manifest is swept: its listed ch-* directories that are stil
   }
 });
 
-test('a manifest from another boot or pid namespace, or with no where, is left alone', () => {
+test('a manifest from another boot or pid namespace, or with no where, is left alone', {skip: WIN32}, () => {
   const kept = fs.mkdtempSync(path.join(PRIVATE, 'ch-kept-'));
   const elsewhere = staleManifest(DEAD, [JSON.stringify(entry(kept))], {meta: {where: Object.fromEntries(Object.keys(where()).map((k) => [k, 'another']))}});
   const nowhere = staleManifest(DEAD, [JSON.stringify(entry(kept))], {meta: {where: {}}});
@@ -145,7 +148,7 @@ test('a manifest from another boot or pid namespace, or with no where, is left a
   for (const d of [kept, elsewhere, nowhere]) fs.rmSync(d, {recursive: true, force: true});
 });
 
-test('a live process\'s manifest is left alone, and what it lists', async () => {
+test('a live process\'s manifest is left alone, and what it lists', {skip: WIN32}, async () => {
   const c = child(1, {wait: true});
   try {
     const dirs = await dirsOf(c);
@@ -171,18 +174,17 @@ function hangingFile() {
 
 // (where a birth time cannot be told, a sweep proves nothing and removes
 // nothing: these cases need one)
-test('the runner: a file past its time is ended, FAILED as timed out, and what it made is swept', {skip: !canTell && 'no birth time here'}, () => {
+test('the runner: a file past its time is ended, FAILED as timed out, and what it made is swept', {skip: WIN32 || (!canTell && 'no birth time here')}, () => {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), hangingFile()], {cwd: ROOT, encoding: 'utf8', timeout: 60000,
     env: envOf({CH_TEST_FILE_TIMEOUT_MS: '1500', CH_TEST_GRACE_MS: '500', CI: ''})});
   assert.strictEqual(r.status, 1, r.stdout + r.stderr);
   assert.match(r.stdout, /FAILED .*hang\.test\.js: timed out after 2 s/);
   assert.strictEqual(r.stdout.match(/FAILED /g).length, 1, 'said once');
-  if (process.platform !== 'win32') assert.match(r.stdout + r.stderr, /still running: hangs/, 'the test it hung in, named');
   assert.deepStrictEqual(chDirs(), [], 'its directory swept');
   assert.deepStrictEqual(manifests(), [], 'and its manifest');
 });
 
-test('the runner sent SIGTERM ends its files, sweeps what they made, and ends by that signal', {skip: !canTell && process.platform !== 'win32' && 'no birth time here'}, async () => {
+test('the runner sent SIGTERM ends its files, sweeps what they made, and ends by that signal', {skip: WIN32 || (!canTell && 'no birth time here')}, async () => {
   const runner = spawn(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), hangingFile()], {cwd: ROOT, env: envOf({CH_TEST_GRACE_MS: '500'}), stdio: 'ignore'});
   // (until its manifest lists it: a directory is made a moment before its
   // line is written, and one killed in between was never recorded)
@@ -204,11 +206,11 @@ test('the runner sent SIGTERM ends its files, sweeps what they made, and ends by
   assert.deepStrictEqual(manifests(), [], 'and its manifest');
 });
 
-// what a file started, holding its pipes (a server, a runtime), neither
-// keeps the runner waiting nor outlives the file: the file's whole process
-// group (the whole tree on Windows) is ended (the medium on #97's second
-// round, 1 and 2)
-test('the runner: a timed-out file\'s child that holds its pipes is ended with it, and the runner still finishes', {skip: !canTell && 'no birth time here'}, () => {
+// what a file started, holding its pipes (a server, a runtime), never keeps
+// the runner waiting: it resolves on the file's 'exit' (the medium on #97's
+// second round, 1). The child itself outlives the file (a leaked daemon is
+// the test's own teardown bug: the residual the Reviewer's cut names).
+test('the runner: a timed-out file whose child holds its pipes still finishes', {skip: WIN32 || (!canTell && 'no birth time here')}, () => {
   const dir = fs.mkdtempSync(path.join(PRIVATE, 'fixture-'));
   const pidFile = path.join(dir, 'grandchild.pid');
   const file = path.join(dir, 'spawner.test.js');
@@ -226,13 +228,11 @@ test('the runner: a timed-out file\'s child that holds its pipes is ended with i
   assert.strictEqual(r.status, 1, r.stdout + r.stderr);
   assert.match(r.stdout, /FAILED .*spawner\.test\.js: timed out/);
   assert.ok(Date.now() - started < 30000, 'the runner did not wait on the held pipes');
-  const g = Number(fs.readFileSync(pidFile, 'utf8'));
-  let alive = true;
-  for (const until = Date.now() + 5000; alive && Date.now() < until;) { try { process.kill(g, 0); } catch (e) { alive = false; } }
-  assert.strictEqual(alive, false, 'the child it started is ended with it');
+  // (the child it started, ended here: never left on the machine)
+  try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch (e) { /* gone */ }
 });
 
-test('a manifest with no first line: removed when its pid is gone and it names nothing; one naming directories it cannot prove is left', () => {
+test('a manifest with no first line: removed when its pid is gone and it names nothing; one naming directories it cannot prove is left', {skip: WIN32}, () => {
   const empty = path.join(PRIVATE, `.ch-local-tmp-${DEAD}-empty${process.pid}`);
   const fresh = path.join(PRIVATE, `.ch-local-tmp-${DEAD}-fresh${process.pid}`);
   const older = path.join(PRIVATE, `.ch-local-tmp-${DEAD}-older${process.pid}`);
@@ -252,48 +252,9 @@ test('a manifest with no first line: removed when its pid is gone and it names n
   for (const d of [older, kept]) fs.rmSync(d, {recursive: true, force: true});
 });
 
-// (Linux: a pid is ended only when its start time is the one recorded)
-test('a detached daemon a killed file started is ended by the sweep before what it uses is removed', {skip: process.platform !== 'linux'}, async () => {
-  const pidFile = path.join(PRIVATE, `daemon-${process.pid}.pid`);
-  const script = `
-    const {spawn} = require('node:child_process'); const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
-    fs.mkdtempSync(path.join(os.tmpdir(), 'ch-daemonhome-'));
-    const d = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {detached: true, stdio: 'ignore'});
-    fs.writeFileSync(${JSON.stringify(pidFile)}, String(d.pid));
-    process.stdout.write('["ready"]' + String.fromCharCode(10));
-    setInterval(() => {}, 1000);`;
-  const c = spawn(process.execPath, ['--require', TMP_DIRS, '-e', script], {env: envOf(), stdio: ['ignore', 'pipe', 'inherit']});
-  await dirsOf(c);
-  const daemon = Number(fs.readFileSync(pidFile, 'utf8'));
-  try {
-    c.kill('SIGKILL');
-    await ended(c);
-    let alive = true;
-    try { process.kill(daemon, 0); } catch (e) { alive = false; }
-    assert.strictEqual(alive, true, 'the daemon outlived its file');
-    freshSweep();
-    for (const until = Date.now() + 5000; alive && Date.now() < until;) { try { process.kill(daemon, 0); await new Promise((r) => setTimeout(r, 50)); } catch (e) { alive = false; } }
-    assert.strictEqual(alive, false, 'ended by the sweep');
-  } finally {
-    // (never a daemon left on the machine, whatever failed)
-    try { process.kill(daemon, 'SIGKILL'); } catch (e) { /* gone */ }
-    fs.rmSync(pidFile, {force: true});
-    for (const n of chDirs()) if (n.startsWith('ch-daemonhome-') || n.startsWith('ch-child-')) fs.rmSync(path.join(PRIVATE, n), {recursive: true, force: true});
-    for (const n of manifests()) fs.rmSync(path.join(PRIVATE, n), {recursive: true, force: true});
-  }
-});
-
-// The runner killed outright (SIGKILL, an OOM kill: no handler runs): its
-// file sees it gone and ends itself, its directories removed at its own
-// 'exit' (the Reviewer's second high review of #97, 5)
-test('the runner killed outright: its file ends itself within seconds, what it made removed', async () => {
-  const runner = spawn(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), hangingFile()], {cwd: ROOT, env: envOf(), stdio: 'ignore'});
-  const recorded = () => manifests().some((n) => { try { return fs.readFileSync(path.join(PRIVATE, n, 'dirs.jsonl'), 'utf8').includes('ch-hang-'); } catch (e) { return false; } });
-  for (const until = Date.now() + 20000; !recorded() && Date.now() < until;) await new Promise((r) => setTimeout(r, 50));
-  assert.ok(recorded(), 'the file made its directory, and its manifest lists it');
-  runner.kill('SIGKILL');
-  await new Promise((resolve) => runner.once('exit', resolve));
-  for (const until = Date.now() + 15000; (chDirs().length > 0 || manifests().length > 0) && Date.now() < until;) await new Promise((r) => setTimeout(r, 100));
-  assert.deepStrictEqual(chDirs(), [], 'the file ended itself, its directory removed');
-  assert.deepStrictEqual(manifests(), [], 'and its manifest');
+// Loud, not silent: the sweep cases skip where no birth time can be told,
+// and Linux CI (ubuntu-latest has statx) must never be such a place (the
+// Reviewer's cut on #97)
+test('Linux CI tells a directory\'s birth time, so the sweep cases run there', () => {
+  if (process.platform === 'linux' && process.env.CI === 'true') assert.ok(canTell, 'no birth time on this Linux CI runner: the sweep cases would all be skipped');
 });
