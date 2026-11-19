@@ -91,15 +91,20 @@ those are dropped anyway (below).
    - every pin, `{version, integrity, repository, repositoryId, ownerId,
      workflow, tag}`;
    - the runtime lockfile;
-   - the packs' composition (today's `ALLOWLIST.packs`: each pack's
-     packages and credentials);
-   - the allowed origins (today's `ALLOWED_ORIGINS`: which origin may
-     receive which variable).
+   - the packs' composition (`packs.<p>.modules`: each pack's modules);
+   - each pack module's description (`modules.<package>`: the variable it
+     sends and the origin it sends it to, the modules it calls, its settings
+     marked confirm), written from the release's own tarballs by
+     `scripts/describe-release.js`, never by hand. The allowed origins
+     (`ALLOWED_ORIGINS`) are derived from these; install refuses a package
+     that differs from its description.
 
    **What an automatic upgrade won't take.** Each of these is announced and
    left to `ch-local upgrade`, which shows what's new and asks:
-   - a release that adds a package to an installed pack, a credential for
-     one, an origin, or a variable sent to an existing origin;
+   - a release that adds a module to an installed pack; sends a key to an
+     origin, or under a variable, its module didn't before; makes a module
+     newly call one that holds a key; or drops a setting's confirm mark or
+     changes its default (`additions` in `lib/release-pins.js`);
    - a release that changes an identity: self's, or an existing pin's
      repository, repository or owner ID, or workflow. This covers the
      runtime, an installed pack's packages and the shim;
@@ -502,8 +507,8 @@ included (as the acceptance run's security review showed). So:
 2. Provenance: the verifier with the bundled root, the identity (numeric
    IDs included), the predicate, the publish attestation, the log and CT
    thresholds, and the test root as an argument.
-3. `lib/release-pins.json` (pins with their identity, the packs and the
-   origins), parsed from the verified bytes; the shared install step from
+3. `lib/release-pins.json` (pins with their identity, the packs and their
+   modules' descriptions), parsed from the verified bytes; the shared install step from
    npm, with the re-read check.
 4. `ch-local upgrade` installing after its yes; `--apply-auto` with its own
    re-checks, its allowlisted environment and the 72-hour wait; the

@@ -37,8 +37,37 @@ function setup() {
   return {user, home, done: () => fs.rmSync(user, {recursive: true, force: true})};
 }
 // the running release's pins give each pack its credentials
-const RELEASE = {packs: {'ci-failure-triage': {credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}, other: {credentials: ['OTHER_TOKEN', 'GITHUB_TOKEN']}}};
+// (pins version 2: a pack's credentials are its modules' descriptions')
+const described = (variable) => ({role: null, credentials: variable == null ? [] : [{variable, origin: 'https://api.githubcopilot.com'}], calls: [], confirmSettings: {}});
+const RELEASE = {
+  packs: {'ci-failure-triage': {modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github']}, other: {modules: ['@countinghouse/ch-pack-other']}},
+  modules: {'@countinghouse/ch-pack-ci-failure-triage': described(null), '@countinghouse/ch-access-github': described('COUNTINGHOUSE_GITHUB_TOKEN'), '@countinghouse/ch-pack-other': described('OTHER_TOKEN')}
+};
 const io = (s, answers) => Object.assign(fakeIo({env: {GITHUB_TOKEN: 'secret-value-123'}, homedir: s.user, answers}), {release: RELEASE});
+
+// the Reviewer's high review of #98's round 2, 6, and its cut in round 3:
+// every variable a stored module's remotes name (more than one remote, a
+// fallbackEnv), and every variable the store holds a key under
+test('the credentials to revoke: every variable an installed module\'s remotes name, and every variable the store holds a key under', async () => {
+  const s = setup();
+  try {
+    const {storeModule} = require('./store-helpers');
+    fs.chmodSync(s.home, 0o700);   // (the store refuses a home others can write)
+    storeModule(s.home, '@countinghouse/ch-pack-other', '1.0.0', {countinghouse: {role: 'scenario', remotes: [
+      {name: 'a', url: 'https://a.example.invalid/', credential: {env: 'A_TOKEN', fallbackEnv: 'A_FALLBACK'}},
+      {name: 'b', url: 'https://b.example.invalid/', credential: 'B_TOKEN'}]}});
+    require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-old-1'});
+    // a removed pack's module whose key was kept: the store's own entries are named
+    require('../lib/credential-store').bind(s.home, '@countinghouse/ch-gone', 'GONE_TOKEN', {origin: 'https://gone.example.invalid', source: 'stored', value: 'test-stored-gone-1'});
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    const line = (u.out.match(/revoke the credentials you gave it: (.*)\n/i) || [])[1] || '';
+    for (const v of ['A_TOKEN', 'A_FALLBACK', 'B_TOKEN', 'COUNTINGHOUSE_GITHUB_TOKEN', 'OTHER_TOKEN', 'GONE_TOKEN']) assert.ok(line.split(', ').includes(v), `${v} in ${line}`);
+    assert.ok(!u.out.includes('test-stored-old-1'), 'never a value');
+  } finally {
+    s.done();
+  }
+});
 
 test('uninstall lists the home directory and deletes nothing without a yes', async () => {
   const s = setup();
@@ -60,7 +89,8 @@ test('on yes everything under the home goes, and the credentials to revoke are n
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 0, u.err);
     assert.ok(!fs.existsSync(s.home));
-    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, GITHUB_TOKEN, OTHER_TOKEN/i, 'every installed pack\'s, once each');
+    // (the variables the pack's modules are described with: pins version 2)
+    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, OTHER_TOKEN\n/i, 'every installed pack\'s, once each');
     assert.ok(!(u.out + u.err).includes('secret-value-123'));
   } finally {
     s.done();
@@ -122,7 +152,7 @@ test('a home whose packs were all removed still names the release\'s credentials
     fs.writeFileSync(path.join(s.home, 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {}}));
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 0, u.err);
-    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, GITHUB_TOKEN/i);
+    assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN/i);
   } finally {
     s.done();
   }

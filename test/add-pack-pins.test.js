@@ -13,12 +13,12 @@ const path = require('node:path');
 const {install} = require('../lib/install');
 const {addPack, removePack} = require('../lib/packs-command');
 const {fakeIo, tmp} = require('./fake-io');
-const {release, npm, record} = require('./install-helpers');
+const {release, npm, record, devModules} = require('./install-helpers');
 
 const REDACT = '@countinghouse/ch-step-redact';
 const CI = '@countinghouse/ch-pack-ci-failure-triage';
 const OTHER = '@countinghouse/ch-pack-other';
-const pinsFile = (r) => { const f = path.join(tmp('ch-pins-'), 'pins.json'); fs.writeFileSync(f, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile})); return f; };
+const pinsFile = (r) => { const f = path.join(tmp('ch-pins-'), 'pins.json'); fs.writeFileSync(f, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile, modules: devModules(r.allow, r.pins)})); return f; };
 // a development home with ci-failure-triage installed from r1's pins
 async function devHome(r1) {
   const home = tmp('ch-home-');
@@ -249,7 +249,7 @@ test('nothing asked before the lock: a home that changed meanwhile is decided ag
 test('an add the lock would refuse is refused before any question', async () => {
   const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
   const r2 = release({versions: {[REDACT]: '0.2.0'}});
-  r2.allow.packs.other = {...r2.allow.packs.other, packages: [...r2.allow.packs.other.packages, 'countinghouse']};
+  r2.allow.packs.other = {...r2.allow.packs.other, modules: [...r2.allow.packs.other.modules, 'countinghouse']};
   const {code, io} = await h.add(r2, {interactive: true, answers: ['y']});
   assert.strictEqual(code, 1);
   assert.match(io.err, /countinghouse is part of the runtime, not a pack's/);

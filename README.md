@@ -54,6 +54,14 @@ One install page per client is in [docs/install](docs/install/README.md).
 | `ch-local rollback [--yes]` | returns, in one step, to the release the last install replaced, which install keeps in `<home>/previous`: the runtime, packs and parts only; caches, usage records, settings, the identity secret and client entries are untouched. Running it again returns to the newer release. A pack the older release lacks stays recorded but is not loaded, and `status` says it needs the newer release. Undoing a release marked as a security fix names it, says what it fixed and asks, and without a terminal needs `--yes`. If one pack got worse, `remove-pack` it on the current release instead |
 | `ch-local upgrade [--auto on\|off]` | shows installed and available versions from the npm registry, the only network call besides install, and asks once; `--auto` stores the opt-in automatic-upgrade setting, off by default |
 
+A module that calls a module of another pack needs that pack installed
+first. `install` and `add-pack` check each module against this release's
+description of it, reading only what they place and what the home already
+holds, so a call into a pack not installed is refused, naming the pack to
+install first; a module of a withdrawn or held pack does not count. Two
+packs whose modules call each other cannot be installed in release 1 (each
+needs the other first). No pack in this release calls outside itself.
+
 `<home>` is `$COUNTINGHOUSE_HOME` (an absolute path) or `~/.countinghouse`. Every
 command first checks Node: below 22.16 it says so and offers two ways on, to
 install Node 24 yourself or to let ch-local fetch its own; that fetch is not
@@ -78,8 +86,10 @@ it.
 
 **Unreleased installs.** Until the first release this launcher pins nothing,
 so `install` and `add-pack` take `--unreleased-pins <file>`, a JSON file of
-`{"pins": {<package>: {"version", "integrity"}}, "runtimeLockfile": {...}}`
-written from the tarballs you built. The home is recorded as unreleased:
+`{"pins": {<package>: {"version", "integrity"}}, "runtimeLockfile": {...}, "modules": {...}}`
+written from the tarballs you built (`node scripts/describe-release.js <tarballs>
+--unreleased-pins <file>` writes `modules`, each pack module's description,
+checked at install as a release's are). The home is recorded as unreleased:
 `status` and every `start` say so on one line, and `upgrade` refuses until a
 clean install from a release. It is for development only.
 

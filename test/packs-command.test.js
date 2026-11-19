@@ -9,7 +9,7 @@ const path = require('node:path');
 const {install} = require('../lib/install');
 const {addPack, removePack, status} = require('../lib/packs-command');
 const {fakeIo, tmp} = require('./fake-io');
-const {release, npm, pkgDir, record} = require('./install-helpers');
+const {devModules, release, npm, pkgDir, record} = require('./install-helpers');
 
 async function installed(r = release(), env = {}) {
   const home = tmp('ch-home-');
@@ -117,10 +117,10 @@ test('status lists each module with its tools or why it would not load, and its 
   assert.match(io.out, /^  ch-pack-ci-failure-triage 0\.1\.0 +not loaded: calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`$/m);
   assert.match(io.out, /^  ch-pack-other 0\.3\.0 +on; tools: ch_pack_other$/m);
   assert.match(io.out, /^packs:\n  ci-failure-triage +\d+ modules\n  other +\d+ modules$/m);
-  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'});
+  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'});
   const after = s.io();
   await status({}, after);
-  assert.match(after.out, /^  ch-access-github \S+ +part; credential COUNTINGHOUSE_GITHUB_TOKEN -> https:\/\/api\.githubcopilot\.com \(stored\)$/m);
+  assert.match(after.out, /^  ch-access-github \S+ +part; credential GITHUB_TOKEN -> https:\/\/api\.githubcopilot\.com \(stored\)$/m);
   assert.match(after.out, /^  ch-pack-ci-failure-triage 0\.1\.0 +on; tools: ci_failure_triage$/m);
   assert.ok(!(io.out + io.err + after.out).includes('secret') && !after.out.includes('test-stored-value-1'));
   assert.ok(!/hidden/.test(io.out + after.out), 'an action without a description is not a tool');
@@ -130,7 +130,7 @@ test('status, add-pack and every start of an unreleased home say so in one stder
   const r = release();
   const home = tmp('ch-home-');
   const pins = path.join(tmp('ch-pins-'), 'pins.json');
-  fs.writeFileSync(pins, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile}));
+  fs.writeFileSync(pins, JSON.stringify({pins: r.pins, runtimeLockfile: r.lockfile, modules: devModules(r.allow, r.pins)}));
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pins}, io, {...r.allow, pins: {}}), 0, io.err);
   const add = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
@@ -163,7 +163,7 @@ test('add-pack refuses pins whose runtime is not the installed one', async () =>
   // A consistent pins file for a newer runtime: its lockfile resolves countinghouse 9.0.0 too.
   const lockfile = JSON.parse(JSON.stringify(other.lockfile));
   lockfile.packages['node_modules/countinghouse'] = {version: '9.0.0', resolved: 'file:tarballs/countinghouse-9.0.0.tgz', integrity: other.pins.countinghouse.integrity};
-  fs.writeFileSync(pins, JSON.stringify({pins: runtimePins, runtimeLockfile: lockfile}));
+  fs.writeFileSync(pins, JSON.stringify({pins: runtimePins, runtimeLockfile: lockfile, modules: devModules(other.allow, runtimePins)}));
   const io = s.io({CH_LOCAL_DEV: '1'});
   assert.strictEqual(await addPack({pack: 'other', from: other.from, unreleasedPins: pins}, io, other.allow), 1);
   assert.match(io.err, /pins countinghouse 9\.0\.0, but the installed runtime is 8\.0\.0/);

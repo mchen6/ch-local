@@ -83,6 +83,23 @@ test('add at a terminal: shown where it goes before asking; stored for that modu
   assert.strictEqual(historyOf(h).pop().change, 'removed');
 });
 
+// a key read from GitHub's earlier name (0.2.0 declares GITHUB_TOKEN) is
+// removed whatever its name, and recorded under the name it was stored
+// under (the medium on #98's cut, 6)
+test('remove: a key stored under COUNTINGHOUSE_GITHUB_TOKEN, read as GITHUB_TOKEN, goes, and the history names the stored name', POSIX, async () => {
+  const h = tmp('ch-cred-');
+  fs.chmodSync(h, 0o700);
+  const {storeModule, writeHome} = require('./store-helpers');
+  storeModule(h, ACCESS, '0.2.0', {countinghouse: {role: 'part', remotes: [{name: 'github', url: `${ORIGIN}/mcp/`, credential: 'GITHUB_TOKEN'}]}});
+  writeHome(h, {'ci-failure-triage': {[ACCESS]: '0.2.0'}});
+  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()});
+  const r = io(h);
+  assert.strictEqual(await credentials({action: 'remove', name: 'ch-access-github'}, r), 0, r.err);
+  assert.strictEqual(bound(h), null);
+  const last = historyOf(h).pop();
+  assert.deepStrictEqual([last.change, last.variable], ['removed', VAR]);
+});
+
 test('the gh offer: only at a terminal, with a gh login, for exactly https://api.githubcopilot.com; yes stores no value, no asks for one', POSIX, async () => {
   const h = home();
   const yes = io(h, {typed: made(), gh: made(), answers: ['y']});

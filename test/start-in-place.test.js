@@ -22,7 +22,7 @@ const ACCESS = '@countinghouse/ch-access-github';
 const GH_ORIGIN = 'https://api.githubcopilot.com';
 // a test home's stored value (no real token's shape)
 const STORED = 'test-stored-value-1';
-const bindAccess = (home, source = 'stored') => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN',
+const bindAccess = (home, source = 'stored') => require('../lib/credential-store').bind(home, ACCESS, 'GITHUB_TOKEN',
   source === 'gh' ? {origin: GH_ORIGIN, source: 'gh'} : {origin: GH_ORIGIN, source: 'stored', value: STORED});
 const TRIAGE_LOADED = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.1.0'};
 const until = async (cond, ms = 10000) => {
@@ -786,7 +786,7 @@ test('a pack that drops a module another pack moves reloads in the same group as
   await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
   // ci-failure-triage moves ch-step-redact to 0.2.0; other no longer takes it
   const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0', '@countinghouse/ch-step-other': '0.2.1'}});
-  r2.allow.packs.other = {...r2.allow.packs.other, packages: r2.allow.packs.other.packages.filter((n) => n !== '@countinghouse/ch-step-redact')};
+  r2.allow.packs.other = {...r2.allow.packs.other, modules: r2.allow.packs.other.modules.filter((n) => n !== '@countinghouse/ch-step-redact')};
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
   await until(() => s.requests.some((m) => m.type === 'reload'));
   await new Promise((r) => setTimeout(r, 300));
@@ -802,7 +802,7 @@ test('a new pack taking a module at a version a refused reload could not move is
   // a release where other also takes ch-access-github, now at 0.1.1: its
   // scenario calls it (by module, the closure is what the manifest calls)
   const r2 = release({versions: {'@countinghouse/ch-access-github': '0.1.1'}, extra: {'@countinghouse/ch-pack-other': {countinghouse: {role: 'scenario', calls: ['ch-step-redact/redactService.redact', 'ch-step-other/otherService.go', 'ch-access-github/githubService.listRuns']}}}});
-  r2.allow.packs.other = {...r2.allow.packs.other, packages: [...r2.allow.packs.other.packages, '@countinghouse/ch-access-github']};
+  r2.allow.packs.other = {...r2.allow.packs.other, modules: [...r2.allow.packs.other.modules, '@countinghouse/ch-access-github']};
   assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
   await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
   assert.match(s.history().find((h) => h.module === '@countinghouse/ch-pack-other').problem, /takes @countinghouse\/ch-access-github 0\.1\.1, which ch-pack-ci-failure-triage keeps at 0\.1\.0 for now/);
@@ -1170,8 +1170,16 @@ test('another release\'s record: a caller whose callee is turned off is unloaded
   const home = tmp('ch-home-');
   const r = release({extra: {[SCENARIO]: {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact', 'ch-pack-other/otherService.go']}}}});
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
-  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
-  assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  // a call into a pack not installed is refused, naming what to install
+  // first (the Reviewer's ruling on L5b: release 1 needs the callee's pack
+  // installed; the description check reads no tarball it does not place)
+  const refused = cmd();
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, refused, r.allow), 1);
+  assert.match(refused.err, /@countinghouse\/ch-pack-ci-failure-triage calls @countinghouse\/ch-pack-other, from pack other, which isn't installed; install other first; nothing was installed/);
+  assert.ok(!/does not match/.test(refused.err), refused.err);
+  // (other first: the scenario calls ch-pack-other)
+  assert.strictEqual(await install({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   bindAccess(home);
   const s = await running({home});
   try {
@@ -1193,8 +1201,9 @@ test('another release\'s record: a caller whose callee is no longer installed is
   const home = tmp('ch-home-');
   const r = release({extra: {[SCENARIO]: {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact', 'ch-pack-other/otherService.go']}}}});
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
-  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
-  assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  // (other first: the scenario calls ch-pack-other)
+  assert.strictEqual(await install({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   bindAccess(home);
   const s = await running({home});
   try {
@@ -1414,7 +1423,7 @@ test('a module turned on while running says where its key goes, once, when it lo
     await until(() => s.args() != null);
     const line = 'sends OTHER_TOKEN to https://api.other.example for ch-step-other';
     assert.ok(!s.f.err.includes(line), 'not said at start: it does not load');
-    assert.match(s.f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
+    assert.match(s.f.err, /sends GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
     fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true}}));
     await until(() => s.requests.some((m) => m.type === 'load' && named(m) === '@countinghouse/ch-pack-other'));
     const load = s.requests.find((m) => m.type === 'load' && named(m) === '@countinghouse/ch-pack-other');
@@ -1598,6 +1607,22 @@ test('a module the ceiling refuses: its unload carries no reason, and says the o
     assert.strictEqual(unload.notice, 'ch-pack-other turned off: the operator\'s settings don\'t allow it');
     assert.ok(!('reason' in unload) && !('because' in unload), JSON.stringify(unload));
     holdsToTheVectors(s.requests);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// The Reviewer's cut on #98's round 3: a key stored under GitHub's earlier
+// name is read under the declared one, said once a start, and never
+// rewritten at start (only `credentials add` changes the stored name)
+test('a key stored under COUNTINGHOUSE_GITHUB_TOKEN: the pack loads, the start says it once, and the store keeps it as it was', async () => {
+  const s = await running({bound: null, beforeStart: (home) => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: STORED})});
+  try {
+    assert.ok(loadsPack(s), 'loaded with the key read under GITHUB_TOKEN');
+    const line = 'ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it again under GITHUB_TOKEN';
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(line)).length, 1, s.f.err);
+    assert.deepStrictEqual([...require('../lib/credential-store').readStore(s.home).modules.get(ACCESS).keys()], ['COUNTINGHOUSE_GITHUB_TOKEN'], 'never rewritten');
   } finally {
     s.end();
     await s.done;

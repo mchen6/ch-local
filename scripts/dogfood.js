@@ -153,12 +153,16 @@ async function buildRelease(plan, work, say) {
     }
     say(`${p.repo}: ${p.dir != null ? `${p.dir} ` : 'GitHub '}${p.ref} ${String(p.commit).slice(0, 7)} -> ${await pack(tree)}`);
   }
-  const missing = [...ALLOWLIST.runtime.packages, ...ALLOWLIST.packs[PACK].packages].filter((n) => pins[n] == null);
+  const missing = [...ALLOWLIST.runtime.packages, ...ALLOWLIST.packs[PACK].modules].filter((n) => pins[n] == null);
   if (missing.length > 0) return {problem: `the build has no ${missing.join(', ')}`};
   say('generating the runtime lockfile (npm registry)');
   const lockfile = await runtimeLockfile(npmIo, release, ALLOWLIST.runtime, pins, path.join(work, 'lock'));
   const pinsFile = path.join(work, 'pins.json');
-  fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: lockfile}, null, 2));
+  // (its own descriptions of the pack modules it pins, from what was just
+  // packed: install checks them as a release's: lib/pins.js)
+  let modules;
+  try { modules = require('./describe-release').describePinned(ALLOWLIST, pins, release); } catch (err) { return {problem: `describing the build: ${err.message}`}; }
+  fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: lockfile, modules}, null, 2));
   return {release, pinsFile, pins};
 }
 
@@ -198,7 +202,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     // Without this shell's token variables: the client gets its token from the
     // line printed below, and install is not to look at this one's.
     const env = {...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'};
-    for (const name of ALLOWLIST.packs[PACK].credentials) delete env[name];
+    for (const name of require('../lib/packs').packVariables(ALLOWLIST, PACK)) delete env[name];
     const installIo = {
       env,
       node: process.execPath, version: process.version, platform: process.platform, homedir: os.homedir,

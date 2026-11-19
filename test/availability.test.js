@@ -233,4 +233,10 @@ test('a caller\'s becauseOff: its direct callee turned off and its only blocker;
   assert.strictEqual(availability(both.where, both.record, {release: releaseOf(PACKS), seams: off}).unavailable.get(A).becauseOff, null);
   const gone = home({calls: {[A]: ['scenario', ['ch-pack-b/s.go', 'ch-nowhere/s.go']], [B]: ['scenario', []]}});
   assert.strictEqual(availability(gone.where, gone.record, {release: releaseOf(PACKS), seams: off}).unavailable.get(A).becauseOff, null, 'a callee not installed too');
+  // a key missing for the caller, or for the module turned off: turning it
+  // on would not bring the caller back (the medium on #98's high round, 1)
+  for (const lacking of [A, B]) {
+    const seams = {...off, credential: (m) => (m === lacking ? 'no key stored' : null)};
+    assert.strictEqual(availability(direct.where, direct.record, {release: releaseOf(PACKS), seams}).unavailable.get(A).becauseOff, null, lacking);
+  }
 });

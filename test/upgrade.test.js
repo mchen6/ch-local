@@ -155,11 +155,12 @@ test('identity changes are shown before the question, marked as never taken auto
 
 test('what the new release adds is shown before the question', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
-  const w = await npmWorld(release(), {edit: (doc) => { doc.allowedOrigins['https://api.example.invalid'] = ['NEW_TOKEN']; }});
+  // (version 2: a module's key sent to a new origin)
+  const w = await npmWorld(release(), {edit: (doc) => { doc.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'COUNTINGHOUSE_GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
-    assert.match(io.out, /it adds:\n  an origin: https:\/\/api\.example\.invalid/);
+    assert.match(io.out, /it adds:\n  ch-access-github(?:'s key goes to| sends a key \(COUNTINGHOUSE_GITHUB_TOKEN\) to) https:\/\/api\.example\.invalid/);
   } finally {
     await w.close();
     s.done();
@@ -283,10 +284,11 @@ test('the yes is a person\'s at a terminal: a piped answer installs nothing; a n
 // A release that withdraws the pack `name`: its entry and the pins of its
 // packages that nothing else in the release uses are gone, as a real one's are.
 const withdrawFrom = (name) => (doc) => {
-  const gone = doc.packs[name].packages;
+  const gone = doc.packs[name].modules;
   delete doc.packs[name];
-  const used = new Set([...doc.runtime.packages, ...Object.values(doc.packs).flatMap((p) => p.packages)]);
-  for (const pkg of gone) if (!used.has(pkg)) delete doc.pins[pkg];
+  const used = new Set([...doc.runtime.packages, ...Object.values(doc.packs).flatMap((p) => p.modules)]);
+  // (version 2: a module no pack lists has no description either)
+  for (const pkg of gone) if (!used.has(pkg)) { delete doc.pins[pkg]; if (doc.modules != null) delete doc.modules[pkg]; }
 };
 
 // Withdrawn packs (maintainer's decision, 2026-11-17): a release that no longer

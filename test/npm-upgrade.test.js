@@ -139,8 +139,8 @@ test('the new release\'s pins: refused if invalid; its own identity changing is 
   } finally {
     await reg.close();
   }
-  const missingPins = await fakeRegistry();
-  for (const [pins, code] of [['{not json', 'RELEASE_PINS'], [Object.assign(shipped(), {v: 2}), 'RELEASE_PINS']]) {
+  // (v 3: a version this ch-local does not know; 2 is the current one)
+  for (const [pins, code] of [['{not json', 'RELEASE_PINS'], [Object.assign(shipped(), {v: 3}), 'RELEASE_PINS']]) {
     const reg = await registryWith('0.4.0', {pins});
     try {
       assert.strictEqual(await codeOf(find(reg)), code, JSON.stringify(pins).slice(0, 40));
@@ -148,18 +148,26 @@ test('the new release\'s pins: refused if invalid; its own identity changing is 
       await reg.close();
     }
   }
-  await missingPins.close();
 });
 
-test('what it adds that needs a yes: a package in or a credential for an installed pack, an origin', async() => {
+test('what it adds that needs a yes: a key sent to a new origin, a module that newly calls one holding a key, a key moved', async() => {
   const next = shipped();
-  next.packs['ci-failure-triage'].credentials.push('NEW_TOKEN');
-  next.allowedOrigins['https://api.example.invalid'] = ['NEW_TOKEN'];
+  // (version 2: a module's credentials name their origin; a pack's module
+  // calling it becomes a key caller)
+  next.modules['@countinghouse/ch-step-report'].credentials = [{variable: 'NEW_TOKEN', origin: 'https://api.example.invalid'}];
+  next.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://moved.example.invalid'}];
+  // (the pack already called ch-step-report: not new; dedupe calling the
+  // GitHub access module is)
+  next.modules['@countinghouse/ch-step-dedupe'].calls = ['@countinghouse/ch-access-github'];
   const reg = await registryWith('0.4.0', {pins: next});
   try {
     const r = await find(reg);
     assert.strictEqual(r.kind, 'available');
-    assert.deepStrictEqual(r.adds.sort(), ['a credential for ci-failure-triage: NEW_TOKEN', 'an origin: https://api.example.invalid']);
+    assert.deepStrictEqual(r.adds.sort(), [
+      "ch-access-github's key goes to https://moved.example.invalid as GITHUB_TOKEN (was https://api.githubcopilot.com as GITHUB_TOKEN)",
+      'ch-step-dedupe now calls ch-access-github, which holds a key',
+      'ch-step-report sends a key (NEW_TOKEN) to https://api.example.invalid',
+    ].sort());
   } finally {
     await reg.close();
   }

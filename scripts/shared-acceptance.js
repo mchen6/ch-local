@@ -325,7 +325,9 @@ async function latchedChecks({second, first, why, reason, check}) {
 const ACCEPT = 'accept';
 const ACCEPT_DIRS = ['back', 'front'].map((d) => path.join(ROOT, 'test', 'fixtures', 'ch-pack-accept', d));
 const ACCEPT_PACKAGES = ['ch-pack-accept', 'ch-accept-back'];
-const acceptRelease = (release) => ({...release, packs: {...release.packs, [ACCEPT]: {packages: ACCEPT_PACKAGES, credentials: []}}});
+// (version 2: a pack lists its modules; their descriptions come with the
+// development pins file the run writes, lib/pins.js)
+const acceptRelease = (release) => ({...release, packs: {...release.packs, [ACCEPT]: {modules: ACCEPT_PACKAGES}}});
 const toolOf = (names, action) => names.find((n) => new RegExp(`(^|[^A-Za-z0-9])${action}$`).test(n)) || null;
 
 // (a) progress frames before an answer (MCP completeness M21), through the
@@ -513,7 +515,9 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       built.pins[p.name] = {version: p.version, integrity: p.integrity};
     }
     const pinsDoc = JSON.parse(fs.readFileSync(built.pinsFile, 'utf8'));
-    fs.writeFileSync(built.pinsFile, JSON.stringify({...pinsDoc, pins: built.pins}, null, 2));
+    // the fixture pack's modules described too, from their tarballs
+    const modules = require('./describe-release').describePinned(acceptRelease(require('../lib/allowlist').ALLOWLIST), built.pins, built.release);
+    fs.writeFileSync(built.pinsFile, JSON.stringify({...pinsDoc, pins: built.pins, modules}, null, 2));
     const added = await require('../lib/packs-command').addPack({pack: ACCEPT, from: built.release, unreleasedPins: built.pinsFile}, installIo,
       acceptRelease(require('../lib/allowlist').ALLOWLIST));
     if (!check('the acceptance fixture pack is added (this run\'s release only)', added === 0, `exit ${added}`)) return 1;

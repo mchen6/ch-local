@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {install} = require('../lib/install');
 const {addPack, removePack} = require('../lib/packs-command');
-const {installedPacks, declaredRemotes} = require('../lib/packs');
+const {installedPacks} = require('../lib/packs');
 const {layout} = require('../lib/home');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm, record} = require('./install-helpers');
@@ -41,7 +41,9 @@ test('installedPacks names each module\'s store directory and the scenario\'s; i
   assert.strictEqual(p.version, '0.1.0');
   assert.strictEqual(p.dir, stored(s.home, '@countinghouse/ch-pack-ci-failure-triage', '0.1.0'));
   assert.deepStrictEqual(Object.keys(p.dirs).sort(), TRIAGE.slice().sort());
-  assert.deepStrictEqual(declaredRemotes(p.dirs, p.packages).map((d) => d.origin), ['https://api.githubcopilot.com']);
+  // (its credential's origin, by the one reader: the Reviewer's high review of #98, 2)
+  const {declared} = require('../lib/module-credentials');
+  assert.strictEqual(declared(s.where, require('../lib/module-record').readModulesRecord(s.where), '@countinghouse/ch-access-github').origin, 'https://api.githubcopilot.com');
 });
 
 test('add-pack places the second pack\'s modules beside the first\'s; a module they share is there once', async () => {

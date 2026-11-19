@@ -19,7 +19,7 @@ async function installed(r = release(), env = {}) {
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 0, io.err);
   return {home, r, io: (more = {}) => Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env, ...more}, exec: npm()}), {release: r.allow})};
 }
-const stored = (home) => require('../lib/credential-store').bind(home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN',
+const stored = (home) => require('../lib/credential-store').bind(home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN',
   {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'});
 // a module's line: its short name and version, then what it is
 const lineOf = (out, short) => (out.split('\n').find((l) => new RegExp(`^  ${short} \\S+ +`).test(l)) || '').replace(/^ +\S+ \S+ +/, '');
@@ -37,7 +37,7 @@ test('the modules first, then the packs: a header, each module with what it is, 
   const versions = r.runtime.versions;
   assert.match(out, new RegExp(`^ch-local ${versions['@countinghouse/ch-local'].replace(/\./g, '\\.')}, countinghouse ${versions.countinghouse.replace(/\./g, '\\.')}\nmodules:\n`));
   assert.strictEqual(lineOf(out, 'ch-pack-ci-failure-triage'), 'on; tools: ci_failure_triage');
-  assert.strictEqual(lineOf(out, 'ch-access-github'), 'part; credential COUNTINGHOUSE_GITHUB_TOKEN -> https://api.githubcopilot.com (stored)');
+  assert.strictEqual(lineOf(out, 'ch-access-github'), 'part; credential GITHUB_TOKEN -> https://api.githubcopilot.com (stored)');
   assert.strictEqual(lineOf(out, 'ch-step-redact'), 'part');
   const n = Object.keys(r.packs['ci-failure-triage'].modules).length;
   assert.match(out, new RegExp(`\npacks:\n  ci-failure-triage +${n} modules\n`));
@@ -47,7 +47,7 @@ test('the modules first, then the packs: a header, each module with what it is, 
 test('a module that would not load says why, as a start says it; its callers say what they call', async () => {
   const s = await installed();
   const {out} = await statusOf(s.io({GITHUB_TOKEN: 'secret'}));
-  assert.match(lineOf(out, 'ch-access-github'), /^part; not available: needs a credential \(COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com\): run `ch-local credentials add ch-access-github`$/);
+  assert.match(lineOf(out, 'ch-access-github'), /^part; not available: needs a credential \(GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com\): run `ch-local credentials add ch-access-github`$/);
   assert.match(lineOf(out, 'ch-pack-ci-failure-triage'), /^not loaded: calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`$/);
   assert.ok(!out.includes('secret'));
 });
@@ -110,7 +110,7 @@ test('a live start that wrote no chLocal (a ch-local from before) is a client on
 
 test('a credential from the gh login: gh is asked as a start asks it; one that gives no token makes the part not available', async () => {
   const s = await installed();
-  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'gh'});
+  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'gh'});
   const io = Object.assign(s.io(), {exec: async (cmd) => { io.execs.push({cmd}); return {status: 1, stdout: '', stderr: 'not logged in'}; }});
   const {out} = await statusOf(io);
   assert.ok(io.execs.some((e) => e.cmd === 'gh'), 'gh asked');
@@ -123,5 +123,5 @@ test('a module turned off still shows its stored credential', async () => {
   stored(s.home);
   require('../lib/settings').setSetting(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}, '/nonexistent'), 'enabled.@countinghouse/ch-pack-ci-failure-triage', 'off', {by: 'cli'});
   const {out} = await statusOf(s.io());
-  assert.strictEqual(lineOf(out, 'ch-access-github'), 'part; credential COUNTINGHOUSE_GITHUB_TOKEN -> https://api.githubcopilot.com (stored)');
+  assert.strictEqual(lineOf(out, 'ch-access-github'), 'part; credential GITHUB_TOKEN -> https://api.githubcopilot.com (stored)');
 });
