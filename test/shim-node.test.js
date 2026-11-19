@@ -458,9 +458,21 @@ test('runtimeEnv: the allowlist only; on win32 by case-insensitive name, never a
   assert.deepStrictEqual(Object.keys(out).sort(), ['LC_ALL', 'NODE_EXTRA_CA_CERTS', 'PATH', 'SystemRoot', 'TZ', 'USERPROFILE']);
   assert.ok(!Object.values(out).some((v) => v === 'client-1' || v === 'client-2' || v === 'planted'));
   // no test switch: a client never turns on the runtime's test-only delays
+  // (a proxy is passed: the user's own egress, below)
   const posix = shimConfig.runtimeEnv({PATH: '/bin', HOME: '/h', github_token: 'x', COUNTINGHOUSE_TEST_REQUIRE_THREAD_FLAG: '1', COUNTINGHOUSE_TEST_RESTART_HOLD_MS: '9', CH_TEST_LATE_LOADS: '1', AWS_SECRET_ACCESS_KEY: 'y', HTTPS_PROXY: 'http://proxy.example:3128'}, 'linux');
-  assert.deepStrictEqual(Object.keys(posix).sort(), ['HOME', 'PATH']);
+  assert.deepStrictEqual(Object.keys(posix).sort(), ['HOME', 'HTTPS_PROXY', 'PATH']);
   // a Windows runtime can run a .cmd: PATHEXT and ComSpec by any case
   const win = shimConfig.runtimeEnv({Path: 'C:\\bin', pathext: '.COM;.EXE;.CMD', COMSPEC: 'C:\\Windows\\cmd.exe'}, 'win32');
   assert.deepStrictEqual(Object.keys(win).sort(), ['ComSpec', 'PATH', 'PATHEXT']);
+});
+
+// the Reviewer's round 3, 8 and 11-18 option 3: on win32 the whole
+// allowlist by any case; the proxies passed (both cases on POSIX), and
+// named only, never their values
+test('runtimeEnv: the locale, extras and proxies by any case on win32; proxies in either case on POSIX; proxiesSet names only', () => {
+  const win = shimConfig.runtimeEnv({Path: 'C:\\bin', lc_all: 'C', node_extra_ca_certs: 'C:\\ca.pem', https_proxy: 'http://proxy.example:3128', No_Proxy: 'localhost'}, 'win32');
+  assert.deepStrictEqual(Object.keys(win).sort(), ['No_Proxy', 'PATH', 'https_proxy', 'lc_all', 'node_extra_ca_certs']);
+  const posix = shimConfig.runtimeEnv({PATH: '/bin', HTTPS_PROXY: 'http://proxy.example:3128', no_proxy: 'localhost', Http_Proxy: 'x', NODE_USE_ENV_PROXY: '1', lc_all: 'C'}, 'linux');
+  assert.deepStrictEqual(Object.keys(posix).sort(), ['HTTPS_PROXY', 'NODE_USE_ENV_PROXY', 'PATH', 'no_proxy']);
+  assert.deepStrictEqual(shimConfig.proxiesSet({HTTPS_PROXY: 'http://proxy.example:3128', no_proxy: 'localhost', OTHER: 'y'}), ['HTTPS_PROXY', 'no_proxy']);
 });

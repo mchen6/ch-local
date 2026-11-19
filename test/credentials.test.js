@@ -510,3 +510,56 @@ test('a hand-written gh entry for another origin is read, refused at use for tha
   assert.strictEqual(await credentials({action: 'remove', name: 'ch-access-github'}, io(h)), 0);
   assert.ok(store.readStore(h).modules.get('@countinghouse/ch-access-two') != null, 'the other module\'s key is untouched');
 });
+
+// the Reviewer's round 3, 1: a racing add's rename swaps the file between
+// the check and the read: read once more; a second race is transient, never
+// a file found wrong
+test('a read raced by an add is read again; raced twice it is transient, not a store problem that unloads', () => {
+  const h = home();
+  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()});
+  const ownFile = require('../lib/own-file');
+  const real = ownFile.readOwnFile;
+  const raced = () => Object.assign(new Error('it changed while it was checked'), {code: 'NOT_PRIVATE', raced: true});
+  try {
+    let races = 1;
+    ownFile.readOwnFile = (...a) => { if (races > 0) { races -= 1; throw raced(); } return real(...a); };
+    assert.ok(store.readStore(h).modules.get(ACCESS) != null, 'one race: read again');
+    ownFile.readOwnFile = () => { throw raced(); };
+    assert.throws(() => store.readStore(h), (e) => e.transient === true && /was being replaced while it was read/.test(e.message));
+    const mc = require('../lib/module-credentials');
+    const {layout} = require('../lib/home');
+    const where = layout({COUNTINGHOUSE_HOME: h}, () => '/nowhere');
+    const record = require('../lib/module-record').readModulesRecord(where);
+    const states = mc.applyStates(where, record, new Map([[ACCESS, {variable: VAR, origin: ORIGIN, source: 'stored', digest: 'x', slot: 'COUNTINGHOUSE_CREDENTIAL_1'}]]));
+    assert.ok(states.unreadable != null && states.size === 0, 'decides nothing');
+  } finally {
+    ownFile.readOwnFile = real;
+  }
+});
+
+// the Reviewer's round 3, 2 and 6: a hand-written gh entry for another
+// origin is never "restart your client", and status never calls it usable
+test('a gh entry for another origin with no slot says its own reason, and status says it is not loaded', async () => {
+  const h = home({url: 'https://api.example.com/mcp/'});
+  fs.mkdirSync(path.join(h, 'credentials'), {recursive: true, mode: 0o700});
+  fs.writeFileSync(path.join(h, 'credentials', 'credentials.json'), JSON.stringify({v: 2, modules: {[ACCESS]: {[VAR]: {origin: 'https://api.example.com', source: 'gh'}}}}), {mode: 0o600});
+  const mc = require('../lib/module-credentials');
+  const {layout} = require('../lib/home');
+  const where = layout({COUNTINGHOUSE_HOME: h}, () => '/nowhere');
+  const record = require('../lib/module-record').readModulesRecord(where);
+  const s = mc.applyStates(where, record, new Map()).get(ACCESS);
+  assert.strictEqual(s.state, 'store-problem');
+  assert.ok(!/restart/.test(s.reason), s.reason);
+  const {statusLine} = require('../lib/credentials-command');
+  assert.match(statusLine(where, record, mc.bindings(where, record), ACCESS), /^not loaded: ch-access-github needs a credential/);
+});
+
+// the Reviewer's round 3, 7: input past the limit is refused at once
+test('standard input over the limit is refused as too long, nothing stored', async () => {
+  const h = home();
+  const f = io(h, {terminal: false});
+  f.readStdin = async () => { throw Object.assign(new Error('standard input held more than 4098 bytes'), {code: 'TOO_LONG'}); };
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, f), 2);
+  assert.match(f.err, /one line of at most 4096 bytes/);
+  assert.strictEqual(bound(h), null);
+});

@@ -271,7 +271,19 @@ function realIo() {
       };
       arm();
       const text = () => Buffer.concat(chunks).subarray(0, max).toString('utf8');
-      process.stdin.on('data', (c) => { arm(); if (size <= max) { chunks.push(c); size += c.length; } });
+      // past max, no more waiting for an end that may never come (`yes |`):
+      // refused as too long at once (the Reviewer's round 3, 7)
+      process.stdin.on('data', (c) => {
+        if (done) return;
+        chunks.push(c);
+        size += c.length;
+        if (size > max) {
+          process.stdin.destroy();
+          finish(reject, Object.assign(new Error(`standard input held more than ${max} bytes`), {code: 'TOO_LONG'}));
+          return;
+        }
+        arm();
+      });
       process.stdin.on('end', () => finish(resolve, text()));
       process.stdin.on('close', () => finish(resolve, text()));
       process.stdin.on('error', (e) => finish(reject, e));

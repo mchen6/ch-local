@@ -21,8 +21,13 @@ with `ch-local credentials add <module>`, bound to the one address the
 module declares, and a client's environment never supplies one.
 A session's own runtime starts from an allowlisted environment, never the
 client's whole one: `PATH`, the home and temporary directories, the locale
-and time zone, and `NODE_EXTRA_CA_CERTS`, plus each module's key in a slot
-of its own.
+and time zone, `NODE_EXTRA_CA_CERTS`, the proxy variables (`HTTP_PROXY`,
+`HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, `NODE_USE_ENV_PROXY`), and each
+module's key in a slot of its own. A module that declares a proxy variable
+sees its value (a module's own network calls run in its worker), so use a
+proxy URL without embedded credentials, or a local forwarder that holds
+them: credentials in a proxy URL are visible to such a module. ch-local
+names the proxy variables it passes, never their values.
 Claude Desktop gets a note instead of an entry: its route is a `.mcpb` bundle
 that keeps the token in the OS keychain, not built yet.
 

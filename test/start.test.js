@@ -1128,3 +1128,14 @@ test('a COUNTINGHOUSE_GITHUB_TOKEN in the client\'s environment is said to be no
   assert.ok(!Object.values(f.spawned[0].env).includes('from-the-client'));
   assert.ok(!f.err.includes('from-the-client'));
 });
+
+// the Reviewer, 11-18 option 3: the proxies reach the runtime, said by
+// name, never by value
+test('start passes the proxy variables to a runtime of its own and names them, never their values', {skip: process.platform === 'win32' && 'the POSIX allowlist'}, async () => {
+  const proxy = `http://proxy-${require('node:crypto').randomBytes(4).toString('hex')}.example:3128`;
+  const f = io(installedHome(), {env: {PATH: '/usr/bin', HTTPS_PROXY: proxy, NO_PROXY: 'localhost'}});
+  await start({passThrough: []}, f);
+  assert.strictEqual(f.spawned[0].env.HTTPS_PROXY, proxy);
+  assert.match(f.err, /proxy: passing HTTPS_PROXY, NO_PROXY to the runtime \(values never shown\)/);
+  assert.ok(!(f.err + f.out).includes(proxy), 'never the value');
+});
