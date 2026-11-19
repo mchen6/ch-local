@@ -30,6 +30,12 @@ test('the record read from disk, and what is derived from it, have no prototype:
     for (const k of PROTO_KEYS) assert.strictEqual(m[k], undefined, `${what}[${k}]`);
   }
   assert.strictEqual(r.modules['@t/ch-pack-a'].version, '1.0.0', 'its own entries read as before');
+  // the record a write hands back has them too
+  const {buildModulesRecord} = require('../lib/module-record');
+  const built = buildModulesRecord({runtime: r.runtime, release: r.release, unreleased: true, packs: JSON.parse(JSON.stringify(r.packs)), held: {}}, {roleOf: () => 'scenario'});
+  for (const [what, m] of Object.entries({'built.packs': built.packs, 'built.packs.a.modules': built.packs.a.modules, 'built.modules': built.modules})) {
+    assert.strictEqual(Object.getPrototypeOf(m), null, what);
+  }
   const file = JSON.parse(require('node:fs').readFileSync(require('node:path').join(dir, 'modules.json'), 'utf8'));
   assert.strictEqual(JSON.stringify(r.packs), JSON.stringify(file.packs), 'and serialise as the file has them');
 });

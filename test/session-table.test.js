@@ -135,6 +135,16 @@ test('declines: the runtime\'s kinds (or a kind\'s shape, handed on), a past epo
 // takes the declines of two 30-minute windows: a lock runs 30 minutes from
 // its third decline, so declines at 0, 0 and 29 min lock until 59. A restart
 // at 31 must still be handed all three, or the lock ends 28 minutes early.
+test('past MAX_DECLINES, a decline of a kind ch-local doesn\'t know goes first: it never pushes out one that starts a lock', () => {
+  const t = createSessionTable({warn: () => {}});
+  const now = Date.now();
+  t.told({type: 'decline', kind: 'module', at: now - 5000});
+  for (let i = 0; i < MAX_DECLINES; i++) t.told({type: 'decline', kind: 'zzz', at: now - 4000});
+  const kept = t.restore().declines;
+  assert.strictEqual(kept.length, MAX_DECLINES);
+  assert.ok(kept.some((d) => d.kind === 'module'), 'the module decline kept');
+});
+
 test('declines are kept two windows (60 minutes): one 59 minutes old reaches a restart, one 61 minutes old does not', () => {
   let now = 1000000000000;
   const t = createSessionTable({now: () => now});
