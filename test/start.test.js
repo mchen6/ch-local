@@ -398,6 +398,8 @@ test('a top-level module two packs record is loaded once; each part of its closu
   assert.deepStrictEqual(named('--partDir'), [path.join('@countinghouse', 'ch-access-github')]);
   assert.strictEqual(f.err.split('\n').filter((l) => /^ch-local: loading /.test(l)).length, 1);
   assert.deepStrictEqual(run.stopped, {});
+  // its own ch-local, for status to name a client still on another one (L1b-1)
+  assert.strictEqual(run.chLocal, f.selfVersion !== undefined ? f.selfVersion : require('../package.json').version);
 });
 
 // the high review of L2a, 3: a start older than the record (a daemon or

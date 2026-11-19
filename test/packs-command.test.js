@@ -108,19 +108,21 @@ test('remove-pack keeps a module version another pack records and collects the o
   assert.match(io2.err, /the pack "other" is not installed/);
 });
 
-test('status lists each pack with its tools and each module\'s credential from the store, never a value', async () => {
+test('status lists each module with its tools or why it would not load, and its credential from the store, never a value (L1b-1: by module)', async () => {
   const s = await installed();
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
   const io = s.io({GITHUB_TOKEN: 'secret'});
   assert.strictEqual(await status({}, io), 0, io.err);
-  assert.match(io.out, /^ci-failure-triage 0\.1\.0\n  tools: ci_failure_triage\n  not loaded: ch-access-github needs a credential: run `ch-local credentials add ch-access-github`\n/m);
-  assert.match(io.out, /^other 0\.3\.0\n  tools: ch_pack_other\n  credential: none needed\n/m);
+  assert.match(io.out, /^  ch-pack-ci-failure-triage 0\.1\.0 +not loaded: calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`$/m);
+  assert.match(io.out, /^  ch-pack-other 0\.3\.0 +on; tools: ch_pack_other$/m);
+  assert.match(io.out, /^packs:\n  ci-failure-triage +\d+ modules\n  other +\d+ modules$/m);
   require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'});
   const after = s.io();
   await status({}, after);
-  assert.match(after.out, /^  credential: ch-access-github sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com \(stored\)$/m);
+  assert.match(after.out, /^  ch-access-github \S+ +part; credential COUNTINGHOUSE_GITHUB_TOKEN -> https:\/\/api\.githubcopilot\.com \(stored\)$/m);
+  assert.match(after.out, /^  ch-pack-ci-failure-triage 0\.1\.0 +on; tools: ci_failure_triage$/m);
   assert.ok(!(io.out + io.err + after.out).includes('secret') && !after.out.includes('test-stored-value-1'));
-  assert.ok(!/hidden/.test(io.out), 'an action without a description is not a tool');
+  assert.ok(!/hidden/.test(io.out + after.out), 'an action without a description is not a tool');
 });
 
 test('status, add-pack and every start of an unreleased home say so in one stderr line', async () => {
@@ -370,23 +372,6 @@ test('add-pack is not blocked by a part only a withdrawn pack holds at another v
   assert.strictEqual(record(s.home).packs.other.modules['@countinghouse/ch-step-other'], '0.2.0');
 });
 
-// A module a running client's runtime stopped for good (module-stopped:
-// #413 sections 7.3 and 9.9; L2a): status shows it, with its code, from
-// that start's run.json; a start no longer running shows nothing.
-test('status shows a module a running client stopped, with its code; a dead start\'s run.json is not read', async () => {
-  const s = await installed();
-  const {hostTag} = require('../lib/gc');
-  const writeRun = (pid) => {
-    const dir = path.join(s.home, 'run', `r${pid}`);
-    fs.mkdirSync(dir, {recursive: true});
-    fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({pid, host: hostTag('box-1'), loaded: {}, stopped: {'@countinghouse/ch-pack-ci-failure-triage': 'MODULE_SUSPENDED'}}));
-  };
-  writeRun(4242);
-  const live = Object.assign(s.io({GITHUB_TOKEN: 'secret'}), {hostname: 'box-1', alive: (pid) => pid === 4242});
-  assert.strictEqual(await status({}, live), 0, live.err);
-  assert.match(live.out, /^ci-failure-triage 0\.1\.0\n  stopped in a running client \(MODULE_SUSPENDED\): restart that client\n/m);
-  const dead = Object.assign(s.io({GITHUB_TOKEN: 'secret'}), {hostname: 'box-1', alive: () => false});
-  assert.strictEqual(await status({}, dead), 0, dead.err);
-  assert.ok(!/stopped/.test(dead.out), dead.out);
-});
+// (a module a running client stopped, and a client on another ch-local:
+// test/status-by-module.test.js)
 
