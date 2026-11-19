@@ -1,7 +1,9 @@
 'use strict';
 // npm test: the test files, each process with test/tmp-dirs.js preloaded
-// (which removes the ch-* temporary directories it makes), then a count of
-// the ch-* directories the run left in the temporary directory.
+// (which removes the ch-* temporary directories it makes, and keeps a
+// manifest of them), each case bounded by --test-timeout, then the
+// manifests of processes that are gone swept (their listed directories
+// only), then a count of the ch-* directories the run left.
 //
 //   npm test                          every test/*.test.js
 //   npm test -- test/a.test.js ...    only those files (any other argument
@@ -17,7 +19,7 @@ const {spawnSync} = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const tmp = os.tmpdir();
-const {PREFIX} = require('../test/tmp-dirs');
+const {PREFIX, sweepStale} = require('../test/tmp-dirs');
 // this user's shared-runtime socket directory (lib/session-socket.js
 // fallbackSocket: made on purpose and kept), as that module names it, and
 // only that one
@@ -33,8 +35,17 @@ const flags = given.filter((a) => !named.includes(a));
 const files = named.length > 0 ? named
   : fs.readdirSync(path.join(root, 'test')).filter((n) => n.endsWith('.test.js')).sort().map((n) => path.join('test', n));
 
+// a process of an earlier run killed by a signal left its manifest: what it
+// made is removed now (only what it listed)
+sweepStale();
+// (a hanging case fails within node:test, so its file goes on and reaches
+// 'exit', its directories removed: never left for an outer kill. 300 s,
+// unless a --test-timeout is given)
+const timeout = flags.some((f) => f.startsWith('--test-timeout')) ? [] : ['--test-timeout=300000'];
 const before = ours();
-const run = spawnSync(process.execPath, ['--require', path.join(root, 'test', 'tmp-dirs.js'), '--test', ...flags, ...files], {cwd: root, stdio: 'inherit'});
+const run = spawnSync(process.execPath, ['--require', path.join(root, 'test', 'tmp-dirs.js'), '--test', ...timeout, ...flags, ...files], {cwd: root, stdio: 'inherit'});
+// a file's process this run's runner ended by a signal left its manifest
+sweepStale();
 if (run.error != null) process.stderr.write(`\nthe tests could not be run: ${run.error.code || run.error.message}\n`);
 const left = [...ours()].filter((n) => !before.has(n)).sort();
 let code = run.status == null ? 1 : run.status;

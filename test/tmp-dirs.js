@@ -23,22 +23,72 @@
 // Why: tests made tens of thousands of ch-* directories on a shared /tmp
 // and left them, until it ran out of inodes (the Reviewer, 11-19).
 // scripts/test.js counts what a full run leaves.
+//
+// A process killed by a signal (an outer `timeout`, a stopped run) never
+// reaches 'exit', and its directories stayed: whole files' worth at once.
+// So each process also keeps a manifest of what it made, MANIFEST_PREFIX +
+// its pid + '.json' in the temporary directory (a dotfile, so no ch-* count
+// sees it), rewritten as it makes each directory and removed with them at
+// 'exit'. sweepStale() takes only manifests whose process is gone (and this
+// user's), removes only the directories they list (each still a ch-*
+// directly under the temporary directory), then the manifest: the runner
+// cleaning up its own registered output, never a pattern sweep of /tmp.
+// scripts/test.js sweeps at its start and after its run (the Reviewer's
+// ruling, 11-19).
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const PREFIX = 'ch-';
+const MANIFEST_PREFIX = '.ch-local-tmp-';
 const KEY = Symbol.for('ch-local.test.tmp-dirs');
+const ours = (dir) => {
+  try {
+    const d = path.resolve(String(dir));
+    return path.dirname(d) === path.resolve(os.tmpdir()) && path.basename(d).startsWith(PREFIX);
+  } catch (err) { return false; }
+};
+const manifestOf = (pid) => path.join(os.tmpdir(), `${MANIFEST_PREFIX}${pid}.json`);
+// whether a process is gone: signal 0 answers ESRCH (EPERM: it lives, as
+// another user's)
+const gone = (pid) => {
+  try { process.kill(pid, 0); return false; } catch (err) { return err.code === 'ESRCH'; }
+};
+// this user's file (POSIX; elsewhere the temporary directory is the user's)
+const mine = (file) => {
+  if (typeof process.getuid !== 'function') return true;
+  try { return fs.statSync(file).uid === process.getuid(); } catch (err) { return false; }
+};
+// the manifests of processes that are gone: each listed directory still ours
+// removed, then the manifest -> the number of directories removed
+function sweepStale() {
+  let removed = 0;
+  let names = [];
+  try { names = fs.readdirSync(os.tmpdir()); } catch (err) { return 0; }
+  for (const name of names) {
+    const m = /^\.ch-local-tmp-(\d+)\.json$/.exec(name);
+    if (m == null) continue;
+    const pid = Number(m[1]);
+    const file = path.join(os.tmpdir(), name);
+    if (pid === process.pid || !gone(pid) || !mine(file)) continue;
+    let dirs = [];
+    try { const doc = JSON.parse(fs.readFileSync(file, 'utf8')); dirs = Array.isArray(doc.dirs) ? doc.dirs : []; } catch (err) { dirs = []; }
+    for (const dir of dirs) {
+      if (typeof dir !== 'string' || !ours(dir)) continue;
+      try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); removed += 1; } catch (err) { /* left: counted after the run */ }
+    }
+    try { fs.rmSync(file, {force: true}); } catch (err) { /* left: swept again next time */ }
+  }
+  return removed;
+}
 if (global[KEY] == null) {
   const made = new Set();
-  const ours = (dir) => {
-    try {
-      const d = path.resolve(String(dir));
-      return path.dirname(d) === path.resolve(os.tmpdir()) && path.basename(d).startsWith(PREFIX);
-    } catch (err) { return false; }
+  const manifest = manifestOf(process.pid);
+  const record = () => {
+    try { fs.writeFileSync(manifest, JSON.stringify({pid: process.pid, dirs: [...made]})); } catch (err) { /* no manifest: 'exit' still removes them */ }
   };
   // (resolved now: a later chdir never sends the removal elsewhere)
-  const keep = (dir) => { if (ours(dir)) made.add(path.resolve(String(dir))); return dir; };
+  const keep = (dir) => { if (ours(dir)) { made.add(path.resolve(String(dir))); record(); } return dir; };
 
   const syncMade = fs.mkdtempSync;
   fs.mkdtempSync = function(...args) { return keep(syncMade.apply(fs, args)); };
@@ -60,9 +110,10 @@ if (global[KEY] == null) {
       try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); } catch (err) { /* left: counted after the run */ }
     }
     made.clear();
+    try { fs.rmSync(manifest, {force: true}); } catch (err) { /* swept as stale later */ }
   };
   process.on('exit', removeMade);
-  global[KEY] = {removeMade, made, PREFIX};
+  global[KEY] = {removeMade, made, PREFIX, MANIFEST_PREFIX, manifestOf, sweepStale};
 }
 
 module.exports = global[KEY];
