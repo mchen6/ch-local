@@ -162,17 +162,54 @@ test('the carry-over, a version 2 store: read under the declared name at once, w
   const {h, where, record} = homeOn020();
   bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-1'));
   const read = mc.bindings(where, record());
-  assert.deepStrictEqual(read.carried, [{module: ACCESS, from: VAR, to: 'GITHUB_TOKEN'}]);
+  assert.deepStrictEqual(read.carried.map(({module, from, to}) => [module, from, to]), [[ACCESS, VAR, 'GITHUB_TOKEN']]);
   assert.deepStrictEqual(read.bindings.get(ACCESS).get('GITHUB_TOKEN'), {origin: GH, source: 'stored', value: 'test-v2-value-1'});
   assert.ok(!read.bindings.get(ACCESS).has(VAR));
   assert.strictEqual(mc.stateOf(ACCESS, mc.declared(where, record(), ACCESS), read).state, 'ok', 'loaded, not "elsewhere"');
   // start writes it, and says so, once
-  assert.deepStrictEqual(mc.carryOver(where, record()), [`the key stored for ch-access-github under ${VAR} is now under GITHUB_TOKEN, the name it declares; nothing else changed`]);
+  const first = mc.carryOver(where, record());
+  assert.deepStrictEqual(first.lines, [`the key stored for ch-access-github under ${VAR} is now under GITHUB_TOKEN, the name it declares; nothing else changed`]);
+  assert.strictEqual(first.read.bindings.get(ACCESS).get('GITHUB_TOKEN').value, 'test-v2-value-1', 'the read forStart is handed');
   assert.deepStrictEqual([...store.readStore(h).modules.get(ACCESS).keys()], ['GITHUB_TOKEN']);
-  assert.deepStrictEqual(mc.carryOver(where, record()), [], 'once');
+  assert.deepStrictEqual(mc.carryOver(where, record()).lines, [], 'once');
   // a key stored for another origin is not this module's GitHub key
   const other = homeOn020();
   bind(other.h, ACCESS, VAR, stored(OTHER_ORIGIN, 'test-v2-value-2'));
   assert.deepStrictEqual(mc.bindings(other.where, other.record()).carried, []);
-  assert.deepStrictEqual(mc.carryOver(other.where, other.record()), []);
+  assert.deepStrictEqual(mc.carryOver(other.where, other.record()).lines, []);
+});
+
+// The Reviewer's high review of #98's round 2: only GitHub's own rename is
+// carried (3), and never over a change made since the read (2)
+test('the carry-over is GitHub\'s rename only: a third-party module at another origin, or the other direction, is not carried', () => {
+  const h = tmp('ch-mc-');
+  const THIRD = '@someone/ch-access-x';
+  storeModule(h, THIRD, '1.0.0', {countinghouse: {role: 'part', remotes: [remote(`${OTHER_ORIGIN}/mcp/`, 'GITHUB_TOKEN')]}});
+  storeModule(h, ACCESS, '0.1.0', {countinghouse: {role: 'part', remotes: [remote(`${GH}/mcp/`, VAR)]}});
+  writeHome(h, {p: {[THIRD]: '1.0.0', [ACCESS]: '0.1.0'}});
+  const where = layout({COUNTINGHOUSE_HOME: h}, () => '/nowhere');
+  bind(h, THIRD, VAR, stored(OTHER_ORIGIN, 'test-third-value-1'));
+  bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-3'));
+  assert.deepStrictEqual(mc.bindings(where, readModulesRecord(where)).carried, []);
+  assert.deepStrictEqual(mc.carryOver(where, readModulesRecord(where)).lines, []);
+  assert.strictEqual(mc.stateOf(THIRD, mc.declared(where, readModulesRecord(where), THIRD), mc.bindings(where, readModulesRecord(where))).state, 'elsewhere', 'added again, as L5a says');
+});
+
+test('the carry-over never undoes a change made since its read: a remove, or another key added, wins', () => {
+  for (const meanwhile of ['remove', 'add']) {
+    const {h, where, record} = homeOn020();
+    bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-4'));
+    const read = mc.bindings(where, record());
+    const {entry} = read.carried[0];
+    if (meanwhile === 'remove') store.unbind(h, ACCESS); else bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-5'));
+    assert.strictEqual(store.rebind(h, ACCESS, VAR, 'GITHUB_TOKEN', entry), 'changed', meanwhile);
+    const now = store.readStore(h).modules.get(ACCESS);
+    if (meanwhile === 'remove') assert.ok(now == null, 'the revoked key is not brought back');
+    else assert.strictEqual(now.get('GITHUB_TOKEN').value, 'test-v2-value-5', 'the key added since is kept');
+  }
+  // a store another writer holds: left, said nothing of (the next start judges again)
+  const {h} = homeOn020();
+  bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-6'));
+  const held = store.withStoreLock(h, () => store.rebind(h, ACCESS, VAR, 'GITHUB_TOKEN', {origin: GH, source: 'stored', value: 'test-v2-value-6'}));
+  assert.strictEqual(held.value, 'busy');
 });

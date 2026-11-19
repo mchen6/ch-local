@@ -64,12 +64,17 @@ test('the home\'s modules add names only: two of them sharing one never refuse a
   // a call to the shared name maps to no one: refused, never guessed
   assert.match(descriptionRefusal(w, [SCENARIO, PART], release([OTHER, PART]), bytesOf(['ch-step-b/x.y', 'twin/x.y']), undefined, context),
     /does not match this release's description of it \(its calls\)/);
-  // a name the operation shares with a module the home holds: a call to it
-  // is refused too (the Reviewer's high review of #98, 5)
+  // one of the operation's names an installed module of another package
+  // holds: the operation is refused, whether or not it calls it (the
+  // Reviewer's high reviews of #98, 5, and of its round 2, 4)
   const both = where();
   storeModule(both.home, OTHER, '1.0.0', {countinghouse: {role: 'scenario'}, files: {'api.json': api('ch-step-b')}});
-  assert.match(descriptionRefusal(both, [SCENARIO, PART], release(), bytesOf(['ch-step-b/x.y']), undefined, {[OTHER]: '1.0.0'}),
-    /does not match this release's description of it \(its calls\)/);
+  for (const calls of [['ch-step-b/x.y'], []]) {
+    assert.match(descriptionRefusal(both, [SCENARIO, PART], release(calls.length > 0 ? [PART] : []), bytesOf(calls), undefined, {[OTHER]: '1.0.0'}),
+      /^ch-step-b is the friendly name of both @countinghouse\/ch-step-b and @countinghouse\/ch-pack-other, which is installed$/);
+  }
+  // an installed module that would not load (not live) clashes with nothing
+  assert.strictEqual(descriptionRefusal(both, [SCENARIO, PART], release(), bytesOf(['ch-step-b/x.y']), undefined, {[OTHER]: '1.0.0'}, {live: new Set([SCENARIO, PART])}), null);
   // the operation's own names must still be one each
   const dup = bytesOf(['ch-step-b/x.y'], {friendly: 'ch-step-b'});
   assert.match(descriptionRefusal(where(), [SCENARIO, PART], release(), dup), /ch-step-b is the friendly name of both/);
@@ -80,9 +85,12 @@ test('only an active pack\'s modules count as installed for a call: a withdrawn 
   const record = {packs: {other: {modules: {[OTHER]: '1.0.0'}}, gone: {modules: {[OTHER_PART]: '1.0.0'}}},
     held: {kept: {modules: {'@countinghouse/ch-held': '1.0.0'}}},
     modules: {[OTHER]: {version: '1.0.0'}, [OTHER_PART]: {version: '1.0.0'}, '@countinghouse/ch-held': {version: '1.0.0'}}};
-  // the operation's release lists other, and withdraws gone
+  // start's own rule (packs.withdrawnNames): a pack the release does not
+  // list is withdrawn; so is one holding a module the record withdrew
   assert.deepStrictEqual(activeContext(record, {packs: {other: {}, a: {}}}), {[OTHER]: '1.0.0'});
-  // a release that lists gone again counts it, whatever the record withdrew
-  assert.deepStrictEqual(activeContext({...record, withdrawn: [OTHER_PART]}, {packs: {other: {}, gone: {}}}), {[OTHER]: '1.0.0', [OTHER_PART]: '1.0.0'});
+  assert.deepStrictEqual(activeContext(record, {packs: {other: {}, gone: {}}}), {[OTHER]: '1.0.0', [OTHER_PART]: '1.0.0'});
+  assert.deepStrictEqual(activeContext({...record, withdrawn: [OTHER_PART]}, {packs: {other: {}, gone: {}}}), {[OTHER]: '1.0.0'});
+  // an unreleased home withdraws nothing by the release
+  assert.deepStrictEqual(activeContext({...record, unreleased: true}, {packs: {other: {}}}), {[OTHER]: '1.0.0', [OTHER_PART]: '1.0.0'});
   assert.deepStrictEqual(activeContext(null, {packs: {}}), {});
 });
