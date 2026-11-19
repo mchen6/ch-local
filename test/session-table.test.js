@@ -167,11 +167,9 @@ test('restore carries reset: the sessions a handoff took loosenings from, once (
   assert.deepStrictEqual(createSessionTable().restore(), {type: 'restore', sessions: [], declines: [], reset: []});
 });
 
-// L3 (#413 section 10): a handoff from a daemon of the pack form. The kind
-// pack becomes enabled in locks, unanswered and declines (a user who
-// declined a form three times stays locked out of the one that replaces
-// it); every pack.* override is dropped, on or off, and the session is
-// marked to be told once.
+// L3 (#413 section 10): a handoff from a daemon of the pack form keeps
+// the kind pack until M5b (the runtime refuses any other), and hands a
+// stale pack.* override on for the runtime to drop and tell.
 test('seed keeps the kind pack until M5b (the runtime takes no other); hands a stale pack.* override on for the runtime to drop and tell', () => {
   const t = createSessionTable({warn: () => {}});
   const at = Date.now();

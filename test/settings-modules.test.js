@@ -288,3 +288,28 @@ test('settings modules with a settings file that is not valid says so, never lis
   assert.match(r.io.err, /is not JSON; ch-local start refuses to start until it is fixed/);
   assert.strictEqual(r.io.out, '');
 });
+
+// the medium on the high round, 1: a ceiling's "conversation": false is a
+// rule for conversation; at a terminal a setting's own confirm still asks
+test('a ceiling with conversation false still has a setting\'s own confirm asked at a terminal', async () => {
+  const home = await installed({ceiling: {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], moduleSettings: {conversation: false, byModule: {[SCENARIO]: {note: {confirm: true}}}}}}});
+  const headless = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.note', 'hello'], {interactive: false});
+  assert.strictEqual(headless.code, 2);
+  assert.match(headless.io.err, /is confirmed at a terminal/);
+  const asked = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.note', 'hello'], {answers: ['y']});
+  assert.strictEqual(asked.code, 0, asked.io.err);
+  assert.strictEqual(asked.io.asked.length, 1);
+});
+
+// the medium on the high round, 2: a trusted ceiling with module-setting
+// rules and a reader that cannot read them fails closed
+test('a ceiling with module-setting rules over a runtime whose reader cannot read them refuses the change', async () => {
+  const home = await installed();
+  require('../lib/ceiling').resetForTests();
+  fs.writeFileSync(path.join(home, 'app', 'node_modules', 'countinghouse', 'lib', 'settings-ceiling.js'),
+    `module.exports = {readCeiling: () => (${JSON.stringify({state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], moduleSettings: {conversation: true, byModule: {[SCENARIO]: {units: {fixed: 'metric'}}}}}})})};\n`);
+  const r = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'imperial']);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.io.err, /has rules for module settings, which the installed countinghouse cannot read/);
+  assert.deepStrictEqual(fileValues(home), {});
+});
