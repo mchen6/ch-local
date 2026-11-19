@@ -322,6 +322,33 @@ test('install: a home that changed before the lock places what it now needs', as
   assert.ok(placed(h.home, REDACT, '0.1.0'));
 });
 
+// The medium review of the round, 5 and 6: a reinstall's own earlier
+// entry is installed, not shared, and no way back is promised that
+// remove-pack would not keep.
+test('install --pack again: its own modules are not "shared", and the way back is only said when another pack keeps it', async (t) => {
+  const ACCESS = '@countinghouse/ch-access-github';
+  const otherCalls = {extra: {[OTHER]: {countinghouse: {role: 'scenario', calls: ['ch-step-redact/redactService.redact', 'ch-access-github/githubService.listRuns']}}}};
+  const reinstall = async (h, r, opts = {}) => {
+    const a = Object.assign(fakeIo({env: h.env, exec: npm(), answers: opts.answers || []}), {interactive: opts.interactive === true});
+    const code = await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pinsFile(r)}, a, {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}});
+    return {code, io: a};
+  };
+  await t.test('nothing shared with itself', async () => {
+    const h = await devHome(release());
+    const {code, io} = await reinstall(h, release({versions: {[OTHER]: '0.3.1'}}));
+    assert.strictEqual(code, 0, io.err);
+    assert.doesNotMatch(io.out, /it shares/);
+  });
+  await t.test('Question A on a reinstall: no way back that remove-pack would not keep', async () => {
+    const h = await devHome(release(otherCalls));
+    assert.strictEqual((await h.add(release(otherCalls))).code, 0);
+    const {code, io} = await reinstall(h, release({versions: {[ACCESS]: '1.0.0'}, ...otherCalls}), {interactive: true, answers: ['y']});
+    assert.strictEqual(code, 0, io.err);
+    assert.match(io.out, /^updated ch-access-github 0\.1\.0 -> 1\.0\.0$/m);
+    assert.match(io.out, /^ch-pack-other 0\.3\.0 was written for 0\.1\.x and still loads$/m);
+  });
+});
+
 // The reviewer's high review of #94, 2: unknown is never "no callers".
 test('a breaking update whose callers cannot be read is refused, never taken for uncalled', async (t) => {
   const r1 = release({versions: {[REDACT]: '0.1.0'}});
