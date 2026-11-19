@@ -122,7 +122,8 @@ test('identity changes, a first pin, or additions block: announced, never instal
   const installed = require('../lib/allowlist').ALLOWLIST.self;
   for (const [edit, why, installedPins] of [
     [(d) => { d.self.ownerId += 1; }, /identity changes/, null],
-    [(d) => { d.allowedOrigins['https://api.example.invalid'] = ['NEW_TOKEN']; }, /adds/, null],
+    // (version 2: a module's credential sent somewhere new)
+    [(d) => { d.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'COUNTINGHOUSE_GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }, /adds/, null],
     // the installed release pinned nothing of the runtime: a first pin blocks
     [null, /countinghouse: pinned for the first time/, {}]]) {
     const w = await world({at: new Date(now - 200 * H), edit, signedAs: installed});
@@ -289,10 +290,11 @@ test('the CLI: `ch-local upgrade --apply-auto` runs it and prints its line; with
 // A release that withdraws the pack `name`: its entry and the pins of its
 // packages that nothing else in the release uses are gone, as a real one's are.
 const withdrawFrom = (name) => (doc) => {
-  const gone = doc.packs[name].packages;
+  const gone = doc.packs[name].modules;
   delete doc.packs[name];
-  const used = new Set([...doc.runtime.packages, ...Object.values(doc.packs).flatMap((p) => p.packages)]);
-  for (const pkg of gone) if (!used.has(pkg)) delete doc.pins[pkg];
+  const used = new Set([...doc.runtime.packages, ...Object.values(doc.packs).flatMap((p) => p.modules)]);
+  // (version 2: a module no pack lists has no description either)
+  for (const pkg of gone) if (!used.has(pkg)) { delete doc.pins[pkg]; if (doc.modules != null) delete doc.modules[pkg]; }
 };
 
 // Withdrawn packs (maintainer's decision, 2026-11-17): an automatic upgrade to a

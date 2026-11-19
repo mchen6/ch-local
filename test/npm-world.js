@@ -28,6 +28,8 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
   const root = testRoot();
   const doc = shipped();
   doc.packs = JSON.parse(JSON.stringify(r.allow.packs));
+  // (version 2: the release's own descriptions of its packs' modules)
+  doc.modules = JSON.parse(JSON.stringify(r.allow.modules));
   doc.pins = {};
   let n = 0;
   const attest = (name, v, bytes, identity) => {
