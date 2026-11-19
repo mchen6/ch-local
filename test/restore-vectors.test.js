@@ -97,18 +97,23 @@ test('every mapped vector row: told or seeded, handed on as it was, for the runt
 });
 
 // A kind the runtime has none of (of a kind's shape) is taken out of its
-// row there, the rest of the row kept (the vector's `taken`). ch-local's
-// kinds are the runtime's, so it is never told one by its own runtime, and
-// it keeps no row that names one: neither told nor seeded is it handed on.
-test('every kindsDropped vector row: never kept, told or seeded (the runtime would take it without the kind)', () => {
+// row, the rest of the row kept (the vector's `taken`), in both repos: told
+// or seeded, ch-local hands on exactly `taken`, so a session's tightenings
+// survive and no kind it doesn't know reaches any runtime (the Reviewer's
+// ruling on #96).
+test('every kindsDropped vector row: told or seeded, handed on as the runtime takes it, without the unknown kind', () => {
   assert.ok(restoreRows.kindsDropped.length > 0);
-  for (const {why, row} of restoreRows.kindsDropped) {
+  for (const {why, row, taken} of restoreRows.kindsDropped) {
     const told = createSessionTable({warn: () => {}});
     told.told({type: 'session-resume', session: row.session, hash: row.resume});
-    assert.strictEqual(told.told({type: 'session-state', session: row.session, state: row.state}), false, `${why}: refused as told`);
-    assert.deepStrictEqual(told.restore().sessions, [], `${why}: nothing of the session handed on`);
+    assert.strictEqual(told.told({type: 'session-state', session: row.session, state: row.state}), true, `${why}: kept, without the kind`);
+    assert.deepStrictEqual(told.restore().sessions, [{session: row.session, resume: row.resume, state: taken}], `${why}: told`);
     const seeded = createSessionTable({warn: () => {}});
-    assert.deepStrictEqual(seeded.seed({sessions: [row], declines: []}), {kept: 0, loosened: 0}, why);
-    assert.deepStrictEqual(seeded.restore().sessions, [], `${why}: seeded, never kept`);
+    assert.deepStrictEqual(seeded.seed({sessions: [row], declines: []}), {kept: 1, loosened: 0}, why);
+    assert.deepStrictEqual(seeded.restore().sessions, [{session: row.session, resume: row.resume, state: taken}], `${why}: seeded`);
   }
+  // a decline of such a kind is dropped, not kept
+  const t = createSessionTable({warn: () => {}});
+  assert.strictEqual(t.told({type: 'decline', kind: 'locale', at: Date.now()}), false);
+  assert.deepStrictEqual(t.restore().declines, []);
 });

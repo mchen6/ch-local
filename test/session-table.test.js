@@ -70,7 +70,13 @@ test('a state with unanswered is kept; a bad unanswered, or an unknown key besid
     const st = {overrides: [], locks: [], formsLeft: 0, unanswered};
     assert.strictEqual(k.told({type: 'session-state', session: ID(3), state: st}), true, JSON.stringify(unanswered));
   }
-  for (const unanswered of [['other'], ['pack', 'pack'], 'pack', [1], ['pack', 'maxOutputBytes', 'requestTimeout', 'pack']]) {
+  // a kind of a kind's shape ch-local has none of is taken out, the row kept
+  // (the shared vectors' kindsDropped); an unanswered list it empties goes
+  const w = createSessionTable({warn: () => {}});
+  w.told({type: 'session-resume', session: ID(4), hash: HASH});
+  assert.strictEqual(w.told({type: 'session-state', session: ID(4), state: Object.assign({}, STATE, {unanswered: ['other']})}), true);
+  assert.deepStrictEqual(w.restore().sessions[0].state, STATE, 'the unknown kind out, its list with it');
+  for (const unanswered of [['other-kind'], ['pack', 'pack'], 'pack', [1], ['pack', 'maxOutputBytes', 'requestTimeout', 'pack'], ['other', 'other']]) {
     const u = createSessionTable({warn: () => {}});
     u.told({type: 'session-resume', session: ID(2), hash: HASH});
     assert.strictEqual(u.told({type: 'session-state', session: ID(2), state: Object.assign({}, STATE, {unanswered})}), false, JSON.stringify(unanswered));
