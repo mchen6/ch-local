@@ -518,7 +518,9 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       acceptRelease(require('../lib/allowlist').ALLOWLIST));
     if (!check('the acceptance fixture pack is added (this run\'s release only)', added === 0, `exit ${added}`)) return 1;
     const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: home});
-    require('../lib/settings').setSetting(where, `pack.${ACCEPT}`, 'off', {by: 'cli'});
+    // turned off by its module (L3: enabled.<module>; set pack.* is refused)
+    const acceptModule = require('../lib/packs').packScenario(require('../lib/module-record').readModulesRecord(where), ACCEPT);
+    require('../lib/settings').setSetting(where, `enabled.${acceptModule}`, 'off', {by: 'cli'});
     if (process.platform !== 'win32') fs.chmodSync(home, 0o700);
 
     const shim = buildShim();
@@ -685,15 +687,15 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     // The fixture pack, turned on from the terminal while the daemon serves:
     // every session's (B3's all-sessions path; no form). A session's own
     // "on" needs its form, which joins with (b1).
-    // `ch-local settings set pack.accept on` is a loosening, which the
+    // `ch-local settings set enabled.<its module> on` is a loosening, which the
     // terminal confirms (lib/cli-change.js); the run has no terminal, so it
     // calls that same path with an io that answers the question "y", as the
     // user at a terminal would
     let asked = null;
     let said = '';
-    const on = await require('../lib/cli-change').cliSet(where, `pack.${ACCEPT}`, 'on',
+    const on = await require('../lib/cli-change').cliSet(where, `enabled.${acceptModule}`, 'on',
       {interactive: true, ask: async (q) => { asked = q; return 'y'; }, stderr: {write: (s) => { said += s; }}, platform: process.platform, env: launcherEnv(home)});
-    if (!check('the fixture pack is turned on from the terminal (its loosening asked and confirmed)', on.code === 0 && /Loosen pack\.accept/.test(String(asked)),
+    if (!check('the fixture pack is turned on from the terminal (its loosening asked and confirmed)', on.code === 0 && String(asked).startsWith(`Loosen enabled.${acceptModule} `),
       `${on.code} ${asked} ${said}`)) return 1;
     let listed = [];
     for (const until = Date.now() + STEP_MS; Date.now() < until;) {
