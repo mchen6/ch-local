@@ -255,6 +255,30 @@ test('an add the lock would refuse is refused before any question', async () => 
   assert.deepStrictEqual(history(h.home), []);
 });
 
+// The reviewer's high review of #94, 3 and 7: only the tarballs the locked
+// path places (and a Question B row's own callers) are read, each once.
+test('a module the pack never places needs no tarball, and each tarball is read once', async (t) => {
+  const {tarballName} = require('../lib/install');
+  for (const [how, run] of [['add-pack', 'add'], ['install --pack', 'inst']]) {
+    await t.test(how, async () => {
+      const h = await devHome(release({versions: {[REDACT]: '0.1.1'}}));
+      const r2 = release({versions: {[REDACT]: '0.1.0'}});
+      fs.rmSync(path.join(r2.from, tarballName(REDACT, '0.1.0')));
+      const reads = new Map();
+      const real = fs.readFileSync;
+      fs.readFileSync = function (file, ...rest) {
+        if (typeof file === 'string' && file.startsWith(r2.from) && file.endsWith('.tgz')) reads.set(file, (reads.get(file) || 0) + 1);
+        return real.call(this, file, ...rest);
+      };
+      let got;
+      try { got = await h[run](r2); } finally { fs.readFileSync = real; }
+      assert.strictEqual(got.code, 0, got.io.err);
+      assert.strictEqual(record(h.home).packs.other.modules[REDACT], '0.1.1');
+      for (const [file, n] of reads) assert.strictEqual(n, 1, `${path.basename(file)} read ${n} times`);
+    });
+  }
+});
+
 // The reviewer's high review of #94, 2: unknown is never "no callers".
 test('a breaking update whose callers cannot be read is refused, never taken for uncalled', async (t) => {
   const r1 = release({versions: {[REDACT]: '0.1.0'}});
