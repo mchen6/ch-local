@@ -1,5 +1,5 @@
 {
-  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json topLevelModules, at countinghouse 099be25c (#449, M5b: the top-level rule on own properties): copied, never edited here",
+  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json topLevelModules, at countinghouse 269ae6ac (#449, M5b: the top-level rule on own properties): copied, never edited here",
   "topLevelModules": {
     "rule": "a module is top-level when it is the scenario of a pack in packs: of that pack's modules (in their order), the first that modules gives role \"scenario\", else the pack's first module; and only when modules holds it. Every other module in modules is a part, whatever its role, and has no enabled.<module>. Only own properties are read (Object.hasOwn), so a name like \"constructor\" is a name like any other",
     "cases": [
