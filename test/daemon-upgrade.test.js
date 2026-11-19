@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // C3b: ch-local daemon's upgrades (#236 section 6, "Upgrade"). It watches
 // <home>/run/daemon/requests. On an upgrade request:
 // - the runtime changed: drain, stop it, start the new one with the table

@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // C4c: where the shared runtime listens (lib/session-socket.js): a random
 // named pipe per runtime start on Windows; on POSIX the run directory's
 // socket, or the long-home fallback in $TMPDIR/ch-<uid>/.

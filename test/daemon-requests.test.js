@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // lib/daemon-requests.js (C3b; #236 section 6, "Upgrade"): an install that
 // changed the home appends an upgrade request to <home>/run/daemon/requests,
 // which a running daemon watches. Owner-only, appended, never followed

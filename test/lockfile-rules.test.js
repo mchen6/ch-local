@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // lib/lockfile-rules.js (the review of #42): one set of rules for the runtime
 // lockfile, released or --unreleased-pins. A runtime package from its own
 // tarball at its pin; every dependency from registry.npmjs.org with a

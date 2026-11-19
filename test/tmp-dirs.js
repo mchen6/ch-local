@@ -1,8 +1,8 @@
 'use strict';
 // Every temporary directory a test makes is removed when its test process
-// ends. npm test (scripts/test.js) preloads this into each test process
-// (node --require ./test/tmp-dirs.js --test), and the files CI runs on their
-// own (acceptance, smoke) require it, so a new test gets it for free:
+// ends. Every test file requires it in its first lines (test/tmp-dirs-loaded
+// checks that), so a file run on its own gets it too; npm test
+// (scripts/test.js) also preloads it:
 // fs.mkdtemp, fs.mkdtempSync and fs.promises.mkdtemp are wrapped, and each
 // directory they make directly under the temporary directory with a name
 // that begins `ch-` (every test's prefix) is registered, then removed at
@@ -44,8 +44,10 @@ if (global[KEY] == null) {
   fs.mkdtempSync = function(...args) { return keep(syncMade.apply(fs, args)); };
   const cbMade = fs.mkdtemp;
   fs.mkdtemp = function(...args) {
-    const cb = typeof args[args.length - 1] === 'function' ? args.pop() : null;
-    return cbMade.call(fs, ...args, (err, dir) => { if (err == null) keep(dir); if (cb != null) cb(err, dir); });
+    // no callback: Node's own error, never one made up (the medium, 3)
+    if (typeof args[args.length - 1] !== 'function') return cbMade.apply(fs, args);
+    const cb = args.pop();
+    return cbMade.call(fs, ...args, (err, dir) => { if (err == null) keep(dir); cb(err, dir); });
   };
   const promiseMade = fs.promises.mkdtemp;
   fs.promises.mkdtemp = async function(...args) { return keep(await promiseMade.apply(fs.promises, args)); };

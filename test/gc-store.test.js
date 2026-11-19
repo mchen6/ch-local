@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // Collecting the module store (module-level install, #413 section 9.10,
 // L1a-1 Task 4): a version is kept while the record (every version a pack
 // or a held pack records), the release rollback's kept record, or a live
