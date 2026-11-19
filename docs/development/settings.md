@@ -24,6 +24,34 @@ When it is read:
 
 ch-local start passes the file to countinghouse as `--settingsFile`.
 
+## On and off, and a module's settings
+
+- **`enabled.<package>`** turns a top-level module on or off, for every
+  session: `ch-local settings set enabled.@acme/weather-tool off`. Off is
+  made at once, and the modules that call it go with it. On is a loosening,
+  so it's asked at a terminal and bound by the ceiling's `modules`. A part
+  has no switch: `set enabled.<part>` is refused, naming the modules that
+  call it, and an `enabled.<part>` written into the file is ignored with a
+  warning.
+- **`pack.<name>`**, the earlier form, is still read as its pack's scenario
+  module's entry, and **off wins**: a leftover `pack.x: false` keeps that
+  module off whatever `enabled.*` says. A terminal "on" removes the
+  leftover in the same write. `set pack.<name>` is refused and names the
+  `enabled.*` command to use. The install that moves a home to
+  `modules.json` moves each `pack.<name>` to `enabled.<module>`.
+- **A module's settings** are stored as `module.<package>.<setting>`:
+  - `ch-local settings modules [<module>]` lists them, for modules not loaded
+    too;
+  - `ch-local settings set <module>.<setting> [<value>]` checks a value with
+    the installed runtime's own reader before anything is written, and
+    prompts for it when it is left out;
+  - `ch-local settings reset <module>[.<setting>]` goes back to the defaults.
+
+  A `confirm: true` setting, or one the ceiling marks `confirm`, asks at a
+  terminal; one the ceiling `fixed` refuses every change. A value over 64
+  characters is recorded in the history cut, with the SHA-256 of the whole.
+  A running client has its runtime read the values again at once.
+
 Two settings are stored in a different unit from the one countinghouse's
 option and a live `set` over the control channel take:
 
@@ -92,8 +120,9 @@ at once. A loosening is:
 3. made under the lock, only if the setting still holds the value it had
    when the user was asked.
 
-`ch-local settings reset` is the loosenings it implies: a pack that was off
-comes back on, a tightened cap goes back up. Each is checked against the
+`ch-local settings reset` is the loosenings it implies: a module that was
+off comes back on, a tightened cap goes back up. A module's settings are
+kept. Each is checked against the
 ceiling, then one question at the terminal lists them all. A reset that only
 tightens is made at once. A settings file that is not valid is reset only at
 a terminal: what it held cannot be known.
@@ -114,13 +143,17 @@ answers anything but a ceiling, fails closed.
 - a forbidden `moduleSandbox audit` runs under `enforce`, and forbidden
   automatic upgrades stay off, each said; `--moduleSandbox audit` passed by
   the client refuses the start;
-- `"packs": [names]`, the operator's allowlist: only those packs ever load,
-  at start, in place and on install, whatever `settings.json` or the history
-  say; `install` and `packs add` refuse another. A ceiling that cannot be
-  trusted loads no pack at all, and says why: an operator's mistake (a typo,
-  a PowerShell that timed out, an older reader) is visible, never a lifted
-  list. A first install, with no runtime yet to read the ceiling, goes on,
-  and `start` then applies it;
+- `"modules": [package names]`, the operator's allowlist: only those
+  modules ever load, parts included, at start, in place and on install,
+  whatever `settings.json` or the history say. A module that calls one not
+  listed doesn't load either. `install` and `add-pack` check every module of
+  the pack first, and refuse it whole, naming the ones missing. A ceiling
+  that cannot be trusted loads no module at all, and says why: an operator's
+  mistake (a typo, a PowerShell that timed out, an older reader) is visible,
+  never a lifted list. A ceiling that still holds `"packs"` is not trusted
+  ("it holds "packs", which is no longer read: list each module under
+  "modules""). A first install, with no runtime yet to read the ceiling,
+  goes on, and `start` then applies it;
 - a ceiling that cannot be trusted refuses a start whose settings or flags
   are looser than the defaults.
 
