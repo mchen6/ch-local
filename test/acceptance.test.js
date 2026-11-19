@@ -1,4 +1,7 @@
 'use strict';
+// (CI runs this file on its own: its ch-* temporary directories are
+// removed at its end as npm test's are; test/tmp-dirs.js)
+require('./tmp-dirs');
 // scripts/acceptance.js (plan Task 13; reviewer, 2026-11-12): the parts that
 // run without a build, and the whole run, gated on local clones
 // (CH_ACCEPTANCE_SRC, with CH_ACCEPTANCE_CLONES and CH_ACCEPTANCE_REFS as

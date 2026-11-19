@@ -55,7 +55,7 @@ async function run(argv, reg, approvedDir) {
 }
 
 test('extraction reads the JS bundle and the native binary alike, into sorted identifier sets', () => {
-  const dir = tmp('ccr-x-');
+  const dir = tmp('ch-ccr-x-');
   fs.writeFileSync(path.join(dir, 'cli.js'), BASE_JS);
   fs.writeFileSync(path.join(dir, 'claude'), binary(...BASE_BIN));
   const s = surface.extractSurface([dir]);
@@ -80,7 +80,7 @@ test('the diff: a new item touching hooks, plugins, settings, managed or policy 
 });
 
 test('end to end: approve a version, then a later one with only an unrelated new variable passes', async () => {
-  const approved = tmp('ccr-a-');
+  const approved = tmp('ch-ccr-a-');
   const reg = registry({'2.1.300': {js: BASE_JS, bin: BASE_BIN}, '2.1.301': {js: BASE_JS + ';process.env.CLAUDE_CODE_FAST_MODE', bin: BASE_BIN}});
   assert.strictEqual((await run(['2.1.300', '--approve'], reg, approved)).code, 0);
   const snap = JSON.parse(fs.readFileSync(path.join(approved, '2.1.300.json'), 'utf8'));
@@ -94,7 +94,7 @@ test('end to end: approve a version, then a later one with only an unrelated new
 });
 
 test('end to end: a new hook variable, plugin flag or settings path fails, named in the one-line report', async () => {
-  const approved = tmp('ccr-b-');
+  const approved = tmp('ch-ccr-b-');
   const reg = registry({'2.1.300': {js: BASE_JS, bin: BASE_BIN},
     '2.1.302': {js: BASE_JS + ';process.env.CLAUDE_CODE_EXTRA_HOOKS;opt("--plugin-url <u>")', bin: [...BASE_BIN, '.claude/hooks.d/settings.json']}});
   await run(['2.1.300', '--approve'], reg, approved);
@@ -107,7 +107,7 @@ test('end to end: a new hook variable, plugin flag or settings path fails, named
 
 test('a tarball whose bytes are not the registry\'s published integrity is refused: could not run', async () => {
   for (const name of ['@anthropic-ai/claude-code', '@anthropic-ai/claude-code-linux-x64']) {
-    const approved = tmp('ccr-c-');
+    const approved = tmp('ch-ccr-c-');
     const reg = registry({'2.1.300': {js: BASE_JS, bin: BASE_BIN}}, {tamper: name});
     const r = await run(['2.1.300', '--approve'], reg, approved);
     assert.strictEqual(r.code, 2, `${name}: ${r.lines.join('\n')}`);
@@ -118,7 +118,7 @@ test('a tarball whose bytes are not the registry\'s published integrity is refus
 });
 
 test('snapshots hold identifiers only, never a code excerpt', async () => {
-  const approved = tmp('ccr-d-');
+  const approved = tmp('ch-ccr-d-');
   const reg = registry({'2.1.300': {js: BASE_JS + ';function secretLogic(){return "a long line of code that must not be copied"}', bin: BASE_BIN}});
   await run(['2.1.300', '--approve'], reg, approved);
   const text = fs.readFileSync(path.join(approved, '2.1.300.json'), 'utf8');
@@ -129,7 +129,7 @@ test('snapshots hold identifiers only, never a code excerpt', async () => {
 });
 
 test('no approved snapshot, a snapshot from another extractor, or a bad version: could not run (2)', async () => {
-  const approved = tmp('ccr-e-');
+  const approved = tmp('ch-ccr-e-');
   const reg = registry({'2.1.300': {js: BASE_JS, bin: BASE_BIN}, '2.1.301': {js: BASE_JS, bin: BASE_BIN}});
   assert.strictEqual((await run(['2.1.301'], reg, approved)).code, 2);
   await run(['2.1.300', '--approve'], reg, approved);
@@ -148,8 +148,8 @@ test('no approved snapshot, a snapshot from another extractor, or a bad version:
 // the shared one, which this test must never count (it once did: ch-home-*
 // and ch-release-* in CI).
 test('a run writes nothing but its snapshot: no temp directory, no unpacked file', async () => {
-  const approved = tmp('ccr-f-');
-  const own = tmp('ccr-tmp-');
+  const approved = tmp('ch-ccr-f-');
+  const own = tmp('ch-ccr-tmp-');
   const saved = {TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP};
   try {
     Object.assign(process.env, {TMPDIR: own, TMP: own, TEMP: own});
@@ -167,7 +167,7 @@ test('a run writes nothing but its snapshot: no temp directory, no unpacked file
 test('streamed in small chunks, every identifier is found whole, once, and none is cut at a chunk edge', async () => {
   const js = Array.from({length: 40}, (_, i) => `x${'y'.repeat(i)};process.env.CLAUDE_CODE_VAR_${i}_HOOKS;opt("--flag-number-${i}")`).join('\n');
   const tgzBuf = packageTgz({name: 'p', version: '1.0.0'}, {'cli.js': js, 'bin/claude': binary(...BASE_BIN)});
-  const whole = surface.extractSurface((() => { const d = tmp('ccr-g-'); fs.writeFileSync(path.join(d, 'cli.js'), js); fs.writeFileSync(path.join(d, 'claude'), binary(...BASE_BIN)); return [d]; })());
+  const whole = surface.extractSurface((() => { const d = tmp('ch-ccr-g-'); fs.writeFileSync(path.join(d, 'cli.js'), js); fs.writeFileSync(path.join(d, 'claude'), binary(...BASE_BIN)); return [d]; })());
   for (const size of [1, 7, 512, 4096]) {
     const sets = {env: new Set(), flags: new Set(), files: new Set(), hookTerms: new Set()};
     async function* chunks() { for (let i = 0; i < tgzBuf.length; i += size) yield tgzBuf.subarray(i, i + size); }
