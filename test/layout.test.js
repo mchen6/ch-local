@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // The module store (#413 section 9.1): every module of every installed pack
 // in <home>/module-store/<name>/<version>/, one directory per version, with
 // its marker; a module two packs share is there once. The runtime stays in

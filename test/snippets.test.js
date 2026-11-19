@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // ch-local snippet <client>: the exact config entry per client (spec §3),
 // against one golden file per client.
 const test = require('node:test');

@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // C4b: ch-local daemon --home <abs> (countinghouse's shared-runtime design,
 // #236, section 6, "Starting"): the native shim spawns it with the home as
 // its working directory and releases start.lock at once. The daemon takes

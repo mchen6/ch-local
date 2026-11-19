@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // lib/client-conditions.js (countinghouse part 3 P2, Task 4): before every
 // dialog, may the client be asked? For Claude Code, only when nothing in
 // its own configuration could answer the dialog for the user (any

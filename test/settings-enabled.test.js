@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // L3 (#413 sections 5.1, 5.3 and 10): on and off by module. enabled.<package>
 // for a top-level module; a part has no switch; pack.<name> is still read as
 // its pack's scenario module's entry (off wins), and a terminal "on" removes

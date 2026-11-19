@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // ch-local settings (packs in place, part 2, plan Task B4): the allowlist and
 // bounds countinghouse_settings has; the CLI, the user at a terminal, may
 // loosen a guarding setting, and every change is recorded. start applies the

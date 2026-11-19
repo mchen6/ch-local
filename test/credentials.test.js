@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // Credentials bound to one module (#413 sections 6.2, 6.3, 6.8 and 10; L5a:
 // lib/credential-store.js, lib/credentials-command.js,
 // lib/module-credentials.js): kept this user's alone and never repaired;

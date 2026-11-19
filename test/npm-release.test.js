@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // lib/npm-release.js (docs/development/auto-upgrade.md, "The trust chain",
 // steps 2-7): a release's packages fetched from the registry, each checked
 // against its pin and its provenance, ch-local's own by its provenance alone,

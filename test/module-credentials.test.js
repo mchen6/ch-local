@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // lib/module-credentials.js (#413 sections 6.4, 6.7 and 10; L5a): each
 // module's credential state and its sentence, the slots a start gives its
 // runtime, and a slot's identity checked against the store.

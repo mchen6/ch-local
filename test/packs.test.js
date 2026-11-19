@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // The packs a home holds and which of them a start loads (spec §2, many packs;
 // plan Tasks 11 and 12b): every installed pack whose credential is present,
 // and the remote credentials as the union of their declared remotes, each

@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // What loads, by module (#413 section 5.2; L2a): lib/availability.js.
 const test = require('node:test');
 const assert = require('node:assert');

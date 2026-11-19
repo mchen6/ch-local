@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // docs/install: one page per client, each with the way in and the way out.
 const test = require('node:test');
 const assert = require('node:assert');

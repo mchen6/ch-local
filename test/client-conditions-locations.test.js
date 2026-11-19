@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // Every place a hook or plugin can come from (lib/client-conditions-fixtures.js
 // LOCATIONS, also the automated re-test's list), planted one at a time, with
 // both events: the scan finds each. And what the scan does not know is no:

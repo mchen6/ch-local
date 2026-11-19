@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // One install with the real npm: this repository packed into a tarball, pinned,
 // installed into a temporary home, and run through <home>/bin/ch-local.js the
 // way a client runs it. ch-local has no dependencies, so npm needs no network.

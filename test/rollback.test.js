@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // ch-local rollback [--yes] (plan Task 12; business review, 2026-11-12): an
 // install over an existing one (today's upgrade, until upgrade installs from
 // npm) keeps the previous release's programs, and rollback returns to them in

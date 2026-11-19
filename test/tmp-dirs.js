@@ -1,8 +1,8 @@
 'use strict';
 // Every temporary directory a test makes is removed when its test process
-// ends. npm test (scripts/test.js) preloads this into each test process
-// (node --require ./test/tmp-dirs.js --test), and the files CI runs on their
-// own (acceptance, smoke) require it, so a new test gets it for free:
+// ends. Every test file requires it in its first lines (test/tmp-dirs-loaded
+// checks that), so a file run on its own gets it too; npm test
+// (scripts/test.js) also preloads it:
 // fs.mkdtemp, fs.mkdtempSync and fs.promises.mkdtemp are wrapped, and each
 // directory they make directly under the temporary directory with a name
 // that begins `ch-` (every test's prefix) is registered, then removed at

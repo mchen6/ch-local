@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // countinghouse part 3 in ch-local (P4): a loosening from the terminal is
 // asked there (no --yes, refused without a terminal) and bound by the
 // operator's ceiling, read with the installed runtime's own reader; start

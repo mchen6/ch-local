@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');   // its ch-* temporary directories removed at its end, under any runner
 // The Claude Code plugin: marketplace at the repo root, the plugin under
 // clients/claude-code, its .mcp.json, the skill, and launch.js.
 const test = require('node:test');
