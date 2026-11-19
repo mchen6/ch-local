@@ -380,7 +380,7 @@ test('conditions: token is null and no credentials, whatever the environment hol
   try {
     require('./store-helpers').writeHome(home, {other: {'@countinghouse/ch-pack-other': '1.0.0'}}, {runtime: {countinghouse: '8.0.0'}});
     const env = {COUNTINGHOUSE_GITHUB_TOKEN: 'example-narrow-token', GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: 'example-other'};
-    const io = conditionsIo({env, gh: {status: 0, stdout: 'gho_exampleexampleexample\n'}});
+    const io = conditionsIo({env, gh: {status: 0, stdout: 'example-gh-login-value\n'}});
     // (no runtime secret in this home: nothing is hashed, so none is read)
     assert.strictEqual(await conditions.conditions({pid: 1, home}, io), 0, io.err);
     const line = JSON.parse(io.out);
