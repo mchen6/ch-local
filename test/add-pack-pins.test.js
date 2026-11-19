@@ -205,6 +205,22 @@ test('a Question B answer\'s history line says which question it answers', async
   assert.deepStrictEqual({question: line.question, from: line.from, to: line.to, answer: line.answer}, {question: 'B', from: '0.2.0', to: '0.1.0', answer: 'no'});
 });
 
+// The reviewer's high review of #94, 1: a reinstall judges its new pins
+// against the active version, its own earlier entry included.
+test('install --pack again with a lower pin than the pack itself raised a module to: never lowered silently', async () => {
+  const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
+  assert.strictEqual((await h.add(release({versions: {[REDACT]: '0.2.0'}}), {interactive: true, answers: ['y']})).code, 0);
+  const before = snapshot(h.home);
+  const no = await h.inst(release({versions: {[REDACT]: '0.1.0'}}));
+  assert.strictEqual(no.code, 2, 'Question B, and no terminal');
+  assert.match(no.io.err, /this install adds the pack "other" beside ch-step-redact 0\.2\.0, a newer major version than it was released with/);
+  assert.strictEqual(snapshot(h.home), before);
+  const yes = await h.inst(release({versions: {[REDACT]: '0.1.0'}}), {interactive: true, answers: ['y']});
+  assert.strictEqual(yes.code, 0, yes.io.err);
+  assert.strictEqual(record(h.home).modules[REDACT].version, '0.2.0');
+  assert.strictEqual(record(h.home).packs.other.modules[REDACT], '0.2.0');
+});
+
 // The reviewer's high review of #94, 2: unknown is never "no callers".
 test('a breaking update whose callers cannot be read is refused, never taken for uncalled', async (t) => {
   const r1 = release({versions: {[REDACT]: '0.1.0'}});
