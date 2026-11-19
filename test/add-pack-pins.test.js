@@ -197,6 +197,14 @@ test('a --from holding only what the store lacks is enough: a module installed a
   assert.ok(OTHER in record(h.home).modules);
 });
 
+test('a Question B answer\'s history line says which question it answers', async () => {
+  const h = await devHome(release({versions: {[REDACT]: '0.2.0'}}));
+  const {code} = await h.add(release({versions: {[REDACT]: '0.1.0'}}), {interactive: true, answers: ['n']});
+  assert.strictEqual(code, 1);
+  const line = history(h.home).find((l) => l.module === REDACT);
+  assert.deepStrictEqual({question: line.question, from: line.from, to: line.to, answer: line.answer}, {question: 'B', from: '0.2.0', to: '0.1.0', answer: 'no'});
+});
+
 test('remove-pack: a module the pack raised goes back; one a remaining pack records stays, the line says which; settings untouched', async () => {
   const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
   const settings = path.join(h.home, 'settings.json');
