@@ -1,0 +1,176 @@
+'use strict';
+// L3 (#413 sections 4.2 and 4.3): a module's settings at a terminal.
+// `settings modules [<m>]`, `settings set <m>.<setting> [<value>]` (a value
+// prompted when left out), `settings reset <m>[.<setting>]`; the value is
+// checked with the installed runtime's own reader (lib/module-settings.js in
+// the app), stored as module.<package>.<setting>, recorded first (a long
+// value cut, with its hash).
+const test = require('node:test');
+const assert = require('node:assert');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const {main} = require('../bin/ch-local');
+const {install} = require('../lib/install');
+const {fakeIo, tmp} = require('./fake-io');
+const {release, npm} = require('./install-helpers');
+
+const SCENARIO = '@countinghouse/ch-pack-ci-failure-triage';
+const SETTINGS = {
+  units: {type: 'enum', values: ['metric', 'imperial'], default: 'metric', title: 'Units'},
+  defaultRepo: {type: 'string', format: 'repo', title: 'Default repository', description: 'owner/name of the repository to triage'},
+  shareStats: {type: 'boolean', default: false, confirm: true, title: 'Share stats'},
+  note: {type: 'string', maxLength: 200, title: 'Note'}
+};
+
+// The installed runtime's reader, as the app holds it: the shapes of
+// countinghouse lib/module-settings.js parseDeclaration and checkValue
+// (a stub, as test/start-in-place.test.js stubs the ceiling's reader).
+const READER = `
+const allowed = (d) => d.type === 'enum' ? d.values.join(' or ') : d.type === 'boolean' ? 'true or false' : d.format === 'repo' ? 'owner/name' : 'text of at most ' + (d.maxLength || 256) + ' characters';
+module.exports = {
+  parseDeclaration: (pkg) => {
+    const s = pkg && pkg.countinghouse && pkg.countinghouse.settings;
+    if (s == null) return {settings: null, problems: [], warnings: []};
+    const out = Object.create(null);
+    for (const [n, d] of Object.entries(s)) out[n] = Object.freeze(Object.assign({name: n, maxLength: d.maxLength || 256}, d));
+    return {settings: out, problems: [], warnings: []};
+  },
+  checkValue: (d, v) => {
+    const no = {ok: false, code: 'SETTING_OUT_OF_BOUNDS', reason: d.name + ' is ' + allowed(d)};
+    if (d.type === 'enum') return d.values.includes(v) ? {ok: true, value: v} : no;
+    if (d.type === 'boolean') return typeof v === 'boolean' ? {ok: true, value: v} : no;
+    if (typeof v !== 'string' || v.length > d.maxLength) return no;
+    if (d.format === 'repo' && !/^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$/.test(v)) return no;
+    return {ok: true, value: v};
+  }
+};
+`;
+async function installed({reader = true, ceiling = null} = {}) {
+  const home = tmp('ch-home-');
+  const r = release({extra: {[SCENARIO]: {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact'], settings: SETTINGS}}}});
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  const lib = path.join(home, 'app', 'node_modules', 'countinghouse', 'lib');
+  fs.mkdirSync(lib, {recursive: true});
+  if (reader) fs.writeFileSync(path.join(lib, 'module-settings.js'), READER);
+  if (ceiling != null) {
+    require('../lib/ceiling').resetForTests();
+    fs.writeFileSync(path.join(lib, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)})};\n`);
+  }
+  return home;
+}
+// the user at a terminal (answers: what each question gets, in order)
+const cli = async (home, argv, {interactive = true, answers = []} = {}) => {
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {interactive});
+  const left = [...answers];
+  io.ask = async (q) => { io.asked.push(q); return left.length > 0 ? left.shift() : ''; };
+  const code = await main(argv, io);
+  return {code, io};
+};
+const fileValues = (home) => (fs.existsSync(path.join(home, 'settings.json')) ? JSON.parse(fs.readFileSync(path.join(home, 'settings.json'), 'utf8')).values : {});
+const historyOf = (home) => fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const STORED = (s) => `module.${SCENARIO}.${s}`;
+
+test('settings modules lists every installed module\'s settings, loaded or not: value, default and what is allowed', async () => {
+  const home = await installed();
+  const r = await cli(home, ['settings', 'modules']);
+  assert.strictEqual(r.code, 0, r.io.err);
+  assert.match(r.io.out, /^ch-pack-ci-failure-triage\.units = metric {2}\(Units; default metric; metric or imperial\)$/m);
+  assert.match(r.io.out, /^ch-pack-ci-failure-triage\.defaultRepo = \(not set\) {2}\(Default repository; owner\/name\)$/m);
+  assert.match(r.io.out, /^ch-pack-ci-failure-triage\.shareStats = off {2}\(Share stats; default off; true or false; asks before a change\)$/m);
+  // one module, with its descriptions
+  const one = await cli(home, ['settings', 'modules', 'ch-pack-ci-failure-triage']);
+  assert.strictEqual(one.code, 0, one.io.err);
+  assert.match(one.io.out, /owner\/name of the repository to triage/);
+});
+
+test('settings set <m>.<setting> <value>: checked by the runtime\'s reader, stored as module.<package>.<setting>, recorded first', async () => {
+  const home = await installed();
+  for (const name of ['ch-pack-ci-failure-triage.units', `module.${SCENARIO}.units`, `${SCENARIO}.units`]) {
+    const r = await cli(home, ['settings', 'set', name, 'imperial']);
+    assert.strictEqual(r.code, 0, `${name}: ${r.io.err}`);
+  }
+  assert.strictEqual(fileValues(home)[STORED('units')], 'imperial');
+  assert.deepStrictEqual(historyOf(home).filter((l) => l.setting === STORED('units')).map((l) => [l.old, l.new]).slice(0, 1), [['metric', 'imperial']]);
+  // an explicit value equal to the default is kept (an upgrade's new default never overrides it)
+  assert.strictEqual((await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'metric'])).code, 0);
+  assert.strictEqual(fileValues(home)[STORED('units')], 'metric');
+});
+
+test('a value the reader refuses says what is allowed, and nothing is written; an unknown setting names the declared ones', async () => {
+  const home = await installed();
+  const bad = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'kelvin']);
+  assert.strictEqual(bad.code, 2);
+  assert.match(bad.io.err, /units is metric or imperial; nothing was changed/);
+  const repo = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.defaultRepo', 'not a repo']);
+  assert.match(repo.io.err, /defaultRepo is owner\/name/);
+  const unknown = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.color', 'red']);
+  assert.strictEqual(unknown.code, 2);
+  assert.match(unknown.io.err, /ch-pack-ci-failure-triage declares no setting color; it declares units, defaultRepo, shareStats, note/);
+  const noModule = await cli(home, ['settings', 'set', 'ch-nothing.units', 'x']);
+  assert.match(noModule.io.err, /no installed module is named ch-nothing/);
+  assert.deepStrictEqual(fileValues(home), {});
+});
+
+test('a value left out is prompted for at a terminal, and refused without one', async () => {
+  const home = await installed();
+  const r = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.defaultRepo'], {answers: ['acme/api']});
+  assert.strictEqual(r.code, 0, r.io.err);
+  assert.ok(r.io.asked.some((q) => /defaultRepo for ch-pack-ci-failure-triage \(owner\/name\): /.test(q)), r.io.asked.join(' | '));
+  assert.strictEqual(fileValues(home)[STORED('defaultRepo')], 'acme/api');
+  const headless = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.note'], {interactive: false});
+  assert.strictEqual(headless.code, 2);
+  assert.match(headless.io.err, /give the value, or run it at a terminal/);
+});
+
+test('a confirm: true setting asks at a terminal, with no --yes, and is refused without one', async () => {
+  const home = await installed();
+  const no = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.shareStats', 'true'], {answers: ['n']});
+  assert.strictEqual(no.code, 1);
+  assert.ok(no.io.asked.some((q) => q === 'Change shareStats for ch-pack-ci-failure-triage from false to true? [y/N] '), no.io.asked.join(' | '));
+  assert.strictEqual(fileValues(home)[STORED('shareStats')], undefined);
+  const yes = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.shareStats', 'true'], {answers: ['y']});
+  assert.strictEqual(yes.code, 0, yes.io.err);
+  assert.strictEqual(fileValues(home)[STORED('shareStats')], true);
+  const headless = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.shareStats', 'false'], {interactive: false});
+  assert.strictEqual(headless.code, 2);
+  assert.match(headless.io.err, /shareStats for ch-pack-ci-failure-triage is confirmed at a terminal/);
+});
+
+test('the ceiling: a fixed value refuses every change; a ceiling confirm asks', async () => {
+  const fixed = await installed({ceiling: {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], moduleSettings: {[`${SCENARIO}.units`]: {fixed: 'metric'}, [`${SCENARIO}.note`]: {confirm: true}}}}});
+  const r = await cli(fixed, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'imperial']);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.io.err, /units for ch-pack-ci-failure-triage is fixed by this machine's operator ceiling; nothing was changed/);
+  const asked = await cli(fixed, ['settings', 'set', 'ch-pack-ci-failure-triage.note', 'hello'], {answers: ['y']});
+  assert.strictEqual(asked.code, 0, asked.io.err);
+  assert.ok(asked.io.asked.length === 1, 'the ceiling asks for a confirmation');
+});
+
+test('settings reset <m>.<setting> and reset <m>: back to the default, other names kept, recorded', async () => {
+  const home = await installed();
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh', [STORED('units')]: 'imperial', [STORED('note')]: 'x', 'module.@acme/other.k': 'v'}}));
+  assert.strictEqual((await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage.units'])).code, 0);
+  assert.deepStrictEqual(fileValues(home), {locale: 'zh', [STORED('note')]: 'x', 'module.@acme/other.k': 'v'});
+  assert.strictEqual((await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage'])).code, 0);
+  assert.deepStrictEqual(fileValues(home), {locale: 'zh', 'module.@acme/other.k': 'v'});
+  assert.ok(historyOf(home).some((l) => l.setting === STORED('note') && l.change === 'reset'));
+});
+
+test('a value over 64 characters is recorded cut, with the SHA-256 of the whole', async () => {
+  const home = await installed();
+  const long = 'n'.repeat(150);
+  assert.strictEqual((await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.note', long])).code, 0);
+  const line = historyOf(home).find((l) => l.setting === STORED('note'));
+  assert.strictEqual(line.new.length, 64);
+  assert.strictEqual(line.newSha256, crypto.createHash('sha256').update(JSON.stringify(long)).digest('hex'));
+  assert.strictEqual(fileValues(home)[STORED('note')], long);
+});
+
+test('with no runtime reader installed, a module setting is refused, saying how to get one', async () => {
+  const home = await installed({reader: false});
+  const r = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'imperial']);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.io.err, /the installed countinghouse cannot check a module's setting: run `ch-local upgrade`/);
+});

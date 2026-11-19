@@ -539,6 +539,9 @@ function moduleMessageProblem(m) {
     if (!Array.isArray(m.names) || m.names.length === 0 || !m.names.every(pkg) || new Set(m.names).size !== m.names.length) return 'names';
   } else if (['load', 'unload'].includes(m.type)) {
     if (!pkg(m.name)) return 'name';
+  } else if (m.type === 'reread') {
+    // (the vectors' rule: reread's what is module-settings)
+    return m.what === 'module-settings' && Object.keys(m).every((k) => ['id', 'type', 'what'].includes(k)) ? null : 'name';
   } else {
     return null;
   }
@@ -562,8 +565,8 @@ const holdsToTheVectors = (requests) => {
   }
 };
 
-test('the module messages\' vectors: each accepted load, reload and unload passes, each refused one fails for its reason', () => {
-  const kinds = new Set(['load', 'reload', 'unload']);
+test('the module messages\' vectors: each accepted load, reload, unload and reread passes, each refused one fails for its reason', () => {
+  const kinds = new Set(['load', 'reload', 'unload', 'reread']);
   for (const {why, message} of MODULE_V.accepted.filter((e) => kinds.has(e.message.type))) {
     // an absolute directory as the platform reads one (the vectors' are POSIX)
     const m = message.dirs != null ? {...message, dirs: Object.fromEntries(Object.entries(message.dirs).map(([n, d]) => [n, path.resolve(d)]))} : message;
@@ -1612,6 +1615,27 @@ test('a module turned on while running says where its key goes, once, when it lo
     fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true, locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.strictEqual(s.f.err.split(line).length - 1, 1, s.f.err);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// L3 (#413 section 4.3): a module's setting changed while running (a
+// terminal set writes module.<package>.<setting>) has the runtime read them
+// again; a change to anything else sends no reread
+test('a module setting changed while running sends the runtime one reread; another change sends none', async () => {
+  const s = await running();
+  try {
+    await until(() => s.args() != null);
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.ok(!s.requests.some((m) => m.type === 'reread'), 'no module setting changed');
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh', 'module.@countinghouse/ch-pack-ci-failure-triage.units': 'imperial'}}));
+    await until(() => s.requests.some((m) => m.type === 'reread'));
+    assert.deepStrictEqual(s.requests.filter((m) => m.type === 'reread').map((m) => ({type: m.type, what: m.what})), [{type: 'reread', what: 'module-settings'}]);
+    const problem = moduleMessageProblem(s.requests.find((m) => m.type === 'reread'));
+    assert.strictEqual(problem, null, problem);
   } finally {
     s.end();
     await s.done;
