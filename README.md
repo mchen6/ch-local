@@ -84,8 +84,10 @@ it.
 
 **Unreleased installs.** Until the first release this launcher pins nothing,
 so `install` and `add-pack` take `--unreleased-pins <file>`, a JSON file of
-`{"pins": {<package>: {"version", "integrity"}}, "runtimeLockfile": {...}}`
-written from the tarballs you built. The home is recorded as unreleased:
+`{"pins": {<package>: {"version", "integrity"}}, "runtimeLockfile": {...}, "modules": {...}}`
+written from the tarballs you built (`node scripts/describe-release.js <tarballs>
+--unreleased-pins <file>` writes `modules`, each pack module's description,
+checked at install as a release's are). The home is recorded as unreleased:
 `status` and every `start` say so on one line, and `upgrade` refuses until a
 clean install from a release. It is for development only.
 

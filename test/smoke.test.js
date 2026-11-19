@@ -94,9 +94,11 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       // What a release does: the runtime's lockfile, from the manifest install writes.
       const runtime = {packages: ['@countinghouse/ch-local', 'countinghouse'], lockfile: null};
       const pinsFile = path.join(work, 'pins.json');
-      fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: await runtimeLockfile(io, from, runtime, pins, path.join(work, 'lock'))}));
+      // (version 2: the pack and its modules, described from their tarballs)
+      const allow = {runtime, packs: {smoke: {modules: [SCENARIO, STEP]}}, modules: {}, pins: {}};
+      const modules = require('../scripts/describe-release').describePinned(allow, pins, from);
+      fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: await runtimeLockfile(io, from, runtime, pins, path.join(work, 'lock')), modules}));
 
-      const allow = {runtime, packs: {smoke: {packages: [SCENARIO, STEP], credentials: []}}, pins: {}};
       assert.strictEqual(await install({pack: 'smoke', from, unreleasedPins: pinsFile}, io, allow), 0, io.err);
 
       // The scenario's own setting, set as a user does at a terminal (#413
