@@ -265,7 +265,7 @@ test('migration: packs.json, its trees and held packs become modules.json and th
   const tree = path.join(h, 'packs', 'ci-failure-triage', '0.1.0+1a2b3c4d', 'node_modules');
   fs.mkdirSync(path.join(tree, '@countinghouse', 'ch-pack-ci-failure-triage'), {recursive: true});
   const packages = Object.fromEntries(TRIAGE.map((n) => [n, '0.1.0']));
-  const p = {packages, credentials: ['GITHUB_TOKEN', 'GITHUB_TOKEN']};
+  const p = {packages, credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']};
   fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
     packs: {'ci-failure-triage': p},
     held: {other: {packages: {'@countinghouse/ch-pack-other': '0.3.0'}, credentials: [], installedUnder: '0.1.0', withdrawn: true},

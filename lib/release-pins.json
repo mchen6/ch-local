@@ -45,6 +45,7 @@
   },
   "modules": {
     "@countinghouse/ch-access-github": {
+      "role": "part",
       "credentials": [
         {
           "variable": "GITHUB_TOKEN",
@@ -55,6 +56,7 @@
       "confirmSettings": {}
     },
     "@countinghouse/ch-pack-ci-failure-triage": {
+      "role": "scenario",
       "credentials": [],
       "calls": [
         "@countinghouse/ch-access-github",
@@ -71,36 +73,43 @@
       }
     },
     "@countinghouse/ch-step-dedupe": {
+      "role": "part",
       "credentials": [],
       "calls": [],
       "confirmSettings": {}
     },
     "@countinghouse/ch-step-error-patterns": {
+      "role": "part",
       "credentials": [],
       "calls": [],
       "confirmSettings": {}
     },
     "@countinghouse/ch-step-failure-signature": {
+      "role": "part",
       "credentials": [],
       "calls": [],
       "confirmSettings": {}
     },
     "@countinghouse/ch-step-log-clean": {
+      "role": "part",
       "credentials": [],
       "calls": [],
       "confirmSettings": {}
     },
     "@countinghouse/ch-step-owner-hint": {
+      "role": "part",
       "credentials": [],
       "calls": [],
       "confirmSettings": {}
     },
     "@countinghouse/ch-step-redact": {
+      "role": "part",
       "credentials": [],
       "calls": [],
       "confirmSettings": {}
     },
     "@countinghouse/ch-step-report": {
+      "role": "part",
       "credentials": [],
       "calls": [],
       "confirmSettings": {}

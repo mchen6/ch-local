@@ -90,7 +90,7 @@ test('the packs, the module descriptions and the runtime: exact shapes, nothing 
     (d) => { d.modules[ACCESS].credentials[0].origin = 'https://api.example.invalid/path'; },
     (d) => { d.modules[ACCESS].credentials.push({variable: 'X_TOKEN', origin: 'https://api.example.invalid'}); },
     (d) => { d.modules[ACCESS].extra = 1; },
-    (d) => { d.modules['@countinghouse/ch-step-orphan'] = {credentials: [], calls: [], confirmSettings: {}}; },
+    (d) => { d.modules['@countinghouse/ch-step-orphan'] = {role: null, credentials: [], calls: [], confirmSettings: {}}; },
     (d) => { delete d.modules[ACCESS]; },
     (d) => { d.modules[TRIAGE].calls.push('@countinghouse/ch-step-elsewhere'); },
     (d) => { d.modules[TRIAGE].confirmSettings = {x: undefined, 'bad name': true}; },
@@ -117,10 +117,10 @@ test('what a new release adds that needs the user\'s yes, for the installed pack
   assert.deepStrictEqual(additions(now, parseReleasePins(shipped()).pins, ['ci-failure-triage']), []);
   const next = shipped();
   next.packs['ci-failure-triage'].modules.push('@countinghouse/ch-step-new');
-  next.modules['@countinghouse/ch-step-new'] = {credentials: [], calls: [ACCESS], confirmSettings: {}};
+  next.modules['@countinghouse/ch-step-new'] = {role: 'part', credentials: [], calls: [ACCESS], confirmSettings: {}};
   next.modules[ACCESS].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}];
   next.packs['another-pack'] = {modules: ['@countinghouse/ch-pack-another']};
-  next.modules['@countinghouse/ch-pack-another'] = {credentials: [{variable: 'OTHER_TOKEN', origin: 'https://other.example.invalid'}], calls: [], confirmSettings: {}};
+  next.modules['@countinghouse/ch-pack-another'] = {role: 'scenario', credentials: [{variable: 'OTHER_TOKEN', origin: 'https://other.example.invalid'}], calls: [], confirmSettings: {}};
   const parsed = parseReleasePins(next);
   assert.strictEqual(parsed.problem, undefined, parsed.problem);
   const found = additions(now, parsed.pins, ['ci-failure-triage']);
@@ -140,6 +140,14 @@ test('what a new release adds that needs the user\'s yes, for the installed pack
   changed.modules[REDACT].confirmSettings = {depth: 4};
   const c = additions(before, parseReleasePins(changed).pins, ['ci-failure-triage']);
   assert.deepStrictEqual(c.map((x) => [x.kind, x.setting, x.now]), [['confirm', 'depth', {default: 4}], ['confirm', 'strict', null]]);
+  // a part no longer one: its settings could be changed in conversation
+  // from then on (the Reviewer's high review of #98, 6)
+  assert.strictEqual(now.modules[REDACT].role, 'part', 'the shipped description records the role');
+  const promoted = shipped();
+  promoted.modules[REDACT].role = 'scenario';
+  const r = additions(now, parseReleasePins(promoted).pins, ['ci-failure-triage']);
+  assert.deepStrictEqual(r.map((x) => [x.kind, x.module, x.was, x.now]), [['role', REDACT, 'part', 'scenario']]);
+  assert.strictEqual(r[0].line, 'ch-step-redact is no longer a part: its settings can be changed in conversation');
   // anything removed asks nothing
   const fewer = shipped();
   fewer.packs['ci-failure-triage'].modules = fewer.packs['ci-failure-triage'].modules.filter((m) => m !== '@countinghouse/ch-step-dedupe');
@@ -187,7 +195,7 @@ test('identityChanges: self, or a pin of the runtime, an installed pack or the s
   const withPins = (edit) => {
     const d = shipped();
     d.packs.other = {modules: ['@countinghouse/ch-pack-other']};
-    d.modules['@countinghouse/ch-pack-other'] = {credentials: [], calls: [], confirmSettings: {}};
+    d.modules['@countinghouse/ch-pack-other'] = {role: 'scenario', credentials: [], calls: [], confirmSettings: {}};
     d.pins = {'@countinghouse/ch-pack-ci-failure-triage': pin(), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}), countinghouse: Object.assign(pin(), {repository: 'mchen6/countinghouse'})};
     if (edit) edit(d);
     const r = parseReleasePins(d);
@@ -215,7 +223,7 @@ test('the review of #48: a first pin for a name this install uses (the runtime, 
   const {identityChanges} = require('../lib/release-pins');
   const d = shipped();
   d.packs.other = {modules: ['@countinghouse/ch-pack-other']};
-  d.modules['@countinghouse/ch-pack-other'] = {credentials: [], calls: [], confirmSettings: {}};
+  d.modules['@countinghouse/ch-pack-other'] = {role: 'scenario', credentials: [], calls: [], confirmSettings: {}};
   const now = parseReleasePins(d).pins;
   d.pins = {countinghouse: Object.assign(pin(), {repository: 'mchen6/countinghouse'}), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}),
     '@countinghouse/ch-shim-linux-x64': Object.assign(pin(), {repository: 'mchen6/ch-local', workflow: '.github/workflows/shim.yml', tag: `shim-v${pin().version}`})};

@@ -17,11 +17,12 @@ const PART = '@countinghouse/ch-step-b';
 const OTHER = '@countinghouse/ch-pack-other';
 const OTHER_PART = '@countinghouse/ch-step-c';
 const api = (friendlyName) => JSON.stringify({device: {friendlyName, serviceList: {}}});
-const none = {credentials: [], calls: [], confirmSettings: {}};
+const none = {role: 'part', credentials: [], calls: [], confirmSettings: {}};
+const top = {...none, role: 'scenario'};
 // a release: pack a {SCENARIO, PART}, pack other {OTHER, OTHER_PART}
 const release = (scenarioCalls = [PART]) => ({
   packs: {a: {modules: [SCENARIO, PART]}, other: {modules: [OTHER, OTHER_PART]}},
-  modules: {[SCENARIO]: {...none, calls: scenarioCalls}, [PART]: none, [OTHER]: none, [OTHER_PART]: none},
+  modules: {[SCENARIO]: {...top, calls: scenarioCalls}, [PART]: none, [OTHER]: top, [OTHER_PART]: none},
   pins: {[SCENARIO]: {version: '1.0.0'}, [PART]: {version: '1.0.0'}, [OTHER]: {version: '1.0.0'}, [OTHER_PART]: {version: '1.0.0'}}
 });
 const bytesOf = (calls, {friendly = 'ch-pack-a'} = {}) => ({
@@ -63,7 +64,22 @@ test('the home\'s modules add names only: two of them sharing one never refuse a
   // a call to the shared name maps to no one: refused, never guessed
   assert.match(descriptionRefusal(w, [SCENARIO, PART], release([OTHER, PART]), bytesOf(['ch-step-b/x.y', 'twin/x.y']), undefined, context),
     /does not match this release's description of it \(its calls\)/);
+  // a name the operation shares with a module the home holds: a call to it
+  // is refused too (the Reviewer's high review of #98, 5)
+  const both = where();
+  storeModule(both.home, OTHER, '1.0.0', {countinghouse: {role: 'scenario'}, files: {'api.json': api('ch-step-b')}});
+  assert.match(descriptionRefusal(both, [SCENARIO, PART], release(), bytesOf(['ch-step-b/x.y']), undefined, {[OTHER]: '1.0.0'}),
+    /does not match this release's description of it \(its calls\)/);
   // the operation's own names must still be one each
   const dup = bytesOf(['ch-step-b/x.y'], {friendly: 'ch-step-b'});
   assert.match(descriptionRefusal(where(), [SCENARIO, PART], release(), dup), /ch-step-b is the friendly name of both/);
+});
+
+test('only an active pack\'s modules count as installed for a call: a withdrawn or held pack\'s never load (the Reviewer\'s high review of #98, 7)', () => {
+  const {activeContext} = require('../lib/description-check');
+  const record = {packs: {other: {modules: {[OTHER]: '1.0.0'}}, gone: {modules: {[OTHER_PART]: '1.0.0'}}},
+    withdrawn: [OTHER_PART], held: {kept: {modules: {'@countinghouse/ch-held': '1.0.0'}}},
+    modules: {[OTHER]: {version: '1.0.0'}, [OTHER_PART]: {version: '1.0.0'}, '@countinghouse/ch-held': {version: '1.0.0'}}};
+  assert.deepStrictEqual(activeContext(record), {[OTHER]: '1.0.0'});
+  assert.deepStrictEqual(activeContext(null), {});
 });

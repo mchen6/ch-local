@@ -35,7 +35,7 @@ async function world({selfVersion = '0.4.0', lie = {}} = {}) {
   const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
   // (version 2: a pack lists its modules, and each is described)
   shipped.packs['ci-failure-triage'].modules = ['@countinghouse/ch-pack-ci-failure-triage'];
-  shipped.modules = {'@countinghouse/ch-pack-ci-failure-triage': {credentials: [], calls: [], confirmSettings: {}}};
+  shipped.modules = {'@countinghouse/ch-pack-ci-failure-triage': {role: null, credentials: [], calls: [], confirmSettings: {}}};
   const publish = (name, version, identity) => {
     const bytes = Buffer.from(`the ${name}@${version} tarball`);
     const integrity = reg.publish(name, version, bytes);

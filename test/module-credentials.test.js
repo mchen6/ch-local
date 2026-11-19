@@ -134,3 +134,45 @@ test('forStart: a planted slot name by any case is removed; a declared name that
   const s = await mc.forStart(where, record(), {env: {PATH: '/bin', countinghouse_credential_1: 'planted', COUNTINGHOUSE_CREDENTIAL_2: 'planted', OTHER_TOKEN: 'kept-if-given'}, ghToken: async () => ({why: 'x'})});
   assert.deepStrictEqual(s.env, {PATH: '/bin', OTHER_TOKEN: 'kept-if-given'});
 });
+
+// The Reviewer's high review of #98, 3: ch-access-github 0.2.0 declares
+// GITHUB_TOKEN where 0.1.0 declared COUNTINGHOUSE_GITHUB_TOKEN. A key stored
+// under the earlier name is carried to the declared one from either store:
+// a version 1 file (section 10, read so) and a version 2 one (written once,
+// said once by start).
+function homeOn020() {
+  const h = tmp('ch-mc-');
+  storeModule(h, ACCESS, '0.2.0', {countinghouse: {role: 'part', remotes: [remote(`${GH}/mcp/`, 'GITHUB_TOKEN')]}});
+  writeHome(h, {p: {[ACCESS]: '0.2.0'}});
+  const where = layout({COUNTINGHOUSE_HOME: h}, () => '/nowhere');
+  return {h, where, record: () => readModulesRecord(where)};
+}
+
+test('the carry-over, a version 1 store: a key stored under COUNTINGHOUSE_GITHUB_TOKEN reads under GITHUB_TOKEN, the name 0.2.0 declares', () => {
+  const {h, where, record} = homeOn020();
+  const {dir, file} = store.paths(h);
+  require('node:fs').mkdirSync(dir, {recursive: true, mode: 0o700});
+  require('node:fs').writeFileSync(file, JSON.stringify({v: 1, values: {[VAR]: {value: 'test_v1_value_1', module: ACCESS}}}), {mode: 0o600});
+  const read = mc.bindings(where, record());
+  assert.strictEqual(read.v1, true);
+  assert.deepStrictEqual(read.bindings.get(ACCESS).get('GITHUB_TOKEN'), {origin: GH, source: 'stored', value: 'test_v1_value_1'});
+});
+
+test('the carry-over, a version 2 store: read under the declared name at once, written once and said once; another origin is never carried', () => {
+  const {h, where, record} = homeOn020();
+  bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-1'));
+  const read = mc.bindings(where, record());
+  assert.deepStrictEqual(read.carried, [{module: ACCESS, from: VAR, to: 'GITHUB_TOKEN'}]);
+  assert.deepStrictEqual(read.bindings.get(ACCESS).get('GITHUB_TOKEN'), {origin: GH, source: 'stored', value: 'test-v2-value-1'});
+  assert.ok(!read.bindings.get(ACCESS).has(VAR));
+  assert.strictEqual(mc.stateOf(ACCESS, mc.declared(where, record(), ACCESS), read).state, 'ok', 'loaded, not "elsewhere"');
+  // start writes it, and says so, once
+  assert.deepStrictEqual(mc.carryOver(where, record()), [`the key stored for ch-access-github under ${VAR} is now under GITHUB_TOKEN, the name it declares; nothing else changed`]);
+  assert.deepStrictEqual([...store.readStore(h).modules.get(ACCESS).keys()], ['GITHUB_TOKEN']);
+  assert.deepStrictEqual(mc.carryOver(where, record()), [], 'once');
+  // a key stored for another origin is not this module's GitHub key
+  const other = homeOn020();
+  bind(other.h, ACCESS, VAR, stored(OTHER_ORIGIN, 'test-v2-value-2'));
+  assert.deepStrictEqual(mc.bindings(other.where, other.record()).carried, []);
+  assert.deepStrictEqual(mc.carryOver(other.where, other.record()), []);
+});

@@ -40,7 +40,7 @@ test('a real install of this launcher runs from <home>/bin/ch-local.js', {timeou
     const modIntegrity = 'sha512-' + crypto.createHash('sha512').update(modBytes).digest('base64');
     const allow = {runtime: {packages: [pkg.name], lockfile: null}, packs: {solo: {modules: ['@countinghouse/ch-pack-solo']}},
       // (version 2: each module described: this one declares nothing)
-      modules: {'@countinghouse/ch-pack-solo': {credentials: [], calls: [], confirmSettings: {}}},
+      modules: {'@countinghouse/ch-pack-solo': {role: 'scenario', credentials: [], calls: [], confirmSettings: {}}},
       pins: {[pkg.name]: {version: pkg.version, integrity}, '@countinghouse/ch-pack-solo': {version: '0.1.0', integrity: modIntegrity}}};
     // What a release does: the runtime's lockfile, from the manifest install writes.
     const release = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-real-release-'));

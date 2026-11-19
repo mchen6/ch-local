@@ -13,8 +13,11 @@ const toPackage = new Map([['github', '@countinghouse/ch-access-github'], ['reda
 const manifest = (ch) => ({name: '@countinghouse/ch-pack-x', version: '1.0.0', countinghouse: ch});
 
 test('a module with no remotes, calls or settings is described empty', () => {
-  assert.deepStrictEqual(describeModule(manifest({}), toPackage), {credentials: [], calls: [], confirmSettings: {}});
-  assert.deepStrictEqual(describeModule({name: 'a', version: '1.0.0'}, toPackage), {credentials: [], calls: [], confirmSettings: {}});
+  assert.deepStrictEqual(describeModule(manifest({}), toPackage), {role: null, credentials: [], calls: [], confirmSettings: {}});
+  assert.deepStrictEqual(describeModule({name: 'a', version: '1.0.0'}, toPackage), {role: null, credentials: [], calls: [], confirmSettings: {}});
+  // its role recorded (the Reviewer's high review of #98, 6)
+  assert.strictEqual(describeModule(manifest({role: 'part'}), toPackage).role, 'part');
+  assert.match(describeModule(manifest({role: 7}), toPackage).problem, /countinghouse\.role is not a role/);
 });
 
 test('a credential in the string form and in the object form: its variable and its remote\'s origin; fallbackEnv never', () => {
@@ -66,12 +69,29 @@ test('friendlyNames: each module\'s api.json device.friendlyName to its package;
   assert.deepStrictEqual([...friendlyNames({a: null, b: {device: {friendlyName: 'y'}}}).map], [['y', 'b']]);
 });
 
-test('describeProblem names the part that differs: credential, calls, a confirm setting', () => {
-  const want = {credentials: [{variable: 'A', origin: KEY_ORIGIN}], calls: ['p'], confirmSettings: {s: false}};
+test('describeProblem names the part that differs: role, credential, calls, a confirm setting', () => {
+  const want = {role: 'part', credentials: [{variable: 'A', origin: KEY_ORIGIN}], calls: ['p'], confirmSettings: {s: false}};
+  assert.strictEqual(describeProblem(want, {...want, role: 'scenario'}), 'its role');
+  // field by field: the same credential in another key order is the same
+  assert.strictEqual(describeProblem(want, {...want, credentials: [{origin: KEY_ORIGIN, variable: 'A'}]}), null);
   assert.strictEqual(describeProblem(want, JSON.parse(JSON.stringify(want))), null);
   assert.strictEqual(describeProblem(want, {...want, credentials: [{variable: 'A', origin: 'https://elsewhere.test'}]}), 'its credential destination');
   assert.strictEqual(describeProblem(want, {...want, calls: ['p', 'q']}), 'its calls');
   assert.strictEqual(describeProblem(want, {...want, confirmSettings: {s: true}}), 'its confirm setting s');
   assert.strictEqual(describeProblem(want, {...want, confirmSettings: {}}), 'its confirm setting s');
   assert.strictEqual(describeProblem(want, {...want, confirmSettings: {s: false, t: null}}), 'its confirm setting t');
+});
+
+// The one reader of a credential (the Reviewer's high review of #98, 2):
+// install's description, the runtime binding and uninstall all read it so
+test('credentialOf: the string form (0.2.0\'s) and the object form name the variable; fallbackEnv is kept apart; more than one is a problem', () => {
+  const {credentialOf} = require('../lib/describe-module');
+  assert.deepStrictEqual(credentialOf([{name: 'github', url: `${KEY_ORIGIN}/mcp/`, credential: 'GITHUB_TOKEN'}]).credential,
+    {variable: 'GITHUB_TOKEN', origin: KEY_ORIGIN, remote: 'github', fallback: null});
+  assert.deepStrictEqual(credentialOf([{name: 'gh', url: `${KEY_ORIGIN}/mcp/`, credential: {env: 'GH_KEY', fallbackEnv: 'OTHER'}}]).credential,
+    {variable: 'GH_KEY', origin: KEY_ORIGIN, remote: 'gh', fallback: 'OTHER'});
+  assert.deepStrictEqual(credentialOf([{name: 'pub', url: `${KEY_ORIGIN}/mcp/`}]), {credential: null});
+  assert.deepStrictEqual(credentialOf(undefined), {credential: null});
+  assert.match(credentialOf([{url: `${KEY_ORIGIN}/a`, credential: 'A_KEY'}, {url: `${KEY_ORIGIN}/b`, credential: 'B_KEY'}]).problem, /more than one credential/);
+  assert.match(credentialOf([{url: 'not a url', credential: 'A_KEY'}]).problem, /not an https origin/);
 });

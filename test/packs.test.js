@@ -11,7 +11,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {tmp} = require('./fake-io');
-const {installedPacks, declaredRemotes} = require('../lib/packs');
+const {installedPacks} = require('../lib/packs');
 const {ALLOWED_ORIGINS} = require('../lib/allowlist');
 
 const GITHUB = {name: 'github', transport: 'streamable-http', url: 'https://api.githubcopilot.com/mcp/',
@@ -63,19 +63,6 @@ test('installedPacks reads modules.json: every pack, its scenario (by role), its
       dir: store('@countinghouse/ch-pack-other', '0.3.0'), packages: ['@countinghouse/ch-pack-other'], credentials: []}]);
   fs.writeFileSync(where.modulesRecord, '{"not": "a record"}');
   assert.throws(() => installedPacks(where), /not a ch-local record/);
-});
-
-test('declaredRemotes reads the installed packages\' countinghouse.remotes: origin, variables and the package', () => {
-  const dir = app({'@countinghouse/ch-access-github': {role: 'part', remotes: [GITHUB]}, '@countinghouse/ch-step-redact': {role: 'part'}});
-  assert.deepStrictEqual(declaredRemotes(dir, ['@countinghouse/ch-access-github', '@countinghouse/ch-step-redact']),
-    [{origin: 'https://api.githubcopilot.com', variables: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], from: '@countinghouse/ch-access-github'}]);
-  const bad = app({'@x/y': {remotes: [{name: 'r', url: 'not a url'}]}});
-  assert.deepStrictEqual(declaredRemotes(bad, ['@x/y']), [{origin: null, variables: [], from: '@x/y'}], 'an unreadable URL is kept, to be refused');
-  const odd = app({'@x/z': {remotes: [null, 'text', {name: 'r', url: 'https://api.githubcopilot.com/mcp/', credential: 'GITHUB_TOKEN'}]}});
-  assert.deepStrictEqual(declaredRemotes(odd, ['@x/z']).map((r) => r.origin), [null, null, null], 'a remote or credential that is not an object is kept, to be refused');
-  assert.throws(() => declaredRemotes(dir, ['@countinghouse/not-installed']), /@countinghouse\/not-installed is not in the module store/, 'a listed module missing from the store is a broken install');
-  fs.writeFileSync(path.join(dir['@countinghouse/ch-step-redact'], 'package.json'), '{"name": ');
-  assert.throws(() => declaredRemotes(dir, ['@countinghouse/ch-step-redact']), /ch-step-redact.*not readable/, 'a corrupt manifest is not "no remotes"');
 });
 
 test('a record whose pack names or versions are not a release\'s is refused: they become directory names', () => {

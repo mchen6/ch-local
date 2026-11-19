@@ -58,7 +58,9 @@ A module that calls a module of another pack needs that pack installed
 first. `install` and `add-pack` check each module against this release's
 description of it, reading only what they place and what the home already
 holds, so a call into a pack not installed is refused, naming the pack to
-install first. No pack in this release calls outside itself.
+install first; a module of a withdrawn or held pack does not count. Two
+packs whose modules call each other cannot be installed in release 1 (each
+needs the other first). No pack in this release calls outside itself.
 
 `<home>` is `$COUNTINGHOUSE_HOME` (an absolute path) or `~/.countinghouse`. Every
 command first checks Node: below 22.16 it says so and offers two ways on, to

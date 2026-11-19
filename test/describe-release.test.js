@@ -23,8 +23,8 @@ const tarballs = {
 };
 const release = () => ({packs: {x: {modules: [PACK, ACCESS]}}, modules: {}, pins: {[PACK]: {version: '0.5.0'}, [ACCESS]: {version: '0.2.0'}}});
 const DESCRIBED = {
-  [ACCESS]: {credentials: [{variable: 'X_TOKEN', origin: ORIGIN}], calls: [], confirmSettings: {}},
-  [PACK]: {credentials: [], calls: [ACCESS], confirmSettings: {share: false}}
+  [ACCESS]: {role: 'part', credentials: [{variable: 'X_TOKEN', origin: ORIGIN}], calls: [], confirmSettings: {}},
+  [PACK]: {role: 'scenario', credentials: [], calls: [ACCESS], confirmSettings: {share: false}}
 };
 // a directory of tarballs: those named, plus `extra` ({file: manifest})
 function dirOf(names = Object.keys(tarballs), extra = {}) {
@@ -100,4 +100,33 @@ test('a description the pins\' format would refuse is refused by the step, never
   } finally {
     tarballs[PACK] = saved;
   }
+});
+
+test('a directory as install\'s --from holds it: ch-local\'s own tarball, bundling what the strict reader refuses, is never opened (the Reviewer\'s high review of #98, 1)', () => {
+  const {member, tgz} = require('./tgz');
+  const dir = dirOf();
+  fs.writeFileSync(path.join(dir, 'countinghouse-ch-local-0.4.0.tgz'), tgz(member('package/package.json', {data: JSON.stringify({name: '@countinghouse/ch-local', version: '0.4.0'})}),
+    member('package/node_modules/@sigstore/verify/package.json', {data: '{}'}), member('package/escape', {type: '2', linkname: '../../etc/passwd'})));
+  assert.deepStrictEqual(describePinned(release(), {'@countinghouse/ch-local': {version: '0.4.0'}, [PACK]: {version: '0.5.0'}, [ACCESS]: {version: '0.2.0'}}, dir), DESCRIBED);
+});
+
+test('the release document is written only as the parser reads it: version 2, allowedOrigins gone, refused whole otherwise (the Reviewer\'s high review of #98, 4)', () => {
+  const dir = dirOf();
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-whole-')), 'release-pins.json');
+  const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
+  const quiet = {write: () => {}};
+  // a version 1 document with this release's packs: converted
+  fs.writeFileSync(file, JSON.stringify({...shipped, v: 1, packs: {x: {packages: [PACK, ACCESS], credentials: ['X_TOKEN']}}, modules: undefined, allowedOrigins: {[ORIGIN]: ['X_TOKEN']}}));
+  assert.strictEqual(main([dir], {stdout: quiet, stderr: quiet, releasePins: file}), 0);
+  const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.strictEqual(written.v, 2);
+  assert.ok(!('allowedOrigins' in written));
+  assert.strictEqual(require('../lib/release-pins').parseReleasePins(written).problem, undefined);
+  // one the parser refuses (a pin that is no pin) is not written
+  const bad = {...written, pins: {[PACK]: {version: 'not a version'}}};
+  fs.writeFileSync(file, JSON.stringify(bad));
+  const err = {text: '', write(x) { this.text += x; }};
+  assert.strictEqual(main([dir], {stdout: quiet, stderr: err, releasePins: file}), 1);
+  assert.match(err.text, /nothing was written/);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), bad);
 });

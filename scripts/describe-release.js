@@ -9,7 +9,7 @@
 //
 // The directory holds one .tgz per module of every pack the file lists
 // (npm pack's names). Each tarball's package.json and api.json are read in
-// memory (lib/tar.js readMember), nothing unpacked. The packs and what they
+// memory (lib/tar.js readMembers), nothing unpacked. The packs and what they
 // hold come from the file: the step never adds a pack, and refuses a module
 // with no tarball, a tarball no pack lists, two tarballs of one module, a
 // tarball whose version is not its pin (where the file pins it), and any
@@ -27,7 +27,7 @@
 // the tarballs'.
 const fs = require('node:fs');
 const path = require('node:path');
-const {readMember} = require('../lib/tar');
+const {readMembers} = require('../lib/tar');
 const {describeModule, friendlyNames} = require('../lib/describe-module');
 
 const root = path.resolve(__dirname, '..');
@@ -36,15 +36,26 @@ const RELEASE_PINS = path.join(root, 'lib', 'release-pins.json');
 class StepError extends Error {}
 const refuse = (why) => { throw new StepError(why); };
 
-// -> {<package>: {version, manifest, api}} from every .tgz in dir
-function readTarballs(dir) {
+// -> {<package>: {version, manifest, api}} from every .tgz in dir, or with
+// only ({package: version}) from those packages' tarballs alone, by npm
+// pack's file name, before any is opened: a directory install's --from
+// holds also has the runtime's and ch-local's, which bundles what the strict
+// reader refuses (the Reviewer's high review of #98, 1)
+function readTarballs(dir, {only = null} = {}) {
   let files;
   try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.tgz')).sort(); } catch (err) { refuse(`cannot read ${dir} (${err.code})`); }
+  if (only != null) {
+    const wanted = new Set(Object.entries(only).map(([name, version]) => require('../lib/unpack').tarballName(name, version)));
+    files = files.filter((f) => wanted.has(f));
+  }
   const out = {};
   for (const f of files) {
     const buf = fs.readFileSync(path.join(dir, f));
+    // (both members from one read of the archive)
+    let members;
+    try { members = readMembers(buf, ['package.json', 'api.json']); } catch (err) { refuse(`${f}: ${err.message}`); }
     const json = (member) => {
-      const b = readMember(buf, member);
+      const b = members[member];
       if (b == null) return null;
       try { return JSON.parse(b.toString('utf8')); } catch (err) { refuse(`${f}: its ${member} is not JSON`); }
     };
@@ -89,12 +100,13 @@ function describeRelease(release, pins, tarballs, {only = false} = {}) {
 // which are never described) -> {<package>: description}. Throws a
 // StepError when one cannot be described. (dogfood and acceptance: their
 // --unreleased-pins file carries its own descriptions, lib/pins.js.)
-function pinnedTarballs(release, pins, all) {
+// the pack modules `pins` pins -> {package: version}
+function pinnedModules(release, pins) {
   const packModules = new Set(Object.values(release.packs).flatMap((p) => p.modules || []));
-  return Object.fromEntries(Object.entries(all).filter(([m]) => packModules.has(m) && pins[m] != null));
+  return Object.fromEntries([...packModules].filter((m) => pins[m] != null && typeof pins[m].version === 'string').map((m) => [m, pins[m].version]));
 }
 function describePinned(release, pins, dir) {
-  return describeRelease(release, pins, pinnedTarballs(release, pins, readTarballs(dir)), {only: true}).modules;
+  return describeRelease(release, pins, readTarballs(dir, {only: pinnedModules(release, pins)}), {only: true}).modules;
 }
 
 function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePins = RELEASE_PINS} = {}) {
@@ -113,13 +125,28 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
     // (a development file: only the pack modules it pins, the runtime's and
     // ch-local's tarballs beside them, as install's --from holds them: the
     // medium on L5b, 1)
-    const all = readTarballs(dir);
-    const described = describeRelease(release, doc.pins || {}, devFile != null ? pinnedTarballs(release, doc.pins || {}, all) : all, {only: devFile != null});
-    const next = devFile != null ? {...doc, modules: described.modules} : {...doc, packs: described.packs, modules: described.modules};
+    const tarballs = devFile != null ? readTarballs(dir, {only: pinnedModules(release, doc.pins || {})}) : readTarballs(dir);
+    const described = describeRelease(release, doc.pins || {}, tarballs, {only: devFile != null});
+    let next;
+    if (devFile != null) {
+      next = {...doc, modules: described.modules};
+    } else {
+      // the release's own document, version 2 (an earlier one converted:
+      // its allowedOrigins are derived now), held whole to the parser every
+      // command loads it with before it is written: a document it would
+      // refuse crashes every command at the next require (the Reviewer's
+      // high review of #98, 4)
+      next = {...doc, v: 2, packs: described.packs, modules: described.modules};
+      delete next.allowedOrigins;
+    }
     if (check) {
       const same = JSON.stringify(next.modules) === JSON.stringify(doc.modules) && (devFile != null || JSON.stringify(next.packs) === JSON.stringify(doc.packs));
       stdout.write(same ? `${target}: the descriptions match the tarballs\n` : `${target}: the descriptions differ from the tarballs; run without --check to write them\n`);
       return same ? 0 : 1;
+    }
+    if (devFile == null) {
+      const parsed = require('../lib/release-pins').parseReleasePins(JSON.parse(JSON.stringify(next)));
+      if (parsed.problem != null) refuse(parsed.problem);
     }
     fs.writeFileSync(target, JSON.stringify(next, null, 2) + '\n');
     stdout.write(`${target}: described ${Object.keys(described.modules).length} modules\n`);

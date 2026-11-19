@@ -68,7 +68,7 @@ function installedRelease(home) {
   try { record = JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8')); } catch (e) { return null; }
   const {ALLOWLIST} = require('../lib/allowlist');
   const describe = (name, version) => {
-    const none = {credentials: [], calls: [], confirmSettings: {}};
+    const none = {role: null, credentials: [], calls: [], confirmSettings: {}};
     let m;
     try { m = JSON.parse(fs.readFileSync(path.join(home, 'module-store', ...name.split('/'), version, 'package.json'), 'utf8')); } catch (e) { return none; }
     const remotes = m.countinghouse != null && Array.isArray(m.countinghouse.remotes) ? m.countinghouse.remotes : [];
