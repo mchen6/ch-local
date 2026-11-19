@@ -573,7 +573,6 @@ test('B3: a load and an unload from the settings are in the module form; the unl
     // " turned off" while the settings have the module off, so a change here
     // would silently drop that notice; exactly "<short name> turned off"
     assert.strictEqual(unload.notice, 'ch-pack-other turned off');
-    assert.match(unload.notice, / turned off$/);
     assert.ok(!s.requests.some((m) => m.type === 'notice' && m.pack === 'other' && /turned off|removed/.test(m.text)), JSON.stringify(s.requests.filter((m) => m.type === 'notice')));
     holdsToTheVectors(s.requests);
   } finally {
