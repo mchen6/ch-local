@@ -187,6 +187,16 @@ test('install --pack under development pins meets the same table', async (t) => 
   });
 });
 
+test('a --from holding only what the store lacks is enough: a module installed at its pin is read from the store', async () => {
+  const {tarballName} = require('../lib/install');
+  const h = await devHome(release({versions: {[REDACT]: '0.2.0'}}));
+  const r2 = release({versions: {[REDACT]: '0.2.0'}});
+  fs.rmSync(path.join(r2.from, tarballName(REDACT, '0.2.0')));
+  const {code, io} = await h.add(r2);
+  assert.strictEqual(code, 0, io.err);
+  assert.ok(OTHER in record(h.home).modules);
+});
+
 test('remove-pack: a module the pack raised goes back; one a remaining pack records stays, the line says which; settings untouched', async () => {
   const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
   const settings = path.join(h.home, 'settings.json');
