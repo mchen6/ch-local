@@ -1593,3 +1593,76 @@ test('a credential unload the runtime refuses is retried, then told: restart you
     await s.done;
   }
 });
+
+// A home with both packs installed, ch-step-other (in other's closure)
+// declaring a credential of its own, and both modules' keys stored.
+const OTHER_STEP = '@countinghouse/ch-step-other';
+const OTHER_ORIGIN = 'https://api.other.example';
+async function twoCredentialed({otherOff = false} = {}) {
+  const home = tmp('ch-home-');
+  const r = release();
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: home}, () => '/nowhere');
+  const record = require('../lib/module-record').readModulesRecord(where);
+  const manifestOf = (m) => path.join(require('../lib/store-paths').versionDir(where, m, record.modules[m].version), 'package.json');
+  const edit = (m, fn) => { const f = manifestOf(m); const p = JSON.parse(fs.readFileSync(f, 'utf8')); fn(p); fs.writeFileSync(f, JSON.stringify(p)); };
+  edit(OTHER_STEP, (p) => { p.countinghouse.remotes = [{name: 'o', url: `${OTHER_ORIGIN}/mcp/`, credential: 'OTHER_TOKEN'}]; });
+  bindAccess(home);
+  require('../lib/credential-store').bind(home, OTHER_STEP, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: 'test-stored-value-2'});
+  if (otherOff) fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
+  return {home, r, edit};
+}
+
+// the Reviewer's high review of L5a's round 2: while the store cannot be
+// read, a module whose declaration is unchanged keeps its key; one whose
+// declaration changed meanwhile is not usable (the medium on the high
+// round, 2)
+test('an unreadable store: an unchanged declaration keeps its key, a changed one is unloaded with its callers', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const t = await twoCredentialed();
+  const s = await running({home: t.home});
+  try {
+    await until(() => s.args() != null);
+    assert.ok(s.args().filter((a) => a === '--loadModule').length === 2, s.args().join(' '));
+    fs.chmodSync(path.join(t.home, 'credentials', 'credentials.json'), 0o000);
+    // ch-access-github now names another variable: its last good state no
+    // longer stands; ch-step-other's declaration is untouched
+    t.edit(ACCESS, (p) => { p.countinghouse.remotes[0].credential = {env: 'RENAMED_TOKEN', header: 'Authorization', scheme: 'Bearer'}; });
+    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === SCENARIO));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.ok(!s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-other'), JSON.stringify(s.requests));
+    const why = s.requests.find((m) => m.type === 'unload' && named(m) === SCENARIO).notice;
+    assert.match(why, /the stored credentials are not used \(.*could not be read/);
+  } finally {
+    fs.chmodSync(path.join(t.home, 'credentials', 'credentials.json'), 0o600);
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on the high round, 5: a module loaded after start gets its
+// "sends" line when its key first goes, once
+test('a module turned on while running says where its key goes, once, when it loads', async () => {
+  const t = await twoCredentialed({otherOff: true});
+  const s = await running({home: t.home});
+  try {
+    await until(() => s.args() != null);
+    const line = 'sends OTHER_TOKEN to https://api.other.example for ch-step-other';
+    assert.ok(!s.f.err.includes(line), 'not said at start: it does not load');
+    assert.match(s.f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
+    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true}}));
+    await until(() => s.requests.some((m) => m.type === 'load' && named(m) === '@countinghouse/ch-pack-other'));
+    const load = s.requests.find((m) => m.type === 'load' && named(m) === '@countinghouse/ch-pack-other');
+    assert.deepStrictEqual(load.credentials, {[OTHER_STEP]: {[OTHER_ORIGIN]: {OTHER_TOKEN: 'COUNTINGHOUSE_CREDENTIAL_2'}}});
+    await until(() => s.f.err.includes(line));
+    // a later change says it no more
+    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true, locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.strictEqual(s.f.err.split(line).length - 1, 1, s.f.err);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
