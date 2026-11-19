@@ -221,6 +221,26 @@ test('install --pack again with a lower pin than the pack itself raised a module
   assert.strictEqual(record(h.home).packs.other.modules[REDACT], '0.2.0');
 });
 
+// The reviewer's high review of #94, 5: a changed home refuses only answers
+// given to it; with nothing asked, the lock decides again.
+test('nothing asked before the lock: a home that changed meanwhile is decided again, not refused', async () => {
+  const table = require('../lib/pack-table');
+  const r1 = release({versions: {[REDACT]: '0.1.0'}});
+  const h = await devHome(r1);
+  const r2 = release({versions: {[REDACT]: '0.1.0'}});
+  const spec = r2.allow.packs.other;
+  const before = record(h.home);
+  const where = {home: h.home, moduleStore: path.join(h.home, 'module-store')};
+  const io = fakeIo({env: h.env});
+  const got = await table.askAll(where, table.decide(where, before, 'other', spec, r2.pins), 'other', io, () => {});
+  assert.strictEqual(got.code, undefined);
+  // meanwhile, the pack that shared ch-step-redact went
+  const changed = {...before, packs: {}};
+  const again = table.recheck(where, changed, 'other', spec, r2.pins, got.signature);
+  assert.strictEqual(again.problem, undefined, again.problem);
+  assert.strictEqual(again.rows.find((r) => r.module === REDACT).case, 'new');
+});
+
 // The reviewer's high review of #94, 2: unknown is never "no callers".
 test('a breaking update whose callers cannot be read is refused, never taken for uncalled', async (t) => {
   const r1 = release({versions: {[REDACT]: '0.1.0'}});
