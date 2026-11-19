@@ -79,6 +79,18 @@ function describeRelease(release, pins, tarballs, {only = false} = {}) {
   return {packs, modules};
 }
 
+// A development pins file's descriptions: the pack modules `pins` names,
+// from their tarballs in dir (dir may hold others: the runtime's, ch-local's,
+// which are never described) -> {<package>: description}. Throws a
+// StepError when one cannot be described. (dogfood and acceptance: their
+// --unreleased-pins file carries its own descriptions, lib/pins.js.)
+function describePinned(release, pins, dir) {
+  const packModules = new Set(Object.values(release.packs).flatMap((p) => p.modules || []));
+  const all = readTarballs(dir);
+  const tarballs = Object.fromEntries(Object.entries(all).filter(([m]) => packModules.has(m) && pins[m] != null));
+  return describeRelease(release, pins, tarballs, {only: true}).modules;
+}
+
 function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePins = RELEASE_PINS} = {}) {
   const check = argv.includes('--check');
   const at = argv.indexOf('--unreleased-pins');
@@ -109,5 +121,5 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
   }
 }
 
-module.exports = {describeRelease, readTarballs, main};
+module.exports = {describeRelease, describePinned, readTarballs, main};
 if (require.main === module) process.exitCode = main(process.argv.slice(2));

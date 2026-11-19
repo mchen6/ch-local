@@ -142,7 +142,7 @@ function session(child) {
 // (every variable the pack's allowlist names), the dev switches.
 function launcherEnv(home, extra = {}) {
   const env = {...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1', ...extra};
-  for (const name of ALLOWLIST.packs[dogfood.PACK].credentials) if (!(name in extra)) delete env[name];
+  for (const name of require('../lib/packs').packVariables(ALLOWLIST, dogfood.PACK)) if (!(name in extra)) delete env[name];
   return env;
 }
 

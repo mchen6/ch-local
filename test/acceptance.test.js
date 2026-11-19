@@ -93,7 +93,8 @@ test('the receipt pattern: a stand-in run, and only that', () => {
 // The review of the acceptance branch (2026-11-12).
 test('the launcher environment drops every credential the pack\'s allowlist names', () => {
   const {ALLOWLIST} = require('../lib/allowlist');
-  const names = ALLOWLIST.packs[require('../scripts/dogfood').PACK].credentials;
+  const names = require('../lib/packs').packVariables(ALLOWLIST, require('../scripts/dogfood').PACK);
+  assert.ok(names.length > 0, 'the pack names a credential');
   const saved = Object.fromEntries(names.map((n) => [n, process.env[n]]));
   try {
     for (const n of names) process.env[n] = 'from-this-shell';
@@ -455,7 +456,7 @@ test('shared: (b2) ctx.ask through the shim: the checks', async () => {
 test('shared: the acceptance fixture pack is in no shipped allowlist, release pin or published file, and npm refuses to publish it', () => {
   const {ALLOWLIST} = require('../lib/allowlist');
   assert.strictEqual(Object.prototype.hasOwnProperty.call(ALLOWLIST.packs, shared.ACCEPT), false);
-  const shipped = new Set([...ALLOWLIST.runtime.packages, ...Object.values(ALLOWLIST.packs).flatMap((p) => p.packages), ...Object.keys(ALLOWLIST.pins || {})]);
+  const shipped = new Set([...ALLOWLIST.runtime.packages, ...Object.values(ALLOWLIST.packs).flatMap((p) => p.modules), ...Object.keys(ALLOWLIST.pins || {})]);
   for (const name of shared.ACCEPT_PACKAGES) assert.strictEqual(shipped.has(name), false, name);
   const pinsText = fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8');
   for (const name of [...shared.ACCEPT_PACKAGES, 'fixtures']) assert.ok(!pinsText.includes(name), name);
@@ -470,5 +471,5 @@ test('shared: the acceptance fixture pack is in no shipped allowlist, release pi
   // the release the run adds it with only adds it: the shipped packs unchanged
   const added = shared.acceptRelease(ALLOWLIST);
   assert.deepStrictEqual(Object.keys(added.packs).filter((k) => k !== shared.ACCEPT), Object.keys(ALLOWLIST.packs));
-  assert.deepStrictEqual(added.packs[shared.ACCEPT].credentials, []);
+  assert.deepStrictEqual(added.packs[shared.ACCEPT], {modules: shared.ACCEPT_PACKAGES});
 });
