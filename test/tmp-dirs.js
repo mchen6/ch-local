@@ -101,20 +101,40 @@ const linesOf = (file) => {
 // Reviewer on #97's CI). The birth time in ns, or null where the system has
 // none (statx with no btime): then device and inode alone. Never ctime,
 // which moves as entries are added.
-const bornOf = (st) => (st.birthtimeNs != null && st.birthtimeNs > 0n ? String(st.birthtimeNs) : null);
+// Where libuv has no statx (an older kernel, a seccomp profile that blocks
+// it), it reports ctime as the birth time: probed once, by writing into a
+// directory, and the birth time used only where it does not move (the
+// medium on #97's second round, 4)
+let bornReal = null;
+const probeBorn = (made) => {
+  if (bornReal != null) return bornReal;
+  bornReal = false;
+  let dir = null;
+  try {
+    dir = made(path.join(os.tmpdir(), '.ch-local-born-'));
+    const first = fs.lstatSync(dir, {bigint: true}).birthtimeNs;
+    fs.writeFileSync(path.join(dir, 'x'), '');
+    fs.utimesSync(dir, new Date(), new Date(Date.now() + 2000));
+    const after = fs.lstatSync(dir, {bigint: true});
+    bornReal = first > 0n && after.birthtimeNs === first && after.ctimeNs !== first;
+  } catch (err) { bornReal = false; }
+  if (dir != null) { try { fs.rmSync(dir, {recursive: true, force: true}); } catch (err) { /* gone */ } }
+  return bornReal;
+};
+const bornOf = (st) => (bornReal === true && st.birthtimeNs != null && st.birthtimeNs > 0n ? String(st.birthtimeNs) : null);
 const lstatBig = (d) => fs.lstatSync(d, {bigint: true});
 const sameDir = (st, {dev, ino, born}) => st.isDirectory() && String(st.dev) === dev && String(st.ino) === ino && mineSt(st)
   && (born == null || bornOf(st) == null || bornOf(st) === born);
 // removes a listed directory when it is still the one listed and this
-// user's, looked at again right before the removal -> whether it is gone
+// user's -> whether it is gone (the check and the removal are by path: a
+// swap between them is not guarded against, and needn't be for a test's own
+// directories)
 const removeListed = (e, under) => {
   if (!ours(e.dir, under)) return true;
   let st;
   try { st = lstatBig(e.dir); } catch (err) { return err.code === 'ENOENT'; }
   if (!sameDir(st, e)) return true;
   try {
-    const again = lstatBig(e.dir);
-    if (!sameDir(again, e)) return true;
     fs.rmSync(e.dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
     return true;
   } catch (err) { return err.code === 'ENOENT'; }
@@ -138,7 +158,13 @@ function sweepStale(dir = os.tmpdir()) {
     try { st = fs.lstatSync(at); } catch (err) { continue; }
     if (!st.isDirectory() || !mineSt(st)) continue;
     const {meta, dirs} = linesOf(path.join(at, 'dirs.jsonl'));
-    if (meta == null || meta.pid !== pid || !sameWhere(meta.where, here) || typeof meta.tmpdir !== 'string') continue;
+    // one killed before its first line (or never opened) names nothing:
+    // removed once it is a minute old, by this user, whatever made it
+    if (meta == null) {
+      if (dirs.length === 0 && Date.now() - st.mtimeMs > 60000) { try { fs.rmSync(at, {recursive: true, force: true}); swept += 1; } catch (err) { /* next time */ } }
+      continue;
+    }
+    if (meta.pid !== pid || !sameWhere(meta.where, here) || typeof meta.tmpdir !== 'string') continue;
     if (pid === process.pid || !gone(pid)) continue;
     if (!dirs.map((e) => removeListed(e, meta.tmpdir)).every(Boolean)) continue;
     try { fs.rmSync(at, {recursive: true, force: true}); swept += 1; } catch (err) { /* swept again next time */ }
@@ -156,6 +182,7 @@ if (global[KEY] == null) {
   const line = (o) => { if (fd != null) fs.writeSync(fd, `${JSON.stringify(o)}\n`); };
   const record = (dir, st) => {
     try {
+      probeBorn((p) => syncMade.call(fs, p));
       if (manifest == null) {
         manifest = syncMade.call(fs, path.join(tmpdir, `${MANIFEST_PREFIX}${process.pid}-`));
         fd = fs.openSync(path.join(manifest, 'dirs.jsonl'), 'wx', 0o600);
@@ -169,7 +196,7 @@ if (global[KEY] == null) {
     if (!ours(dir, tmpdir)) return dir;
     const d = path.resolve(String(dir));
     made.add(d);
-    try { record(d, lstatBig(d)); } catch (err) { /* not recorded: 'exit' still removes it */ }
+    try { probeBorn((p) => syncMade.call(fs, p)); record(d, lstatBig(d)); } catch (err) { /* not recorded: 'exit' still removes it */ }
     return dir;
   };
 
@@ -199,7 +226,7 @@ if (global[KEY] == null) {
   };
   process.on('exit', removeMade);
   // (where: a manifest's own first line, for tmp-manifest's stale cases)
-  global[KEY] = {removeMade, made, PREFIX, MANIFEST_PREFIX, MANIFEST_NAME, sweepStale, where, bornOf};
+  global[KEY] = {removeMade, made, PREFIX, MANIFEST_PREFIX, MANIFEST_NAME, sweepStale, where, bornOf: (st) => { probeBorn((p) => syncMade.call(fs, p)); return bornOf(st); }};
 }
 
 module.exports = global[KEY];

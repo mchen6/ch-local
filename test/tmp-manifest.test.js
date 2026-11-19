@@ -166,3 +166,31 @@ test('the runner sent SIGTERM ends its files, sweeps what they made, and ends by
   assert.deepStrictEqual(chDirs(), [], 'its file\'s directory swept');
   assert.deepStrictEqual(manifests(), [], 'and its manifest');
 });
+
+// what a file started, holding its pipes (a server, a runtime), neither
+// keeps the runner waiting nor outlives the file: the file's whole process
+// group (the whole tree on Windows) is ended (the medium on #97's second
+// round, 1 and 2)
+test('the runner: a timed-out file\'s child that holds its pipes is ended with it, and the runner still finishes', () => {
+  const dir = fs.mkdtempSync(path.join(PRIVATE, 'fixture-'));
+  const pidFile = path.join(dir, 'grandchild.pid');
+  const file = path.join(dir, 'spawner.test.js');
+  fs.writeFileSync(file, `
+    const test = require('node:test'); const {spawn} = require('node:child_process'); const fs = require('node:fs');
+    test('starts a server and hangs', () => {
+      const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'inherit'});
+      fs.writeFileSync(${JSON.stringify(pidFile)}, String(g.pid));
+      setInterval(() => {}, 1000);
+      return new Promise(() => {});
+    });`);
+  const started = Date.now();
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), file], {cwd: ROOT, encoding: 'utf8', timeout: 60000,
+    env: envOf({CH_TEST_FILE_TIMEOUT_MS: '1500', CH_TEST_GRACE_MS: '500', CI: ''})});
+  assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stdout, /FAILED .*spawner\.test\.js: timed out/);
+  assert.ok(Date.now() - started < 30000, 'the runner did not wait on the held pipes');
+  const g = Number(fs.readFileSync(pidFile, 'utf8'));
+  let alive = true;
+  for (const until = Date.now() + 5000; alive && Date.now() < until;) { try { process.kill(g, 0); } catch (e) { alive = false; } }
+  assert.strictEqual(alive, false, 'the child it started is ended with it');
+});

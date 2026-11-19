@@ -38,7 +38,7 @@ const FILE_TIMEOUT_MS = Number(process.env.CH_TEST_FILE_TIMEOUT_MS) > 0 ? Number
 const LONG_FILES = new Set(['acceptance.test.js', 'dogfood.test.js']);
 const LONG_TIMEOUT_MS = Math.max(FILE_TIMEOUT_MS, 60 * 60 * 1000);
 const GRACE_MS = Number(process.env.CH_TEST_GRACE_MS) > 0 ? Number(process.env.CH_TEST_GRACE_MS) : 10 * 1000;
-const CONCURRENCY = Number(process.env.CH_TEST_CONCURRENCY) > 0 ? Number(process.env.CH_TEST_CONCURRENCY)
+const DEFAULT_CONCURRENCY = Number(process.env.CH_TEST_CONCURRENCY) > 0 ? Number(process.env.CH_TEST_CONCURRENCY)
   : Math.max(1, (typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length) - 1);
 // this user's shared-runtime socket directory (lib/session-socket.js
 // fallbackSocket: made on purpose and kept), as that module names it, and
@@ -51,7 +51,12 @@ const ours = () => {
 
 const given = process.argv.slice(2);
 const named = given.filter((a) => /\.test\.js$/.test(a));
-const flags = given.filter((a) => !named.includes(a));
+// --test-concurrency=N is the runner's own now: how many files at once (a
+// file runs as `node file`, where node --test's flag means nothing: the
+// medium on #97's second round, 6)
+const concurrencyFlag = given.find((a) => /^--test-concurrency=\d+$/.test(a));
+const CONCURRENCY = concurrencyFlag != null ? Math.max(1, Number(concurrencyFlag.split('=')[1])) : DEFAULT_CONCURRENCY;
+const flags = given.filter((a) => !named.includes(a) && a !== concurrencyFlag);
 const files = named.length > 0 ? named
   : fs.readdirSync(path.join(root, 'test')).filter((n) => n.endsWith('.test.js')).sort().map((n) => path.join('test', n));
 // a file run as its own process (node:test runs its tests in it), so the
@@ -59,52 +64,105 @@ const files = named.length > 0 ? named
 const reporter = flags.some((f) => f.startsWith('--test-reporter')) ? [] : ['--test-reporter=spec'];
 
 const running = new Map();   // pid -> child
-// a child ended: SIGTERM, then SIGKILL after the grace
-const end = (child) => {
-  try { child.kill('SIGTERM'); } catch (err) { /* gone */ }
-  setTimeout(() => { try { child.kill('SIGKILL'); } catch (err) { /* gone */ } }, GRACE_MS).unref();
+// A file and everything it started (a server, a `ch-local start` runtime):
+// its own process group (POSIX, spawned detached), the whole tree on Windows
+// (taskkill /T). Ended before its manifest is swept, so nothing still using
+// a directory loses it (the medium on #97's second round, 2).
+const signalTree = (child, sig) => {
+  if (child.pid == null) return;
+  if (process.platform === 'win32') {
+    try { require('node:child_process').spawnSync('taskkill', ['/pid', String(child.pid), '/T', ...(sig === 'SIGKILL' ? ['/F'] : [])], {stdio: 'ignore', windowsHide: true}); } catch (err) { /* gone */ }
+    return;
+  }
+  try { process.kill(-child.pid, sig); } catch (err) { try { child.kill(sig); } catch (e) { /* gone */ } }
+};
+// SIGTERM, then SIGKILL after the grace (at once when `now`)
+const end = (child, now = false) => {
+  if (now) { signalTree(child, 'SIGKILL'); return; }
+  signalTree(child, 'SIGTERM');
+  setTimeout(() => signalTree(child, 'SIGKILL'), GRACE_MS).unref();
+};
+
+// A file's output, as it comes: each line under its file's name when files
+// run side by side, as is when one at a time (never held back: a stopped or
+// killed run keeps what explains it: the medium, 3)
+const tagged = CONCURRENCY > 1;
+const relay = (file, stream) => {
+  let partial = '';
+  const tag = `[${path.basename(file)}] `;
+  stream.setEncoding('utf8');
+  stream.on('data', (d) => {
+    if (!tagged) { process.stdout.write(d); return; }
+    const lines = (partial + d).split('\n');
+    partial = lines.pop();
+    if (lines.length > 0) process.stdout.write(lines.map((l) => tag + l).join('\n') + '\n');
+  });
+  stream.on('end', () => { if (tagged && partial !== '') process.stdout.write(tag + partial + '\n'); partial = ''; });
 };
 
 function runFile(file) {
   return new Promise((resolve) => {
     const limit = LONG_FILES.has(path.basename(file)) ? LONG_TIMEOUT_MS : FILE_TIMEOUT_MS;
-    const child = spawn(process.execPath, ['--require', TMP_DIRS, ...reporter, ...flags, file], {cwd: root, stdio: ['ignore', 'pipe', 'pipe']});
+    let settled = false;
+    const finish = (r) => { if (settled) return; settled = true; resolve(r); };
+    if (!tagged) process.stdout.write(`\n# ${file}\n`);
+    const child = spawn(process.execPath, ['--require', TMP_DIRS, ...reporter, ...flags, file],
+      {cwd: root, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32'});
+    // (a spawn that fails, EMFILE say, may never emit 'close': failed now)
+    child.once('error', (err) => {
+      process.stdout.write(`\nFAILED ${file}: could not be run: ${err.code || err.message}\n`);
+      if (child.pid == null) finish({file, failed: true});
+    });
+    if (child.pid == null) return;
     running.set(child.pid, child);
-    const out = [];
-    child.stdout.on('data', (d) => out.push(d));
-    child.stderr.on('data', (d) => out.push(d));
+    relay(file, child.stdout);
+    relay(file, child.stderr);
     let timedOut = false;
     const watchdog = setTimeout(() => { timedOut = true; end(child); }, limit);
-    child.once('error', (err) => out.push(Buffer.from(`\n${file}: could not be run: ${err.code || err.message}\n`)));
-    child.once('close', (code, signal) => {
+    // resolved on 'exit', not 'close': something the file started that
+    // still holds its pipes never keeps the runner waiting (the medium, 1)
+    child.once('exit', (code, signal) => {
       clearTimeout(watchdog);
       running.delete(child.pid);
+      // what it started, if anything survived it
+      signalTree(child, 'SIGKILL');
       // (a file ended by a signal never reached 'exit': its manifest now)
       if (signal != null) sweepStale(tmp);
-      process.stdout.write(`\n# ${file}\n${Buffer.concat(out).toString('utf8')}`);
-      if (timedOut) process.stdout.write(`\nFAILED ${file}: timed out after ${Math.round(limit / 1000)} s (ended by the runner's watchdog)\n`);
-      else if (signal != null) process.stdout.write(`\nFAILED ${file}: ended by ${signal}\n`);
-      resolve({file, failed: timedOut || code !== 0});
+      const report = () => {
+        if (timedOut) process.stdout.write(`\nFAILED ${file}: timed out after ${Math.round(limit / 1000)} s (ended by the runner's watchdog)\n`);
+        else if (signal != null) process.stdout.write(`\nFAILED ${file}: ended by ${signal}\n`);
+        finish({file, failed: timedOut || code !== 0});
+      };
+      // its output drained, within a bound
+      const t = setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); report(); }, 2000);
+      child.once('close', () => { clearTimeout(t); report(); });
     });
   });
 }
 
-// The runner sent SIGTERM or SIGINT: its files ended, swept, then the
-// signal raised again, so the runner ends as it was asked to
+// The runner sent SIGTERM or SIGINT: its files ended (a second signal: at
+// once), swept, then the signal raised again, so the runner ends as it was
+// asked to
 let stopping = false;
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
-    if (stopping) return;
-    stopping = true;
     const children = [...running.values()];
-    const all = children.map((c) => new Promise((r) => (c.exitCode != null || c.signalCode != null ? r() : c.once('close', r))));
-    for (const c of children) end(c);
-    const done = () => {
+    const finishStop = () => {
       sweepStale(tmp);
-      process.removeAllListeners(sig);
+      process.removeAllListeners('SIGTERM');
+      process.removeAllListeners('SIGINT');
       process.kill(process.pid, sig);
     };
-    Promise.race([Promise.all(all), new Promise((r) => setTimeout(r, GRACE_MS + 2000))]).then(done, done);
+    if (stopping) {
+      // (asked again: no grace, the medium on #97's second round, 7)
+      for (const c of children) end(c, true);
+      setTimeout(finishStop, 200);
+      return;
+    }
+    stopping = true;
+    const all = children.map((c) => new Promise((r) => (c.exitCode != null || c.signalCode != null ? r() : c.once('exit', r))));
+    for (const c of children) end(c);
+    Promise.race([Promise.all(all), new Promise((r) => setTimeout(r, GRACE_MS + 2000))]).then(finishStop, finishStop);
   });
 }
 
