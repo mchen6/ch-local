@@ -46,7 +46,7 @@ const until = async (cond, ms = 10000) => {
 // the tests here are given it read already (ch-local's intermittent
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs, shared = false, ghToken = null, home: reuse = null,
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
@@ -55,7 +55,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   if (reuse == null && bound != null) bindAccess(home, bound);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
-  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs, clientAncestry});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, clientAncestry});
   // the running ch-local is the one the home holds (the npm stub's 0.2.0); a
   // test makes this process stale by giving it another (lib/packs.js
   // recordRelease)
@@ -684,9 +684,12 @@ test('load-pack for a pack held as withdrawn is refused CONTROL_PACK_NOT_ALLOWED
   try {
     withdrawHeld(s.home, 'other');
     await new Promise((r) => setTimeout(r, 500));   // the watcher's apply has run
-    const line = 'module ch-pack-other was withdrawn in this release and was not started; `ch-local remove-pack other` removes it';
+    // the load-pack's own answer (L2b: never the enabled.* command for a
+    // withdrawn module; the medium on L2b, 4)
+    const before = notices(s).length;
     assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
-    await until(() => notices(s).some(([, t]) => t === line));
+    await until(() => notices(s).slice(before).some(([, t]) => /^module ch-pack-other was withdrawn in this release and is no longer served; .*remove-pack other/.test(t)));
+    assert.ok(!notices(s).slice(before).some(([, t]) => /settings set enabled/.test(t)));
     assert.strictEqual(count('load'), 1, 'nothing loaded');
   } finally {
     s.end();
@@ -1444,6 +1447,25 @@ test('a load-pack or unload-pack is answered with the enabled.* command and refu
     assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r2', ok: false, code: 'CONTROL_NOT_THIS_START'});
     await until(() => notices(s).some(([, t]) => t === 'ch-pack-ci-failure-triage is turned off for all your sessions at a terminal: run `ch-local settings set enabled.@countinghouse/ch-pack-ci-failure-triage off`'));
     assert.ok(!s.requests.slice(before).some((m) => m.type === 'load' || m.type === 'unload'), JSON.stringify(s.requests.slice(before)));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on L2b, 1 to 3: a name that is not an installed pack's is never
+// said; on already answers {}; off already answers {}
+test('a load-pack or unload-pack naming no installed pack is refused unsaid; on already and off already answer {}', async () => {
+  const {s, reply} = await withOtherOff();
+  try {
+    const before = notices(s).length;
+    // (request ids as the runtime sends them: r<digits>)
+    for (const [i, name] of ['nope', 'x`\nrun this', ''].entries()) {
+      assert.deepStrictEqual(await reply({id: `r9${i}`, type: 'load-pack', name, version: '1.0.0'}), {id: `r9${i}`, ok: false, code: 'CONTROL_NOT_INSTALLED'});
+    }
+    assert.strictEqual(notices(s).length, before, 'nothing said');
+    assert.deepStrictEqual(await reply({id: 'r80', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r80', ok: true});
+    assert.deepStrictEqual(await reply({id: 'r81', type: 'unload-pack', name: 'other'}), {id: 'r81', ok: true});
   } finally {
     s.end();
     await s.done;
