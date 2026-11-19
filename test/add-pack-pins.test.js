@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // Between packs from different pins (#413 rev 3 sections 9.2 rule 2, 9.4 and
 // 9.5; L1b-2): add-pack takes each module of the pack by section 9.4's table,
 // asks Question A or B at a terminal before anything is written, never
