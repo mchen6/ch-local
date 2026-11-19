@@ -60,3 +60,16 @@ test('every dropped vector row: refused as told, and a handoff gives exactly the
     assert.deepStrictEqual(out.reset, [row.session], `${why}: told once`);
   }
 });
+
+// the medium on 5b, 1 and 5: a refused row is refused by a handoff too: a
+// pack.* override not of the pack form's shape refuses the whole row, never
+// stripped and taken
+test('every refused vector row with a pack.* override is refused by a handoff too, never taken without it', () => {
+  const packRows = restoreRows.refused.filter(({row}) => row != null && row.state != null && Array.isArray(row.state.overrides) && row.state.overrides.some((o) => o != null && typeof o.name === 'string' && o.name.startsWith('pack.')));
+  assert.ok(packRows.length > 0, 'the vectors hold one');
+  for (const {why, row} of packRows) {
+    const t = createSessionTable({warn: () => {}});
+    t.seed({sessions: [row], declines: []});
+    assert.deepStrictEqual(t.restore().sessions, [], why);
+  }
+});
