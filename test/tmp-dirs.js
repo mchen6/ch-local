@@ -253,10 +253,14 @@ if (global[KEY] == null) {
 
   // When the runner that started this file is gone (killed outright), the
   // file ends itself, its directories with it (a parent-death check: the
-  // Reviewer's second high review of #97, 5)
+  // Reviewer's second high review of #97, 5). Its parent changes on POSIX;
+  // Windows never reparents, and a runner sent SIGTERM there is ended at
+  // once with no handler run, so the runner's pid itself is asked too (#97's
+  // windows-latest leg).
   const runner = Number(process.env.CH_TEST_RUNNER_PID);
   if (Number.isInteger(runner) && runner > 0 && runner === process.ppid) {
-    setInterval(() => { if (process.ppid !== runner) process.exit(70); }, 1000).unref();
+    const runnerGone = () => { try { process.kill(runner, 0); return false; } catch (err) { return err.code === 'ESRCH'; } };
+    setInterval(() => { if (process.ppid !== runner || runnerGone()) process.exit(70); }, 1000).unref();
   }
   // The runner, before it ends a file past its time, asks it to name the
   // test it is in (SIGUSR2: no test emits it; the file goes on). Names come

@@ -178,7 +178,15 @@ test('the runner sent SIGTERM ends its files, sweeps what they made, and ends by
   assert.ok(recorded(), 'the file made its directory, and its manifest lists it');
   runner.kill('SIGTERM');
   const [code, signal] = await new Promise((resolve) => runner.once('exit', (c, s) => resolve([c, s])));
-  if (process.platform !== 'win32') assert.strictEqual(signal, 'SIGTERM', `ended ${code} ${signal}`);
+  // POSIX: the runner's handler ends its file, sweeps, and re-raises.
+  // Windows: SIGTERM ends the runner at once, with no handler run; its file
+  // sees its runner gone within a second or two and ends itself, its
+  // directories removed at its own 'exit' (Windows never reparents)
+  if (process.platform !== 'win32') {
+    assert.strictEqual(signal, 'SIGTERM', `ended ${code} ${signal}`);
+  } else {
+    for (const until = Date.now() + 15000; (chDirs().length > 0 || manifests().length > 0) && Date.now() < until;) await new Promise((r) => setTimeout(r, 100));
+  }
   assert.deepStrictEqual(chDirs(), [], 'its file\'s directory swept');
   assert.deepStrictEqual(manifests(), [], 'and its manifest');
 });
@@ -247,4 +255,19 @@ test('a detached daemon a killed file started is ended by the sweep before what 
   assert.strictEqual(alive, false, 'ended by the sweep');
   fs.rmSync(pidFile, {force: true});
   for (const n of chDirs()) if (n.startsWith('ch-daemonhome-')) fs.rmSync(path.join(PRIVATE, n), {recursive: true, force: true});
+});
+
+// The runner killed outright (SIGKILL, an OOM kill: no handler runs): its
+// file sees it gone and ends itself, its directories removed at its own
+// 'exit' (the Reviewer's second high review of #97, 5)
+test('the runner killed outright: its file ends itself within seconds, what it made removed', async () => {
+  const runner = spawn(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), hangingFile()], {cwd: ROOT, env: envOf(), stdio: 'ignore'});
+  const recorded = () => manifests().some((n) => { try { return fs.readFileSync(path.join(PRIVATE, n, 'dirs.jsonl'), 'utf8').includes('ch-hang-'); } catch (e) { return false; } });
+  for (const until = Date.now() + 20000; !recorded() && Date.now() < until;) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(recorded(), 'the file made its directory, and its manifest lists it');
+  runner.kill('SIGKILL');
+  await new Promise((resolve) => runner.once('exit', resolve));
+  for (const until = Date.now() + 15000; (chDirs().length > 0 || manifests().length > 0) && Date.now() < until;) await new Promise((r) => setTimeout(r, 100));
+  assert.deepStrictEqual(chDirs(), [], 'the file ended itself, its directory removed');
+  assert.deepStrictEqual(manifests(), [], 'and its manifest');
 });
