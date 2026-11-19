@@ -54,9 +54,9 @@ test('a module that would not load says why, as a start says it; its callers say
 test('a module turned off says how to turn it on', async () => {
   const s = await installed();
   stored(s.home);
-  require('../lib/settings').setSetting({...require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}, '/nonexistent')}, 'pack.ci-failure-triage', 'off', {by: 'cli'});
+  require('../lib/settings').setSetting({...require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}, '/nonexistent')}, 'enabled.@countinghouse/ch-pack-ci-failure-triage', 'off', {by: 'cli'});
   const {out} = await statusOf(s.io());
-  assert.strictEqual(lineOf(out, 'ch-pack-ci-failure-triage'), 'not loaded: turned off (`ch-local settings set pack.ci-failure-triage on`)');
+  assert.strictEqual(lineOf(out, 'ch-pack-ci-failure-triage'), 'not loaded: turned off (`ch-local settings set enabled.@countinghouse/ch-pack-ci-failure-triage on`)');
 });
 
 test('a running client\'s word: a module it stopped, with its code; a client on another ch-local, once; a dead start is not read', async () => {
@@ -120,7 +120,7 @@ test('a credential from the gh login: gh is asked as a start asks it; one that g
 test('a module turned off still shows its stored credential', async () => {
   const s = await installed();
   stored(s.home);
-  require('../lib/settings').setSetting(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}, '/nonexistent'), 'pack.ci-failure-triage', 'off', {by: 'cli'});
+  require('../lib/settings').setSetting(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}, '/nonexistent'), 'enabled.@countinghouse/ch-pack-ci-failure-triage', 'off', {by: 'cli'});
   const {out} = await statusOf(s.io());
   assert.strictEqual(lineOf(out, 'ch-access-github'), 'part; credential COUNTINGHOUSE_GITHUB_TOKEN -> https://api.githubcopilot.com (stored)');
 });

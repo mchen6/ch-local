@@ -42,3 +42,37 @@ test('no refused vector row is restored', () => {
     assert.ok(!t.restore().sessions.some((r) => JSON.stringify(r) === JSON.stringify(row)), why);
   }
 });
+
+// M5a (#438): a well-formed pack.* override from before it is dropped from
+// its row by the runtime, the rest taken, and the session told once naming
+// the packs. A runtime never tells one (refused as told); a handoff that
+// carries one (seed) hands the row on as it is, for the runtime to drop and
+// tell: the vector's `taken` is that row without it.
+test('every dropped vector row: refused as told, and a handoff hands it on whole for the runtime to drop (taken is the rest)', () => {
+  for (const {why, row, taken} of restoreRows.dropped) {
+    const told = createSessionTable({warn: () => {}});
+    assert.strictEqual(told.told({type: 'session-resume', session: row.session, hash: row.resume}), true, why);
+    assert.strictEqual(told.told({type: 'session-state', session: row.session, state: row.state}), false, `${why}: never told by a runtime`);
+    const t = createSessionTable({warn: () => {}});
+    t.seed({sessions: [row], declines: []});
+    const out = t.restore();
+    assert.deepStrictEqual(out.sessions, [row], `${why}: handed on as it is`);
+    assert.deepStrictEqual(out.reset, [], `${why}: the runtime tells it, naming the packs`);
+    // (taken: the state as the runtime takes it, the stale override dropped)
+    const withoutPacks = {...row.state, overrides: row.state.overrides.filter((o) => !o.name.startsWith('pack.'))};
+    assert.deepStrictEqual(withoutPacks, taken, why);
+  }
+});
+
+// the medium on 5b, 1 and 5: a refused row is refused by a handoff too: a
+// pack.* override not of the pack form's shape refuses the whole row, never
+// stripped and taken
+test('every refused vector row with a pack.* override is refused by a handoff too, never taken without it', () => {
+  const packRows = restoreRows.refused.filter(({row}) => row != null && row.state != null && Array.isArray(row.state.overrides) && row.state.overrides.some((o) => o != null && typeof o.name === 'string' && o.name.startsWith('pack.')));
+  assert.ok(packRows.length > 0, 'the vectors hold one');
+  for (const {why, row} of packRows) {
+    const t = createSessionTable({warn: () => {}});
+    t.seed({sessions: [row], declines: []});
+    assert.deepStrictEqual(t.restore().sessions, [], why);
+  }
+});

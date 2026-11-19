@@ -29,6 +29,9 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local uninstall [--keep-data]
        ch-local upgrade [--auto on|off]
        ch-local settings [get | set <name> <value> | reset]
+       ch-local settings modules [<module>]
+       ch-local settings set <module>.<setting> [<value>]
+       ch-local settings reset <module>[.<setting>]
        ch-local credentials [list | add <module> [--to <origin>] | remove <module>]
        ch-local start --stdio [countinghouse options]
 `;
@@ -188,8 +191,9 @@ async function main(argv, io) {
     }
     if (command === 'settings') {
       if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return await require('../lib/settings-command').settings({action: 'get'}, io);
-      if (rest.length === 3 && rest[0] === 'set') return await require('../lib/settings-command').settings({action: 'set', name: rest[1], value: rest[2]}, io);
-      if (rest.length === 1 && rest[0] === 'reset') return await require('../lib/settings-command').settings({action: 'reset'}, io);
+      if ((rest.length === 3 || rest.length === 2) && rest[0] === 'set') return await require('../lib/settings-command').settings({action: 'set', name: rest[1], value: rest[2]}, io);
+      if ((rest.length === 1 || rest.length === 2) && rest[0] === 'reset') return await require('../lib/settings-command').settings({action: 'reset', name: rest[1]}, io);
+      if ((rest.length === 1 || rest.length === 2) && rest[0] === 'modules') return await require('../lib/settings-command').settings({action: 'modules', name: rest[1]}, io);
       return usage();
     }
     if (command === 'upgrade') {

@@ -175,18 +175,18 @@ test('pack seams: a module two packs record is off only when both are, refused o
   const seams = (values, ceiling = {state: 'none'}) => packSeams({settings: {version: 1, values}, ceiling});
   assert.strictEqual(seams({'pack.b': false}).off(A, ['a', 'b']), null);
   assert.match(seams({'pack.a': false, 'pack.b': false}).off(A, ['a', 'b']), /it is turned off/);
-  const only = {state: 'trusted', ceiling: {packs: ['a']}};
+  const only = {state: 'trusted', ceiling: {modules: ['@countinghouse/ch-pack-a']}};
   assert.strictEqual(seams({}, only).ceiling(A, ['a', 'b']), null);
-  assert.match(seams({}, {state: 'trusted', ceiling: {packs: ['c']}}).ceiling(A, ['a', 'b']), /allows only c/);
+  assert.match(seams({}, {state: 'trusted', ceiling: {modules: ['@countinghouse/ch-pack-c']}}).ceiling(A, ['a', 'b']), /its module ch-pack-a is not on the operator's list/);
 });
 
 // the medium review of the high round, 3: an allowed pack that is off and a
 // forbidden one that is on never add up to a load
 test('pack seams: allowed-but-off plus forbidden-but-on is off', () => {
   const {packSeams} = require('../lib/pack-seams');
-  const seams = packSeams({settings: {version: 1, values: {'pack.a': false}}, ceiling: {state: 'trusted', ceiling: {packs: ['a']}}});
+  const seams = packSeams({settings: {version: 1, values: {'pack.a': false}}, ceiling: {state: 'trusted', ceiling: {modules: ['@countinghouse/ch-pack-a']}}});
   assert.strictEqual(seams.ceiling(A, ['a', 'b']), null);
-  assert.match(seams.off(A, ['a', 'b']), /it is turned off \(`ch-local settings set pack\.a on`\)/);
+  assert.match(seams.off(A, ['a', 'b']), /it is turned off \(`ch-local settings set enabled\.@t\/ch-pack-a on`\)/);
 });
 
 // the medium review of the high round, 8: the credential is asked only of
