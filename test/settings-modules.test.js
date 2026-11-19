@@ -314,3 +314,16 @@ test('a ceiling with module-setting rules over a runtime whose reader cannot rea
   assert.match(r.io.err, /has rules for module settings, which the installed countinghouse cannot read/);
   assert.deepStrictEqual(fileValues(home), {});
 });
+
+// the history cut, held to countinghouse's shared historyCut vector (#439):
+// one rule on both sides of settings.json's history
+test('the history cut holds to the shared historyCut vector: each case written and hashed as it says', () => {
+  const {historyValue} = require('../lib/settings');
+  const {historyCut} = require('./vectors/history-cut.json');
+  assert.ok(historyCut.cases.length >= 5);
+  for (const c of historyCut.cases) {
+    const got = historyValue('new', c.value);
+    assert.deepStrictEqual(got.new, c.written, c.why);
+    assert.strictEqual(got.newSha256 === undefined ? null : got.newSha256, c.sha256, c.why);
+  }
+});

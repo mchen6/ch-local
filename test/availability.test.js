@@ -99,14 +99,14 @@ test('a call to a module that is not installed, and a cycle of calls, are said, 
   assert.deepStrictEqual(Object.keys(av.units[0].modules).sort(), [B, X, Y].sort());
 });
 
-test('a top-level module two packs record is one unit, loaded once, with both packs for the seams', () => {
+test('a top-level module two packs record is one unit, loaded once, asked of the seams once', () => {
   const packs = {a: {[A]: '1.0.0', [X]: '1.0.0'}, c: {[A]: '1.0.0', [X]: '1.0.0'}};
   const {where, record} = home({packs});
   const seen = [];
   const av = availability(where, record, {release: releaseOf(packs), seams: {...NONE, off: (m, p) => { seen.push([m, p]); return null; }}});
   assert.deepStrictEqual(av.units.map((u) => u.name), [A]);
   assert.deepStrictEqual(av.units[0].packs, ['a', 'c']);
-  assert.deepStrictEqual(seen, [[A, ['a', 'c']]]);
+  assert.deepStrictEqual(seen.map(([m]) => m), [A], 'by module (L2b): once');
 });
 
 test('a development home is exempt from the release rule; so is a record of another release (pins: false)', () => {
@@ -132,7 +132,7 @@ test('the credential is asked last, of every module that would otherwise load, p
 
 // the medium review of L2a, 1: a pack whose modules declare no role is
 // never past its seams: its first module is its scenario, the rest parts
-test('a pack whose modules declare no role: its first is top-level and goes through the pack\'s seams; the others are parts', () => {
+test('a pack whose modules declare no role: its first is top-level and goes through the seams; the others are parts', () => {
   const N = '@t/n-main';
   const M = '@t/n-helper';
   const packs = {n: {[N]: '1.0.0', [M]: '1.0.0'}};
@@ -141,7 +141,7 @@ test('a pack whose modules declare no role: its first is top-level and goes thro
   storeModule(dir, N, '1.0.0', {countinghouse: {calls: ['n-helper/s.go']}});
   storeModule(dir, M, '1.0.0');
   const record = writeHome(dir, packs);
-  const av = availability(where, record, {release: releaseOf(packs), seams: {...NONE, off: (m, p) => (p.includes('n') ? 'it is turned off' : null)}});
+  const av = availability(where, record, {release: releaseOf(packs), seams: {...NONE, off: (m) => (m === N ? 'it is turned off' : null)}});
   assert.deepStrictEqual(av.units, []);
   assert.deepStrictEqual([...av.unavailable.keys()], [N]);
   assert.strictEqual(av.unavailable.get(N).kind, 'off');
@@ -169,25 +169,28 @@ test('a module that calls a top-level module without its credential is not avail
   assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-pack-b, which is not available (set B_TOKEN)');
 });
 
-// the high review of L2a, 8: a module two packs record is on, and allowed,
-// while either pack is
-test('pack seams: a module two packs record is off only when both are, refused only when neither is allowed', () => {
-  const {packSeams} = require('../lib/pack-seams');
-  const seams = (values, ceiling = {state: 'none'}) => packSeams({settings: {version: 1, values}, ceiling});
-  assert.strictEqual(seams({'pack.b': false}).off(A, ['a', 'b']), null);
-  assert.match(seams({'pack.a': false, 'pack.b': false}).off(A, ['a', 'b']), /it is turned off/);
-  const only = {state: 'trusted', ceiling: {modules: ['@countinghouse/ch-pack-a']}};
-  assert.strictEqual(seams({}, only).ceiling(A, ['a', 'b']), null);
-  assert.match(seams({}, {state: 'trusted', ceiling: {modules: ['@countinghouse/ch-pack-c']}}).ceiling(A, ['a', 'b']), /its module ch-pack-a is not on the operator's list/);
+// L2b (#413 sections 5.1, 5.2 and 8): the seams by module. Off: a top-level
+// module's enabled.*, a leftover pack.* off winning; the ceiling: the
+// operator's modules list, for every module, a part included
+test('module seams: off by enabled.* or a leftover pack.* off (off wins); the ceiling by the modules list; untrusted allows none', () => {
+  const {moduleSeams} = require('../lib/module-seams');
+  const record = {packs: {a: {modules: {[A]: '1.0.0', [X]: '1.0.0'}}}, modules: {[A]: {version: '1.0.0', role: 'scenario'}, [X]: {version: '1.0.0', role: 'part'}}};
+  const seams = (values, ceiling = {state: 'none'}) => moduleSeams({settings: {version: 1, values}, ceiling, record});
+  assert.strictEqual(seams({}).off(A), null);
+  assert.strictEqual(seams({[`enabled.${A}`]: false}).off(A), `it is turned off (\`ch-local settings set enabled.${A} on\`)`);
+  assert.match(seams({'pack.a': false, [`enabled.${A}`]: true}).off(A), /it is turned off/, 'off wins');
+  const only = {state: 'trusted', ceiling: {modules: [A]}};
+  assert.strictEqual(seams({}, only).ceiling(A), null);
+  assert.strictEqual(seams({}, only).ceiling(X), 'it is not on the operator\'s list', 'a part too');
+  assert.match(seams({}, {state: 'untrusted', file: '/etc/c.json', problem: 'bad'}).ceiling(A), /cannot be trusted \(bad\), so no module loads/);
 });
 
-// the medium review of the high round, 3: an allowed pack that is off and a
-// forbidden one that is on never add up to a load
-test('pack seams: allowed-but-off plus forbidden-but-on is off', () => {
-  const {packSeams} = require('../lib/pack-seams');
-  const seams = packSeams({settings: {version: 1, values: {'pack.a': false}}, ceiling: {state: 'trusted', ceiling: {modules: ['@countinghouse/ch-pack-a']}}});
-  assert.strictEqual(seams.ceiling(A, ['a', 'b']), null);
-  assert.match(seams.off(A, ['a', 'b']), /it is turned off \(`ch-local settings set enabled\.@t\/ch-pack-a on`\)/);
+test('a top-level module that calls a part not on the operator\'s list is not available, and says so', () => {
+  const {where, record} = home({calls: {[A]: ['scenario', ['ch-step-x/s.go']]}});
+  const {moduleSeams} = require('../lib/module-seams');
+  const av = availability(where, record, {release: releaseOf(PACKS), seams: Object.assign(moduleSeams({settings: {version: 1, values: {}}, ceiling: {state: 'trusted', ceiling: {modules: [A, B]}}, record}), {credential: () => null})});
+  assert.ok(!av.units.some((u) => u.name === A));
+  assert.strictEqual(av.unavailable.get(A).line, 'not loading ch-pack-a: it calls ch-step-x, which is not available (it is not on the operator\'s list)');
 });
 
 // the medium review of the high round, 8: the credential is asked only of

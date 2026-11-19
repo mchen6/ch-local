@@ -149,10 +149,10 @@ test('on past a leftover pack.* off is a loosening: asked at a terminal, refused
 
 // the medium on L3, 5: the "turned off" hint names a command that works
 test('a module turned off is said with the enabled.* command that turns it on', () => {
-  const {packSeams} = require('../lib/pack-seams');
+  const {moduleSeams} = require('../lib/module-seams');
   const record = {packs: {p: {modules: {[SCENARIO]: '1.0.0'}}}, modules: {[SCENARIO]: {version: '1.0.0', role: 'scenario'}}};
-  const seams = packSeams({settings: {version: 1, values: {[`enabled.${SCENARIO}`]: false}}, ceiling: {state: 'none'}, record});
-  assert.strictEqual(seams.off(SCENARIO, ['p']), `it is turned off (\`ch-local settings set enabled.${SCENARIO} on\`)`);
+  const seams = moduleSeams({settings: {version: 1, values: {[`enabled.${SCENARIO}`]: false}}, ceiling: {state: 'none'}, record});
+  assert.strictEqual(seams.off(SCENARIO), `it is turned off (\`ch-local settings set enabled.${SCENARIO} on\`)`);
 });
 
 // the medium on L3, 6: a write that fails after a leftover's removal line

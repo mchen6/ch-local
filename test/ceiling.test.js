@@ -292,7 +292,8 @@ test('the review of #18: the operator\'s allowlist of packs: an unlisted pack ne
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   reader(home, trusted({modules: ['@countinghouse/ch-pack-other']}));
   const s = await startOnce(home);
-  assert.match(s.err, /not loading ch-pack-ci-failure-triage: its modules ch-pack-ci-failure-triage, ch-access-github, ch-step-redact are not on the operator's list/);
+  // by module (L2b): the scenario itself is not on the list
+  assert.match(s.err, /not loading ch-pack-ci-failure-triage: it is not on the operator's list/);
   assert.ok(s.args != null && !s.args.includes('--loadModule'), 'started, with no pack (#54: never ended for want of one)');
   // a history that says it was turned on changes nothing
   fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: false, new: true}) + '\n');
@@ -405,7 +406,7 @@ test('the review of #18: uninstall --keep-data keeps settings.json with the hist
 test('the review of #18: a ceiling that cannot be trusted loads NO pack, and install refuses, naming the problem', async () => {
   const UNT = {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'packs is not a list of pack names'};
   assert.strictEqual(ceilingModule.packAllowed(UNT, 'ci-failure-triage'), false);
-  assert.match(ceilingModule.packRefusal(UNT, 'x'), /the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(packs is not a list of pack names\), so no module loads/);
+  assert.match(ceilingModule.modulesRefusal(UNT, ['x']), /the operator's ceiling file \/etc\/countinghouse\/ceiling\.json cannot be trusted \(packs is not a list of pack names\), so no module loads/);
   assert.strictEqual(ceilingModule.packAllowed({state: 'none'}, 'x'), true);
   const home = tmp('ch-home-');
   const r = release();

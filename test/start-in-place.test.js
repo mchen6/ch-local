@@ -47,7 +47,7 @@ const until = async (cond, ms = 10000) => {
 // the tests here are given it read already (ch-local's intermittent
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, loadPackAnswerMs, shared = false, ghToken = null, home: reuse = null,
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, loadPackDeadlineMs, loadPackRuntimeWaitMs, ghToken = null, home: reuse = null,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
@@ -56,7 +56,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   if (reuse == null && bound != null) bindAccess(home, bound);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
-  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackAnswerMs, clientAncestry});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackDeadlineMs, loadPackRuntimeWaitMs, clientAncestry});
   // the running ch-local is the one the home holds (the npm stub's 0.2.0); a
   // test makes this process stale by giving it another (lib/packs.js
   // recordRelease)
@@ -473,30 +473,6 @@ async function withOtherOff(opts = {}) {
   return {s, where, count, reply};
 }
 
-test('load-pack: an installed pack, off, allowed, at the version the form showed, is loaded this start; settings.json untouched; recorded and told', async () => {
-  const {s, where, count, reply} = await withOtherOff();
-  try {
-    const before = fs.readFileSync(where.settings, 'utf8');
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
-    assert.strictEqual(count('load'), 2, 'loaded again');
-    assert.strictEqual(fs.readFileSync(where.settings, 'utf8'), before, 'settings.json unchanged');
-    const h = s.history().filter((e) => e.module === '@countinghouse/ch-pack-other').pop();
-    assert.deepStrictEqual([h.change, h.by], ['turned on this start (confirmed in the client)', 'start']);
-    await until(() => s.requests.some((m) => m.type === 'notice' && /ch-pack-other turned on for this start 0\.3\.0/.test(m.text)));
-    // the watcher fires (another setting changed): this start's pack stays
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
-    assert.strictEqual(count('unload'), 1, 'not unloaded by the next apply');
-    // a ceiling that stops allowing it: unloaded
-    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'], conversation: true}});
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'en'}}));
-    await until(() => count('unload') === 2);
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
 // A shared runtime (as ch-local daemon runs it), its GitHub token from gh
 // (its environment holds no other credential), with ci-failure-triage
 // turned off by the terminal after it loaded at spawn
@@ -601,146 +577,6 @@ test('B3: a load and an unload from the settings are in the module form; the unl
   }
 });
 
-// a session's own pack on a shared runtime (the Reviewer, 11-18, L1a Q1):
-// the module form is global there, and one session must never turn a pack
-// on for everyone, so it is refused and the session told how to turn it on
-// for every session; the terminal's on loads it, for everyone
-test('B3: on a shared runtime a session\'s load-pack is refused and the session told to turn it on for every session; the terminal\'s on loads it', async () => {
-  const {s, where, count, reply} = await sharedWithCiOff();
-  try {
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
-    await until(() => notices(s).some(([, t]) => t === 'ci-failure-triage is turned on for every session: `ch-local settings set enabled.@countinghouse/ch-pack-ci-failure-triage on`'));
-    assert.strictEqual(count('load'), 0, 'nothing loaded for the session');
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.ci-failure-triage': true}}));
-    await until(() => count('load') === 1);
-    assert.ok(!s.requests.some((m) => m.type === 'set' && /^pack\./.test(m.name)), 'no set pack.<n>: the load is everyone\'s');
-    holdsToTheVectors(s.requests);
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('B3: outside a shared runtime the terminal\'s on sends no set, and the notice still says "for this start"', async () => {
-  const {s, where, reply} = await withOtherOff();
-  try {
-    await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'});
-    await until(() => s.requests.some((m) => m.type === 'notice' && /ch-pack-other turned on for this start 0\.3\.0/.test(m.text)));
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': true, locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
-    assert.ok(!s.requests.some((m) => m.type === 'set' && m.name === 'pack.other'));
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('load-pack refused: another version than the form showed, a pack the ceiling does not list, one not installed; unload-pack turns this start\'s off', async () => {
-  const {s, count, reply} = await withOtherOff();
-  try {
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.2.0'}), {id: 'r1', ok: false, code: 'CONTROL_VERSION_CHANGED'});
-    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'nope', version: '1.0.0'}), {id: 'r2', ok: false, code: 'CONTROL_NOT_INSTALLED'});
-    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'], conversation: true}});
-    assert.deepStrictEqual(await reply({id: 'r3', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r3', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
-    assert.strictEqual(count('load'), 1, 'nothing loaded');
-    ceilingReader(s.home, {state: 'none'});
-    assert.deepStrictEqual(await reply({id: 'r4', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r4', ok: true});
-    assert.deepStrictEqual(await reply({id: 'r5', type: 'unload-pack', name: 'other'}), {id: 'r5', ok: true});
-    assert.strictEqual(count('unload'), 2);
-    assert.deepStrictEqual(await reply({id: 'r6', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r6', ok: false, code: 'CONTROL_NOT_THIS_START'});
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('load-pack review: the ceiling turned against conversation, or untrusted: refused; a ceiling that unloads a this-start pack ends it (re-allowed, it stays off)', async () => {
-  const {s, where, count, reply} = await withOtherOff();
-  try {
-    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], conversation: false}});
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_CONVERSATION_OFF'});
-    ceilingReader(s.home, {state: 'untrusted', file: '/etc/countinghouse/ceiling.json', problem: 'p'});
-    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r2', ok: false, code: 'CONTROL_CEILING_UNTRUSTED'});
-    ceilingReader(s.home, {state: 'none'});
-    assert.deepStrictEqual(await reply({id: 'r3', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r3', ok: true});
-    ceilingReader(s.home, {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'], conversation: true}});
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
-    await until(() => count('unload') === 2);
-    ceilingReader(s.home, {state: 'none'});
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'en'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale' && m.value === 'en-US'));
-    assert.strictEqual(count('load'), 2, 'not reloaded without a new confirmation');
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('load-pack review: settings.json\'s value for the pack changing ends this start\'s turn-on (the file governs)', async () => {
-  const {s, where, count, reply} = await withOtherOff();
-  try {
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
-    // turned on in the file, then off in the file: off
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': true}}));
-    await new Promise((r) => setTimeout(r, 600));
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {'pack.other': false, locale: 'zh'}}));
-    await until(() => count('unload') === 2);
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('load-pack review: the version loaded is the one confirmed; a pack whose record holds no ch-pack is refused; one not started within 10 s is refused unloaded', async () => {
-  const {s, count, reply} = await withOtherOff();
-  try {
-    // the record's `other` no longer holds its ch-pack package
-    editRecord(s.home, (r) => {
-      const {'@countinghouse/ch-pack-other': _drop, ...rest} = r.packs.other.modules;
-      void _drop;
-      return {...r, packs: {...r.packs, other: {...r.packs.other, modules: rest}}};
-    });
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_VERSION_CHANGED'});
-    assert.strictEqual(count('load'), 1);
-  } finally {
-    s.end();
-    await s.done;
-  }
-  // a request that waited past its start window on the applier's chain
-  const {loadPackDeadlineMs} = require('../lib/in-place');
-  assert.strictEqual(loadPackDeadlineMs, 10000, 'started within 10 s, loaded within 30 s more: under the runtime\'s 45 s');
-});
-
-test('load-pack follow-ups: a this-start pack upgraded in place is turned off, not reloaded at a version nobody confirmed', async () => {
-  const {s, count, reply} = await withOtherOff();
-  try {
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: true});
-    const r2 = release({versions: {'@countinghouse/ch-pack-other': '0.4.0'}});
-    assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
-    await until(() => count('unload') === 2);
-    assert.strictEqual(s.requests.filter((m) => m.type === 'reload' && m.name === '@countinghouse/ch-pack-other').length, 0, 'never reloaded');
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('load-pack follow-ups: a confirmed load answered past the runtime\'s wait is unloaded and refused, never told as turned on', async () => {
-  // the runtime's load answer arrives 300 ms late; the answer window is 200 ms
-  const {s, count, reply} = await withOtherOff({loadPackAnswerMs: 200, answer: (m) => (m.type === 'load' && m.name === '@countinghouse/ch-pack-other' ? {ok: true, delayMs: 300} : m.type === undefined ? null : {ok: true})});
-  try {
-    const before = count('load');
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_BUSY'});
-    assert.strictEqual(count('load'), before + 1);
-    await until(() => count('unload') === 2);
-    assert.ok(!s.requests.some((m) => m.type === 'notice' && /ch-pack-other turned on for this start/.test(m.text)), 'never told as turned on');
-    assert.ok(s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.change === 'not turned on (answered too late)'));
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
 // Withdrawn packs (maintainer's decision, 2026-11-17): installed, but not in the
 // running release's allowlist: never started; told once, on stderr and to
 // the client; nothing of it removed. An unreleased install is exempt (its
@@ -822,26 +658,6 @@ test('an unreleased install is exempt, with CH_LOCAL_DEV=1 or without (the share
   }
 });
 
-test('load-pack for a withdrawn pack is refused CONTROL_PACK_NOT_ALLOWED, and nothing is loaded', async () => {
-  const {s, count, reply} = await withOtherOff();
-  try {
-    // a release that no longer lists `other`: it is withdrawn
-    const release = require('./fake-io').installedRelease(s.home);
-    const {other, ...kept} = release.packs;
-    assert.ok(other != null, 'the release listed other');
-    s.f.release = {...release, packs: kept};
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
-    assert.strictEqual(count('load'), 1, 'nothing loaded');
-    // listed again, the same request loads it: the release was the refusal
-    s.f.release = release;
-    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r2', ok: true});
-    assert.strictEqual(count('load'), 2);
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
 // Withdrawn by the record (#413 section 9.7): an upgrade to a release that
 // no longer lists a pack writes its modules into the record's withdrawn
 // list, which a start of the release before reads. Nothing of it is removed.
@@ -869,9 +685,12 @@ test('load-pack for a pack held as withdrawn is refused CONTROL_PACK_NOT_ALLOWED
   try {
     withdrawHeld(s.home, 'other');
     await new Promise((r) => setTimeout(r, 500));   // the watcher's apply has run
-    const line = 'module ch-pack-other was withdrawn in this release and was not started; `ch-local remove-pack other` removes it';
+    // the load-pack's own answer (L2b: never the enabled.* command for a
+    // withdrawn module; the medium on L2b, 4)
+    const before = notices(s).length;
     assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
-    await until(() => notices(s).some(([, t]) => t === line));
+    await until(() => notices(s).slice(before).some(([, t]) => /^module ch-pack-other was withdrawn in this release and is no longer served; .*remove-pack other/.test(t)));
+    assert.ok(!notices(s).slice(before).some(([, t]) => /settings set enabled/.test(t)));
     assert.strictEqual(count('load'), 1, 'nothing loaded');
   } finally {
     s.end();
@@ -889,31 +708,6 @@ test('a withdrawn pack whose unload is refused is tried once more, then the clie
   } finally {
     s.end();
     await s.done;
-  }
-});
-
-// the medium review of L1a-2, 6: on a shared runtime a session's load-pack is
-// refused only after every other check: a withdrawn pack is told as such,
-// and one already on answers as before
-test('on a shared runtime a withdrawn pack\'s load-pack is told it is withdrawn, not the settings line; one already on answers {}', async () => {
-  const {s, reply} = await sharedWithCiOff();
-  try {
-    withdrawHeld(s.home, 'ci-failure-triage');
-    await new Promise((r) => setTimeout(r, 500));   // the watcher's apply has run
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
-    await until(() => notices(s).some(([, t]) => /ci-failure-triage was withdrawn in this release/.test(t)));
-    assert.ok(!notices(s).some(([, t]) => /is turned on for every session/.test(t)), 'not the settings line');
-  } finally {
-    s.end();
-    await s.done;
-  }
-  const on = await running({shared: true, env: {}, ghToken: `t${require('node:crypto').randomBytes(12).toString('hex')}`});
-  try {
-    const reply = async (msg) => { on.ask(msg); await until(() => on.requests.some((m) => m.id === msg.id)); return on.requests.find((m) => m.id === msg.id); };
-    assert.deepStrictEqual(await reply({id: 'r2', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r2', ok: true}, 'on already');
-  } finally {
-    on.end();
-    await on.done;
   }
 });
 
@@ -1635,6 +1429,106 @@ test('a module setting changed while running sends the runtime one reread; anoth
     assert.deepStrictEqual(s.requests.filter((m) => m.type === 'reread').map((m) => ({type: m.type, what: m.what})), [{type: 'reread', what: 'module-settings'}]);
     const problem = moduleMessageProblem(s.requests.find((m) => m.type === 'reread'));
     assert.strictEqual(problem, null, problem);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// L2b (#413 section 5.3; the Reviewer on L2b's Q3): a client's load-pack or
+// unload-pack from the pack form's dialog turns nothing on or off here: the
+// session is told the enabled.* command, naming the module, and the ask is
+// refused (until M5b moves the runtime to enabled.*); nothing is loaded
+test('a load-pack or unload-pack is answered with the enabled.* command and refused; nothing is loaded or unloaded', async () => {
+  const {s, reply} = await withOtherOff();
+  try {
+    const before = s.requests.length;
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_USE_TERMINAL'});
+    await until(() => notices(s).some(([, t]) => t === 'ch-pack-other is turned on for all your sessions at a terminal: run `ch-local settings set enabled.@countinghouse/ch-pack-other on`'));
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r2', ok: false, code: 'CONTROL_USE_TERMINAL'});
+    await until(() => notices(s).some(([, t]) => t === 'ch-pack-ci-failure-triage is turned off for all your sessions at a terminal: run `ch-local settings set enabled.@countinghouse/ch-pack-ci-failure-triage off`'));
+    assert.ok(!s.requests.slice(before).some((m) => m.type === 'load' || m.type === 'unload'), JSON.stringify(s.requests.slice(before)));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on L2b, 1 to 3: a name that is not an installed pack's is never
+// said; on already answers {}; off already answers {}
+test('a load-pack or unload-pack naming no installed pack is refused unsaid; on already and off already answer {}', async () => {
+  const {s, reply} = await withOtherOff();
+  try {
+    const before = notices(s).length;
+    // (request ids as the runtime sends them: r<digits>)
+    for (const [i, name] of ['nope', 'x`\nrun this', ''].entries()) {
+      assert.deepStrictEqual(await reply({id: `r9${i}`, type: 'load-pack', name, version: '1.0.0'}), {id: `r9${i}`, ok: false, code: 'CONTROL_NOT_INSTALLED'});
+    }
+    assert.strictEqual(notices(s).length, before, 'nothing said');
+    assert.deepStrictEqual(await reply({id: 'r80', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r80', ok: true});
+    assert.deepStrictEqual(await reply({id: 'r81', type: 'unload-pack', name: 'other'}), {id: 'r81', ok: true});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the high review of #92, 1 to 3: a module on but kept out for another
+// reason is answered with that reason, never "turn it on"; the runtime's
+// undo of an unanswered load-pack is {} unsaid; each line once per start
+test('load-pack: on but blocked says why, never the on command; each answer said once', async () => {
+  const s = await running({bound: null});   // on, but its credential is not stored
+  try {
+    await until(() => s.args() != null);
+    const before = notices(s).length;
+    assert.deepStrictEqual(await reply2(s, {id: 'r71', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r71', ok: false, code: 'CONTROL_NOT_AVAILABLE'});
+    await until(() => notices(s).length > before);
+    const said1 = notices(s).slice(before).map(([, t]) => t);
+    assert.ok(said1.every((t) => !/settings set enabled|loads at your client's next start/.test(t)), JSON.stringify(said1));
+    assert.ok(said1.some((t) => /^not loading ch-pack-ci-failure-triage/.test(t)), JSON.stringify(said1));
+    // asked again: refused again, said no more
+    const said = notices(s).length;
+    assert.deepStrictEqual(await reply2(s, {id: 'r72', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r72', ok: false, code: 'CONTROL_NOT_AVAILABLE'});
+    await new Promise((r) => setTimeout(r, 100));
+    assert.strictEqual(notices(s).length, said, 'said once');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+const reply2 = async (s, msg) => { s.ask(msg); await until(() => s.requests.some((m) => m.id === msg.id)); return s.requests.find((m) => m.id === msg.id); };
+
+// the high review of #92, 2: an ask started past the deadline is refused
+// CONTROL_BUSY unsaid, and the runtime's undo of that load-pack (an
+// unload-pack for the same pack) is {} unsaid, even for a loaded module
+test('a load-pack started past the runtime\'s wait is refused CONTROL_BUSY unsaid, and its undo unload-pack answers {} unsaid', async () => {
+  const s = await running({loadPackDeadlineMs: 0, loadPackRuntimeWaitMs: 0});
+  try {
+    await until(() => s.args() != null);
+    assert.strictEqual(loadsPack(s), true);
+    const before = notices(s).length;
+    assert.deepStrictEqual(await reply2(s, {id: 'r61', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r61', ok: false, code: 'CONTROL_BUSY'});
+    assert.deepStrictEqual(await reply2(s, {id: 'r62', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r62', ok: true});
+    // a later unload-pack (no late load-pack before it) is past the deadline too
+    assert.deepStrictEqual(await reply2(s, {id: 'r63', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r63', ok: false, code: 'CONTROL_BUSY'});
+    await new Promise((r) => setTimeout(r, 100));
+    assert.strictEqual(notices(s).length, before, 'nothing said');
+    assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 0, 'nothing unloaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on #92's high round, 1: a load-pack refused late but inside the
+// runtime's wait gets no undo, so a later unload-pack is never taken for one
+test('a load-pack refused CONTROL_BUSY inside the runtime\'s wait marks nothing: a later unload-pack is answered as itself', async () => {
+  const s = await running({loadPackDeadlineMs: 0, loadPackRuntimeWaitMs: 60000});
+  try {
+    await until(() => s.args() != null);
+    assert.strictEqual(loadsPack(s), true);
+    assert.deepStrictEqual(await reply2(s, {id: 'r51', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r51', ok: false, code: 'CONTROL_BUSY'});
+    assert.deepStrictEqual(await reply2(s, {id: 'r52', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r52', ok: false, code: 'CONTROL_BUSY'});
   } finally {
     s.end();
     await s.done;
