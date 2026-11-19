@@ -5,10 +5,16 @@
 // own (acceptance, smoke) require it, so a new test gets it for free:
 // fs.mkdtemp, fs.mkdtempSync and fs.promises.mkdtemp are wrapped, and each
 // directory they make directly under the temporary directory with a name
-// that begins `ch-` (every test's prefix) is registered, then removed when
-// the process ends: at its exit, after its last test, or on SIGTERM or
-// SIGINT (a file the runner kills on a timeout). A test that removes its own
-// first loses nothing (force).
+// that begins `ch-` (every test's prefix) is registered, then removed at
+// the process's exit, after its last test. A test that removes its own first
+// loses nothing (force).
+//
+// No signal handler: a listener for SIGINT or SIGTERM changes how a process
+// ends on one, and tests emit those signals themselves (acceptance's
+// trapSignals test: process.emit('SIGINT')), which would remove a file's
+// directories mid-run and, re-raised, end the process on Windows (ch-local
+// #89's Windows legs). A file killed by a signal leaves its directories;
+// scripts/test.js names them.
 //
 // Why at the process's end, not each test's: it covers the 40 mkdtemp
 // sites and every per-file tmp() helper with no call site changed, and
@@ -54,16 +60,6 @@ if (global[KEY] == null) {
     made.clear();
   };
   process.on('exit', removeMade);
-  // a signal: removed first, then the signal's own ending (no handler left
-  // to swallow it)
-  for (const sig of ['SIGTERM', 'SIGINT']) {
-    const onSignal = () => {
-      removeMade();
-      process.removeListener(sig, onSignal);
-      process.kill(process.pid, sig);
-    };
-    process.on(sig, onSignal);
-  }
   global[KEY] = {removeMade, made, PREFIX};
 }
 
