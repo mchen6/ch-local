@@ -243,3 +243,15 @@ test('settings reset <m>[.<setting>] is refused for a setting the ceiling fixes'
   }
   assert.deepStrictEqual(fileValues(home), {[STORED('units')]: 'metric', [STORED('note')]: 'x'});
 });
+
+// the rule agreed with countinghouse (its historyCut vector, copied once
+// it merges): code points, never a surrogate pair split; exactly 64 whole
+test('the history cut counts code points: a surrogate pair is never split, and 64 is written whole', () => {
+  const {historyValue} = require('../lib/settings');
+  const v = `${'a'.repeat(63)}😀b`;   // 65 code points, 66 UTF-16 units
+  const cut = historyValue('new', v);
+  assert.strictEqual(cut.new, `${'a'.repeat(63)}😀`);
+  assert.strictEqual(cut.newSha256, crypto.createHash('sha256').update(JSON.stringify(v), 'utf8').digest('hex'));
+  assert.deepStrictEqual(historyValue('new', `${'a'.repeat(63)}😀`), {new: `${'a'.repeat(63)}😀`}, '64 code points: whole');
+  assert.deepStrictEqual(historyValue('new', 12345), {new: 12345}, 'only a string is cut');
+});
