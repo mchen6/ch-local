@@ -551,7 +551,7 @@ test('a gh entry for another origin with no slot says its own reason, and status
   assert.strictEqual(s.state, 'store-problem');
   assert.ok(!/restart/.test(s.reason), s.reason);
   const {statusLine} = require('../lib/credentials-command');
-  assert.match(statusLine(where, record, mc.bindings(where, record), ACCESS), /^not loaded: ch-access-github needs a credential/);
+  assert.match(statusLine(where, record, mc.bindings(where, record), ACCESS), /^not loaded: ch-access-github: its stored credential uses your gh login, which is given only to https:\/\/api\.githubcopilot\.com/);
 });
 
 // the Reviewer's round 3, 7: input past the limit is refused at once

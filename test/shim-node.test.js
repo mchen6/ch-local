@@ -474,5 +474,8 @@ test('runtimeEnv: the locale, extras and proxies by any case on win32; proxies i
   assert.deepStrictEqual(Object.keys(win).sort(), ['No_Proxy', 'PATH', 'https_proxy', 'lc_all', 'node_extra_ca_certs']);
   const posix = shimConfig.runtimeEnv({PATH: '/bin', HTTPS_PROXY: 'http://proxy.example:3128', no_proxy: 'localhost', Http_Proxy: 'x', NODE_USE_ENV_PROXY: '1', lc_all: 'C'}, 'linux');
   assert.deepStrictEqual(Object.keys(posix).sort(), ['HTTPS_PROXY', 'NODE_USE_ENV_PROXY', 'PATH', 'no_proxy']);
-  assert.deepStrictEqual(shimConfig.proxiesSet({HTTPS_PROXY: 'http://proxy.example:3128', no_proxy: 'localhost', OTHER: 'y'}), ['HTTPS_PROXY', 'no_proxy']);
+  assert.deepStrictEqual(shimConfig.proxiesSet({HTTPS_PROXY: 'http://proxy.example:3128', no_proxy: 'localhost', OTHER: 'y'}, 'linux'), ['HTTPS_PROXY', 'no_proxy']);
+  // what is named is what is passed: a mixed-case name on POSIX is neither
+  assert.deepStrictEqual(shimConfig.proxiesSet({Http_Proxy: 'x'}, 'linux'), []);
+  assert.deepStrictEqual(shimConfig.proxiesSet({Http_Proxy: 'x'}, 'win32'), ['Http_Proxy']);
 });
