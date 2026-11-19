@@ -78,8 +78,11 @@ test('the home\'s modules add names only: two of them sharing one never refuse a
 test('only an active pack\'s modules count as installed for a call: a withdrawn or held pack\'s never load (the Reviewer\'s high review of #98, 7)', () => {
   const {activeContext} = require('../lib/description-check');
   const record = {packs: {other: {modules: {[OTHER]: '1.0.0'}}, gone: {modules: {[OTHER_PART]: '1.0.0'}}},
-    withdrawn: [OTHER_PART], held: {kept: {modules: {'@countinghouse/ch-held': '1.0.0'}}},
+    held: {kept: {modules: {'@countinghouse/ch-held': '1.0.0'}}},
     modules: {[OTHER]: {version: '1.0.0'}, [OTHER_PART]: {version: '1.0.0'}, '@countinghouse/ch-held': {version: '1.0.0'}}};
-  assert.deepStrictEqual(activeContext(record), {[OTHER]: '1.0.0'});
-  assert.deepStrictEqual(activeContext(null), {});
+  // the operation's release lists other, and withdraws gone
+  assert.deepStrictEqual(activeContext(record, {packs: {other: {}, a: {}}}), {[OTHER]: '1.0.0'});
+  // a release that lists gone again counts it, whatever the record withdrew
+  assert.deepStrictEqual(activeContext({...record, withdrawn: [OTHER_PART]}, {packs: {other: {}, gone: {}}}), {[OTHER]: '1.0.0', [OTHER_PART]: '1.0.0'});
+  assert.deepStrictEqual(activeContext(null, {packs: {}}), {});
 });

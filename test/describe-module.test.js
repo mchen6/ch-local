@@ -17,7 +17,9 @@ test('a module with no remotes, calls or settings is described empty', () => {
   assert.deepStrictEqual(describeModule({name: 'a', version: '1.0.0'}, toPackage), {role: null, credentials: [], calls: [], confirmSettings: {}});
   // its role recorded (the Reviewer's high review of #98, 6)
   assert.strictEqual(describeModule(manifest({role: 'part'}), toPackage).role, 'part');
-  assert.match(describeModule(manifest({role: 7}), toPackage).problem, /countinghouse\.role is not a role/);
+  assert.match(describeModule(manifest({role: 7}), toPackage).problem, /countinghouse\.role is neither scenario nor part/);
+  // only the roles the runtime knows (the medium on #98's high round, 10)
+  assert.match(describeModule(manifest({role: 'parts'}), toPackage).problem, /neither scenario nor part/);
 });
 
 test('a credential in the string form and in the object form: its variable and its remote\'s origin; fallbackEnv never', () => {

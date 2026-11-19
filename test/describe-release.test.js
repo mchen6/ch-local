@@ -64,19 +64,31 @@ test('a development pins file\'s descriptions: only the pack modules it pins, th
   assert.deepStrictEqual(describePinned(release(), {[RUNTIME]: {version: '9.0.0'}, [PACK]: {version: '0.5.0'}, [ACCESS]: {version: '0.2.0'}}, dir), DESCRIBED);
 });
 
+// a whole release document with this test's pack (the shipped one's other
+// parts)
+const wholeDoc = (modules) => ({...JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8')), packs: {x: {modules: [PACK, ACCESS]}}, modules, pins: {}});
+
 test('--check: 0 when the file\'s descriptions match the tarballs, 1 when they differ, and nothing is written', () => {
   const dir = dirOf();
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-pins-')), 'release-pins.json');
   const out = () => { let s = ''; return {write: (x) => { s += x; }, get text() { return s; }}; };
-  fs.writeFileSync(file, JSON.stringify({...release(), modules: DESCRIBED}));
+  fs.writeFileSync(file, JSON.stringify(wholeDoc(DESCRIBED)));
   const ok = out();
   assert.strictEqual(main([dir, '--check'], {stdout: ok, stderr: out(), releasePins: file}), 0, ok.text);
-  const stale = {...release(), modules: {...DESCRIBED, [PACK]: {...DESCRIBED[PACK], calls: []}}};
+  const stale = wholeDoc({...DESCRIBED, [PACK]: {...DESCRIBED[PACK], calls: []}});
   fs.writeFileSync(file, JSON.stringify(stale));
   const differ = out();
   assert.strictEqual(main([dir, '--check'], {stdout: differ, stderr: out(), releasePins: file}), 1);
   assert.match(differ.text, /differ from the tarballs/);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), stale, 'nothing written');
+  // matching descriptions in a document a write would convert, or every
+  // command would refuse: not a match (the medium on #98's high round, 6)
+  for (const doc of [{...wholeDoc(DESCRIBED), allowedOrigins: {}}, {...wholeDoc(DESCRIBED), v: 1}]) {
+    fs.writeFileSync(file, JSON.stringify(doc));
+    const said = out();
+    assert.strictEqual(main([dir, '--check'], {stdout: said, stderr: out(), releasePins: file}), 1);
+    assert.match(said.text, /not a document this ch-local reads as it is/);
+  }
 });
 
 test('--unreleased-pins: the runtime\'s and ch-local\'s tarballs beside the modules are skipped, as install\'s --from holds them (the medium on L5b, 1)', () => {

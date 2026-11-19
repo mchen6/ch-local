@@ -140,6 +140,16 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
       delete next.allowedOrigins;
     }
     if (check) {
+      // the release's own document is also checked as every command reads
+      // it: one a write would convert, or the parser would refuse, does not
+      // match (the medium on #98's high round, 6)
+      if (devFile == null) {
+        const parsed = require('../lib/release-pins').parseReleasePins(JSON.parse(JSON.stringify(doc)));
+        if (doc.v !== 2 || Object.prototype.hasOwnProperty.call(doc, 'allowedOrigins') || parsed.problem != null) {
+          stdout.write(`${target}: not a document this ch-local reads as it is${parsed.problem != null ? ` (${parsed.problem})` : ''}; run without --check to write it\n`);
+          return 1;
+        }
+      }
       const same = JSON.stringify(next.modules) === JSON.stringify(doc.modules) && (devFile != null || JSON.stringify(next.packs) === JSON.stringify(doc.packs));
       stdout.write(same ? `${target}: the descriptions match the tarballs\n` : `${target}: the descriptions differ from the tarballs; run without --check to write them\n`);
       return same ? 0 : 1;
