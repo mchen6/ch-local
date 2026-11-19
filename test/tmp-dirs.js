@@ -45,11 +45,16 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 
 const PREFIX = 'ch-';
 const MANIFEST_PREFIX = '.ch-local-tmp-';
 const MANIFEST_NAME = new RegExp(`^${MANIFEST_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)-[A-Za-z0-9]+$`);
 const KEY = Symbol.for('ch-local.test.tmp-dirs');
+// fs.mkdtempSync as Node has it, taken before it is wrapped (the probe and
+// the manifest's own directory are never registered)
+const rawMkdtemp = global[KEY] != null ? global[KEY].rawMkdtemp : fs.mkdtempSync;
+
 // a directory of ours: a ch-* directly under the temporary directory `under`
 const ours = (dir, under = os.tmpdir()) => {
   try {
@@ -71,47 +76,41 @@ const sameWhere = (a, b) => {
   const keys = Object.keys(b);
   return a != null && keys.length > 0 && keys.every((k) => typeof a[k] === 'string' && a[k] !== '' && b[k] != null && a[k] === b[k]);
 };
+// /proc/<pid>/stat's state and start time (Linux), or null
+const procStat = (pid) => {
+  const raw = read(`/proc/${pid}/stat`);
+  if (raw == null) return null;
+  const rest = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
+  return {state: rest[0], start: rest[19]};
+};
 // whether a process is gone: signal 0 answers ESRCH (EPERM: it lives, as
-// another user's)
+// another user's); a zombie is gone too (the Reviewer's second high review
+// of #97, 6)
 const gone = (pid) => {
-  try { process.kill(pid, 0); return false; } catch (err) { return err.code === 'ESRCH'; }
+  try { process.kill(pid, 0); } catch (err) { return err.code === 'ESRCH'; }
+  const st = procStat(pid);
+  return st != null && st.state === 'Z';
 };
 const uid = typeof process.getuid === 'function' ? process.getuid() : null;
-// this user's (POSIX; elsewhere the temporary directory is the user's own)
-// (a bigint stat's uid is a BigInt)
+// this user's (POSIX; elsewhere the temporary directory is the user's own;
+// a bigint stat's uid is a BigInt)
 const mineSt = (st) => uid == null || Number(st.uid) === uid;
-// a manifest's lines -> {meta, dirs: [{dir, dev, ino}]} (a line cut short by
-// a kill is skipped; one with no dev or ino is never removed)
-const linesOf = (file) => {
-  let raw = '';
-  try { raw = fs.readFileSync(file, 'utf8'); } catch (err) { return {meta: null, dirs: []}; }
-  let meta = null;
-  const dirs = [];
-  for (const line of raw.split('\n')) {
-    let e;
-    try { e = JSON.parse(line); } catch (err) { continue; }
-    if (e == null || typeof e !== 'object') continue;
-    if (meta == null && e.meta != null && typeof e.meta === 'object') { meta = e.meta; continue; }
-    if (typeof e.dir === 'string' && typeof e.dev === 'string' && typeof e.ino === 'string' && (e.born == null || typeof e.born === 'string')) dirs.push(e);
-  }
-  return {meta, dirs};
-};
-// a directory's identity: its device, inode and birth time (tmpfs reuses an
-// inode at once: a directory made again at a path can get the old one; the
-// Reviewer on #97's CI). The birth time in ns, or null where the system has
-// none (statx with no btime): then device and inode alone. Never ctime,
-// which moves as entries are added.
+
+// A directory's identity: its device, inode and birth time (tmpfs reuses an
+// inode at once, so a directory made again at a path can get the old one).
 // Where libuv has no statx (an older kernel, a seccomp profile that blocks
-// it), it reports ctime as the birth time: probed once, by writing into a
-// directory, and the birth time used only where it does not move (the
-// medium on #97's second round, 4)
+// it) it reports ctime as the birth time, which moves as entries are added:
+// probed once per process, the probe itself (never ctime), and a directory
+// whose birth time cannot be told is never removed by a sweep (the
+// Reviewer's second high review of #97, 1). Every process that sweeps or
+// records probes for itself: the runner never calls mkdtemp.
 let bornReal = null;
-const probeBorn = (made) => {
+function probeBorn() {
   if (bornReal != null) return bornReal;
   bornReal = false;
   let dir = null;
   try {
-    dir = made(path.join(os.tmpdir(), '.ch-local-born-'));
+    dir = rawMkdtemp.call(fs, path.join(os.tmpdir(), '.ch-local-born-'));
     const first = fs.lstatSync(dir, {bigint: true}).birthtimeNs;
     fs.writeFileSync(path.join(dir, 'x'), '');
     fs.utimesSync(dir, new Date(), new Date(Date.now() + 2000));
@@ -120,31 +119,58 @@ const probeBorn = (made) => {
   } catch (err) { bornReal = false; }
   if (dir != null) { try { fs.rmSync(dir, {recursive: true, force: true}); } catch (err) { /* gone */ } }
   return bornReal;
-};
-const bornOf = (st) => (bornReal === true && st.birthtimeNs != null && st.birthtimeNs > 0n ? String(st.birthtimeNs) : null);
+}
+const bornOf = (st) => (probeBorn() && st.birthtimeNs != null && st.birthtimeNs > 0n ? String(st.birthtimeNs) : null);
 const lstatBig = (d) => fs.lstatSync(d, {bigint: true});
-const sameDir = (st, {dev, ino, born}) => st.isDirectory() && String(st.dev) === dev && String(st.ino) === ino && mineSt(st)
-  && (born == null || bornOf(st) == null || bornOf(st) === born);
-// removes a listed directory when it is still the one listed and this
-// user's -> whether it is gone (the check and the removal are by path: a
-// swap between them is not guarded against, and needn't be for a test's own
-// directories)
+
+// a manifest's lines -> {meta, dirs: [{dir, dev, ino, born}], pids: [{pid,
+// start}]} (a line cut short by a kill is skipped)
+const linesOf = (file) => {
+  let raw = '';
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (err) { return {meta: null, dirs: [], pids: []}; }
+  let meta = null;
+  const dirs = [];
+  const pids = [];
+  for (const line of raw.split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch (err) { continue; }
+    if (e == null || typeof e !== 'object') continue;
+    if (meta == null && e.meta != null && typeof e.meta === 'object') { meta = e.meta; continue; }
+    if (typeof e.dir === 'string') dirs.push(e);
+    else if (Number.isInteger(e.pid) && typeof e.start === 'string') pids.push(e);
+  }
+  return {meta, dirs, pids};
+};
+// a listed directory removed only when it is still the one listed: this
+// user's, its device and inode, and a birth time both sides can tell and
+// the same -> whether nothing of it is left to keep the manifest for
 const removeListed = (e, under) => {
   if (!ours(e.dir, under)) return true;
+  if (typeof e.dev !== 'string' || typeof e.ino !== 'string' || typeof e.born !== 'string') return true;
   let st;
   try { st = lstatBig(e.dir); } catch (err) { return err.code === 'ENOENT'; }
-  if (!sameDir(st, e)) return true;
-  try {
-    fs.rmSync(e.dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
-    return true;
-  } catch (err) { return err.code === 'ENOENT'; }
+  const born = bornOf(st);
+  if (!st.isDirectory() || !mineSt(st) || String(st.dev) !== e.dev || String(st.ino) !== e.ino || born == null || born !== e.born) return true;
+  // (by path: a swap between the check and the removal is not guarded
+  // against, and needn't be for a test's own directories)
+  try { fs.rmSync(e.dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); return true; } catch (err) { return err.code === 'ENOENT'; }
+};
+// a detached process a dead test process started (a daemon in a session of
+// its own), ended when it is still that process: its start time the one
+// recorded (Linux; elsewhere it is left: no pid is signalled unsure)
+const endRecorded = ({pid, start}) => {
+  const st = procStat(pid);
+  if (st == null || st.start !== start || st.state === 'Z') return;
+  try { process.kill(-pid, 'SIGKILL'); } catch (err) { try { process.kill(pid, 'SIGKILL'); } catch (e) { /* gone */ } }
 };
 // the manifests in `dir` (the temporary directory, by default) of processes
-// that are gone, made on this boot in this pid namespace and this user's:
-// each listed directory still the one listed removed (only under the
-// temporary directory the manifest records), then the manifest, kept while
-// one could not be -> the number of manifests swept
+// that are gone, made on this boot in this pid namespace, and this user's:
+// the detached processes they recorded ended, each listed directory still
+// the one listed removed (only under the temporary directory the manifest
+// records), then the manifest, kept while one could not be -> the number of
+// manifests swept
 function sweepStale(dir = os.tmpdir()) {
+  probeBorn();
   const here = where();
   let swept = 0;
   let names = [];
@@ -156,39 +182,38 @@ function sweepStale(dir = os.tmpdir()) {
     const at = path.join(dir, name);
     let st;
     try { st = fs.lstatSync(at); } catch (err) { continue; }
-    if (!st.isDirectory() || !mineSt(st)) continue;
-    const {meta, dirs} = linesOf(path.join(at, 'dirs.jsonl'));
-    // one killed before its first line (or never opened) names nothing:
-    // removed once it is a minute old, by this user, whatever made it
+    if (!st.isDirectory() || !mineSt(st) || pid === process.pid || !gone(pid)) continue;
+    const {meta, dirs, pids} = linesOf(path.join(at, 'dirs.jsonl'));
     if (meta == null) {
-      if (dirs.length === 0 && Date.now() - st.mtimeMs > 60000) { try { fs.rmSync(at, {recursive: true, force: true}); swept += 1; } catch (err) { /* next time */ } }
+      // one killed before its first line names nothing: removed (its pid
+      // gone); one of an earlier format lists directories it cannot prove:
+      // left (the Reviewer's second high review of #97, 7)
+      if (dirs.length === 0 && pids.length === 0) { try { fs.rmSync(at, {recursive: true, force: true}); swept += 1; } catch (err) { /* next time */ } }
       continue;
     }
     if (meta.pid !== pid || !sameWhere(meta.where, here) || typeof meta.tmpdir !== 'string') continue;
-    if (pid === process.pid || !gone(pid)) continue;
+    for (const p of pids) endRecorded(p);
     if (!dirs.map((e) => removeListed(e, meta.tmpdir)).every(Boolean)) continue;
     try { fs.rmSync(at, {recursive: true, force: true}); swept += 1; } catch (err) { /* swept again next time */ }
   }
   return swept;
 }
+
 if (global[KEY] == null) {
   const made = new Set();
   const tmpdir = path.resolve(os.tmpdir());
-  // made at the first directory, not at load: a process that makes none has
-  // no manifest (fs.mkdtempSync is taken before it is wrapped). Opened once.
+  // made at the first directory or detached child, not at load: a process
+  // that makes none has no manifest. Opened once.
   let manifest = null;
   let fd = null;
-  const syncMade = fs.mkdtempSync;
-  const line = (o) => { if (fd != null) fs.writeSync(fd, `${JSON.stringify(o)}\n`); };
-  const record = (dir, st) => {
+  const line = (o) => {
     try {
-      probeBorn((p) => syncMade.call(fs, p));
       if (manifest == null) {
-        manifest = syncMade.call(fs, path.join(tmpdir, `${MANIFEST_PREFIX}${process.pid}-`));
+        manifest = rawMkdtemp.call(fs, path.join(tmpdir, `${MANIFEST_PREFIX}${process.pid}-`));
         fd = fs.openSync(path.join(manifest, 'dirs.jsonl'), 'wx', 0o600);
-        line({meta: {pid: process.pid, where: where(), tmpdir}});
+        fs.writeSync(fd, `${JSON.stringify({meta: {pid: process.pid, where: where(), tmpdir, bornReal: probeBorn()}})}\n`);
       }
-      line({dir, dev: String(st.dev), ino: String(st.ino), born: bornOf(st)});
+      fs.writeSync(fd, `${JSON.stringify(o)}\n`);
     } catch (err) { /* no manifest: 'exit' still removes them */ }
   };
   // (resolved now: a later chdir never sends the removal elsewhere)
@@ -196,11 +221,11 @@ if (global[KEY] == null) {
     if (!ours(dir, tmpdir)) return dir;
     const d = path.resolve(String(dir));
     made.add(d);
-    try { probeBorn((p) => syncMade.call(fs, p)); record(d, lstatBig(d)); } catch (err) { /* not recorded: 'exit' still removes it */ }
+    try { const st = lstatBig(d); line({dir: d, dev: String(st.dev), ino: String(st.ino), born: bornOf(st)}); } catch (err) { /* not recorded: 'exit' still removes it */ }
     return dir;
   };
 
-  fs.mkdtempSync = function(...args) { return keep(syncMade.apply(fs, args)); };
+  fs.mkdtempSync = function(...args) { return keep(rawMkdtemp.apply(fs, args)); };
   const cbMade = fs.mkdtemp;
   fs.mkdtemp = function(...args) {
     // no callback: Node's own error, never one made up (the medium, 3)
@@ -210,6 +235,39 @@ if (global[KEY] == null) {
   };
   const promiseMade = fs.promises.mkdtemp;
   fs.promises.mkdtemp = async function(...args) { return keep(await promiseMade.apply(fs.promises, args)); };
+
+  // A detached child (a daemon in a session of its own: handoff-io's,
+  // start's session runtimes) outlives a group kill: its pid and start time
+  // recorded, so a sweep ends it before removing what it uses (Linux; the
+  // Reviewer's second high review of #97, 4)
+  const rawSpawn = childProcess.spawn;
+  childProcess.spawn = function(...args) {
+    const child = rawSpawn.apply(childProcess, args);
+    const opts = args.find((a, i) => i > 0 && a != null && typeof a === 'object' && !Array.isArray(a));
+    if (opts != null && opts.detached === true && child.pid != null) {
+      const st = procStat(child.pid);
+      if (st != null) line({pid: child.pid, start: st.start});
+    }
+    return child;
+  };
+
+  // When the runner that started this file is gone (killed outright), the
+  // file ends itself, its directories with it (a parent-death check: the
+  // Reviewer's second high review of #97, 5)
+  const runner = Number(process.env.CH_TEST_RUNNER_PID);
+  if (Number.isInteger(runner) && runner > 0 && runner === process.ppid) {
+    setInterval(() => { if (process.ppid !== runner) process.exit(70); }, 1000).unref();
+  }
+  // The runner, before it ends a file past its time, asks it to name the
+  // test it is in (SIGUSR2: no test emits it; the file goes on). Names come
+  // from scripts/test-running.js, a reporter beside the spec one.
+  if (process.platform !== 'win32') {
+    process.on('SIGUSR2', () => {
+      const running = global[Symbol.for('ch-local.test.running')];
+      const names = running instanceof Map ? [...running.values()] : [];
+      try { process.stderr.write(`\nstill running: ${names.length > 0 ? names.join(' > ') : '(no test started)'}\n`); } catch (err) { /* no stderr */ }
+    });
+  }
 
   // removes what this process made; a directory still in use (Windows, a
   // child still exiting) is tried for about 5 s, and one that cannot be
@@ -225,8 +283,8 @@ if (global[KEY] == null) {
     if (all && manifest != null) { try { fs.rmSync(manifest, {recursive: true, force: true}); } catch (err) { /* swept as stale later */ } }
   };
   process.on('exit', removeMade);
-  // (where: a manifest's own first line, for tmp-manifest's stale cases)
-  global[KEY] = {removeMade, made, PREFIX, MANIFEST_PREFIX, MANIFEST_NAME, sweepStale, where, bornOf: (st) => { probeBorn((p) => syncMade.call(fs, p)); return bornOf(st); }};
+  // (where and bornOf: a manifest's own lines, for tmp-manifest's cases)
+  global[KEY] = {removeMade, made, PREFIX, MANIFEST_PREFIX, MANIFEST_NAME, sweepStale, where, bornOf, rawMkdtemp};
 }
 
 module.exports = global[KEY];

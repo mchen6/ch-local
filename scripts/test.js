@@ -11,7 +11,8 @@
 //                                     say, passed to each file)
 //
 // The watchdog (the Reviewer's high review of #97): a file still running
-// after CH_TEST_FILE_TIMEOUT_MS (15 minutes; LONG_FILES 60) is sent SIGTERM,
+// after CH_TEST_FILE_TIMEOUT_MS (15 minutes; LONG_FILES 25) is asked which
+// test it is in (SIGUSR2, POSIX), then sent SIGTERM,
 // then SIGKILL after GRACE_MS, is FAILED (timed out), and its manifest is
 // swept. No --test-timeout (it caps a parent's own longer hook and subtest
 // timeouts) and no --test-force-exit (it turns an error thrown after a test
@@ -36,7 +37,8 @@ const {PREFIX, MANIFEST_PREFIX, sweepStale} = require('../test/tmp-dirs');
 const FILE_TIMEOUT_MS = Number(process.env.CH_TEST_FILE_TIMEOUT_MS) > 0 ? Number(process.env.CH_TEST_FILE_TIMEOUT_MS) : 15 * 60 * 1000;
 // the files that run a whole release or a client end to end
 const LONG_FILES = new Set(['acceptance.test.js', 'dogfood.test.js']);
-const LONG_TIMEOUT_MS = Math.max(FILE_TIMEOUT_MS, 60 * 60 * 1000);
+// (within CI's 30-minute job: the Reviewer's second high review of #97, 8)
+const LONG_TIMEOUT_MS = Math.max(FILE_TIMEOUT_MS, 25 * 60 * 1000);
 const GRACE_MS = Number(process.env.CH_TEST_GRACE_MS) > 0 ? Number(process.env.CH_TEST_GRACE_MS) : 10 * 1000;
 const DEFAULT_CONCURRENCY = Number(process.env.CH_TEST_CONCURRENCY) > 0 ? Number(process.env.CH_TEST_CONCURRENCY)
   : Math.max(1, (typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length) - 1);
@@ -61,7 +63,10 @@ const files = named.length > 0 ? named
   : fs.readdirSync(path.join(root, 'test')).filter((n) => n.endsWith('.test.js')).sort().map((n) => path.join('test', n));
 // a file run as its own process (node:test runs its tests in it), so the
 // watchdog's pid is the file's own
-const reporter = flags.some((f) => f.startsWith('--test-reporter')) ? [] : ['--test-reporter=spec'];
+// (beside the spec reporter, scripts/test-running.js keeps the test running
+// now, for the watchdog to have named)
+const reporter = flags.some((f) => f.startsWith('--test-reporter')) ? []
+  : ['--test-reporter=spec', '--test-reporter-destination=stdout', `--test-reporter=${path.join(__dirname, 'test-running.js')}`, '--test-reporter-destination=stderr'];
 
 const running = new Map();   // pid -> child
 // A file and everything it started (a server, a `ch-local start` runtime):
@@ -71,16 +76,22 @@ const running = new Map();   // pid -> child
 const signalTree = (child, sig) => {
   if (child.pid == null) return;
   if (process.platform === 'win32') {
+    // (only while the file lives: after its exit the tree is unreachable by
+    // its pid, and the pid may be another's; descendants may survive here)
+    if (child.exitCode != null || child.signalCode != null) return;
     try { require('node:child_process').spawnSync('taskkill', ['/pid', String(child.pid), '/T', ...(sig === 'SIGKILL' ? ['/F'] : [])], {stdio: 'ignore', windowsHide: true}); } catch (err) { /* gone */ }
     return;
   }
   try { process.kill(-child.pid, sig); } catch (err) { try { child.kill(sig); } catch (e) { /* gone */ } }
 };
-// SIGTERM, then SIGKILL after the grace (at once when `now`)
+// SIGTERM, then SIGKILL after the grace (at once when `now`); the delayed
+// one is cleared when the child exits, so no pid is signalled after its
+// 'exit' (the Reviewer's second high review of #97, 2)
 const end = (child, now = false) => {
+  if (child.exitCode != null || child.signalCode != null) return;
   if (now) { signalTree(child, 'SIGKILL'); return; }
   signalTree(child, 'SIGTERM');
-  setTimeout(() => signalTree(child, 'SIGKILL'), GRACE_MS).unref();
+  if (child.killTimer == null) child.killTimer = setTimeout(() => { if (child.exitCode == null && child.signalCode == null) signalTree(child, 'SIGKILL'); }, GRACE_MS);
 };
 
 // A file's output, as it comes: each line under its file's name when files
@@ -106,11 +117,14 @@ function runFile(file) {
     let settled = false;
     const finish = (r) => { if (settled) return; settled = true; resolve(r); };
     if (!tagged) process.stdout.write(`\n# ${file}\n`);
+    // (CH_TEST_RUNNER_PID: the file ends itself if this runner is gone)
     const child = spawn(process.execPath, ['--require', TMP_DIRS, ...reporter, ...flags, file],
-      {cwd: root, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32'});
+      {cwd: root, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', env: {...process.env, CH_TEST_RUNNER_PID: String(process.pid)}});
+    let said = false;
+    const fail = (why) => { if (said) return; said = true; process.stdout.write(`\nFAILED ${file}: ${why}\n`); };
     // (a spawn that fails, EMFILE say, may never emit 'close': failed now)
     child.once('error', (err) => {
-      process.stdout.write(`\nFAILED ${file}: could not be run: ${err.code || err.message}\n`);
+      fail(`could not be run: ${err.code || err.message}`);
       if (child.pid == null) finish({file, failed: true});
     });
     if (child.pid == null) return;
@@ -118,19 +132,28 @@ function runFile(file) {
     relay(file, child.stdout);
     relay(file, child.stderr);
     let timedOut = false;
-    const watchdog = setTimeout(() => { timedOut = true; end(child); }, limit);
+    // past its time: asked which test it is in, then ended
+    const watchdog = setTimeout(() => {
+      timedOut = true;
+      if (process.platform === 'win32') { end(child); return; }
+      try { child.kill('SIGUSR2'); } catch (err) { /* gone */ }
+      setTimeout(() => end(child), 1000).unref();
+    }, limit);
     // resolved on 'exit', not 'close': something the file started that
     // still holds its pipes never keeps the runner waiting (the medium, 1)
     child.once('exit', (code, signal) => {
       clearTimeout(watchdog);
+      if (child.killTimer != null) clearTimeout(child.killTimer);
       running.delete(child.pid);
-      // what it started, if anything survived it
-      signalTree(child, 'SIGKILL');
+      // what it started in its group, if anything survived it (POSIX: the
+      // group outlives its leader while a member lives; on Windows the tree
+      // is unreachable by pid once the file is gone)
+      if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch (err) { /* none left */ } }
       // (a file ended by a signal never reached 'exit': its manifest now)
       if (signal != null) sweepStale(tmp);
       const report = () => {
-        if (timedOut) process.stdout.write(`\nFAILED ${file}: timed out after ${Math.round(limit / 1000)} s (ended by the runner's watchdog)\n`);
-        else if (signal != null) process.stdout.write(`\nFAILED ${file}: ended by ${signal}\n`);
+        if (timedOut) fail(`timed out after ${Math.round(limit / 1000)} s (ended by the runner's watchdog)`);
+        else if (signal != null) fail(`ended by ${signal}`);
         finish({file, failed: timedOut || code !== 0});
       };
       // its output drained, within a bound
@@ -144,8 +167,13 @@ function runFile(file) {
 // once), swept, then the signal raised again, so the runner ends as it was
 // asked to
 let stopping = false;
+let firstSignalAt = 0;
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
+    // (a signal again within 1 s is the same one, delivered twice: by npm
+    // and by the group: the Reviewer's second high review of #97, 6)
+    if (stopping && Date.now() - firstSignalAt < 1000) return;
+    if (!stopping) firstSignalAt = Date.now();
     const children = [...running.values()];
     const finishStop = () => {
       sweepStale(tmp);
