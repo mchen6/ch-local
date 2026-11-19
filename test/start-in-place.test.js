@@ -1539,19 +1539,20 @@ test('a credential removed while running unloads the callers of its module, said
 
 // the Reviewer's high review of L5a, 3: a store that cannot be read for a
 // moment decides nothing; only a read that succeeds and differs unloads
-test('a credential store that cannot be read keeps what is loaded, says so once, and is read again', async () => {
+// (a read that fails, EACCES here; a file read and found wrong is a read,
+// and decides)
+test('a credential store that cannot be read keeps what is loaded, says so once, and is read again', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
   const s = await running();
   try {
     await until(() => s.args() != null);
     const file = path.join(s.home, 'credentials', 'credentials.json');
-    const good = fs.readFileSync(file);
-    fs.writeFileSync(file, '{not json');
+    fs.chmodSync(file, 0o000);
     await until(() => /the stored credentials could not be read/.test(s.f.err));
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.ok(!s.requests.some((m) => m.type === 'unload'), JSON.stringify(s.requests));
-    fs.writeFileSync(file, good);
-    await new Promise((r) => setTimeout(r, 1500));
+    fs.chmodSync(file, 0o600);
+    await new Promise((r) => setTimeout(r, 2500));
     assert.ok(!s.requests.some((m) => m.type === 'unload'), 'the good read matches: nothing unloaded');
     assert.strictEqual(s.f.err.split('the stored credentials could not be read').length - 1, 1, s.f.err);
   } finally {

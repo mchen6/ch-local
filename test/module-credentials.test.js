@@ -125,8 +125,11 @@ test('migrateV1: a version 1 entry reads as a binding to GitHub\'s origin under 
 });
 
 // the /code-review medium on L5a, 1: a client's own token reaches no worker
-test('forStart: every variable an installed module declares, its fallback and the GitHub names included, is removed from the runtime\'s environment', async () => {
+// the medium on the high round, 10: the environment given is an
+// allowlist; a declared name is never stripped from it (one naming PATH
+// would strip the runtime's own), and a slot name by any case is
+test('forStart: a planted slot name by any case is removed; a declared name that is also the runtime\'s own is kept', async () => {
   const {where, record} = home();
-  const s = await mc.forStart(where, record(), {env: {GITHUB_TOKEN: 'client', COUNTINGHOUSE_GITHUB_TOKEN: 'client', OTHER_TOKEN: 'client', PATH: '/bin'}, ghToken: async () => ({why: 'x'})});
-  assert.deepStrictEqual(s.env, {PATH: '/bin'});
+  const s = await mc.forStart(where, record(), {env: {PATH: '/bin', countinghouse_credential_1: 'planted', COUNTINGHOUSE_CREDENTIAL_2: 'planted', OTHER_TOKEN: 'kept-if-given'}, ghToken: async () => ({why: 'x'})});
+  assert.deepStrictEqual(s.env, {PATH: '/bin', OTHER_TOKEN: 'kept-if-given'});
 });

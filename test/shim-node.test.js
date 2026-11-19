@@ -457,6 +457,10 @@ test('runtimeEnv: the allowlist only; on win32 by case-insensitive name, never a
   const out = shimConfig.runtimeEnv(env, 'win32');
   assert.deepStrictEqual(Object.keys(out).sort(), ['LC_ALL', 'NODE_EXTRA_CA_CERTS', 'PATH', 'SystemRoot', 'TZ', 'USERPROFILE']);
   assert.ok(!Object.values(out).some((v) => v === 'client-1' || v === 'client-2' || v === 'planted'));
-  const posix = shimConfig.runtimeEnv({PATH: '/bin', HOME: '/h', github_token: 'x', COUNTINGHOUSE_TEST_FLAG: '1', CH_TEST_LATE_LOADS: '1', AWS_SECRET_ACCESS_KEY: 'y'}, 'linux');
-  assert.deepStrictEqual(Object.keys(posix).sort(), ['CH_TEST_LATE_LOADS', 'COUNTINGHOUSE_TEST_FLAG', 'HOME', 'PATH']);
+  // no test switch: a client never turns on the runtime's test-only delays
+  const posix = shimConfig.runtimeEnv({PATH: '/bin', HOME: '/h', github_token: 'x', COUNTINGHOUSE_TEST_REQUIRE_THREAD_FLAG: '1', COUNTINGHOUSE_TEST_RESTART_HOLD_MS: '9', CH_TEST_LATE_LOADS: '1', AWS_SECRET_ACCESS_KEY: 'y', HTTPS_PROXY: 'http://proxy.example:3128'}, 'linux');
+  assert.deepStrictEqual(Object.keys(posix).sort(), ['HOME', 'PATH']);
+  // a Windows runtime can run a .cmd: PATHEXT and ComSpec by any case
+  const win = shimConfig.runtimeEnv({Path: 'C:\\bin', pathext: '.COM;.EXE;.CMD', COMSPEC: 'C:\\Windows\\cmd.exe'}, 'win32');
+  assert.deepStrictEqual(Object.keys(win).sort(), ['ComSpec', 'PATH', 'PATHEXT']);
 });

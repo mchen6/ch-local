@@ -443,9 +443,9 @@ test('standard input that held nothing, or stayed open and silent, is refused, n
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, empty), 2);
   assert.match(empty.err, /standard input held no key/);
   const silent = io(h, {terminal: false});
-  silent.readStdin = async () => { throw Object.assign(new Error('nothing ended standard input within 30 s'), {code: 'TIMEOUT'}); };
+  silent.readStdin = async () => { throw Object.assign(new Error('standard input sent nothing for 60 s'), {code: 'TIMEOUT'}); };
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, silent), 1);
-  assert.match(silent.err, /nothing ended standard input within 30 s: pipe the key in, one line, and close the input/);
+  assert.match(silent.err, /standard input sent nothing for 60 s: pipe the key in, one line, and close the input/);
   assert.strictEqual(bound(h), null);
 });
 
@@ -471,12 +471,9 @@ test('install\'s end asks for each module, then says the restart once for all of
 });
 
 // the Fable pass on L5a, F5: a gh login is only ever for GitHub's origin
-test('the store refuses an entry that pairs the gh login with another origin, at add and at read', () => {
+test('the store refuses an entry that pairs the gh login with another origin at add', () => {
   const h = home();
   assert.throws(() => store.bind(h, ACCESS, VAR, {origin: 'https://api.example.com', source: 'gh'}), /a gh login is only ever used for https:\/\/api\.githubcopilot\.com/);
-  fs.mkdirSync(path.join(h, 'credentials'), {recursive: true, mode: 0o700});
-  fs.writeFileSync(path.join(h, 'credentials', 'credentials.json'), JSON.stringify({v: 2, modules: {[ACCESS]: {[VAR]: {origin: 'https://api.example.com', source: 'gh'}}}}), {mode: 0o600});
-  assert.throws(() => store.readStore(h), /uses the gh login for https:\/\/api\.example\.com; it is only ever for https:\/\/api\.githubcopilot\.com/);
 });
 
 // the Fable pass on L5a, F2: where a key goes is said on standard error
@@ -487,4 +484,29 @@ test('add says the variable and destination on standard error, never only on sta
   assert.match(f.err, /ch-access-github 1\.0\.0 declares one credential:\n {2}COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com/);
   assert.match(f.err, /stored for ch-access-github: COUNTINGHOUSE_GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com/);
   assert.ok(!/sent to/.test(f.out), f.out);
+});
+
+// the medium on the high round, 6 and 7: a variable named __proto__ is
+// stored as any other; a hand-written gh entry for another origin takes
+// only its own module down, and the CLI can still remove it
+test('a variable named __proto__ is stored as an own key, and read back', () => {
+  const h = home();
+  store.bind(h, ACCESS, '__proto__', {origin: ORIGIN, source: 'stored', value: made()});
+  assert.ok(store.readStore(h).modules.get(ACCESS).has('__proto__'));
+});
+
+test('a hand-written gh entry for another origin is read, refused at use for that module, and removable', async () => {
+  const h = home({extra: {'@countinghouse/ch-access-two': `${ORIGIN}/mcp/`}});
+  fs.mkdirSync(path.join(h, 'credentials'), {recursive: true, mode: 0o700});
+  fs.writeFileSync(path.join(h, 'credentials', 'credentials.json'), JSON.stringify({v: 2, modules: {
+    [ACCESS]: {[VAR]: {origin: 'https://api.example.com', source: 'gh'}},
+    '@countinghouse/ch-access-two': {[VAR]: {origin: ORIGIN, source: 'stored', value: made()}}}}), {mode: 0o600});
+  const read = store.readStore(h);
+  assert.strictEqual(read.modules.get(ACCESS).get(VAR).source, 'gh');
+  const mc = require('../lib/module-credentials');
+  const s = mc.stateOf(ACCESS, {variable: VAR, origin: 'https://api.example.com'}, {bindings: read.modules}, {token: 'x'});
+  assert.strictEqual(s.state, 'store-problem');
+  assert.match(s.reason, /uses your gh login, which is given only to https:\/\/api\.githubcopilot\.com/);
+  assert.strictEqual(await credentials({action: 'remove', name: 'ch-access-github'}, io(h)), 0);
+  assert.ok(store.readStore(h).modules.get('@countinghouse/ch-access-two') != null, 'the other module\'s key is untouched');
 });
