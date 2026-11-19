@@ -242,6 +242,19 @@ test('nothing asked before the lock: a home that changed meanwhile is decided ag
   assert.strictEqual(again.rows.find((r) => r.module === REDACT).case, 'new');
 });
 
+// The reviewer's high review of #94, 6: what the lock would refuse is
+// refused before anything is asked, and no answer is written for it.
+test('an add the lock would refuse is refused before any question', async () => {
+  const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
+  const r2 = release({versions: {[REDACT]: '0.2.0'}});
+  r2.allow.packs.other = {...r2.allow.packs.other, packages: [...r2.allow.packs.other.packages, 'countinghouse']};
+  const {code, io} = await h.add(r2, {interactive: true, answers: ['y']});
+  assert.strictEqual(code, 1);
+  assert.match(io.err, /countinghouse is part of the runtime, not a pack's/);
+  assert.deepStrictEqual(io.asked, []);
+  assert.deepStrictEqual(history(h.home), []);
+});
+
 // The reviewer's high review of #94, 2: unknown is never "no callers".
 test('a breaking update whose callers cannot be read is refused, never taken for uncalled', async (t) => {
   const r1 = release({versions: {[REDACT]: '0.1.0'}});
