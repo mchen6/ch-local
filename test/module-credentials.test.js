@@ -158,7 +158,7 @@ test('the carry-over, a version 1 store: a key stored under COUNTINGHOUSE_GITHUB
   assert.deepStrictEqual(read.bindings.get(ACCESS).get('GITHUB_TOKEN'), {origin: GH, source: 'stored', value: 'test_v1_value_1'});
 });
 
-test('the carry-over, a version 2 store: read under the declared name at once, written once and said once; another origin is never carried', () => {
+test('the carry-over, a version 2 store: read under the declared name, never rewritten; said each start; another origin is never carried', () => {
   const {h, where, record} = homeOn020();
   bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-1'));
   const read = mc.bindings(where, record());
@@ -166,21 +166,26 @@ test('the carry-over, a version 2 store: read under the declared name at once, w
   assert.deepStrictEqual(read.bindings.get(ACCESS).get('GITHUB_TOKEN'), {origin: GH, source: 'stored', value: 'test-v2-value-1'});
   assert.ok(!read.bindings.get(ACCESS).has(VAR));
   assert.strictEqual(mc.stateOf(ACCESS, mc.declared(where, record(), ACCESS), read).state, 'ok', 'loaded, not "elsewhere"');
-  // start writes it, and says so, once
-  const first = mc.carryOver(where, record());
-  assert.deepStrictEqual(first.lines, [`the key stored for ch-access-github under ${VAR} is now under GITHUB_TOKEN, the name it declares; nothing else changed`]);
-  assert.strictEqual(first.read.bindings.get(ACCESS).get('GITHUB_TOKEN').value, 'test-v2-value-1', 'the read forStart is handed');
-  assert.deepStrictEqual([...store.readStore(h).modules.get(ACCESS).keys()], ['GITHUB_TOKEN']);
-  assert.deepStrictEqual(mc.carryOver(where, record()).lines, [], 'once');
+  // what a start says, each start while it applies
+  assert.deepStrictEqual(mc.carriedLines(read), ['ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it under GITHUB_TOKEN']);
+  // nothing is rewritten: the store keeps the earlier name until the user adds it
+  assert.deepStrictEqual([...store.readStore(h).modules.get(ACCESS).keys()], [VAR]);
+  // a remove deletes the module's binding whatever its name: nothing carries it back
+  store.unbind(h, ACCESS);
+  const after = mc.bindings(where, record());
+  assert.strictEqual(after.bindings.get(ACCESS), undefined);
+  assert.deepStrictEqual(mc.carriedLines(after), []);
+  // credentials add stores it under the declared name, and the line goes
+  bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-2'));
+  assert.deepStrictEqual(mc.carriedLines(mc.bindings(where, record())), []);
   // a key stored for another origin is not this module's GitHub key
   const other = homeOn020();
-  bind(other.h, ACCESS, VAR, stored(OTHER_ORIGIN, 'test-v2-value-2'));
+  bind(other.h, ACCESS, VAR, stored(OTHER_ORIGIN, 'test-v2-value-3'));
   assert.deepStrictEqual(mc.bindings(other.where, other.record()).carried, []);
-  assert.deepStrictEqual(mc.carryOver(other.where, other.record()).lines, []);
 });
 
-// The Reviewer's high review of #98's round 2: only GitHub's own rename is
-// carried (3), and never over a change made since the read (2)
+// The Reviewer's high review of #98's round 2, 3: only GitHub's own rename
+// is carried
 test('the carry-over is GitHub\'s rename only: a third-party module at another origin, or the other direction, is not carried', () => {
   const h = tmp('ch-mc-');
   const THIRD = '@someone/ch-access-x';
@@ -191,56 +196,5 @@ test('the carry-over is GitHub\'s rename only: a third-party module at another o
   bind(h, THIRD, VAR, stored(OTHER_ORIGIN, 'test-third-value-1'));
   bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-3'));
   assert.deepStrictEqual(mc.bindings(where, readModulesRecord(where)).carried, []);
-  assert.deepStrictEqual(mc.carryOver(where, readModulesRecord(where)).lines, []);
   assert.strictEqual(mc.stateOf(THIRD, mc.declared(where, readModulesRecord(where), THIRD), mc.bindings(where, readModulesRecord(where))).state, 'elsewhere', 'added again, as L5a says');
-});
-
-test('the carry-over never undoes a change made since its read: a remove, or another key added, wins', () => {
-  for (const meanwhile of ['remove', 'add']) {
-    const {h, where, record} = homeOn020();
-    bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-4'));
-    const read = mc.bindings(where, record());
-    const {entry} = read.carried[0];
-    if (meanwhile === 'remove') store.unbind(h, ACCESS); else bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-5'));
-    assert.strictEqual(store.rebind(h, ACCESS, VAR, 'GITHUB_TOKEN', entry), 'changed', meanwhile);
-    const now = store.readStore(h).modules.get(ACCESS);
-    if (meanwhile === 'remove') assert.ok(now == null, 'the revoked key is not brought back');
-    else assert.strictEqual(now.get('GITHUB_TOKEN').value, 'test-v2-value-5', 'the key added since is kept');
-  }
-  // a store another writer holds: left, said nothing of (the next start judges again)
-  const {h} = homeOn020();
-  bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-6'));
-  const held = store.withStoreLock(h, () => store.rebind(h, ACCESS, VAR, 'GITHUB_TOKEN', {origin: GH, source: 'stored', value: 'test-v2-value-6'}));
-  assert.strictEqual(held.value, 'busy');
-});
-
-// the medium on #98's round 2: the store's lock is lib/lock.js's protocol,
-// and nothing is written in or beside a directory the store refuses
-test('the store lock: a dead holder\'s lock is cleared, a live one is never taken; a refused directory gets no lock written', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const {lockHost} = require('../lib/lock');
-  const {h} = homeOn020();
-  bind(h, ACCESS, VAR, stored(GH, 'test-v2-value-7'));
-  const lock = path.join(store.paths(h).file, '..', 'credentials.lock');
-  // a holder on this host whose PID is dead: cleared, and the write goes on
-  fs.writeFileSync(lock, JSON.stringify({pid: 2147483646, host: lockHost(), at: new Date(0).toISOString()}));
-  bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-8'));
-  assert.ok(!fs.existsSync(lock), 'cleared, then released');
-  assert.strictEqual(store.readStore(h).modules.get(ACCESS).get('GITHUB_TOKEN').value, 'test-v2-value-8');
-  // a live holder (this process) is never taken, however old its lock
-  fs.writeFileSync(lock, JSON.stringify({pid: process.pid, host: lockHost(), at: new Date(0).toISOString()}));
-  const old = new Date(Date.now() - 60 * 60 * 1000);
-  fs.utimesSync(lock, old, old);
-  assert.strictEqual(store.rebind(h, ACCESS, 'GITHUB_TOKEN', VAR, stored(GH, 'test-v2-value-8')), 'busy');
-  assert.throws(() => store.bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-9'), {}), /under way/);
-  fs.rmSync(lock);
-  // the directory a link to elsewhere: refused before a lock is written there
-  if (process.platform !== 'win32') {
-    const other = homeOn020();
-    const elsewhere = tmp('ch-mc-elsewhere-');
-    fs.symlinkSync(elsewhere, store.paths(other.h).dir);
-    assert.throws(() => bind(other.h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-10')));
-    assert.deepStrictEqual(fs.readdirSync(elsewhere), [], 'nothing written there');
-  }
 });

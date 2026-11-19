@@ -1612,3 +1612,19 @@ test('a module the ceiling refuses: its unload carries no reason, and says the o
     await s.done;
   }
 });
+
+// The Reviewer's cut on #98's round 3: a key stored under GitHub's earlier
+// name is read under the declared one, said once a start, and never
+// rewritten at start (only `credentials add` changes the stored name)
+test('a key stored under COUNTINGHOUSE_GITHUB_TOKEN: the pack loads, the start says it once, and the store keeps it as it was', async () => {
+  const s = await running({bound: null, beforeStart: (home) => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: STORED})});
+  try {
+    assert.ok(loadsPack(s), 'loaded with the key read under GITHUB_TOKEN');
+    const line = 'ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it under GITHUB_TOKEN';
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(line)).length, 1, s.f.err);
+    assert.deepStrictEqual([...require('../lib/credential-store').readStore(s.home).modules.get(ACCESS).keys()], ['COUNTINGHOUSE_GITHUB_TOKEN'], 'never rewritten');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
