@@ -770,7 +770,7 @@ test('a pack that drops a module another pack moves reloads in the same group as
   await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
   // ci-failure-triage moves ch-step-redact to 0.2.0; other no longer takes it
   const r2 = release({versions: {'@countinghouse/ch-step-redact': '0.2.0', '@countinghouse/ch-step-other': '0.2.1'}});
-  r2.allow.packs.other = {...r2.allow.packs.other, packages: r2.allow.packs.other.packages.filter((n) => n !== '@countinghouse/ch-step-redact')};
+  r2.allow.packs.other = {...r2.allow.packs.other, modules: r2.allow.packs.other.modules.filter((n) => n !== '@countinghouse/ch-step-redact')};
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
   await until(() => s.requests.some((m) => m.type === 'reload'));
   await new Promise((r) => setTimeout(r, 300));
@@ -786,7 +786,7 @@ test('a new pack taking a module at a version a refused reload could not move is
   // a release where other also takes ch-access-github, now at 0.1.1: its
   // scenario calls it (by module, the closure is what the manifest calls)
   const r2 = release({versions: {'@countinghouse/ch-access-github': '0.1.1'}, extra: {'@countinghouse/ch-pack-other': {countinghouse: {role: 'scenario', calls: ['ch-step-redact/redactService.redact', 'ch-step-other/otherService.go', 'ch-access-github/githubService.listRuns']}}}});
-  r2.allow.packs.other = {...r2.allow.packs.other, packages: [...r2.allow.packs.other.packages, '@countinghouse/ch-access-github']};
+  r2.allow.packs.other = {...r2.allow.packs.other, modules: [...r2.allow.packs.other.modules, '@countinghouse/ch-access-github']};
   assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
   await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
   assert.match(s.history().find((h) => h.module === '@countinghouse/ch-pack-other').problem, /takes @countinghouse\/ch-access-github 0\.1\.1, which ch-pack-ci-failure-triage keeps at 0\.1\.0 for now/);
@@ -1154,8 +1154,16 @@ test('another release\'s record: a caller whose callee is turned off is unloaded
   const home = tmp('ch-home-');
   const r = release({extra: {[SCENARIO]: {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact', 'ch-pack-other/otherService.go']}}}});
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
-  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
-  assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  // a call into a pack not installed is refused, naming what to install
+  // first (the Reviewer's ruling on L5b: release 1 needs the callee's pack
+  // installed; the description check reads no tarball it does not place)
+  const refused = cmd();
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, refused, r.allow), 1);
+  assert.match(refused.err, /@countinghouse\/ch-pack-ci-failure-triage calls @countinghouse\/ch-pack-other, from pack other, which isn't installed; install other first; nothing was installed/);
+  assert.ok(!/does not match/.test(refused.err), refused.err);
+  // (other first: the scenario calls ch-pack-other)
+  assert.strictEqual(await install({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   bindAccess(home);
   const s = await running({home});
   try {
@@ -1177,8 +1185,9 @@ test('another release\'s record: a caller whose callee is no longer installed is
   const home = tmp('ch-home-');
   const r = release({extra: {[SCENARIO]: {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact', 'ch-pack-other/otherService.go']}}}});
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
-  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
-  assert.strictEqual(await addPack({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  // (other first: the scenario calls ch-pack-other)
+  assert.strictEqual(await install({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
   bindAccess(home);
   const s = await running({home});
   try {
