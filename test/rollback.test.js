@@ -233,8 +233,10 @@ test('held packs: remove-pack removes one, uninstall names its credentials, and 
   assert.strictEqual(await rollback({}, rio(u.home)), 0);
   const un = fakeIo({env: {COUNTINGHOUSE_HOME: u.home}, homedir: tmp('ch-user-'), answers: ['yes']});
   // the running release (after the rollback, r1's) lists other: held only
-  // because the restored record lacked it; its pins give its credential
-  un.release = u.r1.allow;
+  // because the restored record lacked it; its pins give its credential (in
+  // version 2, a description of one of its modules: #413 section 9.3)
+  const STEP = '@countinghouse/ch-step-other';
+  un.release = {...u.r1.allow, modules: {...u.r1.allow.modules, [STEP]: {...u.r1.allow.modules[STEP], credentials: [{variable: 'OTHER_TOKEN', origin: 'https://other.example.invalid'}]}}};
   assert.strictEqual(await require('../lib/uninstall').uninstall({}, un), 0, un.err);
   assert.match(un.out, /revoke the credentials you gave it: .*OTHER_TOKEN/i, 'a held pack\'s credential is named too');
   const again = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, exec: npm()});

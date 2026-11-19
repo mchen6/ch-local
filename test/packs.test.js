@@ -30,8 +30,10 @@ function app(packages) {
   return dirs;
 }
 
-test('ALLOWED_ORIGINS pins each token destination and the variables it may receive: today GitHub\'s MCP server only', () => {
-  assert.deepStrictEqual(ALLOWED_ORIGINS, {'https://api.githubcopilot.com': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']});
+test('ALLOWED_ORIGINS pins each token destination and the variables it may receive: today GitHub\'s MCP server only, its described variable', () => {
+  // (from this release's module descriptions, version 2: a fallbackEnv is
+  // never described, section 6.1)
+  assert.deepStrictEqual(ALLOWED_ORIGINS, {'https://api.githubcopilot.com': ['COUNTINGHOUSE_GITHUB_TOKEN']});
   assert.ok(Object.isFrozen(ALLOWED_ORIGINS) && Object.values(ALLOWED_ORIGINS).every(Object.isFrozen));
 });
 
@@ -55,7 +57,7 @@ test('installedPacks reads modules.json: every pack, its scenario (by role), its
       modules: {'@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-pack-ci-failure-triage': '0.1.0'},
       dirs: {'@countinghouse/ch-access-github': store('@countinghouse/ch-access-github', '0.1.0'), '@countinghouse/ch-pack-ci-failure-triage': store('@countinghouse/ch-pack-ci-failure-triage', '0.1.0')},
       dir: store('@countinghouse/ch-pack-ci-failure-triage', '0.1.0'),
-      packages: ['@countinghouse/ch-access-github', '@countinghouse/ch-pack-ci-failure-triage'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']},
+      packages: ['@countinghouse/ch-access-github', '@countinghouse/ch-pack-ci-failure-triage'], credentials: ['COUNTINGHOUSE_GITHUB_TOKEN']},
     {name: 'other', scenario: '@countinghouse/ch-pack-other', version: '0.3.0',
       modules: {'@countinghouse/ch-pack-other': '0.3.0'}, dirs: {'@countinghouse/ch-pack-other': store('@countinghouse/ch-pack-other', '0.3.0')},
       dir: store('@countinghouse/ch-pack-other', '0.3.0'), packages: ['@countinghouse/ch-pack-other'], credentials: []}]);

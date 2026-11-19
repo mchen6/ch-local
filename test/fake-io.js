@@ -55,9 +55,11 @@ function fakeIo({env = {}, answers = [], exec, fetch, version = 'v24.21.0', home
 const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 
 // The shipped allowlist, its packs those the home's record lists (null
-// with no home, or none installed: the shipped one, then).
-// A pack's credentials are the variables its modules' remotes declare, read
-// from the store as a release's pins are written from the manifests.
+// with no home, or none installed: the shipped one, then), in the pins'
+// version 2 (#413 section 9.3): each pack's modules, and each recorded
+// module's description, its credential read from the store as the release
+// step reads one (the first remote with a credential: its variable and its
+// url's origin; fallbackEnv is never described).
 function installedRelease(home) {
   if (typeof home !== 'string' || home === '') return null;
   const fs = require('node:fs');
@@ -65,27 +67,38 @@ function installedRelease(home) {
   let record;
   try { record = JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8')); } catch (e) { return null; }
   const {ALLOWLIST} = require('../lib/allowlist');
-  const declared = (name, version) => {
-    try {
-      const m = JSON.parse(fs.readFileSync(path.join(home, 'module-store', ...name.split('/'), version, 'package.json'), 'utf8'));
-      const remotes = m.countinghouse != null && Array.isArray(m.countinghouse.remotes) ? m.countinghouse.remotes : [];
-      return remotes.flatMap((r) => (r != null && r.credential != null ? [r.credential.env, r.credential.fallbackEnv] : [])).filter((v) => typeof v === 'string' && v !== '');
-    } catch (e) {
-      return [];
-    }
+  const describe = (name, version) => {
+    const none = {credentials: [], calls: [], confirmSettings: {}};
+    let m;
+    try { m = JSON.parse(fs.readFileSync(path.join(home, 'module-store', ...name.split('/'), version, 'package.json'), 'utf8')); } catch (e) { return none; }
+    const remotes = m.countinghouse != null && Array.isArray(m.countinghouse.remotes) ? m.countinghouse.remotes : [];
+    const r = remotes.find((x) => x != null && x.credential != null);
+    if (r == null) return none;
+    const variable = typeof r.credential === 'string' ? r.credential : r.credential.env;
+    let origin = null;
+    try { origin = new URL(r.url).origin; } catch (e) { origin = null; }
+    return typeof variable === 'string' && origin != null ? {...none, credentials: [{variable, origin}]} : none;
   };
-  // a test's own pins credentials, when it gave them (test/store-helpers.js)
+  // a test's own pins credentials, when it gave them (test/store-helpers.js
+  // setPackCredentials: a pack's variables): the first on the pack's first
+  // module, at GitHub's MCP origin; a pack given none has none
   let given = {};
   try { given = JSON.parse(fs.readFileSync(path.join(home, 'test-pack-credentials.json'), 'utf8')); } catch (e) { given = {}; }
   const packs = {};
+  const modules = {};
   for (const [name, p] of Object.entries(record.packs || {})) {
-    const modules = Object.keys(p.modules || {});
-    packs[name] = {packages: modules, credentials: Array.isArray(given[name]) ? given[name] : [...new Set(modules.flatMap((m) => declared(m, p.modules[m])))]};
+    const list = Object.keys(p.modules || {});
+    packs[name] = {modules: list};
+    for (const m of list) modules[m] = describe(m, p.modules[m]);
+    if (Array.isArray(given[name])) {
+      for (const m of list) modules[m] = {...modules[m], credentials: []};
+      if (given[name].length > 0 && list.length > 0) modules[list[0]] = {...modules[list[0]], credentials: [{variable: given[name][0], origin: 'https://api.githubcopilot.com'}]};
+    }
   }
   // and it pins each recorded module at its version (a test home's are no
   // shipped release's: #413 section 5.2's version check)
   const pins = Object.fromEntries(Object.entries(record.modules || {}).map(([m, e]) => [m, {version: e.version}]));
-  return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}, pins: {...ALLOWLIST.pins, ...pins}};
+  return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}, modules: {...ALLOWLIST.modules, ...modules}, pins: {...ALLOWLIST.pins, ...pins}};
 }
 
 module.exports = {fakeIo, tmp, FAKE_NODE, installedRelease};
