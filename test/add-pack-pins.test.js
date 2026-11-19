@@ -109,7 +109,7 @@ test('Question A: installed older across a breaking change that installed module
     assert.strictEqual(code, 0, io.err);
     assert.strictEqual(record(h.home).modules[REDACT].version, '0.2.0');
     assert.match(io.out, /^updated ch-step-redact 0\.1\.0 -> 0\.2\.0$/m);
-    assert.match(io.out, /^ch-pack-ci-failure-triage 0\.1\.0 was written for 0\.1\.x and still loads; if it stops working, `ch-local remove-pack other` puts ch-step-redact back to 0\.1\.0$/m);
+    assert.match(io.out, /^ch-pack-ci-failure-triage 0\.1\.0 was written for 0\.1\.x and still loads; if it stops working, `ch-local remove-pack other` puts ch-step-redact back to 0\.1\.0, unless a pack added later relies on the newer version$/m);
     assert.strictEqual(history(h.home).find((l) => l.module === REDACT).answer, 'yes');
   });
 });
@@ -174,7 +174,7 @@ test('install --pack under development pins meets the same table', async (t) => 
     const {code, io} = await h.inst(release({versions: {[REDACT]: '0.2.0'}}), {interactive: true, answers: ['y']});
     assert.strictEqual(code, 0, io.err);
     assert.strictEqual(record(h.home).modules[REDACT].version, '0.2.0');
-    assert.match(io.out, /^ch-pack-ci-failure-triage 0\.1\.0 was written for 0\.1\.x and still loads; if it stops working, `ch-local remove-pack other` puts ch-step-redact back to 0\.1\.0$/m);
+    assert.match(io.out, /^ch-pack-ci-failure-triage 0\.1\.0 was written for 0\.1\.x and still loads; if it stops working, `ch-local remove-pack other` puts ch-step-redact back to 0\.1\.0, unless a pack added later relies on the newer version$/m);
   });
   await t.test('Question B, yes: the pack installed, the module stays at the installed version', async () => {
     const h = await devHome(release({versions: {[REDACT]: '0.2.0'}}));
