@@ -536,13 +536,13 @@ function moduleMessageProblem(m) {
 // (an unload has exactly the keys of an accepted unload vector: id 5, 9
 // "off" or 10 "calls" with because; A-reason)
 const keysOf = (m) => Object.keys(m).filter((k) => k !== 'id').sort().join(',');
-const UNLOAD_SHAPES = () => new Set(MODULE_V.accepted.filter((e) => e.message.type === 'unload').map((e) => keysOf(e.message)));
+const UNLOAD_SHAPES = new Set(MODULE_V.accepted.filter((e) => e.message.type === 'unload').map((e) => keysOf(e.message)));
 const holdsToTheVectors = (requests) => {
   for (const m of requests) {
     if (['load', 'reload', 'unload'].includes(m.type)) assert.strictEqual(moduleMessageProblem(m), null, JSON.stringify(m));
     else assert.strictEqual(packMessageProblem(m), null, JSON.stringify(m));
     if (m.type === 'unload') {
-      assert.ok(UNLOAD_SHAPES().has(keysOf(m)), `an unload shaped as a vector: ${JSON.stringify(m)}`);
+      assert.ok(UNLOAD_SHAPES.has(keysOf(m)), `an unload shaped as a vector: ${JSON.stringify(m)}`);
       if ('reason' in m) assert.ok(m.reason === 'off' || (m.reason === 'calls' && typeof m.because === 'string'), JSON.stringify(m));
     }
   }
@@ -577,9 +577,10 @@ test('B3: a load and an unload from the settings are in the module form; the unl
     // its notice rides on the unload, which the runtime tells before the pack
     // goes; no separate notice tagged with the pack follows it. The wording
     // is a contract: countinghouse's module-control (#449, M5b, storedOff)
-    // builds the all-sessions off notice from an unload whose notice ends
-    // " turned off" while the settings have the module off, so a change here
-    // would silently drop that notice; exactly "<short name> turned off"
+    // builds the all-sessions off notice from an unload with reason "off"
+    // while the settings have the module off, and tells this notice as given
+    // anywhere else (a runtime not serving the settings tool); kept exactly
+    // "<short name> turned off"
     assert.strictEqual(unload.notice, 'ch-pack-other turned off');
     // (A-reason: the runtime tells every session its own off text: #449 id 9)
     assert.strictEqual(unload.reason, 'off');
