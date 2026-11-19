@@ -385,6 +385,9 @@ test('a top-level module two packs record is loaded once; each part of its closu
   setPackCredentials(home, {'ci-failure-triage': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], twin: ['GITHUB_TOKEN']});
   let run = null;
   const f = io(home, {env: {GITHUB_TOKEN: 'a'}});
+  // this start's own ch-local (this record names none, so it is no other's)
+  const self = '7.7.7';
+  f.selfVersion = self;
   const spawn = f.spawn;
   f.spawn = (...a) => {
     const runs = path.join(home, 'run');
@@ -399,7 +402,7 @@ test('a top-level module two packs record is loaded once; each part of its closu
   assert.strictEqual(f.err.split('\n').filter((l) => /^ch-local: loading /.test(l)).length, 1);
   assert.deepStrictEqual(run.stopped, {});
   // its own ch-local, for status to name a client still on another one (L1b-1)
-  assert.strictEqual(run.chLocal, f.selfVersion !== undefined ? f.selfVersion : require('../package.json').version);
+  assert.strictEqual(run.chLocal, '7.7.7');
 });
 
 // the high review of L2a, 3: a start older than the record (a daemon or

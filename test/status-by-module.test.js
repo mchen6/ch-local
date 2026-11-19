@@ -80,3 +80,47 @@ test('a running client\'s word: a module it stopped, with its code; a client on 
   const d = await statusOf(dead);
   assert.ok(!/stopped|still on ch-local/.test(d.out), d.out);
 });
+
+// the medium review of L1b-1: status decides as a start decides
+test('a settings file a start refuses: status says so, and lists every module as not loaded, guessing nothing', async () => {
+  const s = await installed();
+  stored(s.home);
+  fs.writeFileSync(path.join(s.home, 'settings.json'), '{not json');
+  const {out, code} = await statusOf(s.io());
+  assert.strictEqual(code, 0);
+  assert.match(out, /no client starts until it is fixed/);
+  assert.match(out, /^  ch-pack-ci-failure-triage \S+: not loaded \(no client starts until that is fixed\)$/m);
+  assert.doesNotMatch(out, /on; tools/);
+});
+
+test('a live start that wrote no chLocal (a ch-local from before) is a client on an older ch-local', async () => {
+  const s = await installed();
+  stored(s.home);
+  const {hostTag} = require('../lib/gc');
+  const dir = path.join(s.home, 'run', 'r5151');
+  fs.mkdirSync(dir, {recursive: true});
+  fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({pid: 5151, host: hostTag('box-1'), loaded: {}}));
+  const nul = path.join(s.home, 'run', 'r5252');
+  fs.mkdirSync(nul, {recursive: true});
+  fs.writeFileSync(path.join(nul, 'run.json'), JSON.stringify({pid: 5252, host: hostTag('box-1'), loaded: {}, chLocal: null}));
+  const {out} = await statusOf(Object.assign(s.io(), {hostname: 'box-1', alive: (pid) => pid === 5151 || pid === 5252}));
+  assert.strictEqual(out.split('\n').filter((l) => /still on/.test(l)).join('\n'), 'a running client is still on an older ch-local; restart it', 'a checkout\'s start (null) is not called stale');
+});
+
+test('a credential from the gh login: gh is asked as a start asks it; one that gives no token makes the part not available', async () => {
+  const s = await installed();
+  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'gh'});
+  const io = Object.assign(s.io(), {exec: async (cmd) => { io.execs.push({cmd}); return {status: 1, stdout: '', stderr: 'not logged in'}; }});
+  const {out} = await statusOf(io);
+  assert.ok(io.execs.some((e) => e.cmd === 'gh'), 'gh asked');
+  assert.match(lineOf(out, 'ch-access-github'), /^part; not available: (your gh login gave no token|has no token from your gh login)/);
+  assert.match(lineOf(out, 'ch-pack-ci-failure-triage'), /^not loaded: calls ch-access-github/);
+});
+
+test('a module turned off still shows its stored credential', async () => {
+  const s = await installed();
+  stored(s.home);
+  require('../lib/settings').setSetting(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}, '/nonexistent'), 'pack.ci-failure-triage', 'off', {by: 'cli'});
+  const {out} = await statusOf(s.io());
+  assert.strictEqual(lineOf(out, 'ch-access-github'), 'part; credential COUNTINGHOUSE_GITHUB_TOKEN -> https://api.githubcopilot.com (stored)');
+});

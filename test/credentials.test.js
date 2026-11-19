@@ -550,8 +550,11 @@ test('a gh entry for another origin with no slot says its own reason, and status
   const s = mc.applyStates(where, record, new Map()).get(ACCESS);
   assert.strictEqual(s.state, 'store-problem');
   assert.ok(!/restart/.test(s.reason), s.reason);
-  const {statusLine} = require('../lib/credentials-command');
-  assert.match(statusLine(where, record, mc.bindings(where, record), ACCESS), /^not loaded: ch-access-github: its stored credential uses your gh login, which is given only to https:\/\/api\.githubcopilot\.com/);
+  // status (by module, L1b-1) says the part's own reason, and asks no gh login for it
+  const f = io(h);
+  assert.strictEqual(await require('../lib/packs-command').status({}, f), 0, f.err);
+  assert.match(f.out, /^  ch-access-github \S+ +part; not available: its stored credential uses your gh login, which is given only to https:\/\/api\.githubcopilot\.com/m);
+  assert.ok(!f.execs.some((e) => e.cmd === 'gh'), 'gh is not asked for a binding it could not serve');
 });
 
 // the Reviewer's round 3, 7: input past the limit is refused at once
