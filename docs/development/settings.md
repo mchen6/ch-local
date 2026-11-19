@@ -236,25 +236,11 @@ runtime's exact-version tested list and the automated re-test.
 fixture per source, for these tests and for that re-test.
 
 A module is turned on and off for every session, at a terminal
-(`ch-local settings set enabled.<module> on|off`), never for one start.
-Until the runtime's settings tool writes `enabled.*` itself (countinghouse
-M5b), its `load-pack` and `unload-pack` asks from the dialog load and
-unload nothing; each is answered with what is true, and its line is said
-once per start:
-
-| answer | when |
-|---|---|
-| `CONTROL_NOT_INSTALLED`, nothing said | the name is not an installed pack's |
-| `CONTROL_PACK_NOT_ALLOWED` | withdrawn, or not on the operator's list |
-| `CONTROL_CEILING_UNTRUSTED` | the operator's ceiling file cannot be trusted |
-| `{}` | on already (`load-pack`), off already (`unload-pack`) |
-| `CONTROL_NOT_AVAILABLE` | on, but kept out: availability's reason, or stopped |
-| `CONTROL_USE_TERMINAL` | off (or on, to `unload-pack`): the `enabled.*` command said |
-| `CONTROL_BUSY`, nothing said | started 10 s or more after it came |
-
-The runtime undoes a `load-pack` it got no answer to (its 45 s wait) with
-an `unload-pack`; that one, within 60 s of the `load-pack` refused past the
-wait, is `{}` with nothing said.
+(`ch-local settings set enabled.<module> on|off`) or by the runtime's
+settings tool, which writes `enabled.*` itself (countinghouse M5b), never for
+one start. The runtime sends no `load-pack` or `unload-pack` ask any more
+(M5b, and M6 removed the pack form), and ch-local answers none: one that
+came would be the control channel's `CONTROL_UNKNOWN`.
 
 ## Limits
 

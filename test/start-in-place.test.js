@@ -47,7 +47,7 @@ const until = async (cond, ms = 10000) => {
 // the tests here are given it read already (ch-local's intermittent
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, loadPackDeadlineMs, loadPackRuntimeWaitMs, ghToken = null, home: reuse = null,
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
@@ -56,7 +56,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   if (reuse == null && bound != null) bindAccess(home, bound);
   if (beforeStart != null) beforeStart(home);
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env}, homedir: '/nowhere'});
-  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, loadPackDeadlineMs, loadPackRuntimeWaitMs, clientAncestry});
+  Object.assign(f, {pid: 4242, hostname: 'box-1', cwd: home, alive: () => true, trapSignals: () => () => {}, exit: () => {}, controlTimeoutMs: timeoutMs, clientAncestry});
   // the running ch-local is the one the home holds (the npm stub's 0.2.0); a
   // test makes this process stale by giving it another (lib/packs.js
   // recordRelease)
@@ -456,10 +456,8 @@ test('start answers the runtime\'s may-elicit (countinghouse part 3 P2, Task 4):
   await s.done;
 });
 
-// countinghouse part 3 P2, Task 5: a pack turned on in the client's dialog
-// for this start only (control load-pack / unload-pack from the runtime).
 // Start loads ci-failure-triage; `other` is added while running and turned
-// off, so it is installed and off when the dialog asks for it.
+// off, so it is installed and off.
 async function withOtherOff(opts = {}) {
   const {layout} = require('../lib/home');
   const s = await running(opts);
@@ -490,19 +488,12 @@ async function sharedWithCiOff(opts = {}) {
 }
 
 // The shared contract for these messages (countinghouse's shared-runtime-wire
-// vectors, packMessages, copied): what the runtime refuses, by reason token.
-// From the module store every load, reload and unload is in the module form
-// (#413 section 7.3), which carries none of the pack form's fields.
-const PACK_V = require('./vectors/pack-messages.json').packMessages;
-function packMessageProblem(m) {
-  const packOk = (p) => typeof p === 'string' && new RegExp(PACK_V.packPattern).test(p);
-  // (M5a, #438: set pack.* is refused whatever its value; global is not read)
-  if (m.type === 'set') return (typeof m.name === 'string' && m.name.startsWith('pack.')) ? 'set' : null;
-  if (m.type === 'load' || m.type === 'reload') return packOk(m.pack) ? null : 'pack';
-  if (m.type === 'unload') return packOk(m.pack) ? null : 'pack';
-  if (m.type === 'notice') return (m.pack === undefined || packOk(m.pack)) ? null : 'pack';
-  return null;
-}
+// vectors, moduleMessages, copied): what the runtime refuses, by reason
+// token. Every message is in the module form (#413 section 7.3), which
+// carries none of the pack form's fields; packMessages went with M6 (#455).
+// A set has no vector of its own: its one rule here is that a pack.*
+// setting is never sent (M5a, #438).
+const setProblem = (m) => ((typeof m.name === 'string' && m.name.startsWith('pack.')) ? 'set' : null);
 // The module form's own vectors (countinghouse's moduleMessages, copied):
 // what the runtime refuses, by reason token
 const MODULE_V = require('./vectors/module-messages.json').moduleMessages;
@@ -514,6 +505,10 @@ function moduleMessageProblem(m) {
     if (!Array.isArray(m.names) || m.names.length === 0 || !m.names.every(pkg) || new Set(m.names).size !== m.names.length) return 'names';
   } else if (['load', 'unload'].includes(m.type)) {
     if (!pkg(m.name)) return 'name';
+  } else if (m.type === 'notice') {
+    // (notice: module a package name or null, and text; no pack-form field)
+    if (OLD_FIELDS.some((f) => f in m)) return 'old-field';
+    return (m.module === null || pkg(m.module)) && typeof m.text === 'string' ? null : 'name';
   } else if (m.type === 'reread') {
     // (the vectors' rule: reread's what is module-settings)
     return m.what === 'module-settings' && Object.keys(m).every((k) => ['id', 'type', 'what'].includes(k)) ? null : 'name';
@@ -539,8 +534,8 @@ const keysOf = (m) => Object.keys(m).filter((k) => k !== 'id').sort().join(',');
 const UNLOAD_SHAPES = new Set(MODULE_V.accepted.filter((e) => e.message.type === 'unload').map((e) => keysOf(e.message)));
 const holdsToTheVectors = (requests) => {
   for (const m of requests) {
-    if (['load', 'reload', 'unload'].includes(m.type)) assert.strictEqual(moduleMessageProblem(m), null, JSON.stringify(m));
-    else assert.strictEqual(packMessageProblem(m), null, JSON.stringify(m));
+    if (m.type === 'set') assert.strictEqual(setProblem(m), null, JSON.stringify(m));
+    else assert.strictEqual(moduleMessageProblem(m), null, JSON.stringify(m));
     if (m.type === 'unload') {
       assert.ok(UNLOAD_SHAPES.has(keysOf(m)), `an unload shaped as a vector: ${JSON.stringify(m)}`);
       if ('reason' in m) assert.ok(m.reason === 'off' || (m.reason === 'calls' && typeof m.because === 'string'), JSON.stringify(m));
@@ -548,8 +543,8 @@ const holdsToTheVectors = (requests) => {
   }
 };
 
-test('the module messages\' vectors: each accepted load, reload, unload and reread passes, each refused one fails for its reason', () => {
-  const kinds = new Set(['load', 'reload', 'unload', 'reread']);
+test('the module messages\' vectors: each accepted load, reload, unload, notice and reread passes, each refused one fails for its reason', () => {
+  const kinds = new Set(['load', 'reload', 'unload', 'notice', 'reread']);
   for (const {why, message} of MODULE_V.accepted.filter((e) => kinds.has(e.message.type))) {
     // an absolute directory as the platform reads one (the vectors' are POSIX)
     const m = message.dirs != null ? {...message, dirs: Object.fromEntries(Object.entries(message.dirs).map(([n, d]) => [n, path.resolve(d)]))} : message;
@@ -558,9 +553,14 @@ test('the module messages\' vectors: each accepted load, reload, unload and rere
   for (const {why, reason, message} of MODULE_V.refused.filter((e) => kinds.has(e.message.type))) assert.strictEqual(moduleMessageProblem(message), reason, why);
 });
 
-test('B3: the pack messages\' vectors: each accepted one passes, each refused one fails for its reason', () => {
-  for (const {why, message} of PACK_V.accepted) assert.strictEqual(packMessageProblem(message), null, why);
-  for (const {why, reason, message} of PACK_V.refused) assert.strictEqual(packMessageProblem(message), reason, why);
+// (M6, #455: the pack form is gone; a notice carrying one of its fields is
+// refused, id 20; a set of pack.* is never sent)
+test('M6: no message carries the pack form: a notice with a pack field is refused, and a set of pack.* is never sent', () => {
+  const twenty = MODULE_V.refused.find((e) => e.message.id === 20);
+  assert.ok(twenty != null && twenty.message.type === 'notice' && 'pack' in twenty.message, 'the vectors pin it');
+  assert.strictEqual(moduleMessageProblem(twenty.message), 'old-field');
+  assert.strictEqual(setProblem({type: 'set', name: 'pack.other', value: false}), 'set');
+  assert.strictEqual(setProblem({type: 'set', name: 'requestTimeout', value: 61}), null);
 });
 
 // countinghouse's shared runtime, B3, from the module store: a load and an
@@ -690,24 +690,6 @@ test('a running start stops serving a pack an upgrade withdraws: unloaded, and t
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-ci-failure-triage'));
     const now = 'module ch-pack-ci-failure-triage was withdrawn in this release and is no longer served; `ch-local remove-pack ci-failure-triage` removes it';
     await until(() => s.requests.some((m) => (m.type === 'unload' && m.notice === now) || (m.type === 'notice' && m.text === now)));
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-test('load-pack for a pack held as withdrawn is refused CONTROL_PACK_NOT_ALLOWED, and the session is told why', async () => {
-  const {s, count, reply} = await withOtherOff();
-  try {
-    withdrawHeld(s.home, 'other');
-    await new Promise((r) => setTimeout(r, 500));   // the watcher's apply has run
-    // the load-pack's own answer (L2b: never the enabled.* command for a
-    // withdrawn module; the medium on L2b, 4)
-    const before = notices(s).length;
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_PACK_NOT_ALLOWED'});
-    await until(() => notices(s).slice(before).some(([, t]) => /^module ch-pack-other was withdrawn in this release and is no longer served; .*remove-pack other/.test(t)));
-    assert.ok(!notices(s).slice(before).some(([, t]) => /settings set enabled/.test(t)));
-    assert.strictEqual(count('load'), 1, 'nothing loaded');
   } finally {
     s.end();
     await s.done;
@@ -1460,100 +1442,19 @@ test('a module setting changed while running sends the runtime one reread; anoth
   }
 });
 
-// L2b (#413 section 5.3; the Reviewer on L2b's Q3): a client's load-pack or
-// unload-pack from the pack form's dialog turns nothing on or off here: the
-// session is told the enabled.* command, naming the module, and the ask is
-// refused (until M5b moves the runtime to enabled.*); nothing is loaded
-test('a load-pack or unload-pack is answered with the enabled.* command and refused; nothing is loaded or unloaded', async () => {
+// M5b and M6 (#455): the runtime sends no load-pack or unload-pack ask any
+// more, and the applier answers none (L6): one that came would be the control
+// channel's unknown request, said to no one, and nothing loaded or unloaded
+test('L6: a load-pack or unload-pack is no request the applier answers: CONTROL_UNKNOWN, nothing said, nothing loaded or unloaded', async () => {
   const {s, reply} = await withOtherOff();
   try {
     const before = s.requests.length;
-    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_USE_TERMINAL'});
-    await until(() => notices(s).some(([, t]) => t === 'ch-pack-other is turned on for all your sessions at a terminal: run `ch-local settings set enabled.@countinghouse/ch-pack-other on`'));
-    assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r2', ok: false, code: 'CONTROL_USE_TERMINAL'});
-    await until(() => notices(s).some(([, t]) => t === 'ch-pack-ci-failure-triage is turned off for all your sessions at a terminal: run `ch-local settings set enabled.@countinghouse/ch-pack-ci-failure-triage off`'));
-    assert.ok(!s.requests.slice(before).some((m) => m.type === 'load' || m.type === 'unload'), JSON.stringify(s.requests.slice(before)));
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-// the medium on L2b, 1 to 3: a name that is not an installed pack's is never
-// said; on already answers {}; off already answers {}
-test('a load-pack or unload-pack naming no installed pack is refused unsaid; on already and off already answer {}', async () => {
-  const {s, reply} = await withOtherOff();
-  try {
-    const before = notices(s).length;
-    // (request ids as the runtime sends them: r<digits>)
-    for (const [i, name] of ['nope', 'x`\nrun this', ''].entries()) {
-      assert.deepStrictEqual(await reply({id: `r9${i}`, type: 'load-pack', name, version: '1.0.0'}), {id: `r9${i}`, ok: false, code: 'CONTROL_NOT_INSTALLED'});
-    }
-    assert.strictEqual(notices(s).length, before, 'nothing said');
-    assert.deepStrictEqual(await reply({id: 'r80', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r80', ok: true});
-    assert.deepStrictEqual(await reply({id: 'r81', type: 'unload-pack', name: 'other'}), {id: 'r81', ok: true});
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-// the high review of #92, 1 to 3: a module on but kept out for another
-// reason is answered with that reason, never "turn it on"; the runtime's
-// undo of an unanswered load-pack is {} unsaid; each line once per start
-test('load-pack: on but blocked says why, never the on command; each answer said once', async () => {
-  const s = await running({bound: null});   // on, but its credential is not stored
-  try {
-    await until(() => s.args() != null);
-    const before = notices(s).length;
-    assert.deepStrictEqual(await reply2(s, {id: 'r71', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r71', ok: false, code: 'CONTROL_NOT_AVAILABLE'});
-    await until(() => notices(s).length > before);
-    const said1 = notices(s).slice(before).map(([, t]) => t);
-    assert.ok(said1.every((t) => !/settings set enabled|loads at your client's next start/.test(t)), JSON.stringify(said1));
-    assert.ok(said1.some((t) => /^not loading ch-pack-ci-failure-triage/.test(t)), JSON.stringify(said1));
-    // asked again: refused again, said no more
     const said = notices(s).length;
-    assert.deepStrictEqual(await reply2(s, {id: 'r72', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r72', ok: false, code: 'CONTROL_NOT_AVAILABLE'});
-    await new Promise((r) => setTimeout(r, 100));
-    assert.strictEqual(notices(s).length, said, 'said once');
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-const reply2 = async (s, msg) => { s.ask(msg); await until(() => s.requests.some((m) => m.id === msg.id)); return s.requests.find((m) => m.id === msg.id); };
-
-// the high review of #92, 2: an ask started past the deadline is refused
-// CONTROL_BUSY unsaid, and the runtime's undo of that load-pack (an
-// unload-pack for the same pack) is {} unsaid, even for a loaded module
-test('a load-pack started past the runtime\'s wait is refused CONTROL_BUSY unsaid, and its undo unload-pack answers {} unsaid', async () => {
-  const s = await running({loadPackDeadlineMs: 0, loadPackRuntimeWaitMs: 0});
-  try {
-    await until(() => s.args() != null);
-    assert.strictEqual(loadsPack(s), true);
-    const before = notices(s).length;
-    assert.deepStrictEqual(await reply2(s, {id: 'r61', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r61', ok: false, code: 'CONTROL_BUSY'});
-    assert.deepStrictEqual(await reply2(s, {id: 'r62', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r62', ok: true});
-    // a later unload-pack (no late load-pack before it) is past the deadline too
-    assert.deepStrictEqual(await reply2(s, {id: 'r63', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r63', ok: false, code: 'CONTROL_BUSY'});
-    await new Promise((r) => setTimeout(r, 100));
-    assert.strictEqual(notices(s).length, before, 'nothing said');
-    assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 0, 'nothing unloaded');
-  } finally {
-    s.end();
-    await s.done;
-  }
-});
-
-// the medium on #92's high round, 1: a load-pack refused late but inside the
-// runtime's wait gets no undo, so a later unload-pack is never taken for one
-test('a load-pack refused CONTROL_BUSY inside the runtime\'s wait marks nothing: a later unload-pack is answered as itself', async () => {
-  const s = await running({loadPackDeadlineMs: 0, loadPackRuntimeWaitMs: 60000});
-  try {
-    await until(() => s.args() != null);
-    assert.strictEqual(loadsPack(s), true);
-    assert.deepStrictEqual(await reply2(s, {id: 'r51', type: 'load-pack', name: 'ci-failure-triage', version: '0.1.0'}), {id: 'r51', ok: false, code: 'CONTROL_BUSY'});
-    assert.deepStrictEqual(await reply2(s, {id: 'r52', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r52', ok: false, code: 'CONTROL_BUSY'});
+    assert.deepStrictEqual(await reply({id: 'r1', type: 'load-pack', name: 'other', version: '0.3.0'}), {id: 'r1', ok: false, code: 'CONTROL_UNKNOWN'});
+    assert.deepStrictEqual(await reply({id: 'r2', type: 'unload-pack', name: 'ci-failure-triage'}), {id: 'r2', ok: false, code: 'CONTROL_UNKNOWN'});
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!s.requests.slice(before).some((m) => m.type === 'load' || m.type === 'unload'), JSON.stringify(s.requests.slice(before)));
+    assert.strictEqual(notices(s).length, said, 'nothing said');
   } finally {
     s.end();
     await s.done;
