@@ -291,6 +291,10 @@ test('packs from different pins: one predicate for add-pack, install and remove-
   assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}), rel('1.1.0')), true, 'another release');
   assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}), {unreleased: 'd'}), true, 'development pins beside a released pack');
   assert.strictEqual(fromOtherPins(rec({a: {unreleased: 'd'}}), rel('1.0.0')), true, 'a development home');
+  // one pins file is no guarantee of one version each: a pack is recorded
+  // at a kept newer version (the medium review of the round, 1-3)
+  assert.strictEqual(fromOtherPins({...rec({a: {unreleased: 'd'}}), unreleased: true}, {unreleased: 'd'}), true, 'a development home, its own pins file again');
+  assert.strictEqual(fromOtherPins({...rec({a: {unreleased: 'd'}, b: {unreleased: 'd'}}), unreleased: true}, null), true, 'remove-pack in a development home');
   assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}), rel('1.1.0'), {except: ['a']}), false, 'the packs the operation brings to its pins are not compared');
   assert.strictEqual(fromOtherPins(rec({a: rel('1.0.0')}, ['@x/a']), rel('1.1.0')), false, 'a withdrawn pack never loads');
   assert.strictEqual(fromOtherPins(rec({}), {unreleased: 'd'}), false, 'nothing beside it');
@@ -335,10 +339,9 @@ test('remove-pack: a module the pack raised goes back; one a remaining pack reco
   assert.strictEqual(record(h.home).modules[REDACT].version, '0.1.0');
   assert.ok(fs.readFileSync(settings).equals(bytes), 'the settings file byte for byte');
   // a module a remaining pack was installed with stays, said
-  // (from another pins file: one pins file throughout is one release's, and
-  // nothing is said, as in a released home)
+  // (a development home: one pins file throughout still says it)
   const k = await devHome(release({versions: {[REDACT]: '0.1.1'}}));
-  await k.add(release({versions: {[REDACT]: '0.1.1', [OTHER]: '0.3.1'}}));
+  await k.add(release({versions: {[REDACT]: '0.1.1'}}));
   const io2 = fakeIo({env: k.env});
   assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, io2), 0, io2.err);
   assert.match(io2.out, /^ch-step-redact stays at 0\.1\.1: the pack other was installed with it$/m);
