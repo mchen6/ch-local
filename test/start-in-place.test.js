@@ -22,7 +22,7 @@ const ACCESS = '@countinghouse/ch-access-github';
 const GH_ORIGIN = 'https://api.githubcopilot.com';
 // a test home's stored value (no real token's shape)
 const STORED = 'test-stored-value-1';
-const bindAccess = (home, source = 'stored') => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN',
+const bindAccess = (home, source = 'stored') => require('../lib/credential-store').bind(home, ACCESS, 'GITHUB_TOKEN',
   source === 'gh' ? {origin: GH_ORIGIN, source: 'gh'} : {origin: GH_ORIGIN, source: 'stored', value: STORED});
 const TRIAGE_LOADED = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.1.0'};
 const until = async (cond, ms = 10000) => {
@@ -1407,7 +1407,7 @@ test('a module turned on while running says where its key goes, once, when it lo
     await until(() => s.args() != null);
     const line = 'sends OTHER_TOKEN to https://api.other.example for ch-step-other';
     assert.ok(!s.f.err.includes(line), 'not said at start: it does not load');
-    assert.match(s.f.err, /sends COUNTINGHOUSE_GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
+    assert.match(s.f.err, /sends GITHUB_TOKEN to https:\/\/api\.githubcopilot\.com for ch-access-github/);
     fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true}}));
     await until(() => s.requests.some((m) => m.type === 'load' && named(m) === '@countinghouse/ch-pack-other'));
     const load = s.requests.find((m) => m.type === 'load' && named(m) === '@countinghouse/ch-pack-other');

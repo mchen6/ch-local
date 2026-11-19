@@ -75,9 +75,11 @@ test('the launcher environment carries no token of this shell\'s unless given on
   const before = process.env.GITHUB_TOKEN;
   process.env.GITHUB_TOKEN = 'ghp_from_the_shell';
   try {
-    const env = acceptance.launcherEnv('/h', {COUNTINGHOUSE_GITHUB_TOKEN: 'chacc_x'});
+    // (the pack's variable, GITHUB_TOKEN since ch-access-github 0.2.0: the
+    // shell's dropped, one given kept)
+    const env = acceptance.launcherEnv('/h');
     assert.strictEqual(env.GITHUB_TOKEN, undefined);
-    assert.strictEqual(env.COUNTINGHOUSE_GITHUB_TOKEN, 'chacc_x');
+    assert.strictEqual(acceptance.launcherEnv('/h', {GITHUB_TOKEN: 'chacc_x'}).GITHUB_TOKEN, 'chacc_x');
     assert.strictEqual(env.CH_LOCAL_DEV, '1');
     assert.strictEqual(env.COUNTINGHOUSE_HOME, '/h');
   } finally {

@@ -47,7 +47,7 @@
     "@countinghouse/ch-access-github": {
       "credentials": [
         {
-          "variable": "COUNTINGHOUSE_GITHUB_TOKEN",
+          "variable": "GITHUB_TOKEN",
           "origin": "https://api.githubcopilot.com"
         }
       ],

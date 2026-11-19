@@ -30,7 +30,7 @@ test('the shipped file parses (version 2), and lib/allowlist.js reads its packs,
   // the origins are the descriptions' credentials, each with its variables
   // (fallbackEnv is never described: section 6.1)
   assert.deepStrictEqual(ALLOWED_ORIGINS, originsOf(r.pins.modules));
-  assert.deepStrictEqual(ALLOWED_ORIGINS['https://api.githubcopilot.com'], ['COUNTINGHOUSE_GITHUB_TOKEN']);
+  assert.deepStrictEqual(ALLOWED_ORIGINS['https://api.githubcopilot.com'], ['GITHUB_TOKEN']);
   assert.ok(Object.isFrozen(ALLOWED_ORIGINS) && Object.isFrozen(ALLOWLIST.packs['ci-failure-triage']), 'read-only');
 });
 
@@ -118,7 +118,7 @@ test('what a new release adds that needs the user\'s yes, for the installed pack
   const next = shipped();
   next.packs['ci-failure-triage'].modules.push('@countinghouse/ch-step-new');
   next.modules['@countinghouse/ch-step-new'] = {credentials: [], calls: [ACCESS], confirmSettings: {}};
-  next.modules[ACCESS].credentials = [{variable: 'COUNTINGHOUSE_GITHUB_TOKEN', origin: 'https://api.example.invalid'}];
+  next.modules[ACCESS].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}];
   next.packs['another-pack'] = {modules: ['@countinghouse/ch-pack-another']};
   next.modules['@countinghouse/ch-pack-another'] = {credentials: [{variable: 'OTHER_TOKEN', origin: 'https://other.example.invalid'}], calls: [], confirmSettings: {}};
   const parsed = parseReleasePins(next);
@@ -129,7 +129,7 @@ test('what a new release adds that needs the user\'s yes, for the installed pack
     ['module', '@countinghouse/ch-step-new'],
     ['keyCaller', '@countinghouse/ch-step-new']
   ]);
-  assert.strictEqual(found[0].line, 'ch-access-github\'s key goes to https://api.example.invalid as COUNTINGHOUSE_GITHUB_TOKEN (was https://api.githubcopilot.com as COUNTINGHOUSE_GITHUB_TOKEN)');
+  assert.strictEqual(found[0].line, 'ch-access-github\'s key goes to https://api.example.invalid as GITHUB_TOKEN (was https://api.githubcopilot.com as GITHUB_TOKEN)');
   assert.strictEqual(found[2].line, 'ch-step-new now calls ch-access-github, which holds a key');
   assert.ok(!found.some((x) => x.module === '@countinghouse/ch-pack-another'), 'a pack the user has not installed adds nothing to agree to');
   // a confirm setting: its mark gone, or its default changed

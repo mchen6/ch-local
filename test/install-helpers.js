@@ -11,8 +11,9 @@ const {tarballName} = require('../lib/install');
 
 const integrityOf = (bytes) => 'sha512-' + crypto.createHash('sha512').update(bytes).digest('base64');
 const RUNTIME = [['@countinghouse/ch-local', '0.2.0'], ['countinghouse', '8.0.0']];
-const GITHUB_REMOTE = {name: 'github', transport: 'streamable-http', url: 'https://api.githubcopilot.com/mcp/',
-  credential: {env: 'COUNTINGHOUSE_GITHUB_TOKEN', fallbackEnv: 'GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}};
+// (as ch-access-github 0.2.0 declares it: the short form, its own
+// GITHUB_TOKEN)
+const GITHUB_REMOTE = {name: 'github', url: 'https://api.githubcopilot.com/mcp/', credential: 'GITHUB_TOKEN'};
 // name -> [version, countinghouse block, extra manifest fields]
 const PACKAGES = {
   '@countinghouse/ch-pack-ci-failure-triage': ['0.1.0', {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact']}],

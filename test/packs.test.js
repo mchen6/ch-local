@@ -33,7 +33,7 @@ function app(packages) {
 test('ALLOWED_ORIGINS pins each token destination and the variables it may receive: today GitHub\'s MCP server only, its described variable', () => {
   // (from this release's module descriptions, version 2: a fallbackEnv is
   // never described, section 6.1)
-  assert.deepStrictEqual(ALLOWED_ORIGINS, {'https://api.githubcopilot.com': ['COUNTINGHOUSE_GITHUB_TOKEN']});
+  assert.deepStrictEqual(ALLOWED_ORIGINS, {'https://api.githubcopilot.com': ['GITHUB_TOKEN']});
   assert.ok(Object.isFrozen(ALLOWED_ORIGINS) && Object.values(ALLOWED_ORIGINS).every(Object.isFrozen));
 });
 

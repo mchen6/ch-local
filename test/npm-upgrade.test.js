@@ -155,7 +155,7 @@ test('what it adds that needs a yes: a key sent to a new origin, a module that n
   // (version 2: a module's credentials name their origin; a pack's module
   // calling it becomes a key caller)
   next.modules['@countinghouse/ch-step-report'].credentials = [{variable: 'NEW_TOKEN', origin: 'https://api.example.invalid'}];
-  next.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'COUNTINGHOUSE_GITHUB_TOKEN', origin: 'https://moved.example.invalid'}];
+  next.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://moved.example.invalid'}];
   // (the pack already called ch-step-report: not new; dedupe calling the
   // GitHub access module is)
   next.modules['@countinghouse/ch-step-dedupe'].calls = ['@countinghouse/ch-access-github'];
@@ -164,7 +164,7 @@ test('what it adds that needs a yes: a key sent to a new origin, a module that n
     const r = await find(reg);
     assert.strictEqual(r.kind, 'available');
     assert.deepStrictEqual(r.adds.sort(), [
-      "ch-access-github's key goes to https://moved.example.invalid as COUNTINGHOUSE_GITHUB_TOKEN (was https://api.githubcopilot.com as COUNTINGHOUSE_GITHUB_TOKEN)",
+      "ch-access-github's key goes to https://moved.example.invalid as GITHUB_TOKEN (was https://api.githubcopilot.com as GITHUB_TOKEN)",
       'ch-step-dedupe now calls ch-access-github, which holds a key',
       'ch-step-report sends a key (NEW_TOKEN) to https://api.example.invalid',
     ].sort());
