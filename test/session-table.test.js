@@ -10,6 +10,7 @@ const {createSessionTable, MAX_ROWS, MAX_DECLINES, DECLINE_KEEP_MS, EMPTY_STATE}
 
 const ID = (n) => n.toString(16).padStart(32, '0');
 const HASH = 'f'.repeat(64);
+const HASH2 = HASH.replace(/f$/, 'e');
 const STATE = {overrides: [{name: 'requestTimeout', value: 120000, loosening: true, over: 30000, version: null}], locks: ['pack'], formsLeft: 2};
 
 test('a fresh table restores empty', () => {
@@ -157,23 +158,6 @@ test('the shared vectors\' restoreRows (#270): each accepted row is kept as told
       assert.notDeepStrictEqual(out, c.row, `${c.why}: never handed on as it was`);
     }
   }
-  // mapped (M5b, countinghouse #449): a row of the kind pack is the
-  // runtime's to map to enabled (`taken`); ch-local hands it on as it was
-  // told, so a runtime before M5b takes it as it is (the Reviewer's ruling)
-  for (const c of V.mapped) {
-    const u = createSessionTable({warn: () => {}});
-    assert.strictEqual(u.told({type: 'session-resume', session: c.row.session, hash: c.row.resume}), true, c.why);
-    assert.strictEqual(u.told({type: 'session-state', session: c.row.session, state: c.row.state}), true, c.why);
-    assert.deepStrictEqual(u.restore().sessions, [c.row], `${c.why}: handed on as told`);
-  }
-  // rowDropped: a row naming a kind the runtime has none of is dropped by
-  // itself there; ch-local never keeps one (its kinds are the runtime's)
-  for (const c of V.rowDropped) {
-    const u = createSessionTable({warn: () => {}});
-    u.told({type: 'session-resume', session: c.row.session, hash: c.row.resume});
-    u.told({type: 'session-state', session: c.row.session, state: c.row.state});
-    assert.ok(!u.restore().sessions.some((r) => JSON.stringify(r.state) === JSON.stringify(c.row.state)), `${c.why}: never kept`);
-  }
 });
 
 test('restore carries reset: the sessions a handoff took loosenings from, once (the Reviewer\'s ruling on #35)', () => {
@@ -230,11 +214,11 @@ test('a handoff keeps the kind enabled: a lock, an unanswered form and a decline
   const asking = {overrides: [], locks: [], unanswered: ['enabled'], formsLeft: 2};
   t.told({type: 'session-resume', session: ID(1), hash: HASH});
   t.told({type: 'session-state', session: ID(1), state: locked});
-  t.told({type: 'session-resume', session: ID(2), hash: HASH.replace(/f$/, 'e')});
+  t.told({type: 'session-resume', session: ID(2), hash: HASH2});
   t.told({type: 'session-state', session: ID(2), state: asking});
   assert.strictEqual(t.told({type: 'decline', kind: 'enabled', at}), true);
   const first = t.restore();
-  assert.deepStrictEqual(first.sessions, [{session: ID(1), resume: HASH, state: locked}, {session: ID(2), resume: HASH.replace(/f$/, 'e'), state: asking}]);
+  assert.deepStrictEqual(first.sessions, [{session: ID(1), resume: HASH, state: locked}, {session: ID(2), resume: HASH2, state: asking}]);
   assert.deepStrictEqual(first.declines, [{kind: 'enabled', at}]);
   // the next daemon: seeded with what this one handed on
   const next = createSessionTable({warn: () => {}});
