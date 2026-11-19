@@ -244,6 +244,9 @@ test('L0: names kept by a set or a reset are never reported as edits made outsid
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
   writeSettings(home, {...KEPT, locale: 'zh'});
+  // the module values as the runtime's settings tool writes them: each with
+  // its history line first (#413 section 4.2), so none is an outside edit
+  fs.writeFileSync(path.join(home, 'history.jsonl'), Object.entries(KEPT).filter(([n]) => n.startsWith('module.')).map(([setting, v]) => JSON.stringify({by: 'settings tool', setting, new: v})).join('\n') + '\n');
   await cli(home, 'settings', 'set', 'requestTimeout', '20s');
   await cli(home, 'settings', 'reset');
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
@@ -277,6 +280,8 @@ test('L0: a reset whose write fails is recorded as not made: the values before i
   setSetting(where, 'requestTimeout', '20s', {by: 'cli'});
   const raw = JSON.parse(fs.readFileSync(settingsFile(home), 'utf8'));
   writeSettings(home, {...raw.values, 'module.a.b': 1});
+  // (written as the runtime's settings tool writes it: its line first)
+  fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'settings tool', setting: 'module.a.b', new: 1}) + '\n');
   delete require.cache[settingsPath];
   atomic.writeAtomic = () => { throw Object.assign(new Error('no space'), {code: 'ENOSPC'}); };
   try {

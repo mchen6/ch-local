@@ -174,3 +174,60 @@ test('with no runtime reader installed, a module setting is refused, saying how 
   assert.strictEqual(r.code, 2);
   assert.match(r.io.err, /the installed countinghouse cannot check a module's setting: run `ch-local upgrade`/);
 });
+
+// L3 (#413 section 4.3): the outside-edits check learns module.* and
+// enabled.*; a value recorded cut is compared by its hash
+test('outside edits: a module value the tools wrote, reset or kept is never reported; one edited by hand is, once', async () => {
+  const {outsideEdits, reportOutsideEdits, resetForTests} = require('../lib/outside-edits');
+  const {readSettings} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  resetForTests();
+  const home = await installed();
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  const long = 'q'.repeat(120);
+  assert.strictEqual((await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'imperial'])).code, 0);
+  assert.strictEqual((await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.note', long])).code, 0);
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'what the tools wrote, a long value by its hash');
+  // a reset of one, and a bare reset (which keeps module.*): nothing reported
+  assert.strictEqual((await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage.units'])).code, 0);
+  assert.strictEqual((await cli(home, ['settings', 'set', 'locale', 'zh'])).code, 0);
+  assert.strictEqual((await cli(home, ['settings', 'reset'])).code, 0);
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
+  // edited by hand: the long value changed, and a new one added
+  const values = JSON.parse(fs.readFileSync(path.join(home, 'settings.json'), 'utf8')).values;
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {...values, [STORED('note')]: 'r'.repeat(120), [STORED('units')]: 'imperial'}}));
+  const said = [];
+  const edits = reportOutsideEdits(where, readSettings(where), {say: (s) => said.push(s)});
+  assert.deepStrictEqual(edits.map((e) => e.setting).sort(), [STORED('note'), STORED('units')].sort());
+  assert.ok(said.some((s) => s === `${STORED('units')} was changed outside ch-local: (not set) -> imperial`), said.join(' | '));
+  assert.ok(said.some((s) => s.startsWith(`${STORED('note')} was changed outside ch-local: (a long value) -> ${'r'.repeat(64)}…`)), said.join(' | '));
+  const line = historyOf(home).find((l) => l.setting === STORED('note') && l.change === 'changed outside ch-local');
+  assert.strictEqual(line.new.length, 64);
+  assert.ok(typeof line.newSha256 === 'string');
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'reported once');
+});
+
+test('outside edits: a terminal "on" that removes a leftover pack.* is not an outside edit; enabled.* on by hand that the ceiling forbids is refused', async () => {
+  const {outsideEdits, reportOutsideEdits, resetForTests} = require('../lib/outside-edits');
+  const {readSettings} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const {forbiddenBy, ceilingFor} = require('../lib/ceiling');
+  resetForTests();
+  const home = await installed();
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  fs.writeFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: true, new: false}) + '\n');
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.ci-failure-triage': false}}));
+  assert.strictEqual((await cli(home, ['settings', 'set', `enabled.${SCENARIO}`, 'on'], {answers: ['y']})).code, 0);
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'the leftover\'s removal is recorded');
+  // by hand: off then on again past the ceiling's list
+  require('../lib/ceiling').resetForTests();
+  fs.writeFileSync(path.join(home, 'app', 'node_modules', 'countinghouse', 'lib', 'settings-ceiling.js'),
+    `module.exports = {readCeiling: () => (${JSON.stringify({state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], modules: ['@countinghouse/ch-access-github']}})})};\n`);
+  assert.strictEqual((await cli(home, ['settings', 'set', `enabled.${SCENARIO}`, 'off'])).code, 0);
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {[`enabled.${SCENARIO}`]: true}}));
+  const said = [];
+  const edits = reportOutsideEdits(where, readSettings(where), {say: (s) => said.push(s), refusal: forbiddenBy(ceilingFor(where, {env: {}}))});
+  assert.strictEqual(edits.length, 1);
+  assert.ok(edits[0].refused != null, 'refused by the ceiling');
+  assert.match(said[0], /enabled\.@countinghouse\/ch-pack-ci-failure-triage was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: .*forbids it/);
+});
