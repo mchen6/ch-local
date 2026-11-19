@@ -42,3 +42,21 @@ test('no refused vector row is restored', () => {
     assert.ok(!t.restore().sessions.some((r) => JSON.stringify(r) === JSON.stringify(row)), why);
   }
 });
+
+// M5a (#438): a well-formed pack.* override from before it is dropped from
+// its row, the rest taken. A runtime never tells one (it is refused as
+// told); a handoff that carries one (seed) gives exactly the row taken,
+// and the session is told once (reset).
+test('every dropped vector row: refused as told, and a handoff gives exactly the state taken, its session told once', () => {
+  for (const {why, row, taken} of restoreRows.dropped) {
+    const told = createSessionTable({warn: () => {}});
+    assert.strictEqual(told.told({type: 'session-resume', session: row.session, hash: row.resume}), true, why);
+    assert.strictEqual(told.told({type: 'session-state', session: row.session, state: row.state}), false, `${why}: never told by a runtime`);
+    const t = createSessionTable({warn: () => {}});
+    t.seed({sessions: [row], declines: []});
+    const out = t.restore();
+    // (taken: the row's state as the runtime takes it)
+    assert.deepStrictEqual(out.sessions, [{session: row.session, resume: row.resume, state: taken}], why);
+    assert.deepStrictEqual(out.reset, [row.session], `${why}: told once`);
+  }
+});

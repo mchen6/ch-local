@@ -519,11 +519,9 @@ async function sharedWithCiOff(opts = {}) {
 const PACK_V = require('./vectors/pack-messages.json').packMessages;
 function packMessageProblem(m) {
   const packOk = (p) => typeof p === 'string' && new RegExp(PACK_V.packPattern).test(p);
-  if (m.type === 'set') return (typeof m.name === 'string' && m.name.startsWith('pack.') && m.value !== true) ? 'set-false' : null;
-  if (m.type === 'load' || m.type === 'reload') {
-    if (typeof m.global !== 'boolean') return 'global';
-    return packOk(m.pack) ? null : 'pack';
-  }
+  // (M5a, #438: set pack.* is refused whatever its value; global is not read)
+  if (m.type === 'set') return (typeof m.name === 'string' && m.name.startsWith('pack.')) ? 'set' : null;
+  if (m.type === 'load' || m.type === 'reload') return packOk(m.pack) ? null : 'pack';
   if (m.type === 'unload') return packOk(m.pack) ? null : 'pack';
   if (m.type === 'notice') return (m.pack === undefined || packOk(m.pack)) ? null : 'pack';
   return null;
