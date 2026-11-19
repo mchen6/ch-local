@@ -29,7 +29,14 @@ async function devHome(r1) {
     const code = await addPack({pack: 'other', from: r2.from, unreleasedPins: pinsFile(r2)}, a, {...r2.allow, pins: {}, runtime: {...r2.allow.runtime, lockfile: null}});
     return {code, io: a};
   };
-  return {home, env, add};
+  // install --pack under development pins meets the same table (the
+  // reviewer's answer: in a development home an added pack does)
+  const inst = async (r2, {interactive = false, answers = []} = {}) => {
+    const a = Object.assign(fakeIo({env, exec: npm(), answers}), {interactive});
+    const code = await install({pack: 'other', from: r2.from, unreleasedPins: pinsFile(r2)}, a, {...r2.allow, pins: {}, runtime: {...r2.allow.runtime, lockfile: null}});
+    return {code, io: a};
+  };
+  return {home, env, add, inst};
 }
 const placed = (home, m, v) => fs.existsSync(path.join(home, 'module-store', ...m.split('/'), v));
 const history = (home) => { try { return fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch (e) { return []; } };
@@ -125,6 +132,58 @@ test('Question B: installed newer across a breaking change than the pack was rel
     assert.strictEqual(record(h.home).modules[REDACT].version, '0.2.0');
     assert.ok(!placed(h.home, REDACT, '0.1.0'), 'never lowered: 0.1.0 not placed');
     assert.ok(OTHER in record(h.home).modules);
+  });
+});
+
+test('install --pack under development pins meets the same table', async (t) => {
+  await t.test('installed newer, no breaking change: never lowered, the pack recorded with the installed version', async () => {
+    const h = await devHome(release({versions: {[REDACT]: '0.1.1'}}));
+    const {code, io} = await h.inst(release({versions: {[REDACT]: '0.1.0'}}));
+    assert.strictEqual(code, 0, io.err);
+    assert.strictEqual(record(h.home).packs.other.modules[REDACT], '0.1.1');
+    assert.strictEqual(record(h.home).modules[REDACT].version, '0.1.1');
+    assert.ok(!placed(h.home, REDACT, '0.1.0'), 'the older version is not placed');
+    assert.deepStrictEqual(io.asked, []);
+  });
+  await t.test('installed older, no breaking change: updated, its callers named', async () => {
+    const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
+    const {code, io} = await h.inst(release({versions: {[REDACT]: '0.1.1'}}));
+    assert.strictEqual(code, 0, io.err);
+    assert.strictEqual(record(h.home).modules[REDACT].version, '0.1.1');
+    assert.match(io.out, /^updated ch-step-redact 0\.1\.0 -> 0\.1\.1; ch-pack-ci-failure-triage uses it too$/m);
+  });
+  await t.test('Question A with no terminal: exit 2, nothing written', async () => {
+    const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
+    const before = snapshot(h.home);
+    const {code, io} = await h.inst(release({versions: {[REDACT]: '0.2.0'}}));
+    assert.strictEqual(code, 2);
+    assert.match(io.err, /this install updates ch-step-redact across a major version, which is confirmed at a terminal: run it in one; nothing was installed/);
+    assert.strictEqual(snapshot(h.home), before);
+  });
+  await t.test('Question A, No: nothing installed, the answer in the history', async () => {
+    const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
+    const before = snapshot(h.home);
+    const {code, io} = await h.inst(release({versions: {[REDACT]: '0.2.0'}}), {interactive: true, answers: ['n']});
+    assert.strictEqual(code, 1);
+    assert.match(io.err, /nothing was installed/);
+    assert.strictEqual(snapshot(h.home), before);
+    assert.strictEqual(history(h.home).find((l) => l.module === REDACT).answer, 'no');
+  });
+  await t.test('Question A, yes: updated, the way back said', async () => {
+    const h = await devHome(release({versions: {[REDACT]: '0.1.0'}}));
+    const {code, io} = await h.inst(release({versions: {[REDACT]: '0.2.0'}}), {interactive: true, answers: ['y']});
+    assert.strictEqual(code, 0, io.err);
+    assert.strictEqual(record(h.home).modules[REDACT].version, '0.2.0');
+    assert.match(io.out, /^ch-pack-ci-failure-triage 0\.1\.0 was written for 0\.1\.x and still loads; if it stops working, `ch-local remove-pack other` puts ch-step-redact back to 0\.1\.0$/m);
+  });
+  await t.test('Question B, yes: the pack installed, the module stays at the installed version', async () => {
+    const h = await devHome(release({versions: {[REDACT]: '0.2.0'}}));
+    const {code, io} = await h.inst(release({versions: {[REDACT]: '0.1.0'}}), {interactive: true, answers: ['yes']});
+    assert.strictEqual(code, 0, io.err);
+    assert.strictEqual(io.asked.length, 1);
+    assert.strictEqual(record(h.home).modules[REDACT].version, '0.2.0');
+    assert.ok(!placed(h.home, REDACT, '0.1.0'), 'never lowered: 0.1.0 not placed');
+    assert.strictEqual(record(h.home).packs.other.modules[REDACT], '0.2.0');
   });
 });
 
