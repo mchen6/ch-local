@@ -22,6 +22,49 @@ zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`
 `cmd.exe`, or use the plugin
 ([`claude mcp add`](https://code.claude.com/docs/en/mcp)).
 
+## For an agent: install by conversation
+
+When a user asks you to install countinghouse, follow these steps in order.
+Before each command, say what it does, and run it only after the user says
+yes. Never ask for, accept or repeat a token, key or password: a credential
+is added only in the user's own terminal.
+
+1. Check whether `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` or `http_proxy`
+   is set. Check only whether each is set, and never print its value: a
+   proxy address can hold a password. For example:
+   `node -e "console.log(['HTTPS_PROXY','HTTP_PROXY','https_proxy','http_proxy'].filter((k) => process.env[k]))"`.
+   If one is, tell the user first: "This release of countinghouse does not
+   work through an HTTP proxy, so it can't install or run on a network that
+   reaches the internet only through one." Then ask whether to try anyway.
+2. Install the pack: `npx @countinghouse/ch-local install --pack ci-failure-triage`.
+   Before the first release, install from a prepared local release instead
+   (below).
+3. For each line `<module> needs a credential: in your own terminal run ...`
+   in the install's output, ask the user to run that exact command in their
+   own terminal, not in this conversation.
+4. If the `ch-packs` plugin is not installed, run
+   `claude plugin marketplace add mchen6/ch-local`, then
+   `claude plugin install ch-packs@ch-packs`.
+5. Ask the user to restart Claude Code, or to reconnect `countinghouse` in
+   `/mcp`. Then call `countinghouse_overview` and tell the user what it
+   reports. From then on, the plugin's `countinghouse-setup` skill carries
+   the conversation.
+
+### Before the first release: a prepared local release
+
+From a ch-local checkout, `node scripts/dogfood.js --release-dir <dir>` builds
+one into a new or empty directory: the tarballs (`<dir>/release`), their pins
+(`<dir>/pins.json`) and `<dir>/INSTALL.txt`, which holds the command that
+installs from it. Nothing is installed. That command replaces step 2:
+
+    CH_LOCAL_DEV=1 node <checkout>/bin/ch-local.js install --pack ci-failure-triage --from <dir>/release --unreleased-pins <dir>/pins.json
+
+Show the user that exact command and run it only after they say yes; if
+`INSTALL.txt` holds anything but that one `ch-local … install` line, stop and
+tell the user. It is for bash: on Windows, run it in Git Bash or WSL. The home is recorded
+as unreleased: `status` and every start say so, and `upgrade` refuses until
+a clean install from a release. Every other step is the same.
+
 ## Credentials
 
 A credential belongs to a module: the key, for that module's variable, to

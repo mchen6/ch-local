@@ -120,3 +120,20 @@ test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY |
   assert.strictEqual(works(), worksBefore, 'the work directory is removed');
   fs.rmSync(parent, {recursive: true, force: true});
 });
+
+// A-firstrun d2: a prepared local release for Matt's acceptance run, and the
+// install doc's pre-release command for it
+test('--release-dir takes an absolute path only; the command for a prepared release is this checkout\'s launcher with CH_LOCAL_DEV and its pins', () => {
+  assert.strictEqual(dogfood.parseArgs(['--release-dir', '/r']).releaseDir, '/r');
+  assert.throws(() => dogfood.parseArgs(['--release-dir', 'relative/r']), /--release-dir must be an absolute path/);
+  // (nothing is installed: a home would be ignored, so it is refused)
+  assert.throws(() => dogfood.parseArgs(['--release-dir', '/r', '--home', '/h']), /--home is for dogfood's own install; --release-dir installs nothing/);
+  assert.strictEqual(dogfood.releaseLine({checkout: '/src/ch-local', dir: '/r'}),
+    'CH_LOCAL_DEV=1 node /src/ch-local/bin/ch-local.js install --pack ci-failure-triage --from /r/release --unreleased-pins /r/pins.json');
+  assert.strictEqual(dogfood.releaseLine({checkout: '/my src', dir: '/r'}).split(' ')[2], "'/my", 'a path with a space is one quoted word');
+  // (the shape the setup skill runs from INSTALL.txt, and nothing more:
+  // business's condition on d2)
+  const line = dogfood.releaseLine({checkout: '/src/ch-local', dir: '/r'});
+  assert.match(line, /^CH_LOCAL_DEV=1 node \S+\/bin\/ch-local\.js install --pack \S+ --from \S+ --unreleased-pins \S+$/);
+  assert.ok(!/[;&|<>]/.test(line));
+});

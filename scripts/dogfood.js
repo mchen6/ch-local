@@ -11,6 +11,12 @@
 //
 //   node scripts/dogfood.js [--home <dir>] [--src <dir of clones>]
 //                           [--clone <repo>=<path>]... [--ref <repo>=<ref>]...
+//   node scripts/dogfood.js --release-dir <dir> [--src ...] [--clone ...] [--ref ...]
+//
+// --release-dir: build a prepared local release into <dir> (absolute, new or
+// empty) and install nothing: <dir>/release (the tarballs), <dir>/pins.json
+// and <dir>/INSTALL.txt (the command that installs from it). What the install
+// doc's pre-release variant runs (A-firstrun d2: Matt's acceptance run).
 //
 // --src: local clones, <dir>/<repo>, used at their last fetched origin/main
 // (origin/master for countinghouse), through git archive, so no working tree
@@ -27,7 +33,7 @@ const OWNER = 'mchen6';
 const PACK = 'ci-failure-triage';
 const SOURCES = [['countinghouse', 'origin/master'], ['ch-pack-ci-failure-triage', 'origin/main'], ['ch-access-github', 'origin/main'],
   ...['redact', 'log-clean', 'error-patterns', 'failure-signature', 'dedupe', 'owner-hint', 'report'].map((s) => [`ch-step-${s}`, 'origin/main'])];
-const USAGE = 'usage: node scripts/dogfood.js [--home <dir>] [--src <dir of clones>] [--clone <repo>=<path>]... [--ref <repo>=<ref>]...\n';
+const USAGE = 'usage: node scripts/dogfood.js [--home <dir> | --release-dir <dir>] [--src <dir of clones>] [--clone <repo>=<path>]... [--ref <repo>=<ref>]...\n';
 
 const sources = () => SOURCES.map(([repo, ref]) => ({repo, ref}));
 
@@ -45,10 +51,20 @@ function parseArgs(argv) {
     const next = () => { if (i + 1 >= argv.length) throw new Error(USAGE); return argv[++i]; };
     if (a === '--src') out.src = next();
     else if (a === '--home') out.home = next();
+    // build a prepared local release into this (absolute, new or empty)
+    // directory and install nothing: what the install doc's pre-release
+    // command runs from (A-firstrun d2: Matt's acceptance run)
+    else if (a === '--release-dir') {
+      out.releaseDir = next();
+      if (!path.isAbsolute(out.releaseDir)) throw new Error(`--release-dir must be an absolute path\n${USAGE}`);
+    }
     else if (a === '--clone') { const [r, v] = pair(next(), '--clone'); out.clones[r] = v; }
     else if (a === '--ref') { const [r, v] = pair(next(), '--ref'); out.refs[r] = v; }
     else throw new Error(USAGE);
   }
+  // (nothing is installed with --release-dir: a home would be ignored, and
+  // the command it prints installs into the default home)
+  if (out.releaseDir != null && out.home != null) throw new Error(`--home is for dogfood's own install; --release-dir installs nothing\n${USAGE}`);
   return out;
 }
 
@@ -69,6 +85,13 @@ function homeFor(args, env = process.env) {
 // 2026-11-13). A home other than the default goes with every command, since
 // the launcher finds
 // its home by COUNTINGHOUSE_HOME.
+// The install command for a prepared local release (--release-dir), as the
+// install doc's pre-release variant gives it: this checkout's launcher, with
+// CH_LOCAL_DEV=1 and the release's pins
+function releaseLine({checkout = ROOT, dir}) {
+  return `CH_LOCAL_DEV=1 node ${word(path.join(checkout, 'bin', 'ch-local.js'))} install --pack ${PACK} --from ${word(path.join(dir, 'release'))} --unreleased-pins ${word(path.join(dir, 'pins.json'))}`;
+}
+
 function instructions({node, home, defaultHome = DEFAULT_HOME()}) {
   const launcher = path.join(home, 'bin', 'ch-local.js');
   const other = path.resolve(home) !== path.resolve(defaultHome);
@@ -191,6 +214,38 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   const refProblem = resolveRefs(plan);
   if (refProblem != null) return fail(refProblem);
 
+  // a prepared local release only: built into the directory, kept, nothing
+  // installed; the command that installs from it is printed
+  if (args.releaseDir != null) {
+    const dir = args.releaseDir;
+    let st = null;
+    try { st = fs.statSync(dir); } catch (e) { st = null; }
+    if (st != null && (!st.isDirectory() || fs.readdirSync(dir).length > 0)) return fail(`${dir} is not a new or empty directory: --release-dir builds into one`, 2);
+    // built in a working directory (the sources, the lockfile's scratch),
+    // removed after; only the release, its pins and the command reach <dir>,
+    // and only once the whole build has succeeded (nothing half-made there)
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
+    try {
+      const built = await buildRelease(plan, work, say);
+      if (built.problem != null) return fail(built.problem);
+      fs.mkdirSync(dir, {recursive: true});
+      fs.cpSync(built.release, path.join(dir, 'release'), {recursive: true});
+      fs.copyFileSync(built.pinsFile, path.join(dir, 'pins.json'));
+      const line = releaseLine({dir});
+      fs.writeFileSync(path.join(dir, 'INSTALL.txt'), `Install pack 1 from this prepared local release (for bash: on Windows, Git Bash or WSL):\n\n  ${line}\n`);
+      say('');
+      if (process.platform === 'win32') say('This command is for bash: run it in Git Bash or WSL.');
+      say(`A prepared local release is in ${dir}; nothing was installed. Its INSTALL.txt holds the command that installs from it:`);
+      say('');
+      say(`  ${line}`);
+      return 0;
+    } catch (err) {
+      return fail(err.message);
+    } finally {
+      fs.rmSync(work, {recursive: true, force: true});
+    }
+  }
+
   const {install} = require('../lib/install');
   const {ALLOWLIST} = require('../lib/allowlist');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
@@ -228,4 +283,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};
+module.exports = {main, instructions, releaseLine, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};

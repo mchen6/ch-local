@@ -34,6 +34,29 @@ test('the Claude Code page adds the marketplace from this repository', () => {
   assert.ok(page.includes('claude plugin install ch-packs@ch-packs'));
 });
 
+// A-firstrun d2: the page an agent follows before the plugin is installed
+test('the Claude Code page\'s agent section: the proxy check first, then the install, the plugin and one restart, and the pre-release command', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
+  const at = page.indexOf('## For an agent: install by conversation');
+  assert.ok(at > 0);
+  // (as read: the page wraps its sentences across lines)
+  const section = page.slice(at, page.indexOf('\n## ', at + 1)).replace(/\s+/g, ' ');
+  const proxy = section.indexOf('HTTPS_PROXY');
+  const install = section.indexOf('npx @countinghouse/ch-local install --pack ci-failure-triage');
+  const plugin = section.indexOf('claude plugin install ch-packs@ch-packs');
+  const restart = section.indexOf('restart Claude Code');
+  // (the skill's order: the plugin's server starts only after the install,
+  // once, at the one restart: the medium on d2, 9)
+  assert.ok(proxy > 0 && proxy < install && install < plugin && plugin < restart, 'in that order');
+  // (presence only: a proxy address can hold a password; the medium on d2, 3)
+  assert.ok(section.includes('never print its value'));
+  assert.ok(section.includes('INSTALL.txt'));
+  assert.ok(section.includes('does not work through an HTTP proxy, so it can\'t install or run on a network that reaches the internet only through one.'));
+  assert.ok(section.includes('Never ask for, accept or repeat a token, key or password'));
+  assert.ok(section.includes('CH_LOCAL_DEV=1 node <checkout>/bin/ch-local.js install --pack ci-failure-triage --from <dir>/release --unreleased-pins <dir>/pins.json'));
+  assert.ok(section.includes('`countinghouse_overview`'));
+});
+
 test('the Claude Code page says which shells the add line is for', () => {
   const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
   assert.match(page, /cmd\.exe/);
