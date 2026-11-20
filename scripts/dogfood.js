@@ -91,14 +91,18 @@ function homeFor(args, env = process.env) {
 // setup skill builds it: the folder's own launcher, each path one
 // single-quoted word, forward slashes (on Windows only, where a backslash
 // is the separator: anywhere else it is part of a name, and refused), the
-// folder's path absolute (/... or X:/...: never one node would read as an
-// option or a shell as ~) and only of FOLDER's characters (the high on #105,
-// 2; its medium, 3 and 4) -> the line, or null for a folder path that isn't
-const FOLDER = /^(?:\/|[A-Za-z]:\/)[A-Za-z0-9_/.:@%+=,~ -]*$/;
+// folder's path absolute and only of FOLDER's characters: on Windows X:/...
+// only (MSYS rewrites a /-rooted path for node.exe, so it could name a folder
+// never checked; //host neither), elsewhere one leading / (never one node
+// would read as an option or a shell as ~) (the high on #105, 2, and its
+// round 2, 3; the medium on round 1, 3 and 4) -> the line, or null
+const CHARS = /^[A-Za-z0-9_/.:@%+=,~ -]*$/;
+const ROOTED = {win32: /^[A-Za-z]:\/(?!\/)/, other: /^\/(?!\/)/};
+const FOLDER = {test: (f, platform = process.platform) => CHARS.test(f) && (platform === 'win32' ? ROOTED.win32 : ROOTED.other).test(f)};
 const slashed = (dir, platform) => (platform === 'win32' ? String(dir).replace(/\\/g, '/') : String(dir)).replace(/(.)\/+$/, '$1');
 function releaseLine({dir}, platform = process.platform) {
   const f = slashed(dir, platform);
-  if (!FOLDER.test(f)) return null;
+  if (!FOLDER.test(f, platform)) return null;
   return `CH_LOCAL_DEV=1 node '${f}/ch-local/bin/ch-local.js' install --pack ${PACK} --from '${f}/release' --unreleased-pins '${f}/pins.json'`;
 }
 
@@ -200,15 +204,18 @@ async function buildRelease(plan, work, say) {
 }
 
 // The prepared release put together as <dir>: release/, pins.json and the
-// folder's own launcher, ch-local/ (its tarball from the release, unpacked:
-// it bundles its own dependencies). Assembled in a stage beside <dir> (one
-// file system: unpacked there, never renamed in from elsewhere), then:
-// - <dir> absent: the stage, given the mode a new directory gets, renamed
-//   into place;
-// - <dir> an empty directory: the parts moved into it, pins.json last (its
-//   own mode, owner and ACL kept), and on a failure the parts moved removed.
-// Nothing half-made is left either way (the high on #105, 9; its medium,
-// 1, 2, 6, 9 and 10) -> null, or the problem.
+// folder's own launcher, ch-local/ (its tarball from the release, unpacked,
+// checked to hold every dependency it bundles: a checkout packed without
+// node_modules drops them silently). Assembled in a stage on <dir>'s own
+// file system (unpacked there, never renamed in from elsewhere), then:
+// - <dir> absent: its parent made now (after a successful build), the stage
+//   beside it, given the mode a new directory gets, renamed into place;
+// - <dir> an empty directory: the stage inside it (a mount point, or a link
+//   to another device, is its own file system), the parts moved up, pins.json
+//   last (its own mode, owner and ACL kept), and on a failure the parts moved
+//   removed.
+// Nothing half-made is left either way (the high on #105, 9, and its round
+// 2, 5; the medium on round 1, 1, 2, 6, 9 and 10) -> null, or the problem.
 function placeRelease({release, pinsFile, pins, dir}) {
   const name = require('../package.json').name;
   const own = pins[name] != null ? require('../lib/unpack').tarballName(name, pins[name].version) : null;
@@ -217,13 +224,18 @@ function placeRelease({release, pinsFile, pins, dir}) {
   let stage = null;
   const moved = [];
   try {
-    stage = fs.mkdtempSync(path.join(path.dirname(dir), `.${path.basename(dir)}.partial-`));
+    if (!exists) fs.mkdirSync(path.dirname(dir), {recursive: true});
+    stage = fs.mkdtempSync(exists ? path.join(dir, '.partial-') : path.join(path.dirname(dir), `.${path.basename(dir)}.partial-`));
     fs.cpSync(release, path.join(stage, 'release'), {recursive: true});
     fs.copyFileSync(pinsFile, path.join(stage, 'pins.json'));
     // (the archive on stdin: GNU tar, Git Bash's, reads C:... as a host)
     const tar = run('tar', ['-x', '-z', '-f', '-', '-C', stage], {input: fs.readFileSync(path.join(release, own)), encoding: 'buffer'});
     if (tar.error != null || tar.signal != null || tar.status !== 0) return `${own} could not be unpacked (${tar.error != null ? tar.error.code : tar.signal != null ? tar.signal : `tar exit ${tar.status}`})`;
     fs.renameSync(path.join(stage, 'package'), path.join(stage, 'ch-local'));
+    const manifest = JSON.parse(fs.readFileSync(path.join(stage, 'ch-local', 'package.json'), 'utf8'));
+    const bundled = manifest.bundleDependencies || manifest.bundledDependencies || [];
+    const lacking = bundled.filter((d) => !fs.existsSync(path.join(stage, 'ch-local', 'node_modules', ...d.split('/'), 'package.json')));
+    if (lacking.length > 0) return `${own} lacks the dependencies it bundles (${lacking.join(', ')}): pack ch-local from a checkout with its node_modules installed (npm ci)`;
     if (!exists) {
       // (a new directory's mode, not mkdtemp's 0700)
       const umask = process.umask();
@@ -280,7 +292,6 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     if (st != null && (!st.isDirectory() || fs.readdirSync(dir).length > 0)) return fail(`${dir} is not a new or empty directory: --release-dir builds into one`, 2);
     // built in a working directory (the sources, the lockfile's scratch),
     // removed after; the folder put together by placeRelease
-    fs.mkdirSync(path.dirname(dir), {recursive: true});
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
     try {
       const built = await buildRelease(plan, work, say);
@@ -288,7 +299,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       const problem = placeRelease({release: built.release, pinsFile: built.pinsFile, pins: built.pins, dir});
       if (problem != null) return fail(problem);
       say('');
-      say(`A prepared local release is in ${dir}; nothing was installed. It installs with (in bash; on Windows, Git Bash):`);
+      say(`A prepared local release is in ${dir}; nothing was installed. It installs with this line, run as written in bash, zsh or Git Bash:`);
       say('');
       say(`  ${releaseLine({dir})}`);
       return 0;
