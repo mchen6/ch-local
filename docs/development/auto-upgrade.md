@@ -112,6 +112,21 @@ those are dropped anyway (below).
      the runtime's, an installed pack's or the shim's. Who builds it is new,
      so it counts as an identity change.
 
+   What a release adds is judged against what this home has installed: its
+   record, each module described from the store at the version the record
+   names (`lib/installed-description.js`), not the pins of the ch-local that
+   runs. A module it can't describe counts as unknown, so what the release
+   says it sends or calls is new, and holds the upgrade back.
+
+   A release held back is announced once per version (`announced` in
+   `upgrade-check.json`), and said no more until a newer one.
+
+   **A release is installed as one** (#413 rev 3 section 9.6), as `ch-local
+   upgrade` installs it: every installed pack the release lists moves to its
+   pins, whichever way each module's version moves. A module moving, forward
+   or back, never holds an automatic upgrade back. A home whose record can't
+   be read is never upgraded automatically, and says so.
+
    **A pack the user hasn't installed** is never installed by an automatic
    upgrade. So a change to it, an identity change included, never blocks
    one: it's named in the announcement, nothing more.
