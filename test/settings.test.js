@@ -114,14 +114,22 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   assert.strictEqual((await cli(home, 'settings', 'set', 'enabled.@countinghouse/ch-pack-other', 'on')).code, 0);
   for (let i = 0; sent().length < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual([sent()[0].type, sent()[0].name], ['load', '@countinghouse/ch-pack-other']);
-  for (let i = 0; !requests.some(isHeld) && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
-  assert.ok(requests.some(isHeld), 'the pack turned on is no longer held back: the list is read again');
+  // (the pack turned on is no longer held back: one reread, after its load)
+  const rereads = () => requests.filter(isHeld).length;
+  for (let i = 0; rereads() < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+  assert.strictEqual(rereads(), 1);
+  assert.ok(requests.findIndex(isHeld) > requests.indexOf(sent()[0]), 'after the load');
   assert.strictEqual((await cli(home, 'settings', 'set', 'requestTimeout', '15s')).code, 0);
   for (let i = 0; sent().length < 2 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual(sent()[1], {type: 'set', name: 'requestTimeout', value: 15, id: sent()[1].id});
   assert.strictEqual((await cli(home, 'settings', 'set', 'enabled.@countinghouse/ch-pack-ci-failure-triage', 'off')).code, 0);
   for (let i = 0; sent().length < 3 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.deepStrictEqual([sent()[2].type, sent()[2].name, sent()[2].notice], ['unload', '@countinghouse/ch-pack-ci-failure-triage', 'ch-pack-ci-failure-triage turned off']);
+  // (a timeout changes nothing held back: no reread for it; the pack turned
+  // off is: one more, after its unload)
+  for (let i = 0; rereads() < 2 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+  assert.strictEqual(rereads(), 2);
+  assert.ok(requests.indexOf(requests.filter(isHeld)[1]) > requests.indexOf(sent()[2]), 'the second after the unload, none for the timeout');
   end(0);
   await done;
 });

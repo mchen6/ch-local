@@ -808,6 +808,18 @@ test('a new pack taking a module at a version a refused reload could not move is
   await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
   assert.match(s.history().find((h) => h.module === '@countinghouse/ch-pack-other').problem, /takes @countinghouse\/ch-access-github 0\.1\.1, which ch-pack-ci-failure-triage keeps at 0\.1\.0 for now/);
   assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'), 'never loaded beside the old version');
+  // (named restart while it waits: the reviewer's high on #106, 4)
+  const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+  await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other'));
+  assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other' && e.reason === 'restart'));
+  // (said once per change: turned off and on again, the same clash is said
+  // again: the medium on #106's round 1, 3)
+  const clashes = () => s.history().filter((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null && /keeps at/.test(h.problem)).length;
+  assert.strictEqual(clashes(), 1);
+  fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
+  await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other' && e.reason === 'off'));
+  fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true}}));
+  await until(() => clashes() === 2);
   s.end();
   await s.done;
 });
@@ -1409,14 +1421,52 @@ test('the applier ends with start: a pending held-back retry never runs after it
   s.end();
   await s.done;
   const [requests, history, said] = [s.requests.length, s.history().length, s.f.err.length];
+  // (a stop the runtime reports as it ends is not recorded or said either:
+  // the medium on round 1, 2)
+  s.ask({type: 'module-stopped', name: SCENARIO, code: 'MODULE_SUSPENDED', when: 'restart'});
   await new Promise((r) => setTimeout(r, 1500));
   assert.deepStrictEqual([s.requests.length, s.history().length, s.f.err.length], [requests, history, said], 'nothing after start ended');
+});
+
+// the medium on #106's round 1, 1: CONTROL_FAILED is any failed read (a
+// passing one on Windows too), so it is tried again
+test('a held-back list whose read failed is sent again, and taken', async () => {
+  let failed = 0;
+  const once = (m) => (m.type === 'reread' && m.what === 'held-back' && failed++ === 0 ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true});
+  const s = await running({answer: once});
+  try {
+    await until(() => s.args() != null);
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    await until(() => s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length === 2);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.strictEqual(s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length, 2, 'taken the second time: no third');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on #106's round 1, 5: a load the runtime refused is not named
+// restart (whether a restart loads it is not known)
+test('a pack whose load the runtime refused is not named restart in the held-back file', async () => {
+  const s = await running({answer: (m) => (m.type === 'load' ? {ok: false, code: 'MODULE_INVALID'} : {ok: true})});
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, []);
+  } finally {
+    s.end();
+    await s.done;
+  }
 });
 
 // the reviewer's high on #106, 2: a refusal that won't change is not sent
 // again until the list changes; a busy one is retried, backing off
 test('a held-back list the runtime refuses for good is not sent again until it changes', async () => {
-  const refused = (m) => (m.type === 'reread' && m.what === 'held-back' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true});
+  const refused = (m) => (m.type === 'reread' && m.what === 'held-back' ? {ok: false, code: 'CONTROL_UNKNOWN'} : {ok: true});
   const s = await running({answer: refused});
   try {
     await until(() => s.args() != null);
