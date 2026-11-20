@@ -2,9 +2,9 @@
 require('./tmp-dirs');
 // ch-local dev-server (A-ownuse): the home's own runtime as a local
 // development server for the user's own tools: 127.0.0.1, a fixed port, the
-// authoring tools behind an admin key made anew each start, removed when it
-// stops and never printed, the packs' short environment, nothing of the pack
-// install.
+// authoring tools behind an admin key made once and kept (made anew with
+// --new-key), never printed, the packs' short environment, nothing of the
+// pack install.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -66,14 +66,51 @@ test('the home\'s runtime on 127.0.0.1, its port, the local store, the authoring
   assert.match(key, /^[0-9a-f]{64}$/);
   assert.deepStrictEqual(JSON.parse(f.spawned[0].auth), {[key]: {userName: 'dev', devices: ['*'], admin: true}});
   assert.ok(!(f.out + f.err).includes(key), 'the key is never printed');
-  assert.deepStrictEqual(f.out.trimEnd().split('\n'), linesFor({port: 7600, keyFile: path.join(h, 'dev-auth', 'admin-key'), modules: path.join(h, 'dev', 'modules'), platform: process.platform}));
-  // the key ends with the server; the next start has a new one (a key taken
-  // while it was down is dead: the reviewer on the A-ownuse medium, 1)
-  assert.deepStrictEqual(fs.readdirSync(path.join(h, 'dev-auth')), [], 'removed on stop');
+  const lines = (fresh) => linesFor({port: 7600, keyFile: path.join(h, 'dev-auth', 'admin-key'), modules: path.join(h, 'dev', 'modules'), platform: process.platform, fresh, launcher: path.join(h, 'bin', 'ch-local.js')});
+  assert.deepStrictEqual(f.out.trimEnd().split('\n'), lines(true), 'a new key: the lines to add it');
+  // a stable key (Matt, 11-20): kept across starts, the entry from before
+  // still works; --new-key replaces it and says how to add it again
+  assert.strictEqual(fs.readFileSync(path.join(h, 'dev-auth', 'admin-key'), 'utf8'), key, 'kept on stop');
   const again = io(h);
   assert.strictEqual(await devServer({port: 7600}, again), 0);
-  assert.match(again.spawned[0].key, /^[0-9a-f]{64}$/);
-  assert.notStrictEqual(again.spawned[0].key, key, 'a new key each start');
+  assert.strictEqual(again.spawned[0].key, key, 'the same key');
+  assert.deepStrictEqual(again.out.trimEnd().split('\n'), lines(false));
+  const rotated = io(h);
+  assert.strictEqual(await devServer({port: 7600, newKey: true}, rotated), 0);
+  assert.match(rotated.spawned[0].key, /^[0-9a-f]{64}$/);
+  assert.notStrictEqual(rotated.spawned[0].key, key, '--new-key: a new key');
+  assert.deepStrictEqual(rotated.out.trimEnd().split('\n'), lines(true));
+  assert.ok(!(again.out + again.err + rotated.out + rotated.err).includes(rotated.spawned[0].key) && !(again.out + rotated.out).includes(key), 'never printed');
+});
+
+// a kept key is used only if it is still one this command made, private
+test('a kept key open to others, a link, or not a key: refused, naming --new-key; nothing started', POSIX, async () => {
+  const loose = home();
+  assert.strictEqual(await devServer({}, io(loose)), 0);
+  fs.chmodSync(path.join(loose, 'dev-auth', 'admin-key'), 0o644);
+  const l = io(loose);
+  assert.strictEqual(await devServer({}, l), 1);
+  assert.match(l.err, /admin-key is open to others: start with --new-key to replace it/);
+  const linked = home();
+  assert.strictEqual(await devServer({}, io(linked)), 0);
+  const elsewhere = path.join(linked, 'elsewhere-key');
+  fs.writeFileSync(elsewhere, 'a'.repeat(64), {mode: 0o600});
+  fs.rmSync(path.join(linked, 'dev-auth', 'admin-key'));
+  fs.symlinkSync(elsewhere, path.join(linked, 'dev-auth', 'admin-key'));
+  const k = io(linked);
+  assert.strictEqual(await devServer({}, k), 1);
+  assert.match(k.err, /admin-key is not a file this command made: start with --new-key to replace it/);
+  const junk = home();
+  assert.strictEqual(await devServer({}, io(junk)), 0);
+  fs.writeFileSync(path.join(junk, 'dev-auth', 'admin-key'), 'not-a-key', {mode: 0o600});
+  const j = io(junk);
+  assert.strictEqual(await devServer({}, j), 1);
+  assert.match(j.err, /is not a key this command made: start with --new-key/);
+  assert.deepStrictEqual([...l.spawned, ...k.spawned, ...j.spawned], []);
+  // --new-key replaces any of them
+  const fixed = io(loose);
+  assert.strictEqual(await devServer({newKey: true}, fixed), 0, fixed.err);
+  assert.strictEqual(fs.statSync(path.join(loose, 'dev-auth', 'admin-key')).mode & 0o777, 0o600);
 });
 
 // the A-ownuse medium, 3 and 5: a home the printed line would break on is
@@ -132,26 +169,26 @@ test('signals: SIGINT at a terminal is not sent again; another is passed on once
 
 test('the key and its auth config are private: dev-auth/ 0700, its files 0600', POSIX, async () => {
   const h = home();
-  const f = io(h);
-  // (read while the runtime runs: the files end with it)
-  const modes = {};
-  const spawn = f.spawn;
-  f.spawn = (...a) => { for (const n of ['admin-key', 'auth.json']) modes[n] = fs.statSync(path.join(h, 'dev-auth', n)).mode & 0o777; return spawn(...a); };
-  assert.strictEqual(await devServer({}, f), 0);
+  assert.strictEqual(await devServer({}, io(h)), 0);
   assert.strictEqual(fs.statSync(path.join(h, 'dev-auth')).mode & 0o777, 0o700);
-  assert.deepStrictEqual(modes, {'admin-key': 0o600, 'auth.json': 0o600});
+  for (const n of ['admin-key', 'auth.json']) assert.strictEqual(fs.statSync(path.join(h, 'dev-auth', n)).mode & 0o777, 0o600, n);
 });
 
-test('the lines said: the URL, the two Claude Code lines run again each start (PowerShell on Windows), and where it runs only', () => {
-  const posix = linesFor({port: 7531, keyFile: '/h/dev-auth/admin-key', modules: '/h/dev/modules', platform: 'linux'});
-  assert.deepStrictEqual(posix, [
+test('the lines said: the URL; with a new key the two Claude Code lines (PowerShell on Windows), else the entry from before and --new-key; where it runs only', () => {
+  const at = {port: 7531, keyFile: '/h/dev-auth/admin-key', modules: '/h/dev/modules', platform: 'linux', launcher: '/h/bin/ch-local.js'};
+  assert.deepStrictEqual(linesFor({...at, fresh: true}), [
     'countinghouse development server: http://127.0.0.1:7531/mcp (stop it with Ctrl-C)',
-    'It has a new key each time it starts. Add it to Claude Code again now, in another terminal:',
+    'Its key is new: add it to Claude Code, in another terminal:',
     '  claude mcp remove --scope user countinghouse-dev',
     '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(cat "/h/dev-auth/admin-key")"',
     'Keep your tools\' modules in /h/dev/modules, and load them again after each start. They run here only: not inside your installed packs, not upgraded with them, and not published or shared.'
   ]);
-  const win = linesFor({port: 7531, keyFile: 'C:\\h\\dev-auth\\admin-key', modules: 'C:\\h\\dev\\modules', platform: 'win32'});
+  assert.deepStrictEqual(linesFor({...at, fresh: false}), [
+    'countinghouse development server: http://127.0.0.1:7531/mcp (stop it with Ctrl-C)',
+    'Claude Code\'s countinghouse-dev entry from before still works. To make a new key: node "/h/bin/ch-local.js" dev-server --new-key',
+    'Keep your tools\' modules in /h/dev/modules, and load them again after each start. They run here only: not inside your installed packs, not upgraded with them, and not published or shared.'
+  ]);
+  const win = linesFor({port: 7531, keyFile: 'C:\\h\\dev-auth\\admin-key', modules: 'C:\\h\\dev\\modules', platform: 'win32', fresh: true, launcher: 'C:\\h\\bin\\ch-local.js'});
   assert.match(win[1], /in another terminal \(PowerShell\):$/);
   assert.strictEqual(win[3], '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(Get-Content \'C:\\h\\dev-auth\\admin-key\')"');
 });

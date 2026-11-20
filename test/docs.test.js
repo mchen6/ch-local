@@ -102,11 +102,12 @@ test('pages that pin a node say an upgrade changes it and how to reprint', () =>
 test('the build-your-own-tool page: the key never in a conversation, kept in Claude Code\'s settings; the add line as printed; removal; the limits', () => {
   const page = fs.readFileSync(path.join(DOCS, 'build-your-own-tool.md'), 'utf8').replace(/\s+/g, ' ');
   const {linesFor} = require('../lib/dev-server');
-  const lines = linesFor({port: 7531, keyFile: '<home>/dev-auth/admin-key', modules: '<home>/dev/modules', platform: 'linux'});
+  const lines = linesFor({port: 7531, keyFile: '<home>/dev-auth/admin-key', modules: '<home>/dev/modules', platform: 'linux', fresh: true});
   assert.ok(page.includes(lines[2].trim()) && page.includes(lines[3].trim()), 'the remove and add lines exactly as dev-server prints them');
   for (const s of ['so it never appears in a conversation', 'Claude Code keeps it in its own settings on this machine', 'The server listens only on 127.0.0.1 and runs your own code',
     'claude mcp remove --scope user countinghouse-dev', 'no credential is passed to it', 'It does not work through an HTTP proxy',
-    'Every time it starts, it makes a new admin key', 'a new key at every start makes such a key useless', 'run them in PowerShell',
+    'The first time, it makes an admin key, which is never printed, and keeps it for later starts', '`dev-server --new-key` makes a new key and prints the two commands again',
+    'On a machine other people log into, start it with --new-key each time: while the server is stopped, another account could listen on its port and catch the key Claude Code sends.', 'run them in PowerShell',
     'the key is also in its command line', 'after each start, ask Claude Code to load your tool again', 'Stop it before `ch-local upgrade`, `rollback` or `uninstall`',
     'not inside your installed packs, not upgraded with them, and not published or shared']) assert.ok(page.includes(s), s);
   assert.ok(fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8').includes('(build-your-own-tool.md)'), 'linked from the index');

@@ -24,10 +24,10 @@ conversation:
 node ~/.countinghouse/bin/ch-local.js dev-server
 ```
 
-It runs in the foreground until you stop it with Ctrl-C. Every time it
-starts, it makes a new admin key, which is never printed, and removes it when
-it stops. It then prints two commands that add the server to Claude Code with
-that key. Run both in a second terminal, each time it starts:
+It runs in the foreground until you stop it with Ctrl-C. The first time, it
+makes an admin key, which is never printed, and keeps it for later starts. It
+then prints two commands that add the server to Claude Code with that key.
+Run both in a second terminal, then restart Claude Code:
 
 ```bash
 claude mcp remove --scope user countinghouse-dev
@@ -39,10 +39,13 @@ Windows, run them in PowerShell: it prints the PowerShell form, which reads
 the key with `Get-Content` (cmd and Git Bash would not read the key there).
 (`<home>` is `~/.countinghouse`, or `$COUNTINGHOUSE_HOME` when it is set.)
 
-Why a new key each time: Claude Code keeps trying the server's address even
-while it is stopped. If something else took that port meanwhile, it would
-receive the key Claude Code sends; a new key at every start makes such a key
-useless.
+Later starts use the same key, so Claude Code's entry keeps working, and they
+print no commands. `dev-server --new-key` makes a new key and prints the two
+commands again.
+
+On a machine other people log into, start it with --new-key each time: while
+the server is stopped, another account could listen on its port and catch the
+key Claude Code sends.
 
 ## Where the key is
 
@@ -63,8 +66,8 @@ file or that entry.
 - `<home>/dev-auth`: the admin key and its configuration.
 
 The server uses port 7531. If the port is in use, `dev-server` says so and
-exits; choose another with `--port <n>`, and run the two commands it prints
-(`remove`, then `add` with that port).
+exits; choose another with `dev-server --port <n> --new-key`, and run the two
+commands it prints (`remove`, then `add` with that port).
 
 ## Limits in this release
 

@@ -34,7 +34,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local settings reset <module>[.<setting>]
        ch-local credentials [list | add <module> [--to <origin>] | remove <module>]
        ch-local start --stdio [countinghouse options]
-       ch-local dev-server [--port <n>]
+       ch-local dev-server [--port <n>] [--new-key]
 `;
 
 // argv -> {flags, values, positional} | null when something is not understood.
@@ -107,10 +107,10 @@ async function main(argv, io) {
     }
     // a local development server for the user's own tools (A-ownuse)
     if (command === 'dev-server') {
-      const a = parse(rest, {values: ['--port']});
+      const a = parse(rest, {values: ['--port'], flags: ['--new-key']});
       if (a == null || a.positional.length > 0) return usage();
       const port = a.values['--port'] !== undefined ? Number(a.values['--port']) : undefined;
-      return await require('../lib/dev-server').devServer({port}, io);
+      return await require('../lib/dev-server').devServer({port, newKey: a.flags['--new-key'] === true}, io);
     }
     if (command === 'remove-pack') {
       if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
