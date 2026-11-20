@@ -23,7 +23,7 @@ const GH_ORIGIN = 'https://api.githubcopilot.com';
 // a test home's stored value (no real token's shape)
 const STORED = 'test-stored-value-1';
 const bindAccess = (home, source = 'stored') => require('../lib/credential-store').bind(home, ACCESS, 'GITHUB_TOKEN',
-  source === 'gh' ? {origin: GH_ORIGIN, source: 'gh'} : {origin: GH_ORIGIN, source: 'stored', value: STORED});
+  source === 'gh' ? {origin: GH_ORIGIN, source: 'gh'} : {origin: GH_ORIGIN, source: 'stored', value: STORED}, {held: require('./store-helpers').FIXTURE_HELD});
 const TRIAGE_LOADED = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.1.0'};
 const until = async (cond, ms = 10000) => {
   for (const t = Date.now(); Date.now() - t < ms; await new Promise((r) => setTimeout(r, 20))) if (cond()) return;
@@ -1287,7 +1287,7 @@ test('a credential removed while running unloads the callers of its module, said
   const s = await running();
   try {
     await until(() => s.args() != null);
-    require('../lib/credential-store').unbind(s.home, ACCESS);
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
     const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or restart your client';
     await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
     // a later change sends no second unload
@@ -1349,7 +1349,7 @@ test('a credential unload the runtime refuses is retried, then told: restart you
   const s = await running({answer: (m) => (m.type === 'unload' ? {ok: false, code: 'BUSY'} : {ok: true})});
   try {
     await until(() => s.args() != null);
-    require('../lib/credential-store').unbind(s.home, ACCESS);
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
     await until(() => s.requests.filter((m) => m.type === 'unload').length >= 2);
     await until(() => notices(s).some(([, t]) => /could not be stopped in place after a credential was removed or changed: restart your client now to stop it/.test(t)));
   } finally {
@@ -1374,7 +1374,7 @@ async function twoCredentialed({otherOff = false} = {}) {
   const edit = (m, fn) => { const f = manifestOf(m); const p = JSON.parse(fs.readFileSync(f, 'utf8')); fn(p); fs.writeFileSync(f, JSON.stringify(p)); };
   edit(OTHER_STEP, (p) => { p.countinghouse.remotes = [{name: 'o', url: `${OTHER_ORIGIN}/mcp/`, credential: 'OTHER_TOKEN'}]; });
   bindAccess(home);
-  require('../lib/credential-store').bind(home, OTHER_STEP, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: 'test-stored-value-2'});
+  require('../lib/credential-store').bind(home, OTHER_STEP, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: 'test-stored-value-2'}, {held: require('./store-helpers').FIXTURE_HELD});
   if (otherOff) fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
   return {home, r, edit};
 }
@@ -1532,7 +1532,7 @@ test('a module the ceiling refuses: its unload carries no reason, and says the o
 // name is read under the declared one, said once a start, and never
 // rewritten at start (only `credentials add` changes the stored name)
 test('a key stored under COUNTINGHOUSE_GITHUB_TOKEN: the pack loads, the start says it once, and the store keeps it as it was', async () => {
-  const s = await running({bound: null, beforeStart: (home) => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: STORED})});
+  const s = await running({bound: null, beforeStart: (home) => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: STORED}, {held: require('./store-helpers').FIXTURE_HELD})});
   try {
     assert.ok(loadsPack(s), 'loaded with the key read under GITHUB_TOKEN');
     const line = 'ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it again under GITHUB_TOKEN';

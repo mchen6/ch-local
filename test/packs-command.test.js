@@ -117,7 +117,7 @@ test('status lists each module with its tools or why it would not load, and its 
   assert.match(io.out, /^  ch-pack-ci-failure-triage 0\.1\.0 +not loaded: calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`$/m);
   assert.match(io.out, /^  ch-pack-other 0\.3\.0 +on; tools: ch_pack_other$/m);
   assert.match(io.out, /^packs:\n  ci-failure-triage +\d+ modules\n  other +\d+ modules$/m);
-  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'});
+  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'}, {held: require('./store-helpers').FIXTURE_HELD});
   const after = s.io();
   await status({}, after);
   assert.match(after.out, /^  ch-access-github \S+ +part; credential GITHUB_TOKEN -> https:\/\/api\.githubcopilot\.com \(stored\)$/m);

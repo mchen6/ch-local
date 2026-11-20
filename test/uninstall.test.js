@@ -56,9 +56,9 @@ test('the credentials to revoke: every variable an installed module\'s remotes n
     storeModule(s.home, '@countinghouse/ch-pack-other', '1.0.0', {countinghouse: {role: 'scenario', remotes: [
       {name: 'a', url: 'https://a.example.invalid/', credential: {env: 'A_TOKEN', fallbackEnv: 'A_FALLBACK'}},
       {name: 'b', url: 'https://b.example.invalid/', credential: 'B_TOKEN'}]}});
-    require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-old-1'});
+    require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-old-1'}, {held: require('./store-helpers').FIXTURE_HELD});
     // a removed pack's module whose key was kept: the store's own entries are named
-    require('../lib/credential-store').bind(s.home, '@countinghouse/ch-gone', 'GONE_TOKEN', {origin: 'https://gone.example.invalid', source: 'stored', value: 'test-stored-gone-1'});
+    require('../lib/credential-store').bind(s.home, '@countinghouse/ch-gone', 'GONE_TOKEN', {origin: 'https://gone.example.invalid', source: 'stored', value: 'test-stored-gone-1'}, {held: require('./store-helpers').FIXTURE_HELD});
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 0, u.err);
     const line = (u.out.match(/revoke the credentials you gave it: (.*)\n/i) || [])[1] || '';

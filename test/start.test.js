@@ -22,8 +22,8 @@ const STORED = 'test-stored-value-1';
 const OTHER = '@countinghouse/ch-pack-other';
 const OTHER_ORIGIN = 'https://api.other.example';
 const OTHER_REMOTE = {name: 'other', url: `${OTHER_ORIGIN}/mcp/`, credential: 'OTHER_TOKEN'};
-const bindOther = (home, value = 'test-stored-value-2') => credentialStore.bind(home, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value});
-const bindGh = (home) => credentialStore.bind(home, ACCESS, VAR, {origin: GH_ORIGIN, source: 'gh'});
+const bindOther = (home, value = 'test-stored-value-2') => credentialStore.bind(home, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value}, {held: require('./store-helpers').FIXTURE_HELD});
+const bindGh = (home) => credentialStore.bind(home, ACCESS, VAR, {origin: GH_ORIGIN, source: 'gh'}, {held: require('./store-helpers').FIXTURE_HELD});
 
 const GITHUB = {name: 'github', transport: 'streamable-http', url: 'https://api.githubcopilot.com/mcp/',
   credential: {env: 'COUNTINGHOUSE_GITHUB_TOKEN', fallbackEnv: 'GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}};
@@ -46,7 +46,7 @@ function installedHome({remotes = [GITHUB], unreleased = false, other = false, b
     ...(other ? {other: {'@countinghouse/ch-pack-other': '1.0.0'}} : {})
   }, {unreleased, credentials: {'ci-failure-triage': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN'], ...(other ? {other: ['OTHER_TOKEN']} : {})}});
   // a credential is the module's own, bound in the store (#413 section 6.3)
-  if (bound != null) credentialStore.bind(home, ACCESS, VAR, {origin: boundTo, source: 'stored', value: bound});
+  if (bound != null) credentialStore.bind(home, ACCESS, VAR, {origin: boundTo, source: 'stored', value: bound}, {held: require('./store-helpers').FIXTURE_HELD});
   return home;
 }
 

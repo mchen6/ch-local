@@ -76,7 +76,12 @@ function editHome(home, fn, {release = null} = {}) {
 // ch-access-github's credential stored in a test home (L5a: a credential is
 // the module's own, in the store), a test value with no real token's shape
 function bindAccess(home, value = 'test-stored-value-1') {
-  require('../lib/credential-store').bind(home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value});
+  require('../lib/credential-store').bind(home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value}, {held: FIXTURE_HELD});
 }
 
-module.exports = {storeModule, writeHome, editHome, roleOf, setPackCredentials, bindAccess, CREDENTIALS_FILE};
+// a branded held from the store's test-only factory, for fixtures that set
+// a store up before the code under test runs (lib/ takes one only from
+// withStoreLock: test/credential-lock.test.js pins that)
+const FIXTURE_HELD = require('../lib/credential-store').testOnlyHeld();
+
+module.exports = {FIXTURE_HELD, storeModule, writeHome, editHome, roleOf, setPackCredentials, bindAccess, CREDENTIALS_FILE};
