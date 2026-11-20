@@ -84,7 +84,11 @@ function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/
     const walk = (d, rel) => { for (const e of fs.readdirSync(d, {withFileTypes: true})) { const r = rel ? `${rel}/${e.name}` : e.name; if (e.isDirectory()) walk(path.join(d, e.name), r); else config[r] = JSON.parse(fs.readFileSync(path.join(d, e.name), 'utf8')); } };
     if (fs.existsSync(dir)) walk(dir, '');
     const rc = args[args.indexOf('--remoteCredentials') + 1];
-    f.spawned.push({cmd, args, env: childEnv, config, remoteCredentials: JSON.parse(fs.readFileSync(rc, 'utf8'))});
+    // the held-back file, as the runtime would read it, and its mode
+    // (A-firstrun d1)
+    const hb = args.includes('--heldBackFile') ? args[args.indexOf('--heldBackFile') + 1] : null;
+    const heldBack = hb != null ? {path: hb, doc: JSON.parse(fs.readFileSync(hb, 'utf8')), mode: fs.lstatSync(hb).mode & 0o777, file: fs.lstatSync(hb).isFile()} : null;
+    f.spawned.push({cmd, args, env: childEnv, config, remoteCredentials: JSON.parse(fs.readFileSync(rc, 'utf8')), heldBack});
     // A real spawn is synchronous: signals arrive once start holds the child.
     return {kill: (sig) => f.killed.push(sig), exited: Promise.resolve().then(() => { if (f.duringRun) f.duringRun(); return exit; })};
   };
@@ -312,6 +316,27 @@ test('start names the credential and never prints a value; with none stored it l
   assert.strictEqual(none.spawned.length, 1);
   assert.ok(!none.spawned[0].args.includes('--loadModule'), 'the runtime starts with no module');
   assert.match(none.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`/);
+});
+
+// A-firstrun d1 (countinghouse #490): what start held back reaches the
+// runtime's overview, by name and reason class, in a private file in its run
+// directory; the launcher only where the home has one
+test('start passes the runtime what it held back: the pack calls a module with no credential, by name and reason, never a value', async () => {
+  const none = io(installedHome({bound: null}), {env: {GITHUB_TOKEN: 'from-the-client'}});
+  assert.strictEqual(await start({passThrough: []}, none), 0, none.err);
+  const hb = none.spawned[0].heldBack;
+  assert.ok(hb != null, 'the flag is passed');
+  assert.ok(hb.path.startsWith(path.join(none.env.COUNTINGHOUSE_HOME, 'run')) && path.basename(hb.path) === 'held-back.json', hb.path);
+  assert.deepStrictEqual(hb.doc.modules, [{name: '@countinghouse/ch-pack-ci-failure-triage', reason: 'calls', root: 'credential', via: '@countinghouse/ch-access-github'}]);
+  assert.deepStrictEqual(Object.keys(hb.doc).sort(), hb.doc.launcher != null ? ['launcher', 'modules', 'v'] : ['modules', 'v']);
+  if (hb.doc.launcher != null) assert.strictEqual(hb.doc.launcher, fs.realpathSync.native(path.join(none.env.COUNTINGHOUSE_HOME, 'bin', 'ch-local.js')));
+  assert.ok(hb.file, 'a regular file');
+  if (process.platform !== 'win32') assert.strictEqual(hb.mode, 0o600);
+  assert.ok(!JSON.stringify(hb.doc).includes('from-the-client') && !JSON.stringify(hb.doc).includes('GITHUB_TOKEN'));
+  // everything loaded: nothing held back
+  const all = io(installedHome());
+  assert.strictEqual(await start({passThrough: []}, all), 0, all.err);
+  assert.deepStrictEqual(all.spawned[0].heldBack.doc.modules, []);
 });
 
 test('start with nothing installed says to install, and starts nothing', async () => {

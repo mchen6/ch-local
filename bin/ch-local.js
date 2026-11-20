@@ -91,12 +91,18 @@ async function main(argv, io) {
       const code = await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
       // asked once whether to turn automatic upgrades on (off with no terminal)
       if (code === 0) await require('../lib/upgrade').offerAuto(io);
+      // the last line: what to do next (A-firstrun d1)
+      if (code === 0) io.stdout.write(`${require('../lib/next-steps').READY_LINE}\n`);
       return code;
     }
     if (command === 'add-pack') {
       const a = parse(rest, {values: ['--from', '--unreleased-pins']});
       if (a == null || a.positional.length !== 1) return usage();
-      return await require('../lib/packs-command').addPack({pack: a.positional[0], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+      const report = {added: false};
+      const code = await require('../lib/packs-command').addPack({pack: a.positional[0], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins'], report}, io);
+      // the last line, when it added the pack: what to do next (A-firstrun d1)
+      if (code === 0 && report.added) io.stdout.write(`${require('../lib/next-steps').READY_LINE}\n`);
+      return code;
     }
     if (command === 'remove-pack') {
       if (rest.length !== 1 || rest[0].startsWith('--')) return usage();

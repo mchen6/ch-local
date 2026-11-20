@@ -107,15 +107,29 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
   // none stored: the default, passed all the same (the two caps always are,
   // so the runtime's own default never governs: countinghouse #283)
   assert.deepStrictEqual(args.slice(args.indexOf('--requestTimeout'), args.indexOf('--requestTimeout') + 2), ['--requestTimeout', '30']);
+  // (the held-back list's rereads, which follow each change in what is held
+  // back, are read apart: A-firstrun d1)
+  const isHeld = (m) => m.type === 'reread' && m.what === 'held-back';
+  const sent = () => requests.filter((m) => !isHeld(m));
   assert.strictEqual((await cli(home, 'settings', 'set', 'enabled.@countinghouse/ch-pack-other', 'on')).code, 0);
-  for (let i = 0; requests.length < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
-  assert.deepStrictEqual([requests[0].type, requests[0].name], ['load', '@countinghouse/ch-pack-other']);
+  for (let i = 0; sent().length < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+  assert.deepStrictEqual([sent()[0].type, sent()[0].name], ['load', '@countinghouse/ch-pack-other']);
+  // (the pack turned on is no longer held back: one reread, after its load)
+  const rereads = () => requests.filter(isHeld).length;
+  for (let i = 0; rereads() < 1 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+  assert.strictEqual(rereads(), 1);
+  assert.ok(requests.findIndex(isHeld) > requests.indexOf(sent()[0]), 'after the load');
   assert.strictEqual((await cli(home, 'settings', 'set', 'requestTimeout', '15s')).code, 0);
-  for (let i = 0; requests.length < 2 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
-  assert.deepStrictEqual(requests[1], {type: 'set', name: 'requestTimeout', value: 15, id: requests[1].id});
+  for (let i = 0; sent().length < 2 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+  assert.deepStrictEqual(sent()[1], {type: 'set', name: 'requestTimeout', value: 15, id: sent()[1].id});
   assert.strictEqual((await cli(home, 'settings', 'set', 'enabled.@countinghouse/ch-pack-ci-failure-triage', 'off')).code, 0);
-  for (let i = 0; requests.length < 3 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
-  assert.deepStrictEqual([requests[2].type, requests[2].name, requests[2].notice], ['unload', '@countinghouse/ch-pack-ci-failure-triage', 'ch-pack-ci-failure-triage turned off']);
+  for (let i = 0; sent().length < 3 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+  assert.deepStrictEqual([sent()[2].type, sent()[2].name, sent()[2].notice], ['unload', '@countinghouse/ch-pack-ci-failure-triage', 'ch-pack-ci-failure-triage turned off']);
+  // (a timeout changes nothing held back: no reread for it; the pack turned
+  // off is: one more, after its unload)
+  for (let i = 0; rereads() < 2 && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
+  assert.strictEqual(rereads(), 2);
+  assert.ok(requests.indexOf(requests.filter(isHeld)[1]) > requests.indexOf(sent()[2]), 'the second after the unload, none for the timeout');
   end(0);
   await done;
 });

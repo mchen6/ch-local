@@ -183,7 +183,10 @@ test('install\'s end: with no terminal, each module that needs a credential is n
   const r = release(); const h = home();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, GITHUB_TOKEN: 'secret-value-123'}, exec: npm()});
   assert.strictEqual(await run(r, io), 0, io.err);
-  assert.match(io.err, /^ch-access-github needs a credential: run `ch-local credentials add ch-access-github`$/m);
+  // (the home's own launcher, which runs as printed: nothing puts ch-local
+  // on PATH; A-firstrun d1, the fixed text business checked)
+  const launcher = fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js'));
+  assert.ok(io.err.split('\n').includes(`ch-access-github needs a credential: in your own terminal run \`node "${launcher}" credentials add ch-access-github\``), io.err);
   assert.ok(!/GITHUB_TOKEN/.test(io.out), 'no environment variable is named');
   assert.ok(!(io.out + io.err).includes('secret-value-123'));
 });
@@ -202,7 +205,7 @@ test('install\'s end at a terminal: the add conversation stores the key; nothing
   const skip = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm()});
   Object.assign(skip, {terminal: true, readHidden: async () => '', ask: async () => 'n'});
   assert.strictEqual(await run(release(), skip), 0, skip.err);
-  assert.match(skip.err, /ch-access-github is not loaded until it has one: run `ch-local credentials add ch-access-github`/);
+  assert.ok(skip.err.includes(`ch-access-github is not loaded until it has one: in your own terminal run \`node "${fs.realpathSync.native(path.join(h2, 'bin', 'ch-local.js'))}" credentials add ch-access-github\``), skip.err);
 });
 
 // #413 section 9.4: install no longer drops the other packs; every installed

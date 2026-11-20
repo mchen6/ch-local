@@ -32,6 +32,23 @@ test('add-pack installs a second pack beside the first and shares an installed p
   assert.deepStrictEqual(io.execs, [], 'no npm: packs are unpacked');
 });
 
+// A-firstrun d1: add-pack says whether it added the pack (the CLI's "next"
+// line, test/next-steps.test.js); one already installed answers 0 too
+test('add-pack reports whether it added the pack: yes when it adds, no when it is already there or refused', async () => {
+  const s = await installed();
+  const added = {added: false};
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from, report: added}, s.io(), s.r.allow), 0);
+  assert.strictEqual(added.added, true);
+  const again = {added: false};
+  const io = s.io();
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from, report: again}, io, s.r.allow), 0, io.err);
+  assert.match(io.out, /the pack "other" is already installed/);
+  assert.strictEqual(again.added, false);
+  const refused = {added: false};
+  assert.notStrictEqual(await addPack({pack: 'nope', from: s.r.from, report: refused}, s.io(), s.r.allow), 0);
+  assert.strictEqual(refused.added, false);
+});
+
 test('add-pack refuses a pack the release does not pin', async () => {
   const s = await installed();
   const io = s.io();
