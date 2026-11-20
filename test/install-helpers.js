@@ -43,6 +43,7 @@ function release({versions = {}, extra = {}, describe = {}} = {}) {
   const from = tmp('ch-release-');
   const pins = {};
   const manifests = {};
+  const apis = {};
   for (const [name, pinned] of RUNTIME) {
     // versions may move a runtime package too (but ch-local's own, which the
     // npm stub installs at its fixed version)
@@ -55,7 +56,8 @@ function release({versions = {}, extra = {}, describe = {}} = {}) {
     const version = versions[name] || v;
     const tool = name === '@countinghouse/ch-pack-ci-failure-triage' ? 'ci_failure_triage' : name.split('/')[1].replace(/-/g, '_');
     manifests[name] = {name, version, countinghouse, ...(extra[name] || {})};
-    const bytes = packageTgz(manifests[name], {'api.json': api(tool, name.replace(/^@[^/]+\//, '')), 'lib/index.js': `// ${name}\n`});
+    apis[name] = api(tool, name.replace(/^@[^/]+\//, ''));
+    const bytes = packageTgz(manifests[name], {'api.json': apis[name], 'lib/index.js': `// ${name}\n`});
     fs.writeFileSync(path.join(from, tarballName(name, version)), bytes);
     pins[name] = {version, integrity: integrityOf(bytes)};
   }
@@ -74,7 +76,7 @@ function release({versions = {}, extra = {}, describe = {}} = {}) {
     modules: describeAll(manifests, describe),
     pins
   };
-  return {from, allow, pins, lockfile};
+  return {from, allow, pins, lockfile, manifests, apis};
 }
 
 // npm as the stub sees it: ci installs the launcher at the given version,
@@ -110,4 +112,29 @@ const pkgDir = (home, name) => {
 // modules pins names (what describe-release.js --unreleased-pins writes)
 const devModules = (allow, pins) => Object.fromEntries(Object.entries(allow.modules).filter(([m]) => Object.prototype.hasOwnProperty.call(pins, m)));
 
-module.exports = {release, npm, pkgDir, record, integrityOf, devModules, RUNTIME, PACKAGES};
+// A home as an install of release r leaves it (L4: what an upgrade's
+// additions are judged against is the home's own modules, described from
+// the store): every module of the named packs at r's pins, in the store
+// with r's own manifest and api.json, and the record naming them.
+// -> the record's packs, as written
+function installedHome(home, packs, {r = release(), runtime = {}, unreleased = false} = {}) {
+  const {storeModule, writeHome} = require('./store-helpers');
+  const out = {};
+  for (const p of packs) {
+    out[p] = {};
+    for (const m of r.allow.packs[p].modules) {
+      const v = r.pins[m].version;
+      const {name, version, ...rest} = r.manifests[m];
+      const dir = storeModule(home, m, v, {countinghouse: rest.countinghouse, files: {'api.json': r.apis[m]}});
+      // (its marker names the release's own integrity, as install's does:
+      // a later install never takes it for other contents)
+      const marker = JSON.parse(fs.readFileSync(`${dir}.json`, 'utf8'));
+      fs.writeFileSync(`${dir}.json`, JSON.stringify({...marker, integrity: r.pins[m].integrity}) + '\n');
+      out[p][m] = v;
+    }
+  }
+  writeHome(home, out, {runtime, unreleased});
+  return out;
+}
+
+module.exports = {release, npm, pkgDir, record, integrityOf, devModules, installedHome, RUNTIME, PACKAGES};

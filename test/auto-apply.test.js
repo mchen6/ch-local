@@ -20,8 +20,9 @@ const H = 3600e3;
 const TO = '0.1.1';
 function home({autoUpgrade = true, installed = '0.1.0', packs = ['ci-failure-triage']} = {}) {
   const h = tmp('ch-auto-');
-  require('./store-helpers').writeHome(h, Object.fromEntries(packs.map((p) => [p, {[`@countinghouse/ch-pack-${p}`]: '0.1.0'}])),
-    {runtime: {'@countinghouse/ch-local': installed, countinghouse: '8.0.0'}});
+  // (as an install of the release leaves it: the baseline additions are
+  // judged against is the home's own modules, from the store: L4)
+  require('./install-helpers').installedHome(h, packs, {runtime: {'@countinghouse/ch-local': installed, countinghouse: '8.0.0'}});
   fs.writeFileSync(path.join(h, 'settings.json'), JSON.stringify({version: 1, values: {autoUpgrade}}));
   return h;
 }
@@ -29,10 +30,12 @@ const world = (opts = {}) => npmWorld(release(), Object.assign({version: TO}, op
 const writeStampFile = (h, doc, mode = 0o600) => { const f = path.join(h, 'upgrade-check.json'); fs.writeFileSync(f, JSON.stringify(doc), {mode}); fs.chmodSync(f, mode); };
 const stamp = (h) => { try { return JSON.parse(fs.readFileSync(path.join(h, 'upgrade-check.json'), 'utf8')); } catch (e) { return {}; } };
 const historyOf = (h) => { try { return fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch (e) { return []; } };
-const run = (h, w, {now = Date.now(), env = {}, exec = npm(TO)} = {}) => {
-  const io = fakeIo({env: Object.assign({COUNTINGHOUSE_HOME: h}, env), exec, fetch: (u, o) => globalThis.fetch(u, o)});
+// pins: the running release's, when a test's differ from the world's
+// onFetch: called before each registry request (a home changed meanwhile)
+const run = (h, w, {now = Date.now(), env = {}, exec = npm(TO), pins = null, onFetch = null} = {}) => {
+  const io = fakeIo({env: Object.assign({COUNTINGHOUSE_HOME: h}, env), exec, fetch: (u, o) => { if (onFetch != null) onFetch(u); return globalThis.fetch(u, o); }});
   const go = () => autoApply({io, now, fromNpm: w != null ? w.fromNpm : {}}).then((r) => Object.assign(r, {io}));
-  return w != null && w.pinsDoc != null ? asInstalled(w.pinsDoc.pins, go, w.installed) : go();
+  return w != null && w.pinsDoc != null ? asInstalled(pins || w.pinsDoc.pins, go, w.installed) : go();
 };
 
 test('off, or a development override: nothing fetched, the override named', async() => {
@@ -139,6 +142,132 @@ test('identity changes, a first pin, or additions block: announced, never instal
     } finally {
       await w.close();
     }
+  }
+});
+
+// L4: a held release is announced once per version (upgrade-check.json's
+// announced), then said no more at each check until a newer one
+test('L4: a release held back for what it adds is announced once: the next check says nothing and installs nothing', async() => {
+  const now = Date.now();
+  const installed = require('../lib/allowlist').ALLOWLIST.self;
+  const w = await world({at: new Date(now - 200 * H), signedAs: installed,
+    edit: (d) => { d.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
+  try {
+    const h = home();
+    // (an announcement of a version no longer newer is dropped: the medium on L4, 7)
+    writeStampFile(h, {firstSeen: {[TO]: now - 200 * H}, announced: [{version: '0.0.1', key: '0123456789abcdef'}]});
+    const check = () => {
+      const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(TO), fetch: (u, o) => globalThis.fetch(u, o)});
+      return asInstalled(w.pinsDoc.pins, () => autoApply({io, now, fromNpm: w.fromNpm}), w.installed).then((r) => Object.assign(r, {io}));
+    };
+    const first = await check();
+    assert.strictEqual(first.outcome, 'needs-upgrade');
+    assert.match(first.line, /run ch-local upgrade/);
+    assert.deepStrictEqual(stamp(h).announced.map((e) => e.version), [TO]);
+    const again = await check();
+    assert.deepStrictEqual([again.outcome, again.line], ['announced', undefined], 'said once');
+    assert.deepStrictEqual(again.io.execs, [], 'nothing installed');
+    assert.strictEqual(historyOf(h).filter((e) => e.outcome === 'needs-upgrade').length, 1, 'recorded once');
+  } finally {
+    await w.close();
+  }
+});
+
+// L4 (#413 rev 3 section 9.6): a home with more than one pack upgrades
+// automatically, the release's set installed as one
+test('L4: a home with two packs upgrades automatically after the wait: both packs at the release\'s pins', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home({packs: ['ci-failure-triage', 'other']});
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const r = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    const after = JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'));
+    assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], TO);
+    assert.deepStrictEqual(Object.keys(after.packs).sort(), ['ci-failure-triage', 'other']);
+    for (const [p, e] of Object.entries(after.packs)) for (const [m, v] of Object.entries(e.modules)) assert.strictEqual(v, w.pinsDoc.pins[m].version, `${p} ${m}`);
+    assert.ok(!historyOf(h).some((e) => e.outcome === 'several-packs'));
+  } finally {
+    await w.close();
+  }
+});
+
+// the Reviewer's high on #101, round 2: a home changed while the automatic
+// upgrade was prepared is not installed; said once
+test('L4: a home changed while the automatic upgrade was prepared: not installed, said once', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home({packs: ['ci-failure-triage', 'other']});
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const file = path.join(h, 'modules.json');
+    let changed = null;
+    // after the record is judged, before the install: "other" is removed
+    const onFetch = () => { if (changed == null) { require('./store-helpers').editHome(h, (r) => { delete r.packs.other; return r; }); changed = fs.readFileSync(file, 'utf8'); } };
+    const r = await run(h, w, {now: now + 73 * H, onFetch});
+    assert.strictEqual(r.outcome, 'home-changed', r.line);
+    assert.strictEqual(r.line, `ch-local ${TO} was not installed: this home changed while the upgrade was prepared; the next check judges it again`);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), changed, 'nothing written');
+  } finally {
+    await w.close();
+  }
+});
+
+// the Reviewer's high on L4, 1: a module moving back, and one a pack no
+// longer lists, hold nothing, but the session line names them and history
+// records them
+test('L4: an automatic upgrade that moves a module back and drops one says each, and records the moves', async() => {
+  const now = Date.now();
+  const REDACT = '@countinghouse/ch-step-redact';
+  // (other no longer lists ch-step-redact; ci-failure-triage still does)
+  const w = await npmWorld(release({versions: {[REDACT]: '0.0.9'}}), {version: TO, at: new Date(now - 100 * H),
+    edit: (doc) => { doc.packs.other.modules = doc.packs.other.modules.filter((m) => m !== REDACT); }});
+  try {
+    const h = home({packs: ['ci-failure-triage', 'other']});
+    // the running release is the one installed: ch-step-redact at its 0.1.0
+    const r0 = release();
+    const pins = {...w.pinsDoc.pins, [REDACT]: {...w.pinsDoc.pins[REDACT], version: '0.1.0', integrity: r0.pins[REDACT].integrity}};
+    const first = await run(h, w, {now, pins});
+    assert.strictEqual(first.outcome, 'waiting', first.line);
+    const r = await run(h, w, {now: now + 73 * H, pins});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    assert.match(r.line, /; ch-step-redact moved back 0\.1\.0 -> 0\.0\.9 \(ci-failure-triage\); ch-step-redact is no longer in other: it stays running through ci-failure-triage/);
+    const last = historyOf(h).filter((e) => e.outcome === 'installed').pop();
+    assert.deepStrictEqual(last.moves, [{module: REDACT, from: '0.1.0', to: '0.0.9', back: true, packs: ['ci-failure-triage']}]);
+    assert.deepStrictEqual(last.dropped, [{module: REDACT, packs: ['other'], keptBy: ['ci-failure-triage']}]);
+  } finally {
+    await w.close();
+  }
+});
+
+// the Reviewer on L4: a record that can't be read fails closed, said
+test('L4: a home whose record cannot be read is not upgraded automatically, and says so; nothing is fetched', async() => {
+  const w = await world();
+  try {
+    const h = home();
+    fs.writeFileSync(path.join(h, 'modules.json'), '{"not": "a record"}');
+    const r = await run(h, w);
+    assert.strictEqual(r.outcome, 'record-unreadable');
+    // (no path named; recorded in history: the Reviewer's high on L4, 7)
+    assert.strictEqual(r.line, 'automatic upgrades are paused: this home\'s record can\'t be read: run `ch-local status`');
+    assert.deepStrictEqual(w.reg.requests, []);
+    const last = fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).pop();
+    assert.deepStrictEqual([last.how, last.outcome, last.reason], ['auto', 'record-unreadable', 'RECORD_FORMAT']);
+    // an earlier format is told to migrate, not that it can't be read
+    const e = home();
+    fs.unlinkSync(path.join(e, 'modules.json'));
+    fs.writeFileSync(path.join(e, 'packs.json'), '{}');
+    const old = await run(e, w);
+    assert.strictEqual(old.outcome, 'record-unreadable');
+    assert.strictEqual(old.line, 'automatic upgrades are paused: this home was made by an earlier ch-local: run `ch-local install` again to bring it to this one');
+    // a development launcher's home keeps its own advice: its pack and --from
+    const dev = home();
+    fs.unlinkSync(path.join(dev, 'modules.json'));
+    fs.writeFileSync(path.join(dev, 'installed.json'), '{"pack": "ci-failure-triage"}');
+    assert.strictEqual((await run(dev, w)).line, 'automatic upgrades are paused: this home was made by an earlier development ch-local; run `ch-local install --pack ci-failure-triage --from <dir>` again');
+  } finally {
+    await w.close();
   }
 });
 
@@ -316,7 +445,9 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
     const after = JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'));
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.1.1');
     assert.deepStrictEqual(Object.keys(after.packs), ['ci-failure-triage'], 'still recorded');
-    assert.deepStrictEqual(after.withdrawn, ['@countinghouse/ch-pack-ci-failure-triage']);
+    // (its modules the release lists in no pack; ch-step-redact stays, as
+    // other still lists it)
+    assert.deepStrictEqual(after.withdrawn, ['@countinghouse/ch-access-github', '@countinghouse/ch-pack-ci-failure-triage']);
     assert.deepStrictEqual(historyOf(h).filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', '0.1.1']]);
   } finally {
     await w.close();
@@ -326,17 +457,20 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
 // Withdrawn by the record: a home whose one pack the record lists as
 // withdrawn still takes an automatic upgrade; a release that lists it again
 // brings it to its pins
-test('a home whose one pack the record lists as withdrawn still upgrades automatically; listed again, it is at the pins', async() => {
+// (the Reviewer's high on L4, 4: a pack the record has withdrawn, listed
+// again, is served again: new to the running set, so it holds the automatic
+// upgrade and is said; ch-local upgrade shows it and installs it)
+test('a home whose one pack the record lists as withdrawn, listed again: held, "served again" said, nothing installed', async() => {
   const now = Date.now();
   const w = await world({at: new Date(now - 100 * H)});
   try {
     const h = home();
     require('./store-helpers').editHome(h, (r) => r, {release: {packs: {}}});
-    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const before = fs.readFileSync(path.join(h, 'modules.json'), 'utf8');
     const r = await run(h, w, {now: now + 73 * H});
-    assert.strictEqual(r.outcome, 'installed', r.line);
-    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8')).withdrawn, []);
-    assert.doesNotMatch(r.line, /adds it back/);
+    assert.strictEqual(r.outcome, 'needs-upgrade', r.line);
+    assert.match(r.line, /it adds ci-failure-triage is served again: its modules start after the upgrade; a module in ci-failure-triage: /);
+    assert.strictEqual(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'), before, 'nothing installed');
   } finally {
     await w.close();
   }

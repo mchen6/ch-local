@@ -212,7 +212,7 @@ test('no lib/ code names `trust` or `registry` but the three that take them; ins
   const install = fs.readFileSync(path.join(lib, 'install.js'), 'utf8');
   const lines = install.split('\n').filter((l) => /fromNpm/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim());
   assert.deepStrictEqual(lines, [
-    'async function install({pack, from, unreleasedPins, runtimeOnly = false}, io, release = ALLOWLIST, fromNpm = {}) {',
+    'async function install({pack, from, unreleasedPins, runtimeOnly = false, judged = null}, io, release = ALLOWLIST, fromNpm = {}) {',
     'version: allow.release.version, names, dir: path.join(fetched, \'release\'), io, verifiedSelf: allow.verifiedSelf || null, ...fromNpm});',
     'if (fetched != null && allow.shim != null) await placeShim(allow, io, {say, fail}, fromNpm);',
     'async function placeShim(allow, io, {say, fail}, fromNpm) {',
@@ -222,8 +222,8 @@ test('no lib/ code names `trust` or `registry` but the three that take them; ins
   const upgrade = fs.readFileSync(path.join(lib, 'upgrade.js'), 'utf8');
   assert.deepStrictEqual(upgrade.split('\n').filter((l) => /fromNpm/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim()), [
     'async function upgrade({auto}, io, fromNpm = {}) {',
-    'found = await findUpgrade({data, installed: from, packs, io, allowMajor: true, ...fromNpm});',
-    'const code = await require(\'./install\').install(target, io, allow, fromNpm);'
+    'found = await findUpgrade({data, now, installed: from, packs, io, allowMajor: true, ...fromNpm});',
+    'const code = await require(\'./install\').install({...target, judged: judgedDigest(record)}, io, allow, fromNpm);'
   ]);
 });
 
@@ -271,8 +271,8 @@ test('bin/ and lib/: no code names `trust` or `registry` outside the three, and 
   // autoApply( with {io} alone, so nothing passes theirs on
   // (the automatic upgrade's install says nothing of its own: its io is a quiet copy)
   // (target: {pack} or, for a release that withdraws the pack, {runtimeOnly: true})
-  const passOn = {'lib/upgrade.js': 'const code = await require(\'\').install(target, io, allow, fromNpm);',
-    'lib/auto-apply.js': 'const code = await require(\'\').install(target, quiet, allow, fromNpm);'};
+  const passOn = {'lib/upgrade.js': 'const code = await require(\'\').install({...target, judged: judgedDigest(record)}, io, allow, fromNpm);',
+    'lib/auto-apply.js': 'const code = await require(\'\').install({...target, judged: judgedDigest(record)}, quiet, allow, fromNpm);'};
   const odd = calls.filter(([f, fn, n, line]) => {
     if (fn === 'install') return !(n === 2 || passOn[f] === line);
     if (fn === 'upgrade') return n !== 2;

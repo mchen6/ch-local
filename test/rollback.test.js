@@ -440,3 +440,38 @@ test('a rollback round trip keeps each record\'s own withdrawn list', async () =
   assert.strictEqual(await rollback({}, rio(s.home)), 0);
   assert.deepStrictEqual(record(s.home).withdrawn, ['@countinghouse/ch-step-redact'], 'the newer release\'s own list, as it wrote it');
 });
+
+// L4 (#413 rev 3 section 9.6): a release over several packs, and its
+// rollback. Release 0.2.0 has both packs at ch-step-redact 0.1.0 and
+// ch-step-other 0.2.0; release 0.3.0 moves ch-step-redact to 0.2.0 and
+// ch-step-other to 0.3.0, installed as one. Rollback returns every pack to
+// the kept record; the module store keeps every version either record names,
+// and collection sweeps none of them; forward again is the newer set.
+test('L4: two packs moved as one release, and rolled back: each pack\'s versions come back, the store keeps both records\' versions through collection, forward again', async () => {
+  const home = tmp('ch-home-');
+  const OTHER = '@countinghouse/ch-step-other';
+  const r1 = release();
+  r1.allow.release = {version: '0.2.0', security: null};
+  const r2 = release({versions: {[REDACT]: '0.2.0', [OTHER]: '0.3.0'}});
+  r2.allow.release = {version: '0.3.0', security: null};
+  const io = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r1.from}, io(), r1.allow), 0);
+  assert.strictEqual(await addPack({pack: 'other', from: r1.from}, io(), r1.allow), 0);
+  // the newer release, installed as one: both packs move (lib/install-plan.js touchedPacks)
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, io(), r2.allow), 0);
+  const at = (rec) => Object.fromEntries(Object.entries(rec.packs).map(([p, e]) => [p, [e.modules[REDACT], e.modules[OTHER] || null]]));
+  assert.deepStrictEqual(at(record(home)), {'ci-failure-triage': ['0.2.0', null], other: ['0.2.0', '0.3.0']});
+  const rb = rio(home);
+  assert.strictEqual(await rollback({}, rb), 0, rb.err);
+  assert.deepStrictEqual(at(record(home)), {'ci-failure-triage': ['0.1.0', null], other: ['0.1.0', '0.2.0']}, 'every pack back to the kept record');
+  assert.strictEqual(record(home).modules[REDACT].version, '0.1.0', 'the older version is the one that loads');
+  // the store keeps both records' versions, collection included
+  const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: home});
+  const stored = (m, v) => fs.existsSync(path.join(home, 'module-store', ...m.split('/'), v));
+  require('../lib/gc').collectStore(where, {alive: () => false});
+  for (const [m, v] of [[REDACT, '0.1.0'], [REDACT, '0.2.0'], [OTHER, '0.2.0'], [OTHER, '0.3.0']]) assert.ok(stored(m, v), `${m} ${v} kept`);
+  // forward again: the newer set, from the store
+  assert.strictEqual(await rollback({}, rio(home)), 0);
+  assert.deepStrictEqual(at(record(home)), {'ci-failure-triage': ['0.2.0', null], other: ['0.2.0', '0.3.0']});
+});
+

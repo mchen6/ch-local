@@ -28,7 +28,7 @@ const registry = (latest) => async (url) => {
 // ch-local, checked by its provenance, its pins read from its verified bytes,
 // shown with what it adds, and on a yes installed through install. A fake
 // registry and the test root reach it only as its test-only argument.
-const {npmWorld} = require('./npm-world');
+const {npmWorld, asInstalled} = require('./npm-world');
 const {release, npm} = require('./install-helpers');
 const recordOf = (home) => JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8'));
 const historyOf = (home) => { try { return fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (e) { return []; } };
@@ -155,12 +155,17 @@ test('identity changes are shown before the question, marked as never taken auto
 
 test('what the new release adds is shown before the question', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  // (as an install leaves it: additions are judged against the home's own
+  // modules, from the store: L4)
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
   // (version 2: a module's key sent to a new origin)
-  const w = await npmWorld(release(), {edit: (doc) => { doc.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'COUNTINGHOUSE_GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
+  const w = await npmWorld(release(), {edit: (doc) => { doc.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
-    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
-    assert.match(io.out, /it adds:\n  ch-access-github(?:'s key goes to| sends a key \(COUNTINGHOUSE_GITHUB_TOKEN\) to) https:\/\/api\.example\.invalid/);
+    // (the running ch-local is the installed release: its pins verify the
+    // store's modules, the Reviewer's high on L4, 3)
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
+    assert.match(io.out, /it adds:\n  ch-access-github's key goes to https:\/\/api\.example\.invalid as GITHUB_TOKEN \(was https:\/\/api\.githubcopilot\.com as GITHUB_TOKEN\)\n/);
   } finally {
     await w.close();
     s.done();
@@ -256,7 +261,7 @@ test('offerAuto: a no leaves it off, and still unset is asked at the next instal
 
 // the review of #48 --------------------------------------------------------
 
-test('the yes is a person\'s at a terminal: a piped answer installs nothing; a no, an override and several packs are recorded too', async () => {
+test('the yes is a person\'s at a terminal: a piped answer installs nothing; a no and an override are recorded too', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const w = await npmWorld(release());
   try {
@@ -270,11 +275,8 @@ test('the yes is a person\'s at a terminal: a piped answer installs nothing; a n
     assert.match(no.out, /under semver a 0\.x minor or 0\.0\.x patch may break what works now/);
     const over = tty({env: {COUNTINGHOUSE_HOME: s.home, CH_LOCAL_DEV: '1'}, answers: ['yes'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, over, w.fromNpm), 1);
-    require('./store-helpers').editHome(s.home, (rec) => ({...rec, packs: {...rec.packs, other: {from: {release: '0.2.0'}, modules: {'@countinghouse/ch-pack-other': '0.3.0'}}}}));
-    const several = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], fetch: realFetch});
-    assert.strictEqual(await upgrade({}, several, w.fromNpm), 1);
     assert.deepStrictEqual(historyOf(s.home).map((e) => [e.outcome, e.reason || null]),
-      [['no-terminal', null], ['declined', null], ['override', 'CH_LOCAL_DEV'], ['several-packs', null]]);
+      [['no-terminal', null], ['declined', null], ['override', 'CH_LOCAL_DEV']]);
   } finally {
     await w.close();
     s.done();
@@ -430,4 +432,228 @@ test('a home with one pack and one the record lists as withdrawn upgrades: not "
     await w.close();
     s.done();
   }
+});
+
+// L4 (#413 rev 3 section 9.6): a release is a tested set, installed as one.
+// Two packs share ch-step-redact at 0.2.0; ch-step-other is at 0.1.0. The
+// release pins ch-step-redact at 0.1.0 (back) and ch-step-other at 0.2.0.
+const TRIAGE_MODS = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.2.0'};
+const OTHER_MODS = {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.2.0', '@countinghouse/ch-step-other': '0.1.0'};
+function twoPacks() {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const {storeModule, editHome} = require('./store-helpers');
+  // (the store holds the versions the release does not pin, which it must
+  // keep, never sweep; one it pins comes from the release itself: install
+  // never puts other contents under a version the record names)
+  for (const [m, v] of [['@countinghouse/ch-step-redact', '0.2.0'], ['@countinghouse/ch-step-other', '0.1.0']]) storeModule(s.home, m, v, {countinghouse: {role: 'part'}, files: {kept: `${m}@${v}`}});
+  editHome(s.home, (r) => ({...r, packs: {'ci-failure-triage': {from: {release: '0.1.0'}, modules: TRIAGE_MODS}, other: {from: {release: '0.1.0'}, modules: OTHER_MODS}}}));
+  return s;
+}
+const stored = (home, m, v) => path.join(home, 'module-store', ...m.split('/'), v);
+
+test('L4: a home with two packs upgrades as one release: every pack to its pins, no version asked, each moving module said once with its packs, a move back said', async () => {
+  const s = twoPacks();
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /its modules move:\n  ch-step-other 0\.1\.0 -> 0\.2\.0 \(other\)\n  ch-step-redact 0\.2\.0 -> 0\.1\.0, back to an earlier version \(ci-failure-triage, other\)\n/);
+    assert.strictEqual(io.asked.length, 1, 'one question, the upgrade\'s own');
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0; ch-local rollback undoes it/);
+    const rec = recordOf(s.home);
+    assert.strictEqual(rec.packs['ci-failure-triage'].modules['@countinghouse/ch-step-redact'], '0.1.0');
+    assert.deepStrictEqual(rec.packs.other.modules, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});
+    assert.strictEqual(rec.modules['@countinghouse/ch-step-redact'].version, '0.1.0', 'the version that loads is the one the preview said');
+    assert.ok(!historyOf(s.home).some((e) => e.outcome === 'several-packs'));
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// the Reviewer on the L4 plan: a module moves back in one pack while another
+// pack (here withdrawn by the release, so not moved) holds it at the newer
+// version. The preview, what the store keeps and which version loads agree.
+test('L4: a module moving back in one pack while a withdrawn pack holds it newer: said for the pack that moves it, both versions kept, the moved one loads', async () => {
+  const s = twoPacks();
+  const w = await npmWorld(release(), {edit: withdrawFrom('other')});
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    // (the running release serves both packs: start's rule, the Reviewer's
+    // high on #101, round 2)
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
+    assert.match(io.out, /it withdraws:\n  other /);
+    assert.match(io.out, /its modules move:\n  ch-step-redact 0\.2\.0 -> 0\.1\.0, back to an earlier version \(ci-failure-triage\)\n/);
+    assert.doesNotMatch(io.out, /ch-step-other 0\.1\.0 ->/, 'a withdrawn pack\'s modules do not move');
+    const rec = recordOf(s.home);
+    assert.strictEqual(rec.packs['ci-failure-triage'].modules['@countinghouse/ch-step-redact'], '0.1.0');
+    assert.strictEqual(rec.packs.other.modules['@countinghouse/ch-step-redact'], '0.2.0', 'the withdrawn pack keeps its own');
+    assert.strictEqual(rec.modules['@countinghouse/ch-step-redact'].version, '0.1.0', 'the live pack\'s version loads, as the preview said');
+    for (const v of ['0.1.0', '0.2.0']) assert.ok(fs.existsSync(stored(s.home, '@countinghouse/ch-step-redact', v)), `ch-step-redact ${v} kept in the store`);
+    assert.strictEqual(fs.readFileSync(path.join(stored(s.home, '@countinghouse/ch-step-redact', '0.2.0'), 'kept'), 'utf8'), '@countinghouse/ch-step-redact@0.2.0');
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// L4 (#413 rev 3 sections 9.3 and 9.6; C's L4 notes): additions are judged
+// against what the home has installed, each module described from the store
+// at the version the record names, not against the bundled pins of the
+// ch-local that runs. Here the home keeps ch-access-github at 0.0.9, whose
+// manifest declares no key; the release's sends one, so it is said, though
+// the bundled pins already describe that key.
+test('L4: what a release adds is judged against the home\'s installed modules, not the bundled pins: a key a module kept off its pin never sent is said', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const {storeModule, editHome} = require('./store-helpers');
+  storeModule(s.home, '@countinghouse/ch-access-github', '0.0.9', {countinghouse: {role: 'part'}});
+  editHome(s.home, (r) => ({...r, packs: {'ci-failure-triage': {from: {release: '0.1.0'},
+    modules: {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.0.9', '@countinghouse/ch-step-redact': '0.1.0'}}}}));
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /it adds:\n(  .*\n)*  ch-access-github sends a key \(GITHUB_TOKEN\) to https:\/\/api\.githubcopilot\.com/);
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// the medium on L4, 4 and 5: moves and drops are judged per pack, against
+// that pack's own list in the new release; a pack the release lists again
+// (relisted after a withdrawal) is counted
+test('L4: releaseMoves judges each pack against its own new list: a module moved to a pack not installed is no longer listed here; a relisted pack\'s moves are said', () => {
+  const {releaseMoves} = require('../lib/upgrade');
+  const record = {packs: {a: {modules: {m: '1.0.0', p: '1.0.0'}}, back: {modules: {q: '2.0.0'}}},
+    modules: {m: {version: '1.0.0'}, p: {version: '1.0.0'}, q: {version: '2.0.0'}}};
+  // m now listed only under y (not installed); back relisted, q moving back
+  const allow = {packs: {a: {modules: ['p']}, y: {modules: ['m']}, back: {modules: ['q']}}, pins: {m: {version: '1.1.0'}, p: {version: '1.0.1'}, q: {version: '1.9.0'}}};
+  assert.deepStrictEqual(releaseMoves(record, allow, ['a', 'back']), {
+    moves: [{module: 'p', from: '1.0.0', to: '1.0.1', back: false, packs: ['a']}, {module: 'q', from: '2.0.0', to: '1.9.0', back: true, packs: ['back']}],
+    dropped: [{module: 'm', packs: ['a'], keptBy: []}]
+  });
+  // (a module one pack drops and another moved pack keeps stays running
+  // through it: the Reviewer's high on L4, 6)
+  const both = {packs: {a: {modules: {m: '1.0.0'}}, b: {modules: {m: '1.0.0'}}}, modules: {m: {version: '1.0.0'}}};
+  const keep = {packs: {a: {modules: []}, b: {modules: ['m']}}, pins: {m: {version: '1.0.0'}}};
+  const r = releaseMoves(both, keep, ['a', 'b']);
+  assert.deepStrictEqual(r.dropped, [{module: 'm', packs: ['a'], keptBy: ['b']}]);
+  assert.deepStrictEqual(require('../lib/upgrade').movesLines(r), ['it no longer lists:\n  m (a): it stays running through b']);
+  // a pack not served (withdrawn in the record, say) keeps nothing running
+  assert.deepStrictEqual(releaseMoves(both, keep, ['a', 'b'], ['a']).dropped, [{module: 'm', packs: ['a'], keptBy: []}]);
+});
+
+// the medium on L4, 3: every pack an install moves is held to the operator's
+// allowlist, not only the one named
+test('L4: an upgrade moving a pack the operator\'s allowlist refuses moves nothing, and says which', async () => {
+  const s = twoPacks();
+  // the runtime's ceiling reader, as an installed runtime has it: the
+  // triage pack's modules only
+  const dir = path.join(s.home, 'app', 'node_modules', 'countinghouse', 'lib');
+  fs.mkdirSync(dir, {recursive: true});
+  const ceiling = {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], conversation: true,
+    modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact']}};
+  fs.writeFileSync(path.join(dir, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)})};\n`);
+  require('../lib/ceiling').resetForTests();
+  const w = await npmWorld(release());
+  try {
+    const before = recordOf(s.home);
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.notStrictEqual(await upgrade({}, io, w.fromNpm), 0);
+    assert.match(io.err, /the pack "other" is not allowed on this machine/);
+    assert.deepStrictEqual(recordOf(s.home).packs, before.packs, 'nothing moved');
+  } finally {
+    require('../lib/ceiling').resetForTests();
+    await w.close();
+    s.done();
+  }
+});
+
+
+// the Reviewer's high on L4, 4: a pack the record has withdrawn that the
+// release lists again is served again: the preview says so, its modules are
+// what it adds, and its credentials are asked for, though nothing else of
+// the home is served
+test('L4: a withdrawn pack listed again: "served again" before the question; installed as a pack, its credentials asked', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
+  require('./store-helpers').editHome(s.home, (r) => r, {release: {packs: {}}});
+  assert.ok(recordOf(s.home).withdrawn.length > 0);
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
+    assert.match(io.out, /it adds:\n  ci-failure-triage is served again: its modules start after the upgrade\n/);
+    assert.deepStrictEqual(recordOf(s.home).withdrawn, []);
+    assert.match(io.err, /^ch-access-github needs a credential: run `ch-local credentials add ch-access-github`$/m);
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// the Reviewer's high on #101, round 2: install acts only on the record the
+// upgrade judged; a home changed during the question or the fetch refuses,
+// and nothing is written
+const changedDuring = async (s, w, {when, change}) => {
+  const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+  if (when === 'question') {
+    const ask = io.ask;
+    io.ask = async (q) => { change(); return ask(q); };
+  } else {
+    const write = io.stdout.write.bind(io.stdout);
+    io.stdout.write = (x) => { if (/^fetching \d+ package/.test(String(x))) change(); return write(x); };
+  }
+  const code = await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed);
+  return {code, io};
+};
+test('L4: a home changed while the upgrade was prepared refuses: a pack added during the question, one removed or a rollback during the fetch', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage', 'other'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
+  const file = path.join(s.home, 'modules.json');
+  const both = fs.readFileSync(file, 'utf8');
+  require('./store-helpers').editHome(s.home, (r) => { delete r.packs.other; return r; });
+  const one = fs.readFileSync(file, 'utf8');
+  const w = await npmWorld(release());
+  try {
+    const cases = [
+      ['a pack added during the question', one, 'question', () => fs.writeFileSync(file, both)],
+      ['a pack removed during the fetch', both, 'fetch', () => fs.writeFileSync(file, one)],
+      // (a rollback: the same packs, another version)
+      ['a rollback during the fetch', one, 'fetch', () => {
+        const r = JSON.parse(one);
+        r.packs['ci-failure-triage'].modules['@countinghouse/ch-step-redact'] = '0.0.9';
+        r.modules['@countinghouse/ch-step-redact'].version = '0.0.9';
+        fs.writeFileSync(file, JSON.stringify(r));
+      }]
+    ];
+    for (const [what, start, when, change] of cases) {
+      fs.writeFileSync(file, start);
+      let changed = null;
+      const {code, io} = await changedDuring(s, w, {when, change: () => { change(); changed = fs.readFileSync(file, 'utf8'); }});
+      assert.strictEqual(code, 1, `${what}: ${io.err}`);
+      assert.match(io.err, /this home changed while the upgrade was prepared; run it again; nothing was installed/, what);
+      // the record is the changed one, untouched: no pack it lacks is written back
+      assert.strictEqual(fs.readFileSync(file, 'utf8'), changed, `${what}: nothing written`);
+    }
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// the medium on #101 round 2, 3: a pack the record holds as live that
+// neither the running release nor the new one lists is withdrawn by this
+// upgrade (its modules go into the record's withdrawn list), so it is said
+test('releaseSelection: start\'s running rule; withdrawn is every pack the record has not withdrawn that the release does not list', () => {
+  const {releaseSelection} = require('../lib/packs');
+  const rec = {packs: {a: {modules: {m: '1.0.0'}}, x: {modules: {n: '1.0.0'}}, w: {modules: {k: '1.0.0'}}}, modules: {m: {version: '1.0.0'}, n: {version: '1.0.0'}, k: {version: '1.0.0'}}, withdrawn: ['k']};
+  const running = {packs: {a: {modules: ['m']}, w: {modules: ['k']}}};
+  // the new release lists a and w (w served again), not x
+  assert.deepStrictEqual(releaseSelection(rec, {packs: {a: {modules: ['m']}, w: {modules: ['k']}}}, running), {withdrawn: ['x'], served: ['a', 'w'], target: {pack: 'a'}});
+  // it lists only w: a is withdrawn, w is the target
+  assert.deepStrictEqual(releaseSelection(rec, {packs: {w: {modules: ['k']}}}, running), {withdrawn: ['a', 'x'], served: ['w'], target: {pack: 'w'}});
+  // none: the runtime only
+  assert.deepStrictEqual(releaseSelection(rec, {packs: {}}, running).target, {runtimeOnly: true});
 });

@@ -112,6 +112,52 @@ those are dropped anyway (below).
      the runtime's, an installed pack's or the shim's. Who builds it is new,
      so it counts as an identity change.
 
+   What a release adds is judged against what this home has installed
+   (`lib/installed-description.js`). A module counts as known only when it is
+   verifiably the running release's pin: the record has it at that pin's
+   version, and the store's marker names the pin's integrity. Its
+   description is then the running release's. Anything else counts as
+   unknown, and the store's files are never read in its place: a module the
+   version table keeps off its pin, or a marker naming other bytes. An
+   unknown module holds the upgrade back, and everything the release has it
+   send or call is listed, as for a new module.
+
+   What runs is start's own rule (`withdrawnNames`): a pack the running
+   release doesn't list, or one the record has withdrawn, is not running, and
+   neither is a module only such a pack lists. A module is verified by the
+   store holding it whole at the pin, its directory and its marker.
+
+   A pack that isn't running and that the release lists is served
+   again ("<pack> is served again"). Its modules are new to the running set,
+   so it holds an automatic upgrade back. `ch-local upgrade` installs it and
+   asks for its credentials.
+
+   A release held back is announced once per version (`announced` in
+   `upgrade-check.json`), and said no more until a newer one.
+
+   **A release is installed as one** (#413 rev 3 section 9.6), as `ch-local
+   upgrade` installs it: every installed pack the release lists moves to its
+   pins, whichever way each module's version moves. A module moving, forward
+   or back, never holds an automatic upgrade back, but none is silent:
+   - the session line names each module moved back and each a pack no longer
+     lists (one another pack keeps "stays running through" it);
+   - history records the moves and the drops.
+
+   A home whose record can't be read is never upgraded automatically. It
+   says so without naming a path, and records it in history. A home an
+   earlier ch-local made is told to run `ch-local install` again. Every
+   pack an install moves is held to the operator's allowlist, again under
+   the lock.
+
+   **The install acts only on the record that was judged.** `ch-local upgrade`
+   and the automatic upgrade pass install a digest of the record they judged:
+   its packs with their versions, and its withdrawn list. Under the lock,
+   install refuses a record that differs ("this home changed while the
+   upgrade was prepared; run it again"). That covers a pack added during
+   the question, or one removed, or a rollback, during the fetch, and it
+   writes nothing back. The automatic upgrade says it once, and the next
+   check judges the home as it is then.
+
    **A pack the user hasn't installed** is never installed by an automatic
    upgrade. So a change to it, an identity change included, never blocks
    one: it's named in the announcement, nothing more.
