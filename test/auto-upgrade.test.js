@@ -62,11 +62,12 @@ test('on: the child runs as `ch-local upgrade --apply-auto`, with the allowliste
 test('the stamp keeps what the child wrote: lastCheck is merged in, never written over', async () => {
   const {where} = await home();
   setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
-  fs.writeFileSync(path.join(where.home, 'upgrade-check.json'), JSON.stringify({firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], declined: ['0.2.8'], lastSuccess: 7}), {mode: 0o600});
+  fs.writeFileSync(path.join(where.home, 'upgrade-check.json'), JSON.stringify({firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], declined: ['0.2.8'], announced: ['0.3.1'], lastSuccess: 7}), {mode: 0o600});
   const now = Date.now();
   await run(where, {status: 0, stdout: ''}, now);
   const stamp = JSON.parse(fs.readFileSync(path.join(where.home, 'upgrade-check.json'), 'utf8'));
-  assert.deepStrictEqual(stamp, {firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], declined: ['0.2.8'], lastSuccess: 7, lastCheck: now});
+  // (announced: the held versions said once, L4: kept as the rest)
+  assert.deepStrictEqual(stamp, {firstSeen: {'0.3.0': 5}, refused: [{version: '0.2.9', root: 'r'}], declined: ['0.2.8'], announced: ['0.3.1'], lastSuccess: 7, lastCheck: now});
 });
 
 test('weekly waits a week; never never checks; a child that fails is said, and tried again an hour later; one start checks at a time', async () => {

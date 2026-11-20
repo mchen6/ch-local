@@ -143,6 +143,68 @@ test('identity changes, a first pin, or additions block: announced, never instal
   }
 });
 
+// L4: a held release is announced once per version (upgrade-check.json's
+// announced), then said no more at each check until a newer one
+test('L4: a release held back for what it adds is announced once: the next check says nothing and installs nothing', async() => {
+  const now = Date.now();
+  const installed = require('../lib/allowlist').ALLOWLIST.self;
+  const w = await world({at: new Date(now - 200 * H), signedAs: installed,
+    edit: (d) => { d.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
+  try {
+    const h = home();
+    writeStampFile(h, {firstSeen: {[TO]: now - 200 * H}});
+    const check = () => {
+      const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(TO), fetch: (u, o) => globalThis.fetch(u, o)});
+      return asInstalled(w.pinsDoc.pins, () => autoApply({io, now, fromNpm: w.fromNpm}), w.installed).then((r) => Object.assign(r, {io}));
+    };
+    const first = await check();
+    assert.strictEqual(first.outcome, 'needs-upgrade');
+    assert.match(first.line, /run ch-local upgrade/);
+    assert.deepStrictEqual(stamp(h).announced, [TO]);
+    const again = await check();
+    assert.deepStrictEqual([again.outcome, again.line], ['announced', undefined], 'said once');
+    assert.deepStrictEqual(again.io.execs, [], 'nothing installed');
+    assert.strictEqual(historyOf(h).filter((e) => e.outcome === 'needs-upgrade').length, 1, 'recorded once');
+  } finally {
+    await w.close();
+  }
+});
+
+// L4 (#413 rev 3 section 9.6): a home with more than one pack upgrades
+// automatically, the release's set installed as one
+test('L4: a home with two packs upgrades automatically after the wait: both packs at the release\'s pins', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home({packs: ['ci-failure-triage', 'other']});
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const r = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    const after = JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'));
+    assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], TO);
+    assert.deepStrictEqual(Object.keys(after.packs).sort(), ['ci-failure-triage', 'other']);
+    for (const [p, e] of Object.entries(after.packs)) for (const [m, v] of Object.entries(e.modules)) assert.strictEqual(v, w.pinsDoc.pins[m].version, `${p} ${m}`);
+    assert.ok(!historyOf(h).some((e) => e.outcome === 'several-packs'));
+  } finally {
+    await w.close();
+  }
+});
+
+// the Reviewer on L4: a record that can't be read fails closed, said
+test('L4: a home whose record cannot be read is not upgraded automatically, and says so; nothing is fetched', async() => {
+  const w = await world();
+  try {
+    const h = home();
+    fs.writeFileSync(path.join(h, 'modules.json'), '{"not": "a record"}');
+    const r = await run(h, w);
+    assert.strictEqual(r.outcome, 'record-unreadable');
+    assert.match(r.line, /^automatic upgrades are paused: this home's record can't be read \(.+\); run ch-local status$/);
+    assert.deepStrictEqual(w.reg.requests, []);
+  } finally {
+    await w.close();
+  }
+});
+
 test('the review of #48: a 0.x minor is a major here, announced and never installed', async() => {
   const now = Date.now();
   const w = await world({version: '0.2.0', at: new Date(now - 200 * H)});
