@@ -586,7 +586,7 @@ test('L4: a withdrawn pack listed again: "served again" before the question; ins
     assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
     assert.match(io.out, /it adds:\n  ci-failure-triage is served again: its modules start after the upgrade\n/);
     assert.deepStrictEqual(recordOf(s.home).withdrawn, []);
-    assert.match(io.err, /^ch-access-github needs a credential: run `ch-local credentials add ch-access-github`$/m);
+    assert.ok(io.err.split('\n').includes(`ch-access-github needs a credential: in your own terminal run \`node "${require('path').join(s.home, 'bin', 'ch-local.js')}" credentials add ch-access-github\``), io.err);
   } finally {
     await w.close();
     s.done();
