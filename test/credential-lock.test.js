@@ -397,14 +397,47 @@ test('uninstall: a store that can\'t be removed leaves the record and says so, e
   assert.match(left.u.out, /Revoke the credentials you gave it: /);
 });
 
-// the reviewer's high on #102, 6: a holder whose heartbeat is fresh is
-// waited for (up to STALE_MS); one on another host whose heartbeat is old is
-// said at once, never waited out
-test('the wait follows the holder\'s heartbeat: another host\'s old lock is said at once', async () => {
+// the reviewer's high on #102's round 1, 3: another host's lock is waited
+// out to the cap whatever its mtime says (that host's clock), then said with
+// the file to remove; never refused at once
+test('another host\'s lock, however old its mtime, is waited out to the cap, then said with the file to remove', async () => {
   const h = home();
   writeLock(h, {pid: 1, host: 'elsewhere', at: 'x'}, 60 * 60 * 1000);
-  const f = io(h, {readStdin: async() => made()});
+  const f = io(h, {readStdin: async() => made(), credentialsLockWaitMs: 400});
   const t0 = Date.now();
   assert.strictEqual(await credentials({action: 'add', name: 'ch-other-step', to: OTHER_ORIGIN, restart: false}, f), 1);
-  assert.ok(Date.now() - t0 < 5000, `said at once, not after a wait (${Date.now() - t0} ms)`);
+  assert.ok(Date.now() - t0 >= 350, `waited to the cap (${Date.now() - t0} ms)`);
+  assert.match(f.err, /or remove .*credentials\.lock if nothing is running on elsewhere\./);
 });
+
+// the reviewer's high on #102's round 1, 2: a dead holder whose clearing is
+// held up (a young .break, another waiter mid-clear) is waited for, never
+// refused at once naming the dead pid
+test('a dead holder whose lock can\'t be cleared yet is waited for, and the change goes on once it can', async () => {
+  const h = home();
+  const dead = spawn(process.execPath, ['-e', '0']);
+  await new Promise((r) => dead.on('close', r));
+  writeLock(h, {pid: dead.pid, host: lock.lockHost(), at: 'x'}, 10 * 60 * 1000);
+  fs.writeFileSync(`${lockFile(h)}.break`, '1');
+  setTimeout(() => fs.rmSync(`${lockFile(h)}.break`, {force: true}), 400);
+  const value = made();
+  const f = io(h, {readStdin: async() => value});
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-other-step', to: OTHER_ORIGIN, restart: false}, f), 0, f.err);
+  assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), value);
+});
+
+// the reviewer's high on #102's round 1, 1: a held is for its own home
+test('a held from one home\'s lock writes no other home', async () => {
+  const a = home();
+  const b = home();
+  const code = await store.withStoreLock(a, io(a), 'test', async(held) => {
+    assert.throws(() => store.bind(b, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {held}), (e) => e.code === 'CREDENTIALS_LOCK');
+    assert.throws(() => store.unbind(b, OTHER, {held}), (e) => e.code === 'CREDENTIALS_LOCK');
+    store.bind(a, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {held});
+    return 0;
+  });
+  assert.strictEqual(code, 0);
+  assert.ok(!fs.existsSync(path.join(b, 'credentials')));
+  assert.notStrictEqual(valueOf(a, OTHER, 'OTHER_TOKEN'), null);
+});
+
