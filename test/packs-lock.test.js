@@ -150,11 +150,22 @@ test('the same boot id is this machine, whatever its host name or namespace: age
     assert.match(t.err, new RegExp(`on another machine named ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\).* if nothing is running on another machine named`));
     assert.ok(fs.existsSync(file(twin)));
   }
-  // this machine before a reboot: gone
-  if (lock.machineId() != null) {
+  if (lock.machineId() != null && lock.bootTimeMs() != null) {
+    const before = lock.bootTimeMs() - 60 * 1000;
+    // this machine before a reboot (renewed last before this kernel booted): gone
     const rebooted = home();
     holderAt(rebooted, {pid: 1, host: lock.lockHost(), at: 'x', started: '1', boot: 'a-boot-before-this-one', machine: lock.machineId()});
+    fs.utimesSync(file(rebooted), new Date(before), new Date(before));
     assert.strictEqual(await lock.withLock({home: rebooted}, fakeIo({}), async() => 0), 0, 'from before a reboot: gone');
+    // a cloned VM (the same machine id and host name, another boot) renewing
+    // after this boot: another machine, never cleared, however old
+    // (the reviewer's delta read of 87b28d4)
+    const clone = home();
+    holderAt(clone, {pid: 1, host: lock.lockHost(), at: 'x', started: '1', boot: 'a-clone-s-boot', machine: lock.machineId()});
+    const c = fakeIo({});
+    assert.strictEqual(await lock.withLock({home: clone}, c, async() => 0), 1, 'a live clone: held');
+    assert.match(c.err, /on another machine named /);
+    assert.ok(fs.existsSync(file(clone)), 'never cleared');
   }
   // no boot id: the host string decides, as before
   const unknown = home();
