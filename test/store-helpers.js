@@ -79,9 +79,9 @@ function bindAccess(home, value = 'test-stored-value-1') {
   require('../lib/credential-store').bind(home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value}, {held: FIXTURE_HELD});
 }
 
-// a stand-in for the store lock's `held`, for fixtures that set a store up
-// before the code under test runs (lib/ takes it only from withStoreLock:
-// test/credential-lock.test.js pins that)
-const FIXTURE_HELD = Object.freeze({check() {}});
+// a branded held from the store's test-only factory, for fixtures that set
+// a store up before the code under test runs (lib/ takes one only from
+// withStoreLock: test/credential-lock.test.js pins that)
+const FIXTURE_HELD = require('../lib/credential-store').testOnlyHeld();
 
 module.exports = {FIXTURE_HELD, storeModule, writeHome, editHome, roleOf, setPackCredentials, bindAccess, CREDENTIALS_FILE};

@@ -278,23 +278,119 @@ test('Windows (win-acl stubbed): a lock taken over before the rename leaves the 
   const mine = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-18', type: 'Allow', rights: 2032127}]};
   const {privateProblem} = require('../lib/win-acl');
   const acl = {privateProblem, fileAcl: () => mine, makePrivateDirs: (dirs) => dirs.map(() => mine), createPrivate: (file, data) => fs.writeFileSync(file, data, {flag: 'wx'})};
-  const before = fs.existsSync(path.join(h, 'credentials', 'credentials.json'));
-  const held = {check() { throw Object.assign(new Error('gone'), {code: 'LOCK_LOST'}); }};
-  assert.throws(() => store.bind(h, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {platform: 'win32', acl, held}),
+  const lost = () => { throw Object.assign(new Error('gone'), {code: 'LOCK_LOST'}); };
+  // lost from the start: nothing made, the directory included
+  assert.throws(() => store.bind(h, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {platform: 'win32', acl, held: store.testOnlyHeld(lost)}),
     (e) => e.code === 'CREDENTIALS_LOCK');
-  assert.strictEqual(fs.existsSync(path.join(h, 'credentials', 'credentials.json')), before);
+  assert.ok(!fs.existsSync(path.join(h, 'credentials')));
+  // lost after the directory is made, before the rename: the file as it was
+  // (none), no temporary file left
+  let checks = 0;
+  const later = store.testOnlyHeld(() => { checks += 1; if (checks > 1) lost(); });
+  assert.throws(() => store.bind(h, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {platform: 'win32', acl, held: later}),
+    (e) => e.code === 'CREDENTIALS_LOCK');
+  assert.strictEqual(checks, 2, 'checked before the directory and before the rename');
+  assert.ok(!fs.existsSync(path.join(h, 'credentials', 'credentials.json')));
   assert.deepStrictEqual(fs.readdirSync(path.join(h, 'credentials')).filter((n) => n.endsWith('.tmp')), [], 'no temporary file left');
 });
 
-test('lib/ changes the store only with the held withStoreLock hands it; the fixtures\' stand-in is never in lib/', () => {
-  const lib = path.join(__dirname, '..', 'lib');
-  const calls = [];
-  for (const name of fs.readdirSync(lib).filter((n) => n.endsWith('.js'))) {
-    const text = fs.readFileSync(path.join(lib, name), 'utf8');
-    assert.ok(!text.includes('FIXTURE_HELD'), name);
-    for (const m of text.matchAll(/\bstore\.(bind|unbind)\(([^;]*)\);/g)) calls.push({name, call: m[0]});
-    if (name !== 'credential-store.js') assert.ok(!/require\('\.\/credential-store'\)\.(bind|unbind)\(/.test(text), name);
-  }
-  assert.deepStrictEqual(calls.map((c) => c.name), ['credentials-command.js', 'credentials-command.js'], JSON.stringify(calls));
-  for (const c of calls) assert.match(c.call, /\{\.\.\.opts, held, migrate:/, c.call);
+// the reviewer's high on #102, 7: held is branded (minted by withStoreLock
+// into the store's own WeakSet); the test-only factory's name is nowhere
+// else under lib/ or bin/, however a module imports the store
+test('held is branded: a look-alike is refused; the test-only factory and the fixtures\' held are nowhere in lib/ or bin/ but its definition', () => {
+  const h = home();
+  assert.throws(() => store.bind(h, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {held: {check() {}}}), (e) => e.code === 'CREDENTIALS_LOCK');
+  assert.throws(() => store.unbind(h, OTHER, {held: Object.freeze({check() {}})}), (e) => e.code === 'CREDENTIALS_LOCK');
+  assert.ok(!fs.existsSync(path.join(h, 'credentials')));
+  const root = path.join(__dirname, '..');
+  const files = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, {withFileTypes: true})) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(c|m)?js$/.test(e.name)) files.push(p);
+    }
+  };
+  walk(path.join(root, 'lib'));
+  walk(path.join(root, 'bin'));
+  const using = files.filter((f) => /testOnlyHeld|FIXTURE_HELD/.test(fs.readFileSync(f, 'utf8'))).map((f) => path.relative(root, f).split(path.sep).join('/'));
+  assert.deepStrictEqual(using, ['lib/credential-store.js']);
+  const text = fs.readFileSync(path.join(root, 'lib', 'credential-store.js'), 'utf8');
+  assert.ok(!/FIXTURE_HELD/.test(text));
+  // defined there, and nothing in the store calls it
+  assert.match(text, /^function testOnlyHeld\(/m);
+  assert.ok(!/[^.\w]testOnlyHeld\(\)/.test(text.replace(/^function testOnlyHeld\(.*$/m, '')), 'never called in the store');
+});
+
+// the reviewer's high on #102, 1: with no home, remove never shows back its
+// argument (it may be a pasted key)
+test('remove with no home: refused, the argument never shown back', async () => {
+  const h = path.join(tmp('ch-credlock-'), 'absent');
+  const pasted = made();
+  const f = io(h);
+  assert.strictEqual(await credentials({action: 'remove', name: pasted, restart: false}, f), 2);
+  assert.ok(!f.out.includes(pasted) && !f.err.includes(pasted), 'never echoed');
+  assert.match(f.err, /that is not an installed module that declares a credential/);
+  const g = io(h);
+  assert.strictEqual(await credentials({action: 'remove', restart: false}, g), 2);
+  assert.ok(!/undefined/.test(g.out + g.err));
+});
+
+// the reviewer's high on #102, 4: a holder whose lock was taken over never
+// recreates credentials/ (an uninstall removed it meanwhile)
+test('a taken-over holder makes no credentials directory', () => {
+  const h = home();
+  const lost = store.testOnlyHeld(() => { throw Object.assign(new Error('gone'), {code: 'LOCK_LOST'}); });
+  assert.throws(() => store.bind(h, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {held: lost}), (e) => e.code === 'CREDENTIALS_LOCK');
+  assert.ok(!fs.existsSync(path.join(h, 'credentials')), 'no credentials/ made');
+});
+
+// the reviewer's high on #102, 2 and 3: uninstall's store section removes
+// the keys first; one that can't be removed leaves the record and says so;
+// a home a waiter's lock keeps is said as left, never an unhandled error
+test('uninstall: a store that can\'t be removed leaves the record and says so, exit 1; a home kept by a waiter is said as left', async () => {
+  const uninstall = (h) => {
+    const u = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, homedir: tmp('ch-credlock-user-'), answers: ['yes']}), {pid: 4245, hostname: 'box-1'});
+    return require('../lib/uninstall').uninstall({}, u).then((code) => ({code, u}));
+  };
+  const h = home();
+  const value = made();
+  assert.strictEqual(await add(h, 'ch-other-step', value, OTHER_ORIGIN), 0);
+  const rmSync = fs.rmSync;
+  fs.rmSync = function(p, ...rest) {
+    if (path.basename(String(p)) === 'credentials') throw Object.assign(new Error('busy'), {code: 'EBUSY'});
+    return rmSync.call(this, p, ...rest);
+  };
+  let r;
+  try { r = await uninstall(h); } finally { fs.rmSync = rmSync; }
+  assert.strictEqual(r.code, 1);
+  assert.match(r.u.err, /the stored credentials could not be removed \(EBUSY\); nothing else was removed\. Close what has .* open and run `ch-local uninstall` again\n/);
+  assert.ok(!/nothing was removed/.test(r.u.out), 'said once');
+  assert.ok(fs.existsSync(path.join(h, 'modules.json')), 'the record left, so it can be run again');
+  assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), value);
+  assert.strictEqual((await uninstall(h)).code, 0, 'run again: done');
+
+  const k = home();
+  const rmdirSync = fs.rmdirSync;
+  fs.rmdirSync = function(p, ...rest) {
+    if (String(p) === k) throw Object.assign(new Error('not empty'), {code: 'ENOTEMPTY'});
+    return rmdirSync.call(this, p, ...rest);
+  };
+  let left;
+  try { left = await uninstall(k); } finally { fs.rmdirSync = rmdirSync; }
+  assert.strictEqual(left.code, 0, left.u.err);
+  assert.match(left.u.out, /what is not ch-local's is left/);
+  assert.match(left.u.out, /Revoke the credentials you gave it: /);
+});
+
+// the reviewer's high on #102, 6: a holder whose heartbeat is fresh is
+// waited for (up to STALE_MS); one on another host whose heartbeat is old is
+// said at once, never waited out
+test('the wait follows the holder\'s heartbeat: another host\'s old lock is said at once', async () => {
+  const h = home();
+  writeLock(h, {pid: 1, host: 'elsewhere', at: 'x'}, 60 * 60 * 1000);
+  const f = io(h, {readStdin: async() => made()});
+  const t0 = Date.now();
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-other-step', to: OTHER_ORIGIN, restart: false}, f), 1);
+  assert.ok(Date.now() - t0 < 5000, `said at once, not after a wait (${Date.now() - t0} ms)`);
 });
