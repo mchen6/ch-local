@@ -94,3 +94,18 @@ test('pages that pin a node say an upgrade changes it and how to reprint', () =>
     assert.match(page, /upgrade\s+changes\s+(this|that|the)\s+path/i, client); // across a line wrap
   }
 });
+
+// A-ownuse: the build-your-own-tool page states where the key is, the two
+// commands (the add line as dev-server prints it), how to remove it, and the
+// limits the code has (lib/dev-server.js: runtimeEnv's short environment, no
+// credential slot)
+test('the build-your-own-tool page: the key never in a conversation, kept in Claude Code\'s settings; the add line as printed; removal; the limits', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'build-your-own-tool.md'), 'utf8').replace(/\s+/g, ' ');
+  const {linesFor} = require('../lib/dev-server');
+  const add = linesFor({port: 7531, keyFile: '<home>/dev-auth/admin-key', modules: '<home>/dev/modules', platform: 'linux'})[2].trim();
+  assert.ok(page.includes(add), 'the add line exactly as dev-server prints it');
+  for (const s of ['so it never appears in a conversation', 'Claude Code keeps it in its own settings on this machine', 'The server listens only on 127.0.0.1 and runs your own code',
+    'claude mcp remove --scope user countinghouse-dev', 'no credential is passed to it', 'It does not work through an HTTP proxy',
+    'not inside your installed packs, not upgraded with them, and not published or shared']) assert.ok(page.includes(s), s);
+  assert.ok(fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8').includes('(build-your-own-tool.md)'), 'linked from the index');
+});

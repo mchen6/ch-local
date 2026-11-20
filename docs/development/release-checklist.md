@@ -119,6 +119,21 @@ The checks are grouped. Within a group, the order doesn't matter.
       provenance.
     - Evidence: the two commands' output, saved with the checklist.
 
+## The plugin
+
+15. **The plugin's countinghouse-module skill is countinghouse's own, at
+    the version the release pins.**
+    - How: copy `.claude/skills/countinghouse-module/SKILL.md` from
+      countinghouse at the commit of the version the release pins, to
+      `clients/claude-code/skills/countinghouse-module/SKILL.md`. Rewrite
+      its repo-relative doc links to GitHub URLs at that commit, and set
+      its header line's source sha. Then update `MODULE_SKILL` in
+      `test/plugin.test.js` (the source commit and the copy's sha256).
+    - Check: `test/plugin.test.js` passes, and the header's sha is the
+      pinned version's commit.
+    - Evidence: the commit that re-copied it, or a note that the pinned
+      version's skill is unchanged since the recorded commit.
+
 ## Reviews, Windows and the notes
 
 16. **The pre-release trust-boundary review is done, and its findings are

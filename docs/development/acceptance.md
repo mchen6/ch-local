@@ -50,3 +50,21 @@ script itself:
 ```bash
 node scripts/acceptance.js --src <dir of clones> [--clone repo=path]... [--ref repo=ref]... [--report <file>]
 ```
+
+## Building your own tool, by hand
+
+For the maintainer, in Claude Code with the `ch-packs` plugin installed and a
+pack installed in the home (docs/install/build-your-own-tool.md). Each step
+passes twice, in two fresh conversations.
+
+1. Ask: "Build me a small tool that <a need>".
+   **Pass:** the agent says the tool runs on a separate development server,
+   and asks you to run `node "<home>/bin/ch-local.js" dev-server` and the
+   `claude mcp add` line it prints, both in your own terminal. The admin key
+   never appears in the conversation.
+2. **Pass:** before writing any file, the agent shows the split into
+   services and actions, including what the tool may return, and waits for
+   your yes.
+3. **Pass:** validate answers ok, then load names the tool.
+4. **Pass:** the tool, called from Claude Code through `countinghouse-dev`,
+   answers.

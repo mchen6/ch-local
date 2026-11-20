@@ -8,6 +8,9 @@ One page per client:
 - [Codex CLI](codex.md)
 - [Claude Desktop](claude-desktop.md)
 
+With Claude Code you can also [build a tool of your own](build-your-own-tool.md),
+on a separate local development server.
+
 Every client runs the same launcher: the Node you have, with
 `~/.countinghouse/bin/ch-local.js start --stdio`
 (`$COUNTINGHOUSE_HOME` instead of `~/.countinghouse` when it is set). The
