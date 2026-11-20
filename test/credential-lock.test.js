@@ -174,18 +174,18 @@ test('a dead holder\'s lock is cleared and the change goes on', async () => {
   assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), value);
 });
 
-test('a reused PID (alive, another start time) holds the store\'s lock no longer; packs.lock, without the option, still takes it for live', {skip: process.platform !== 'linux' && 'start times are read on Linux'}, async () => {
+test('a reused PID (alive, another start time) holds the store\'s lock no longer, nor packs.lock', {skip: process.platform !== 'linux' && 'start times are read on Linux'}, async () => {
   const h = home();
   const holder = {pid: process.pid, host: lock.lockHost(), at: 'x', started: '1'};
   writeLock(h, holder);
   const value = made();
   assert.strictEqual(await add(h, 'ch-other-step', value, OTHER_ORIGIN), 0);
   assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), value);
-  // packs.lock keeps the defaults until it is brought onto the options
+  // packs.lock is on the same options now (post-rel packs.lock protocol):
+  // the reused PID is gone there too
   fs.writeFileSync(path.join(h, 'packs.lock'), JSON.stringify(holder));
   const f = io(h);
-  assert.strictEqual(await lock.withLock({home: h}, f, async() => 0), 1);
-  assert.match(f.err, /is changing this home/);
+  assert.strictEqual(await lock.withLock({home: h}, f, async() => 0), 0, f.err);
 });
 
 test('another host\'s lock is never cleared by its age: named, with the file to remove if nothing runs there', async () => {

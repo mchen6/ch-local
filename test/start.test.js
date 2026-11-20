@@ -607,6 +607,29 @@ test('start waits for an install for as long as it takes, saying so, and never s
   assert.strictEqual(f.spawned.length, 1);
 });
 
+// post-rel packs.lock protocol (its medium, 1 and 2): another host's lock
+// that stops changing is given up on at start's cap, and the start fails,
+// spawning nothing, never going on without the lock; one still renewed (its
+// mtime changing, by this host's clock) is waited for
+test('start against another host\'s abandoned lock fails at its cap, spawning nothing; one still being renewed is waited for', async () => {
+  const home = installedHome();
+  const lock = path.join(home, 'packs.lock');
+  fs.writeFileSync(lock, JSON.stringify({pid: 1, host: 'elsewhere', at: 'x'}));
+  const f = Object.assign(io(home), {lockWaitMs: 300});
+  assert.notStrictEqual(await start({passThrough: []}, f), 0);
+  assert.match(f.err, /if nothing is running on elsewhere/);
+  assert.match(f.err, /the home's lock could not be taken; nothing was started/);
+  assert.strictEqual(f.spawned.length, 0);
+  assert.ok(!fs.existsSync(path.join(home, 'run')) || fs.readdirSync(path.join(home, 'run')).every((n) => !n.includes(String(f.pid))), 'no run directory');
+  // renewed every 200 ms for 3 s against a 1.5 s cap, then released: waited
+  // for, and started (wide margins for a loaded CI runner: #104's high)
+  const g = Object.assign(io(home), {lockWaitMs: 1500});
+  const renew = setInterval(() => { const t = new Date(); try { fs.utimesSync(lock, t, t); } catch (e) { /* gone */ } }, 200);
+  setTimeout(() => { clearInterval(renew); fs.rmSync(lock, {force: true}); }, 3000);
+  assert.strictEqual(await start({passThrough: []}, g), 0, g.err);
+  assert.strictEqual(g.spawned.length, 1);
+});
+
 test('the requestTimeout setting, in milliseconds, reaches the runtime in seconds', async () => {
   const home = installedHome();
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 12500}}));
