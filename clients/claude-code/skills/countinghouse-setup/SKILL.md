@@ -15,7 +15,7 @@ Never print environment values (except the countinghouse home's path, which sect
 
 ## 1. Is it installed?
 
-The launcher is `<home>/bin/ch-local.js`, where `<home>` is `$COUNTINGHOUSE_HOME` if set, else `~/.countinghouse` (`%USERPROFILE%\.countinghouse` on Windows). With the user's yes, run `node "<home>/bin/ch-local.js" status`. If the file does not exist, countinghouse is not installed: go to 2. If it lists the pack the user wants, go to 4.
+The launcher is `<home>/bin/ch-local.js`, where `<home>` is `$COUNTINGHOUSE_HOME` if set, else `~/.countinghouse` (`%USERPROFILE%\.countinghouse` on Windows). Before any command uses `<home>`, check that it holds no `$`, backquote, double quote, `!` or line break; if it does, stop and tell the user. With the user's yes, run `node "<home>/bin/ch-local.js" status`. If the file does not exist, countinghouse is not installed: go to 2. If it lists the pack the user wants, go to 4.
 
 ## 2. Install
 
@@ -23,7 +23,7 @@ First check whether `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` or `http_proxy` i
 
 With the user's yes, run `npx @countinghouse/ch-local install --pack ci-failure-triage`. If the user names a local release folder instead (a pre-release build), use only that folder:
 
-- First, before any command uses the path, check its characters: it is absolute and uses only ASCII letters, digits, spaces and `_ / . : @ % + = , ~ -`, with no `'`, `$`, backquote, double quote, backslash or line break. On Linux and macOS it starts with one `/`; on Windows it starts with a drive letter, as `C:/` (write it with forward slashes), never with `/` or `//`. If not, stop and tell the user.
+- First, before any command uses the path, check its characters (on Windows, change each backslash to a forward slash yourself first, never with a command): it is absolute and uses only ASCII letters, digits, spaces and `_ / . : @ % + = , ~ -`, with no `'`, `$`, backquote, double quote, backslash or line break. On Linux and macOS it starts with one `/`; on Windows it starts with a drive letter, as `C:/` (write it with forward slashes), never with `/` or `//`. If not, stop and tell the user.
 - Then check that it holds `ch-local/bin/ch-local.js`, `release/` and `pins.json`, with file tools only (or a command that uses the same single-quoted path). If not, stop and tell the user.
 - Build this one command, with `<folder>` that path, each path in single quotes, and nothing added (no second variable, no `;`, `&&`, `|`, redirection or second command):
   `CH_LOCAL_DEV=1 node '<folder>/ch-local/bin/ch-local.js' install --pack ci-failure-triage --from '<folder>/release' --unreleased-pins '<folder>/pins.json'`
@@ -34,7 +34,7 @@ If the install fails because it cannot reach the network directly, say plainly: 
 
 ## 3. Credentials
 
-Read the install's output. For each line `<module> needs a credential: in your own terminal run ...`, tell the user to run that exact command in their own terminal, not here (if the line gives a bare `ch-local credentials add <module>`, give them `node "<home>/bin/ch-local.js" credentials add <module>` instead, never the bare `ch-local`: neither way of installing puts it on their PATH), and why: the pack's tool reads GitHub through that module. Tell them the command shows where the key will be sent before it asks, and reads the key without showing it; that for GitHub it can offer their `gh` login instead; and that a fine-grained read-only token (Actions read, Contents read) is narrower than a `gh` login. Wait until they say it is done.
+Read the install's output. For each line `<module> needs a credential: in your own terminal run ...`, tell the user to run that exact command in their own terminal, not here (wherever ch-local's output names a bare `ch-local <command>`, give them `node "<home>/bin/ch-local.js" <command>` instead, never the bare `ch-local`: neither way of installing puts it on their PATH), and why: the pack's tool reads GitHub through that module. Tell them the command shows where the key will be sent before it asks, and reads the key without showing it; that for GitHub it can offer their `gh` login instead; and that a fine-grained read-only token (Actions read, Contents read) is narrower than a `gh` login. Wait until they say it is done.
 
 ## 4. Connect Claude Code
 

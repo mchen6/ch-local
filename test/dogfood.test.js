@@ -148,7 +148,12 @@ test('--release-dir takes an absolute path only; the command for a prepared rele
   for (const bad of ['/c/rel', '//host/share/rel', '\\\\host\\share']) assert.strictEqual(dogfood.releaseLine({dir: bad}, 'win32'), null, JSON.stringify(bad));
   assert.strictEqual(dogfood.releaseLine({dir: '//srv/rel'}, 'linux'), null);
   assert.ok(dogfood.releaseLine({dir: 'C:/rel'}, 'win32') != null);
-  for (const bad of ["/r/it's", '/r/$HOME', '/r/a`b', '/r/a"b', '/r/a\nb', '/r/caf\u00e9']) assert.strictEqual(dogfood.releaseLine({dir: bad}), null, JSON.stringify(bad));
+  // (each platform's own root, so the characters themselves are what is
+  // refused: the medium on round 2, 7)
+  for (const bad of ["it's", '$HOME', 'a`b', 'a"b', 'a\nb', 'caf\u00e9', 'a$(x)b']) {
+    assert.strictEqual(dogfood.releaseLine({dir: `/r/${bad}`}, 'linux'), null, JSON.stringify(bad));
+    assert.strictEqual(dogfood.releaseLine({dir: `C:/r/${bad}`}, 'win32'), null, JSON.stringify(bad));
+  }
 });
 
 // the medium on #105's round 1, 1, 2, 6 and 9: the folder is put together
@@ -166,6 +171,7 @@ test('placeRelease: a new folder whole, at a new directory\'s mode; an empty one
     fs.writeFileSync(path.join(base, 'pkg', 'package', 'package.json'), JSON.stringify({name, version: '0.1.0', bundleDependencies: ['@x/dep']}));
     fs.mkdirSync(path.join(base, 'pkg', 'package', 'node_modules', '@x', 'dep'), {recursive: true});
     fs.writeFileSync(path.join(base, 'pkg', 'package', 'node_modules', '@x', 'dep', 'package.json'), '{}');
+    fs.writeFileSync(path.join(base, 'pkg', 'package', 'node_modules', '@x', 'dep', 'index.js'), 'module.exports = 1;\n');
     fs.mkdirSync(release, {recursive: true});
     const tgz = require('../lib/unpack').tarballName(name, '0.1.0');
     const made = spawnSync('tar', ['-c', '-z', '-f', '-', '-C', path.join(base, 'pkg'), 'package'], {encoding: 'buffer'});
@@ -198,8 +204,8 @@ test('placeRelease: a new folder whole, at a new directory\'s mode; an empty one
     const good = fs.readFileSync(path.join(release, tgz));
     fs.rmSync(path.join(base, 'pkg', 'package', 'node_modules'), {recursive: true});
     fs.writeFileSync(path.join(release, tgz), tarOf(path.join(base, 'pkg')));
-    assert.match(dogfood.placeRelease({release, pinsFile, pins, dir: path.join(base, 'nodeps', 'rel')}), /lacks the dependencies it bundles \(@x\/dep\)/);
-    assert.ok(!fs.existsSync(path.join(base, 'nodeps', 'rel')));
+    assert.match(dogfood.placeRelease({release, pinsFile, pins, dir: path.join(base, 'nodeps', 'deeper', 'rel')}), /lacks the dependencies it bundles \(@x\/dep\)/);
+    assert.ok(!fs.existsSync(path.join(base, 'nodeps')), 'the parents it made are gone too');
     fs.writeFileSync(path.join(release, tgz), good);
     // no tarball of its own: nothing made; a tarball that won't unpack: nothing made, nothing moved
     assert.match(dogfood.placeRelease({release, pinsFile, pins: {}, dir: path.join(base, 'none')}), /holds no .* tarball/);
@@ -212,6 +218,28 @@ test('placeRelease: a new folder whole, at a new directory\'s mode; an empty one
     assert.match(dogfood.placeRelease({release, pinsFile, pins, dir: path.join(base, 'bad')}), /could not be unpacked/);
     assert.ok(!fs.existsSync(path.join(base, 'bad')));
     assert.deepStrictEqual(leftovers(), [], 'no stage left');
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
+  }
+});
+
+// the medium on #105's round 2, 6: every bundled dependency loads from the
+// unpacked tree (a dependency's own dependency missing too); true bundles all
+test('bundledProblem: each bundled dependency must load, its own dependencies included; bundleDependencies true means all', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-bundled-'));
+  try {
+    const mod = (dir, name, body) => {
+      fs.mkdirSync(path.join(dir, 'node_modules', ...name.split('/')), {recursive: true});
+      fs.writeFileSync(path.join(dir, 'node_modules', ...name.split('/'), 'package.json'), '{}');
+      fs.writeFileSync(path.join(dir, 'node_modules', ...name.split('/'), 'index.js'), body);
+    };
+    fs.writeFileSync(path.join(base, 'package.json'), JSON.stringify({dependencies: {'@x/a': '1.0.0'}, bundleDependencies: true}));
+    mod(base, '@x/a', "module.exports = require('@x/b');\n");
+    assert.match(dogfood.bundledProblem(base, 'own.tgz'), /own\.tgz lacks the dependencies it bundles \(@x\/a\)/, 'its own dependency missing');
+    mod(base, '@x/b', 'module.exports = 2;\n');
+    assert.strictEqual(dogfood.bundledProblem(base, 'own.tgz'), null);
+    fs.writeFileSync(path.join(base, 'package.json'), '{not json');
+    assert.match(dogfood.bundledProblem(base, 'own.tgz'), /own\.tgz: its package\.json can't be read/);
   } finally {
     fs.rmSync(base, {recursive: true, force: true});
   }

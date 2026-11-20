@@ -30,7 +30,11 @@ yes. Never ask for, accept or repeat a token, key or password: a credential
 is added only in the user's own terminal. Never turn a tool on, or change a
 setting, without the user's explicit yes. Never print environment values
 (except the countinghouse home's path), npm configuration, `.npmrc`, or
-anything under the countinghouse home.
+anything under the countinghouse home. The home, `<home>`, is
+`$COUNTINGHOUSE_HOME` if set, else `~/.countinghouse`
+(`%USERPROFILE%\.countinghouse` on Windows); before any command uses it,
+check that it holds no `$`, backquote, double quote, `!` or line break, and
+if it does, stop and tell the user.
 
 1. Check whether `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` or `http_proxy`
    is set. Check only whether each is set, and never print its value: a
@@ -44,10 +48,10 @@ anything under the countinghouse home.
    (below).
 3. For each line `<module> needs a credential: in your own terminal run ...`
    in the install's output, ask the user to run that exact command in their
-   own terminal, not in this conversation. If the line gives a bare
-   `ch-local credentials add <module>`, give them
-   `node "<home>/bin/ch-local.js" credentials add <module>` instead, never the
-   bare `ch-local`: neither way of installing puts it on their PATH.
+   own terminal, not in this conversation. Wherever ch-local's output names
+   a bare `ch-local <command>`, give them `node "<home>/bin/ch-local.js" <command>`
+   instead, never the bare `ch-local`: neither way of installing puts it on
+   their PATH.
 4. If the `ch-packs` plugin is not installed, run
    `claude plugin marketplace add mchen6/ch-local`, then
    `claude plugin install ch-packs@ch-packs`, and ask the user to restart
@@ -73,7 +77,8 @@ one into a new or empty directory, self-contained: its own launcher
 (`<dir>/pins.json`). Nothing is installed.
 
 When the user names such a folder, use only that folder. First, before any
-command uses the path, check its characters: it is absolute and uses only
+command uses the path, check its characters (on Windows, change each
+backslash to a forward slash yourself first, never with a command): it is absolute and uses only
 ASCII letters, digits, spaces and `_ / . : @ % + = , ~ -`. On Linux and macOS
 it starts with one `/`; on Windows it starts with a drive letter, as `C:/`
 (written with forward slashes), never with `/` or `//`. Then check that it
