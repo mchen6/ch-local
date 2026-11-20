@@ -108,6 +108,22 @@ test('a remove beside an add: the removed key never comes back (on main the add 
   assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), kept);
 });
 
+test('a remove of the last key beside an add: the add\'s key is kept (on main the remove deleted the file the add had just written)', POSIX, async () => {
+  const h = home();
+  const kept = made();
+  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
+  // the remove (the store's one key: it removes the file) pauses before it
+  // does; the add of OTHER's key runs meanwhile
+  const removing = child({op: 'remove', home: h, user: tmp('ch-credlock-user-'), name: 'ch-access-github', slowMs: 1500});
+  await removing.ready;
+  const added = await add(h, 'ch-other-step', kept, OTHER_ORIGIN);
+  const r = await removing.done;
+  assert.strictEqual(r.code, 0, r.err);
+  assert.strictEqual(added, 0);
+  assert.strictEqual(valueOf(h, ACCESS, VAR), null);
+  assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), kept, 'the add\'s key kept');
+});
+
 test('an add, then an uninstall --keep-data beside it: the uninstall waits, removes the key, and names it (on main the add recreated the store after the uninstall)', POSIX, async () => {
   const h = home();
   const user = tmp('ch-credlock-user-');
@@ -142,6 +158,8 @@ test('a live holder: said with its command, exit 1, nothing changed; never taken
   const f = io(h, {readStdin: async() => made(), credentialsLockWaitMs: 300});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-other-step', to: OTHER_ORIGIN, restart: false}, f), 1);
   assert.match(f.err, new RegExp(`another ch-local \\(pid ${process.pid}, \`ch-local credentials remove\`\\) is changing the stored credentials; nothing was changed\\. Try again when it is done\\.\\n`));
+  // said at once that it waits, never a silent wait (the medium, 6)
+  assert.match(f.err, /^ch-local: waiting for another ch-local \(pid \d+\) to finish changing the stored credentials\n/);
   assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), null);
   assert.ok(fs.existsSync(lockFile(h)), 'the holder\'s lock left as it was');
 });
@@ -187,6 +205,31 @@ test('no home: the lock\'s function never runs unlocked, and no lock or home is 
   assert.ok(!fs.existsSync(h));
   assert.strictEqual(await store.withStoreLock(h, io(h), 'test', async() => { ran = true; return 0; }, {missing: () => 7}), 7);
   assert.strictEqual(ran, false);
+});
+
+test('an uninstall whose store lock can\'t be made, or is held, says so and removes nothing, never an unhandled error', async () => {
+  const uninstall = (h, extra = {}) => {
+    const u = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, homedir: tmp('ch-credlock-user-'), answers: ['yes']}), {pid: 4244, hostname: 'box-1'}, extra);
+    return require('../lib/uninstall').uninstall({}, u).then((code) => ({code, u}));
+  };
+  // can't be made (packs.lock can: the store's own lock fails, as a full
+  // disk or a link refused would make it)
+  const h = home();
+  const real = store.withStoreLock;
+  store.withStoreLock = async() => { throw new store.StoreProblem(`${lockFile(h)} could not be made (EACCES); nothing was changed`, 'CREDENTIALS_WRITE'); };
+  let r;
+  try { r = await uninstall(h); } finally { store.withStoreLock = real; }
+  assert.strictEqual(r.code, 1);
+  assert.match(r.u.err, /credentials\.lock could not be made \(EACCES\); nothing was removed\n/);
+  assert.ok(fs.existsSync(path.join(h, 'modules.json')), 'the record kept');
+  // held by a live ch-local
+  const k = home();
+  writeLock(k, {pid: process.pid, host: lock.lockHost(), at: 'x', started: lock.processStarted(process.pid), doing: 'ch-local credentials add'});
+  const held = await uninstall(k, {credentialsLockWaitMs: 300});
+  assert.strictEqual(held.code, 1);
+  assert.match(held.u.out, /nothing was removed/);
+  assert.match(held.u.err, /`ch-local credentials add`\) is changing the stored credentials/);
+  assert.ok(fs.existsSync(path.join(k, 'modules.json')), 'the record kept');
 });
 
 test('bind and unbind without the lock\'s held are refused, nothing written', () => {

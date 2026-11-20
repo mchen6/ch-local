@@ -38,6 +38,12 @@ Object.assign(io, {terminal: false, stdinIsTTY: false, pid: process.pid, hostnam
     const ownFile = require('../lib/own-file');
     const write = ownFile.writeOwnFile;
     ownFile.writeOwnFile = (...a) => { pause(); return write(...a); };
+    // (a remove of the last key removes the file instead)
+    const rmSync = fs.rmSync;
+    fs.rmSync = function(p, ...rest) {
+      if (String(p).endsWith('credentials.json')) pause();
+      return rmSync.call(this, p, ...rest);
+    };
     const {credentials} = require('../lib/credentials-command');
     code = await credentials({action: args.op, name: args.name, to: args.to || null, restart: false}, io);
   }
