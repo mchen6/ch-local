@@ -87,18 +87,17 @@ function homeFor(args, env = process.env) {
 // 2026-11-13). A home other than the default goes with every command, since
 // the launcher finds
 // its home by COUNTINGHOUSE_HOME.
-// The install command for a prepared local release (--release-dir), as the
-// install doc's pre-release variant gives it: this checkout's launcher, with
-// CH_LOCAL_DEV=1 and the release's pins
 // The one command that installs from a prepared local release <dir>, as the
 // setup skill builds it: the folder's own launcher, each path one
-// single-quoted word, forward slashes (Windows too: node takes them), the
-// folder's path only of FOLDER's characters (the high on #105, 2) -> the line,
-// or null for a folder path that isn't
-const FOLDER = /^[A-Za-z0-9_/.:@%+=,~ -]+$/;
-const slashed = (dir) => String(dir).replace(/\\/g, '/').replace(/\/+$/, '');
-function releaseLine({dir}) {
-  const f = slashed(dir);
+// single-quoted word, forward slashes (on Windows only, where a backslash
+// is the separator: anywhere else it is part of a name, and refused), the
+// folder's path absolute (/... or X:/...: never one node would read as an
+// option or a shell as ~) and only of FOLDER's characters (the high on #105,
+// 2; its medium, 3 and 4) -> the line, or null for a folder path that isn't
+const FOLDER = /^(?:\/|[A-Za-z]:\/)[A-Za-z0-9_/.:@%+=,~ -]*$/;
+const slashed = (dir, platform) => (platform === 'win32' ? String(dir).replace(/\\/g, '/') : String(dir)).replace(/(.)\/+$/, '$1');
+function releaseLine({dir}, platform = process.platform) {
+  const f = slashed(dir, platform);
   if (!FOLDER.test(f)) return null;
   return `CH_LOCAL_DEV=1 node '${f}/ch-local/bin/ch-local.js' install --pack ${PACK} --from '${f}/release' --unreleased-pins '${f}/pins.json'`;
 }
@@ -200,6 +199,52 @@ async function buildRelease(plan, work, say) {
   return {release, pinsFile, pins};
 }
 
+// The prepared release put together as <dir>: release/, pins.json and the
+// folder's own launcher, ch-local/ (its tarball from the release, unpacked:
+// it bundles its own dependencies). Assembled in a stage beside <dir> (one
+// file system: unpacked there, never renamed in from elsewhere), then:
+// - <dir> absent: the stage, given the mode a new directory gets, renamed
+//   into place;
+// - <dir> an empty directory: the parts moved into it, pins.json last (its
+//   own mode, owner and ACL kept), and on a failure the parts moved removed.
+// Nothing half-made is left either way (the high on #105, 9; its medium,
+// 1, 2, 6, 9 and 10) -> null, or the problem.
+function placeRelease({release, pinsFile, pins, dir}) {
+  const name = require('../package.json').name;
+  const own = pins[name] != null ? require('../lib/unpack').tarballName(name, pins[name].version) : null;
+  if (own == null || !fs.existsSync(path.join(release, own))) return `the release holds no ${name} tarball`;
+  const exists = fs.existsSync(dir);
+  let stage = null;
+  const moved = [];
+  try {
+    stage = fs.mkdtempSync(path.join(path.dirname(dir), `.${path.basename(dir)}.partial-`));
+    fs.cpSync(release, path.join(stage, 'release'), {recursive: true});
+    fs.copyFileSync(pinsFile, path.join(stage, 'pins.json'));
+    // (the archive on stdin: GNU tar, Git Bash's, reads C:... as a host)
+    const tar = run('tar', ['-x', '-z', '-f', '-', '-C', stage], {input: fs.readFileSync(path.join(release, own)), encoding: 'buffer'});
+    if (tar.error != null || tar.signal != null || tar.status !== 0) return `${own} could not be unpacked (${tar.error != null ? tar.error.code : tar.signal != null ? tar.signal : `tar exit ${tar.status}`})`;
+    fs.renameSync(path.join(stage, 'package'), path.join(stage, 'ch-local'));
+    if (!exists) {
+      // (a new directory's mode, not mkdtemp's 0700)
+      const umask = process.umask();
+      fs.chmodSync(stage, 0o777 & ~umask);
+      fs.renameSync(stage, dir);
+      stage = null;
+      return null;
+    }
+    for (const part of ['ch-local', 'release', 'pins.json']) {
+      fs.renameSync(path.join(stage, part), path.join(dir, part));
+      moved.push(part);
+    }
+    return null;
+  } catch (err) {
+    for (const part of moved) fs.rmSync(path.join(dir, part), {recursive: true, force: true});
+    return err.message;
+  } finally {
+    if (stage != null) fs.rmSync(stage, {recursive: true, force: true});
+  }
+}
+
 // Each local clone's ref, resolved to its commit -> null or a problem.
 function resolveRefs(plan) {
   for (const p of plan) {
@@ -234,36 +279,23 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     try { st = fs.statSync(dir); } catch (e) { st = null; }
     if (st != null && (!st.isDirectory() || fs.readdirSync(dir).length > 0)) return fail(`${dir} is not a new or empty directory: --release-dir builds into one`, 2);
     // built in a working directory (the sources, the lockfile's scratch),
-    // removed after; the folder is put together beside <dir> and renamed into
-    // place only once whole, so a failure anywhere leaves no half-made folder
+    // removed after; the folder put together by placeRelease
     fs.mkdirSync(path.dirname(dir), {recursive: true});
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
-    const stage = fs.mkdtempSync(path.join(path.dirname(dir), `.${path.basename(dir)}.partial-`));
     try {
       const built = await buildRelease(plan, work, say);
       if (built.problem != null) return fail(built.problem);
-      fs.cpSync(built.release, path.join(stage, 'release'), {recursive: true});
-      fs.copyFileSync(built.pinsFile, path.join(stage, 'pins.json'));
-      // the folder's own launcher: this checkout's ch-local, as packed
-      const own = fs.readdirSync(built.release).filter((n) => /ch-local-\d[^/]*\.tgz$/.test(n));
-      if (own.length !== 1) return fail(`the release holds ${own.length} ch-local tarballs, not one`);
-      const unpacked = fs.mkdtempSync(path.join(work, 'own-'));
-      const tar = run('tar', ['-xzf', path.join(built.release, own[0]), '-C', unpacked], {cwd: unpacked});
-      if (tar != null && tar.status != null && tar.status !== 0) return fail(`ch-local's tarball could not be unpacked (tar exit ${tar.status})`);
-      fs.renameSync(path.join(unpacked, 'package'), path.join(stage, 'ch-local'));
-      if (st != null) fs.rmdirSync(dir);
-      fs.renameSync(stage, dir);
+      const problem = placeRelease({release: built.release, pinsFile: built.pinsFile, pins: built.pins, dir});
+      if (problem != null) return fail(problem);
       say('');
-      say(`A prepared local release is in ${dir}; nothing was installed. It installs with:`);
+      say(`A prepared local release is in ${dir}; nothing was installed. It installs with (in bash; on Windows, Git Bash):`);
       say('');
       say(`  ${releaseLine({dir})}`);
-      if (process.platform === 'win32') say('(on Windows, in Git Bash: the path is written with forward slashes)');
       return 0;
     } catch (err) {
       return fail(err.message);
     } finally {
       fs.rmSync(work, {recursive: true, force: true});
-      fs.rmSync(stage, {recursive: true, force: true});
     }
   }
 
@@ -304,4 +336,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, releaseLine, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};
+module.exports = {main, instructions, releaseLine, placeRelease, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};
