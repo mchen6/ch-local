@@ -179,3 +179,33 @@ test('uninstall removes a leftover packs.lock with the program, and waits for no
     t.done();
   }
 });
+
+// A-ownuse: the dev server's key (dev-auth/) goes with the program, the user's
+// own modules (dev/) are data; Claude Code's entry for it is named at the
+// end (the A-ownuse medium, 8)
+test('the dev server: dev-auth/ is removed always, dev/ unless --keep-data; Claude Code\'s entry is named to remove', async () => {
+  for (const keepData of [false, true]) {
+    const s = setup();
+    try {
+      fs.mkdirSync(path.join(s.home, 'dev-auth'), {mode: 0o700});
+      fs.mkdirSync(path.join(s.home, 'dev', 'modules', 'mine'), {recursive: true});
+      const u = io(s, ['yes']);
+      assert.strictEqual(await uninstall({keepData}, u), 0, u.err);
+      assert.match(u.out, /\n {2}dev-auth\/\n/);
+      assert.match(u.out, /\n {2}dev\//);
+      assert.ok(!fs.existsSync(path.join(s.home, 'dev-auth')), 'the key\'s directory');
+      assert.strictEqual(fs.existsSync(path.join(s.home, 'dev', 'modules', 'mine')), keepData, 'the user\'s modules: kept only with --keep-data');
+      assert.match(u.out, /If you added the development server to Claude Code, remove it there too: claude mcp remove --scope user countinghouse-dev\n$/);
+    } finally {
+      s.done();
+    }
+  }
+  const plain = setup();
+  try {
+    const u = io(plain, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    assert.ok(!u.out.includes('development server'), 'no dev server here: not named');
+  } finally {
+    plain.done();
+  }
+});

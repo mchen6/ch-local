@@ -58,8 +58,9 @@ Answer only from what this release has: a composite scenario is a module whose t
 
 This runs on a separate local development server, not inside the installed packs. The tool is for the user's own Claude Code. It is not upgraded with the packs, and it can't be published or shared in this release. Say this before starting.
 
-1. Ask the user to run, in their own terminal, `node "<home>/bin/ch-local.js" dev-server`, and to leave it running. It prints one `claude mcp add` command; ask them to run that too, in a second terminal. It adds the server to Claude Code as `countinghouse-dev`. Your terminal fills in the key from a file, so it never appears in this conversation; Claude Code keeps it in its own settings on this machine, and the server listens only on 127.0.0.1. Then ask them to restart Claude Code.
-2. When `countinghouse-dev` is connected, follow the `countinghouse-module` skill: the need, what the tool may return, the split shown to the user and approved before any file is written, then validate, load and call.
+1. Ask the user to run, in their own terminal, `node "<home>/bin/ch-local.js" dev-server`, and to leave it running. It prints two commands, `claude mcp remove` and `claude mcp add`; ask them to run both, in a second terminal, each time the server starts. The server makes a new key every time it starts, so a key taken while it was stopped is useless. The commands add it to Claude Code as `countinghouse-dev`. Their terminal fills in the key from a file, so it never appears in this conversation; Claude Code keeps it in its own settings on this machine, and the server listens only on 127.0.0.1. Then ask them to restart Claude Code.
+2. Never read anything under `<home>/dev-auth`, and never run `claude mcp get countinghouse-dev` or print Claude Code's settings: that would bring the key into this conversation.
+3. When `countinghouse-dev` is connected, follow the `countinghouse-module` skill: the need, what the tool may return, the split shown to the user and approved before any file is written, then validate, load and call. Keep the tool's module in `<home>/dev/modules/<name>`. After the server restarts, load it again before calling it.
 
 ## Never say
 

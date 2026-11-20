@@ -24,46 +24,61 @@ conversation:
 node ~/.countinghouse/bin/ch-local.js dev-server
 ```
 
-It runs in the foreground until you stop it with Ctrl-C. On its first run it
-makes an admin key; the key is never printed. It then prints one command to
-add the server to Claude Code. Run that in a second terminal, once:
+It runs in the foreground until you stop it with Ctrl-C. Every time it
+starts, it makes a new admin key, which is never printed, and removes it when
+it stops. It then prints two commands that add the server to Claude Code with
+that key. Run both in a second terminal, each time it starts:
 
 ```bash
+claude mcp remove --scope user countinghouse-dev
 claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(cat "<home>/dev-auth/admin-key")"
 ```
 
-On Windows it prints the PowerShell form, which reads the key with
-`Get-Content`. (`<home>` is `~/.countinghouse`, or `$COUNTINGHOUSE_HOME` when
-it is set.)
+The first time, `remove` says there is no such server: that's fine. On
+Windows, run them in PowerShell: it prints the PowerShell form, which reads
+the key with `Get-Content` (cmd and Git Bash would not read the key there).
+(`<home>` is `~/.countinghouse`, or `$COUNTINGHOUSE_HOME` when it is set.)
+
+Why a new key each time: Claude Code keeps trying the server's address even
+while it is stopped. If something else took that port meanwhile, it would
+receive the key Claude Code sends; a new key at every start makes such a key
+useless.
 
 ## Where the key is
 
 Your terminal fills in the key from its file, so it never appears in a
 conversation. Claude Code keeps it in its own settings on this machine, as
 part of the `countinghouse-dev` entry. The key file is readable by your user
-only. The server listens only on 127.0.0.1 and runs your own code.
+only; while `claude mcp add` runs, the key is also in its command line, which
+other users of this machine may be able to see. The server listens only on
+127.0.0.1 and runs your own code. Claude Code is told never to read the key
+file or that entry.
 
 ## Where things are
 
-- `<home>/dev/modules`: your tools' modules, one directory each.
+- `<home>/dev/modules`: your tools' modules, one directory each. The server
+  doesn't load them by itself: after each start, ask Claude Code to load your
+  tool again before you use it.
 - `<home>/dev/store`: the development server's own data.
 - `<home>/dev-auth`: the admin key and its configuration.
 
-The server uses port 7531, so Claude Code's entry stays valid from one run to
-the next. If the port is in use, `dev-server` says so and exits; choose
-another with `--port <n>`, and add the entry again with that port.
+The server uses port 7531. If the port is in use, `dev-server` says so and
+exits; choose another with `--port <n>`, and run the two commands it prints
+(`remove`, then `add` with that port).
 
 ## Limits in this release
 
 - A tool runs with a short environment: `PATH`, `HOME`, `LANG` and `TMPDIR`
   (on Windows, the system's own variables), plus the locale and
-  `NODE_EXTRA_CA_CERTS`. No variable of yours reaches it, and no credential
-  is passed to it, so a tool that needs a key or a token can't get one on
-  the development server.
+  `NODE_EXTRA_CA_CERTS`. No other variable of yours reaches it, and no
+  credential is passed to it, so a tool that needs a key or a token can't get
+  one on the development server.
 - It does not work through an HTTP proxy: no proxy variable is passed.
 - It runs the countinghouse your packs installed. Install a pack first;
   without one, `dev-server` says so.
 - Your packs are not loaded there, and their credentials are not used.
+- Stop it before `ch-local upgrade`, `rollback` or `uninstall`: they replace
+  or remove the countinghouse it runs.
 
 ## Stopping and removing
 
@@ -73,5 +88,6 @@ Ctrl-C stops the server. To remove it from Claude Code:
 claude mcp remove --scope user countinghouse-dev
 ```
 
-`ch-local uninstall` removes `<home>/dev-auth` (the key) always, and
-`<home>/dev` (your modules) unless you pass `--keep-data`.
+`ch-local uninstall` removes `<home>/dev-auth` always, and `<home>/dev` (your
+modules) unless you pass `--keep-data`. It reminds you to remove the
+`countinghouse-dev` entry from Claude Code, which only you can do.
