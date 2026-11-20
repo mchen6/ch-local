@@ -127,21 +127,44 @@ test('the launcher, the runtime\'s rule: none for a missing one, a backslash off
 });
 
 // countinghouse #490's wire vectors for the file (heldBackFile, copied in
-// test/vectors/module-messages.json): every accepted file is one this writer
-// writes from the same verdict, and it never writes a refused one (the
-// reviewer's high on #106, 3, and round 2, 5)
-test('the runtime\'s heldBackFile vectors: each accepted file is written as given; no refused file is ever written', () => {
+// test/vectors/module-messages.json). A checker written from the vectors'
+// rule text is first held to the vectors themselves (it takes every
+// accepted file and refuses every refused one). Then:
+// - every accepted file is written exactly as given from the same verdict;
+// - from each refused file's own entries, fields and all, the writer writes
+//   only a file the checker takes.
+// (the reviewer's high on #106, 3, and round 2, 5; the medium on round 2, 3)
+const RULE_REASONS = ['credential', 'off', 'ceiling', 'missing', 'pin', 'withdrawn', 'stopped', 'restart', 'calls'];
+const RULE_ROOTS = [...RULE_REASONS.filter((r) => r !== 'calls'), 'not-installed'];
+const rulePackage = (n) => typeof n === 'string' && n.length <= 214 && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._~-]*$/.test(n);
+const ruleCallee = (n) => typeof n === 'string' && n.length >= 1 && n.length <= 64 && !/[/.\u0000-\u001f\u007f]/.test(n);
+const isObj = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
+function ruleTakes(doc) {
+  if (!isObj(doc) || doc.v !== 1 || !Array.isArray(doc.modules) || doc.modules.length > 256) return false;
+  if (Object.keys(doc).some((k) => !['v', 'modules', 'launcher'].includes(k))) return false;
+  const seen = new Set();
+  for (const m of doc.modules) {
+    if (!isObj(m) || Object.keys(m).some((k) => !['name', 'reason', 'root', 'via'].includes(k))) return false;
+    if (!rulePackage(m.name) || seen.has(m.name) || !RULE_REASONS.includes(m.reason)) return false;
+    seen.add(m.name);
+    if ((m.root !== undefined) !== (m.via !== undefined)) return false;
+    if (m.root !== undefined && (m.reason !== 'calls' || !RULE_ROOTS.includes(m.root))) return false;
+    if (m.via !== undefined && !(m.root === 'not-installed' ? ruleCallee(m.via) : rulePackage(m.via))) return false;
+  }
+  return true;
+}
+test('the runtime\'s heldBackFile vectors: each accepted file is written as given; from a refused file\'s entries, only a file the rule takes', () => {
   const V = require('./vectors/module-messages.json').heldBackFile;
   assert.ok(V.accepted.length >= 5 && V.refused.length >= 16);
+  for (const {why, file} of V.accepted) assert.ok(ruleTakes(file), `the checker takes: ${why}`);
+  for (const {why, file} of V.refused) assert.ok(!ruleTakes(file), `the checker refuses: ${why}`);
   const h = tmp('ch-held-');   // no launcher here: the vectors carry none
-  const verdict = (modules) => new Map(modules.map((m) => [m.name, {kind: m.reason, root: m.root === 'not-installed' ? 'not installed' : m.root, via: m.via}]));
-  for (const {why, file} of V.accepted) {
-    assert.deepStrictEqual(JSON.parse(contentOf(whereIn(h), verdict(file.modules))), file, why);
-  }
+  // (the verdict an entry would come from, every field of it passed on)
+  const verdict = (modules) => new Map(modules.map((m) => [m.name, {...m, kind: m.reason, root: m.root === 'not-installed' ? 'not installed' : m.root}]));
+  for (const {why, file} of V.accepted) assert.deepStrictEqual(JSON.parse(contentOf(whereIn(h), verdict(file.modules))), file, why);
   for (const {why, file} of V.refused) {
-    const modules = Array.isArray(file.modules) ? file.modules.filter((m) => m != null && typeof m === 'object' && !Array.isArray(m)) : [];
-    let input;
-    try { input = verdict(modules); } catch (e) { continue; }
-    assert.notDeepStrictEqual(JSON.parse(contentOf(whereIn(h), input)), file, why);
+    const entries = Array.isArray(file.modules) ? file.modules.filter(isObj) : [];
+    const out = JSON.parse(contentOf(whereIn(h), verdict(entries)));
+    assert.ok(ruleTakes(out), `${why}: ${JSON.stringify(out).slice(0, 200)}`);
   }
 });

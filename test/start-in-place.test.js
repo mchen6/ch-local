@@ -1475,6 +1475,49 @@ test('a failing held-back reread is retried alone, 5 times at most, then given u
   }
 });
 
+// the medium on round 2, 1: a reread that reached the runtime and failed
+// leaves its list empty, so after a give-up the list it once took is sent
+// again when what is held back returns to it
+test('after a held-back list is given up, a return to the list the runtime once took is sent again', async () => {
+  let failing = false;
+  const s = await running({heldRetryMs: 20, answer: (m) => (m.type === 'reread' && m.what === 'held-back' && failing ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  try {
+    await until(() => s.args() != null);
+    const rereads = () => s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length;
+    failing = true;
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    await until(() => s.f.err.includes('the runtime did not take the held-back list after 5 tries (CONTROL_FAILED)'));
+    assert.strictEqual(rereads(), 5);
+    failing = false;
+    bindAccess(s.home);
+    await until(() => rereads() === 6);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, [], 'the list it took at start, sent again');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on round 2, 4: a pack whose load the runtime refused, then not
+// sent a load at all (here: another release's record), is named again
+test('a refused pack not sent a load in a later apply is named restart again', async () => {
+  const s = await running({answer: (m) => (m.type === 'load' ? {ok: false, code: 'MODULE_INVALID'} : {ok: true})});
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    stale(s);
+    const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other'));
+    assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other' && e.reason === 'restart'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // round 2, 3: a load that never reached the runtime (CONTROL_BUSY) left it
 // unloaded: named restart
 test('a pack whose load never reached the runtime is named restart', async () => {
@@ -1518,7 +1561,9 @@ test('a held-back list the runtime refuses for good is not sent again until it c
     await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
     await new Promise((r) => setTimeout(r, 1500));
     assert.strictEqual(s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length, 1, 'not retried');
-    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes('the overview may not say which modules are held back')).length, 1, 'said once');
+    // (final at its first try: one line, the give-up's: the medium on round 2, 10)
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes('the runtime did not take the held-back list after 1 try (CONTROL_UNKNOWN)')).length, 1, 'said once');
+    assert.ok(!s.f.err.includes('the overview may not say which modules are held back'), 'not said as passing');
   } finally {
     s.end();
     await s.done;
