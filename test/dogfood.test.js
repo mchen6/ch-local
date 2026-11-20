@@ -120,3 +120,127 @@ test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY |
   assert.strictEqual(works(), worksBefore, 'the work directory is removed');
   fs.rmSync(parent, {recursive: true, force: true});
 });
+
+// A-firstrun d2: a prepared local release for Matt's acceptance run, and the
+// one command that installs from it, as the setup skill builds it: the
+// folder's own launcher, each path one single-quoted word, forward slashes
+// (the reviewer's high on #105, 1 and 2). Platform-aware: a Windows path is
+// written with forward slashes.
+test('--release-dir takes an absolute path only; the command for a prepared release is the folder\'s own launcher, each path quoted, in the skill\'s shape', () => {
+  assert.strictEqual(dogfood.parseArgs(['--release-dir', path.resolve('/r')]).releaseDir, path.resolve('/r'));
+  assert.throws(() => dogfood.parseArgs(['--release-dir', 'relative/r']), /--release-dir must be an absolute path/);
+  // (nothing is installed: a home would be ignored, so it is refused)
+  assert.throws(() => dogfood.parseArgs(['--release-dir', path.resolve('/r'), '--home', path.resolve('/h')]), /--home is for dogfood's own install; --release-dir installs nothing/);
+  assert.strictEqual(dogfood.releaseLine({dir: '/r/rel 1'}, 'linux'),
+    "CH_LOCAL_DEV=1 node '/r/rel 1/ch-local/bin/ch-local.js' install --pack ci-failure-triage --from '/r/rel 1/release' --unreleased-pins '/r/rel 1/pins.json'");
+  assert.strictEqual(dogfood.releaseLine({dir: 'C:\\Users\\m\\rel'}, 'win32'),
+    "CH_LOCAL_DEV=1 node 'C:/Users/m/rel/ch-local/bin/ch-local.js' install --pack ci-failure-triage --from 'C:/Users/m/rel/release' --unreleased-pins 'C:/Users/m/rel/pins.json'", 'Windows: forward slashes');
+  // (the skill's shape, slot by slot: one variable, single-quoted paths of
+  // the allowed characters, nothing chained)
+  const SHAPE = /^CH_LOCAL_DEV=1 node '[A-Za-z0-9_\/.:@%+=,~ -]+\/ch-local\/bin\/ch-local\.js' install --pack ci-failure-triage --from '[A-Za-z0-9_\/.:@%+=,~ -]+\/release' --unreleased-pins '[A-Za-z0-9_\/.:@%+=,~ -]+\/pins\.json'$/;
+  assert.match(dogfood.releaseLine({dir: path.resolve('/srv/rel')}), SHAPE);
+  // (absolute only, never an option or a ~; a backslash is a separator on
+  // Windows alone: the medium on round 1, 3 and 4)
+  for (const bad of ['rel', '~/rel', '-r/x', '--require=/x', '/srv/a\\b']) assert.strictEqual(dogfood.releaseLine({dir: bad}, 'linux'), null, JSON.stringify(bad));
+  assert.strictEqual(dogfood.releaseLine({dir: 'C:\\a\\b'}, 'linux'), null, 'a backslash off Windows');
+  // (Windows: X:/ only -- MSYS rewrites a /-rooted path for node.exe; never
+  // //host; elsewhere one leading /: the high on round 1, 3)
+  for (const bad of ['/c/rel', '//host/share/rel', '\\\\host\\share']) assert.strictEqual(dogfood.releaseLine({dir: bad}, 'win32'), null, JSON.stringify(bad));
+  assert.strictEqual(dogfood.releaseLine({dir: '//srv/rel'}, 'linux'), null);
+  assert.ok(dogfood.releaseLine({dir: 'C:/rel'}, 'win32') != null);
+  // (each platform's own root, so the characters themselves are what is
+  // refused: the medium on round 2, 7)
+  for (const bad of ["it's", '$HOME', 'a`b', 'a"b', 'a\nb', 'caf\u00e9', 'a$(x)b']) {
+    assert.strictEqual(dogfood.releaseLine({dir: `/r/${bad}`}, 'linux'), null, JSON.stringify(bad));
+    assert.strictEqual(dogfood.releaseLine({dir: `C:/r/${bad}`}, 'win32'), null, JSON.stringify(bad));
+  }
+});
+
+// the medium on #105's round 1, 1, 2, 6 and 9: the folder is put together
+// beside its target from the release's own ch-local tarball (on stdin, named
+// by tarballName), whole or not at all; a new folder gets a new directory's
+// mode, an empty one keeps its own
+test('placeRelease: a new folder whole, at a new directory\'s mode; an empty one filled in place, its mode kept; a failure leaves nothing', () => {
+  const {spawnSync} = require('node:child_process');
+  const name = require('../package.json').name;
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-place-'));
+  try {
+    const release = path.join(base, 'built', 'release');
+    fs.mkdirSync(path.join(base, 'pkg', 'package', 'bin'), {recursive: true});
+    fs.writeFileSync(path.join(base, 'pkg', 'package', 'bin', 'ch-local.js'), '// launcher\n');
+    fs.writeFileSync(path.join(base, 'pkg', 'package', 'package.json'), JSON.stringify({name, version: '0.1.0', bundleDependencies: ['@x/dep']}));
+    fs.mkdirSync(path.join(base, 'pkg', 'package', 'node_modules', '@x', 'dep'), {recursive: true});
+    fs.writeFileSync(path.join(base, 'pkg', 'package', 'node_modules', '@x', 'dep', 'package.json'), '{}');
+    fs.writeFileSync(path.join(base, 'pkg', 'package', 'node_modules', '@x', 'dep', 'index.js'), 'module.exports = 1;\n');
+    fs.mkdirSync(release, {recursive: true});
+    const tgz = require('../lib/unpack').tarballName(name, '0.1.0');
+    const made = spawnSync('tar', ['-c', '-z', '-f', '-', '-C', path.join(base, 'pkg'), 'package'], {encoding: 'buffer'});
+    assert.strictEqual(made.status, 0);
+    fs.writeFileSync(path.join(release, tgz), made.stdout);
+    const pinsFile = path.join(base, 'built', 'pins.json');
+    fs.writeFileSync(pinsFile, '{}\n');
+    const pins = {[name]: {version: '0.1.0'}};
+    const whole = (dir) => fs.existsSync(path.join(dir, 'ch-local', 'bin', 'ch-local.js')) && fs.existsSync(path.join(dir, 'release', tgz)) && fs.existsSync(path.join(dir, 'pins.json'));
+    const leftovers = () => fs.readdirSync(base).filter((n) => n.includes('.partial-'));
+
+    const fresh = path.join(base, 'fresh');
+    assert.strictEqual(dogfood.placeRelease({release, pinsFile, pins, dir: fresh}), null);
+    assert.ok(whole(fresh));
+    if (process.platform !== 'win32') {
+      const umask = process.umask();
+      assert.strictEqual(fs.statSync(fresh).mode & 0o777, 0o777 & ~umask, 'a new directory\'s mode, not 0700');
+    }
+    const empty = path.join(base, 'empty');
+    fs.mkdirSync(empty, {mode: 0o750});
+    fs.chmodSync(empty, 0o750);
+    assert.strictEqual(dogfood.placeRelease({release, pinsFile, pins, dir: empty}), null);
+    assert.ok(whole(empty));
+    if (process.platform !== 'win32') assert.strictEqual(fs.statSync(empty).mode & 0o777, 0o750, 'its own mode kept');
+    assert.deepStrictEqual(fs.readdirSync(empty).sort(), ['ch-local', 'pins.json', 'release'], 'staged inside it, no stage left');
+
+    // a ch-local packed without the dependencies it bundles: refused, nothing made
+    // (the high on round 1, 5)
+    const tarOf = (dir) => spawnSync('tar', ['-c', '-z', '-f', '-', '-C', dir, 'package'], {encoding: 'buffer'}).stdout;
+    const good = fs.readFileSync(path.join(release, tgz));
+    fs.rmSync(path.join(base, 'pkg', 'package', 'node_modules'), {recursive: true});
+    fs.writeFileSync(path.join(release, tgz), tarOf(path.join(base, 'pkg')));
+    assert.match(dogfood.placeRelease({release, pinsFile, pins, dir: path.join(base, 'nodeps', 'deeper', 'rel')}), /lacks the dependencies it bundles \(@x\/dep\)/);
+    assert.ok(!fs.existsSync(path.join(base, 'nodeps')), 'the parents it made are gone too');
+    fs.writeFileSync(path.join(release, tgz), good);
+    // no tarball of its own: nothing made; a tarball that won't unpack: nothing made, nothing moved
+    assert.match(dogfood.placeRelease({release, pinsFile, pins: {}, dir: path.join(base, 'none')}), /holds no .* tarball/);
+    assert.ok(!fs.existsSync(path.join(base, 'none')));
+    fs.writeFileSync(path.join(release, tgz), 'not a tarball');
+    const kept = path.join(base, 'kept');
+    fs.mkdirSync(kept);
+    assert.match(dogfood.placeRelease({release, pinsFile, pins, dir: kept}), /could not be unpacked/);
+    assert.deepStrictEqual(fs.readdirSync(kept), [], 'the empty folder stays empty');
+    assert.match(dogfood.placeRelease({release, pinsFile, pins, dir: path.join(base, 'bad')}), /could not be unpacked/);
+    assert.ok(!fs.existsSync(path.join(base, 'bad')));
+    assert.deepStrictEqual(leftovers(), [], 'no stage left');
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
+  }
+});
+
+// the medium on #105's round 2, 6: every bundled dependency loads from the
+// unpacked tree (a dependency's own dependency missing too); true bundles all
+test('bundledProblem: each bundled dependency must load, its own dependencies included; bundleDependencies true means all', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-bundled-'));
+  try {
+    const mod = (dir, name, body) => {
+      fs.mkdirSync(path.join(dir, 'node_modules', ...name.split('/')), {recursive: true});
+      fs.writeFileSync(path.join(dir, 'node_modules', ...name.split('/'), 'package.json'), '{}');
+      fs.writeFileSync(path.join(dir, 'node_modules', ...name.split('/'), 'index.js'), body);
+    };
+    fs.writeFileSync(path.join(base, 'package.json'), JSON.stringify({dependencies: {'@x/a': '1.0.0'}, bundleDependencies: true}));
+    mod(base, '@x/a', "module.exports = require('@x/b');\n");
+    assert.match(dogfood.bundledProblem(base, 'own.tgz'), /own\.tgz lacks the dependencies it bundles \(@x\/a\)/, 'its own dependency missing');
+    mod(base, '@x/b', 'module.exports = 2;\n');
+    assert.strictEqual(dogfood.bundledProblem(base, 'own.tgz'), null);
+    fs.writeFileSync(path.join(base, 'package.json'), '{not json');
+    assert.match(dogfood.bundledProblem(base, 'own.tgz'), /own\.tgz: its package\.json can't be read/);
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
+  }
+});
