@@ -516,3 +516,44 @@ test('L4: what a release adds is judged against the home\'s installed modules, n
   }
 });
 
+// the medium on L4, 4 and 5: moves and drops are judged per pack, against
+// that pack's own list in the new release; a pack the release lists again
+// (relisted after a withdrawal) is counted
+test('L4: releaseMoves judges each pack against its own new list: a module moved to a pack not installed is no longer listed here; a relisted pack\'s moves are said', () => {
+  const {releaseMoves} = require('../lib/upgrade');
+  const record = {packs: {a: {modules: {m: '1.0.0', p: '1.0.0'}}, back: {modules: {q: '2.0.0'}}},
+    modules: {m: {version: '1.0.0'}, p: {version: '1.0.0'}, q: {version: '2.0.0'}}};
+  // m now listed only under y (not installed); back relisted, q moving back
+  const allow = {packs: {a: {modules: ['p']}, y: {modules: ['m']}, back: {modules: ['q']}}, pins: {m: {version: '1.1.0'}, p: {version: '1.0.1'}, q: {version: '1.9.0'}}};
+  assert.deepStrictEqual(releaseMoves(record, allow, ['a', 'back']), {
+    moves: [{module: 'p', from: '1.0.0', to: '1.0.1', back: false, packs: ['a']}, {module: 'q', from: '2.0.0', to: '1.9.0', back: true, packs: ['back']}],
+    dropped: [{module: 'm', packs: ['a']}]
+  });
+});
+
+// the medium on L4, 3: every pack an install moves is held to the operator's
+// allowlist, not only the one named
+test('L4: an upgrade moving a pack the operator\'s allowlist refuses moves nothing, and says which', async () => {
+  const s = twoPacks();
+  // the runtime's ceiling reader, as an installed runtime has it: the
+  // triage pack's modules only
+  const dir = path.join(s.home, 'app', 'node_modules', 'countinghouse', 'lib');
+  fs.mkdirSync(dir, {recursive: true});
+  const ceiling = {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], conversation: true,
+    modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact']}};
+  fs.writeFileSync(path.join(dir, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)})};\n`);
+  require('../lib/ceiling').resetForTests();
+  const w = await npmWorld(release());
+  try {
+    const before = recordOf(s.home);
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.notStrictEqual(await upgrade({}, io, w.fromNpm), 0);
+    assert.match(io.err, /the pack "other" is not allowed on this machine/);
+    assert.deepStrictEqual(recordOf(s.home).packs, before.packs, 'nothing moved');
+  } finally {
+    require('../lib/ceiling').resetForTests();
+    await w.close();
+    s.done();
+  }
+});
+

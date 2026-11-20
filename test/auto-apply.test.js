@@ -152,7 +152,8 @@ test('L4: a release held back for what it adds is announced once: the next check
     edit: (d) => { d.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
   try {
     const h = home();
-    writeStampFile(h, {firstSeen: {[TO]: now - 200 * H}});
+    // (an announcement of a version no longer newer is dropped: the medium on L4, 7)
+    writeStampFile(h, {firstSeen: {[TO]: now - 200 * H}, announced: [{version: '0.0.1', key: '0123456789abcdef'}]});
     const check = () => {
       const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(TO), fetch: (u, o) => globalThis.fetch(u, o)});
       return asInstalled(w.pinsDoc.pins, () => autoApply({io, now, fromNpm: w.fromNpm}), w.installed).then((r) => Object.assign(r, {io}));
@@ -160,7 +161,7 @@ test('L4: a release held back for what it adds is announced once: the next check
     const first = await check();
     assert.strictEqual(first.outcome, 'needs-upgrade');
     assert.match(first.line, /run ch-local upgrade/);
-    assert.deepStrictEqual(stamp(h).announced, [TO]);
+    assert.deepStrictEqual(stamp(h).announced.map((e) => e.version), [TO]);
     const again = await check();
     assert.deepStrictEqual([again.outcome, again.line], ['announced', undefined], 'said once');
     assert.deepStrictEqual(again.io.execs, [], 'nothing installed');
