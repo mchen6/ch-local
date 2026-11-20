@@ -510,8 +510,11 @@ function moduleMessageProblem(m) {
     if (OLD_FIELDS.some((f) => f in m)) return 'old-field';
     return (m.module === null || pkg(m.module)) && typeof m.text === 'string' ? null : 'name';
   } else if (m.type === 'reread') {
-    // (the vectors' rule: reread's what is module-settings)
-    return m.what === 'module-settings' && Object.keys(m).every((k) => ['id', 'type', 'what'].includes(k)) ? null : 'name';
+    // (the vectors' rule: reread's what is one an accepted vector has --
+    // module-settings, and held-back since countinghouse #490 -- and nothing
+    // else is in it)
+    const whats = new Set(MODULE_V.accepted.filter((e) => e.message.type === 'reread').map((e) => e.message.what));
+    return whats.has(m.what) && Object.keys(m).every((k) => ['id', 'type', 'what'].includes(k)) ? null : 'name';
   } else {
     return null;
   }
@@ -1295,6 +1298,29 @@ test('a credential removed while running unloads the callers of its module, said
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 1, JSON.stringify(s.requests));
     assert.strictEqual(s.history().filter((h) => h.notice === line).length, 1);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// A-firstrun d1 (countinghouse #490): what is held back changes while
+// running; the file is rewritten and the runtime asked to read it again,
+// once per change, so its overview says what start would now
+test('a credential removed while running: the held-back file names the pack and why, and the runtime is asked to read it again, once', async () => {
+  const s = await running();
+  try {
+    await until(() => s.args() != null);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, [], 'everything loaded at start');
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules,
+      [{name: '@countinghouse/ch-pack-ci-failure-triage', reason: 'calls', root: 'credential', via: '@countinghouse/ch-access-github'}]);
+    // a later change that holds back nothing new sends no second reread
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    assert.strictEqual(s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length, 1, JSON.stringify(s.requests));
   } finally {
     s.end();
     await s.done;
