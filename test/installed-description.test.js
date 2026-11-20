@@ -270,10 +270,19 @@ test('an app whose package.json is refused (a link, a directory, a FIFO, over th
     assert.strictEqual(ownReleasePins(where, record, sameButOther()), null, label);
     assert.deepStrictEqual(homeDescription(where, record, sameButOther()).modules, {[A]: null, [P]: null}, label);
   }
-  // the app's directory there but its package.json missing: no app
-  const {home, where, record} = ownHome();
-  fs.rmSync(path.join(app(home), 'package.json'));
-  assert.deepStrictEqual(homeDescription(where, record, sameButOther()).modules, {[A]: DA, [P]: DP});
+  // the app there but its package.json missing (an install or rollback cut
+  // short): unknown, not "no app" (the medium on #103's round 1, 4)
+  {
+    const {home, where, record} = ownHome();
+    fs.rmSync(path.join(app(home), 'package.json'));
+    assert.deepStrictEqual(homeDescription(where, record, sameButOther()).modules, {[A]: null, [P]: null});
+  }
+  // the app a dangling link: unknown (the medium, 3)
+  if (process.platform !== 'win32') {
+    const {home, where, record} = ownHome();
+    fs.symlinkSync(path.join(home, 'gone'), path.join(home, 'app'));
+    assert.deepStrictEqual(homeDescription(where, record, sameButOther()).modules, {[A]: null, [P]: null});
+  }
 });
 
 // the reviewer's high on #103, 2: an older running release doesn't list a
@@ -289,7 +298,11 @@ test('a pack an older running release doesn\'t list is running; a release at lea
   app(home, {doc});
   const r = {...record, packs: {...record.packs, b: {modules: {[B]: '3.0.0'}}}, modules: {...record.modules, [B]: {version: '3.0.0'}}};
   const older = {...bundled(), release: {version: '0.8.0', security: null}};
-  assert.deepStrictEqual(homeDescription(where, r, older).packs.b, {modules: [B]}, 'an older release never knew b');
+  const fromOlder = homeDescription(where, r, older);
+  assert.deepStrictEqual(fromOlder.packs.b, {modules: [B]}, 'an older release never knew b');
+  assert.deepStrictEqual(fromOlder.modules[B], {...DA, calls: []}, 'and b\'s module is described');
+  // a running release whose version can't be compared counts (fail closed)
+  assert.deepStrictEqual(homeDescription(where, r, {...bundled(), release: {version: 'dev', security: null}}).packs.b, {modules: [], withdrawn: true});
   assert.deepStrictEqual(homeDescription(where, r, bundled()).packs.b, {modules: [], withdrawn: true}, '1.4.0 no longer lists it');
 });
 
