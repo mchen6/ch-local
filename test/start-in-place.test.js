@@ -48,7 +48,7 @@ const until = async (cond, ms = 10000) => {
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null,
-  env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
+  env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null, heldRetryMs = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
@@ -61,6 +61,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   // test makes this process stale by giving it another (lib/packs.js
   // recordRelease)
   f.selfVersion = '0.2.0';
+  if (heldRetryMs != null) f.heldRetryMs = heldRetryMs;
   // release: the running release's allowlist, for a withdrawn pack's tests (else the shipped one)
   // (by default fakeIo's: the packs the home holds are listed)
   if (running_release != null) f.release = running_release;
@@ -1440,6 +1441,49 @@ test('a held-back list whose read failed is sent again, and taken', async () => 
     await until(() => s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length === 2);
     await new Promise((r) => setTimeout(r, 300));
     assert.strictEqual(s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length, 2, 'taken the second time: no third');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the reviewer's round 2 on #106, 1 and 2: a retry sends only the reread
+// (never a whole apply, which would send a refused load again and say it
+// again), and a reread that keeps failing is given up after 5 tries, said
+// once, until what is held back changes
+test('a failing held-back reread is retried alone, 5 times at most, then given up until the list changes', async () => {
+  const s = await running({heldRetryMs: 20, answer: (m) => (m.type === 'reread' && m.what === 'held-back' ? {ok: false, code: 'CONTROL_FAILED'} : m.type === 'load' ? {ok: false, code: 'MODULE_INVALID'} : {ok: true})});
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    const rereads = () => s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length;
+    // (the credential change's own apply sends the pending load again, as any
+    // change does; from its first reread on, only retries run)
+    await until(() => rereads() >= 1);
+    const loads = s.requests.filter((m) => m.type === 'load').length;
+    const lines = s.history().filter((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null).length;
+    await until(() => s.f.err.includes('the runtime did not take the held-back list after 5 tries (CONTROL_FAILED)'));
+    await new Promise((r) => setTimeout(r, 800));
+    assert.strictEqual(rereads(), 5, 'five tries, then none');
+    assert.strictEqual(s.requests.filter((m) => m.type === 'load').length, loads, 'the refused load is not sent again by a retry');
+    assert.strictEqual(s.history().filter((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null).length, lines, 'nor recorded again');
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes('did not take the held-back list')).length, 1, 'said once');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// round 2, 3: a load that never reached the runtime (CONTROL_BUSY) left it
+// unloaded: named restart
+test('a pack whose load never reached the runtime is named restart', async () => {
+  const s = await running({answer: (m) => (m.type === 'load' ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true})});
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other'));
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, [{name: '@countinghouse/ch-pack-other', reason: 'restart'}]);
   } finally {
     s.end();
     await s.done;
