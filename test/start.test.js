@@ -621,10 +621,11 @@ test('start against another host\'s abandoned lock fails at its cap, spawning no
   assert.match(f.err, /the home's lock could not be taken; nothing was started/);
   assert.strictEqual(f.spawned.length, 0);
   assert.ok(!fs.existsSync(path.join(home, 'run')) || fs.readdirSync(path.join(home, 'run')).every((n) => !n.includes(String(f.pid))), 'no run directory');
-  // renewed every 100 ms for 700 ms, then released: waited for, and started
-  const g = Object.assign(io(home), {lockWaitMs: 300});
-  const renew = setInterval(() => { const t = new Date(); try { fs.utimesSync(lock, t, t); } catch (e) { /* gone */ } }, 100);
-  setTimeout(() => { clearInterval(renew); fs.rmSync(lock, {force: true}); }, 700);
+  // renewed every 200 ms for 3 s against a 1.5 s cap, then released: waited
+  // for, and started (wide margins for a loaded CI runner: #104's high)
+  const g = Object.assign(io(home), {lockWaitMs: 1500});
+  const renew = setInterval(() => { const t = new Date(); try { fs.utimesSync(lock, t, t); } catch (e) { /* gone */ } }, 200);
+  setTimeout(() => { clearInterval(renew); fs.rmSync(lock, {force: true}); }, 3000);
   assert.strictEqual(await start({passThrough: []}, g), 0, g.err);
   assert.strictEqual(g.spawned.length, 1);
 });
