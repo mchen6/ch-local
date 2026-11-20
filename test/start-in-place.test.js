@@ -940,6 +940,70 @@ test('another release\'s record: a module moved back is stopped with its callers
   }
 });
 
+// the reviewer's high on #106, 4: under another release's record, a pack
+// turned off is still unloaded, and the held-back file says so (it followed
+// the unloads only outside a frozen home before)
+test('another release\'s record: a pack turned off is unloaded, and the held-back file names it', async () => {
+  const s = await running();
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
+    stale(s);
+    const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => s.f.err.includes(UPGRADED));
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
+    await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
+    await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, [{name: '@countinghouse/ch-pack-other', reason: 'off'}]);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the reviewer's high on #106, 4: the file follows what ended up loaded. A
+// module the runtime stopped is named stopped until another version loads;
+// a pack wanted but not loaded in place (here: added under another
+// release's record) is named restart
+test('the held-back file names a stopped module stopped, until a new version loads', async () => {
+  const s = await running();
+  try {
+    await until(() => s.args() != null);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    const held = () => JSON.parse(fs.readFileSync(file, 'utf8')).modules;
+    s.ask({type: 'module-stopped', name: SCENARIO, code: 'MODULE_SUSPENDED', when: 'restart'});
+    await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
+    assert.deepStrictEqual(held(), [{name: SCENARIO, reason: 'stopped'}]);
+    const r2 = release({versions: {[SCENARIO]: '0.1.1'}});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length === 2);
+    assert.deepStrictEqual(held(), []);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('another release\'s record: a pack added is not loaded in place, and the held-back file names it restart', async () => {
+  const s = await running();
+  try {
+    stale(s);
+    const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => s.f.err.includes(UPGRADED));
+    assert.strictEqual(await addPack({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, [{name: '@countinghouse/ch-pack-other', reason: 'restart'}]);
+    assert.ok(!s.requests.some((m) => m.type === 'load'), 'nothing loaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // the medium review of L2a, 3: a module without its credential is told in
 // start's words, once, by start and the applier together (L5a: the
 // credential is the called module's own, in the store)
@@ -1327,6 +1391,40 @@ test('a credential removed while running: the held-back file names the pack and 
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.strictEqual(s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length, 1, JSON.stringify(s.requests));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the reviewer's high on #106, 1: an applier ends with its start. A held-back
+// reread that keeps failing leaves a retry armed; after start ends nothing
+// is applied again (no request, no history line, nothing said)
+test('the applier ends with start: a pending held-back retry never runs after it', async () => {
+  const busy = (m) => (m.type === 'reread' && m.what === 'held-back' ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true});
+  const s = await running({answer: busy});
+  await until(() => s.args() != null);
+  require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+  await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
+  s.end();
+  await s.done;
+  const [requests, history, said] = [s.requests.length, s.history().length, s.f.err.length];
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.deepStrictEqual([s.requests.length, s.history().length, s.f.err.length], [requests, history, said], 'nothing after start ended');
+});
+
+// the reviewer's high on #106, 2: a refusal that won't change is not sent
+// again until the list changes; a busy one is retried, backing off
+test('a held-back list the runtime refuses for good is not sent again until it changes', async () => {
+  const refused = (m) => (m.type === 'reread' && m.what === 'held-back' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true});
+  const s = await running({answer: refused});
+  try {
+    await until(() => s.args() != null);
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.strictEqual(s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length, 1, 'not retried');
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes('the overview may not say which modules are held back')).length, 1, 'said once');
   } finally {
     s.end();
     await s.done;
