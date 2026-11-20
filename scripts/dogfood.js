@@ -14,9 +14,11 @@
 //   node scripts/dogfood.js --release-dir <dir> [--src ...] [--clone ...] [--ref ...]
 //
 // --release-dir: build a prepared local release into <dir> (absolute, new or
-// empty) and install nothing: <dir>/release (the tarballs), <dir>/pins.json
-// and <dir>/INSTALL.txt (the command that installs from it). What the install
-// doc's pre-release variant runs (A-firstrun d2: Matt's acceptance run).
+// empty) and install nothing. Self-contained, so the folder a person names is
+// the whole of what runs (the reviewer's high on #105, 1): <dir>/ch-local
+// (this checkout's launcher, packed and unpacked), <dir>/release (the
+// tarballs) and <dir>/pins.json. The setup skill and the install doc build
+// the one command that installs from it, from the folder alone (releaseLine).
 //
 // --src: local clones, <dir>/<repo>, used at their last fetched origin/main
 // (origin/master for countinghouse), through git archive, so no working tree
@@ -88,8 +90,17 @@ function homeFor(args, env = process.env) {
 // The install command for a prepared local release (--release-dir), as the
 // install doc's pre-release variant gives it: this checkout's launcher, with
 // CH_LOCAL_DEV=1 and the release's pins
-function releaseLine({checkout = ROOT, dir}) {
-  return `CH_LOCAL_DEV=1 node ${word(path.join(checkout, 'bin', 'ch-local.js'))} install --pack ${PACK} --from ${word(path.join(dir, 'release'))} --unreleased-pins ${word(path.join(dir, 'pins.json'))}`;
+// The one command that installs from a prepared local release <dir>, as the
+// setup skill builds it: the folder's own launcher, each path one
+// single-quoted word, forward slashes (Windows too: node takes them), the
+// folder's path only of FOLDER's characters (the high on #105, 2) -> the line,
+// or null for a folder path that isn't
+const FOLDER = /^[A-Za-z0-9_/.:@%+=,~ -]+$/;
+const slashed = (dir) => String(dir).replace(/\\/g, '/').replace(/\/+$/, '');
+function releaseLine({dir}) {
+  const f = slashed(dir);
+  if (!FOLDER.test(f)) return null;
+  return `CH_LOCAL_DEV=1 node '${f}/ch-local/bin/ch-local.js' install --pack ${PACK} --from '${f}/release' --unreleased-pins '${f}/pins.json'`;
 }
 
 function instructions({node, home, defaultHome = DEFAULT_HOME()}) {
@@ -217,32 +228,42 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   // a prepared local release only: built into the directory, kept, nothing
   // installed; the command that installs from it is printed
   if (args.releaseDir != null) {
-    const dir = args.releaseDir;
+    const dir = path.resolve(args.releaseDir);
+    if (releaseLine({dir}) == null) return fail(`${dir}: a release folder's path uses only ASCII letters, digits, spaces and _ / . : @ % + = , ~ - (the setup skill refuses any other)`, 2);
     let st = null;
     try { st = fs.statSync(dir); } catch (e) { st = null; }
     if (st != null && (!st.isDirectory() || fs.readdirSync(dir).length > 0)) return fail(`${dir} is not a new or empty directory: --release-dir builds into one`, 2);
     // built in a working directory (the sources, the lockfile's scratch),
-    // removed after; only the release, its pins and the command reach <dir>,
-    // and only once the whole build has succeeded (nothing half-made there)
+    // removed after; the folder is put together beside <dir> and renamed into
+    // place only once whole, so a failure anywhere leaves no half-made folder
+    fs.mkdirSync(path.dirname(dir), {recursive: true});
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
+    const stage = fs.mkdtempSync(path.join(path.dirname(dir), `.${path.basename(dir)}.partial-`));
     try {
       const built = await buildRelease(plan, work, say);
       if (built.problem != null) return fail(built.problem);
-      fs.mkdirSync(dir, {recursive: true});
-      fs.cpSync(built.release, path.join(dir, 'release'), {recursive: true});
-      fs.copyFileSync(built.pinsFile, path.join(dir, 'pins.json'));
-      const line = releaseLine({dir});
-      fs.writeFileSync(path.join(dir, 'INSTALL.txt'), `Install pack 1 from this prepared local release (for bash: on Windows, Git Bash or WSL):\n\n  ${line}\n`);
+      fs.cpSync(built.release, path.join(stage, 'release'), {recursive: true});
+      fs.copyFileSync(built.pinsFile, path.join(stage, 'pins.json'));
+      // the folder's own launcher: this checkout's ch-local, as packed
+      const own = fs.readdirSync(built.release).filter((n) => /ch-local-\d[^/]*\.tgz$/.test(n));
+      if (own.length !== 1) return fail(`the release holds ${own.length} ch-local tarballs, not one`);
+      const unpacked = fs.mkdtempSync(path.join(work, 'own-'));
+      const tar = run('tar', ['-xzf', path.join(built.release, own[0]), '-C', unpacked], {cwd: unpacked});
+      if (tar != null && tar.status != null && tar.status !== 0) return fail(`ch-local's tarball could not be unpacked (tar exit ${tar.status})`);
+      fs.renameSync(path.join(unpacked, 'package'), path.join(stage, 'ch-local'));
+      if (st != null) fs.rmdirSync(dir);
+      fs.renameSync(stage, dir);
       say('');
-      if (process.platform === 'win32') say('This command is for bash: run it in Git Bash or WSL.');
-      say(`A prepared local release is in ${dir}; nothing was installed. Its INSTALL.txt holds the command that installs from it:`);
+      say(`A prepared local release is in ${dir}; nothing was installed. It installs with:`);
       say('');
-      say(`  ${line}`);
+      say(`  ${releaseLine({dir})}`);
+      if (process.platform === 'win32') say('(on Windows, in Git Bash: the path is written with forward slashes)');
       return 0;
     } catch (err) {
       return fail(err.message);
     } finally {
       fs.rmSync(work, {recursive: true, force: true});
+      fs.rmSync(stage, {recursive: true, force: true});
     }
   }
 

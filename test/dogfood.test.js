@@ -122,18 +122,22 @@ test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY |
 });
 
 // A-firstrun d2: a prepared local release for Matt's acceptance run, and the
-// install doc's pre-release command for it
-test('--release-dir takes an absolute path only; the command for a prepared release is this checkout\'s launcher with CH_LOCAL_DEV and its pins', () => {
-  assert.strictEqual(dogfood.parseArgs(['--release-dir', '/r']).releaseDir, '/r');
+// one command that installs from it, as the setup skill builds it: the
+// folder's own launcher, each path one single-quoted word, forward slashes
+// (the reviewer's high on #105, 1 and 2). Platform-aware: a Windows path is
+// written with forward slashes.
+test('--release-dir takes an absolute path only; the command for a prepared release is the folder\'s own launcher, each path quoted, in the skill\'s shape', () => {
+  assert.strictEqual(dogfood.parseArgs(['--release-dir', path.resolve('/r')]).releaseDir, path.resolve('/r'));
   assert.throws(() => dogfood.parseArgs(['--release-dir', 'relative/r']), /--release-dir must be an absolute path/);
   // (nothing is installed: a home would be ignored, so it is refused)
-  assert.throws(() => dogfood.parseArgs(['--release-dir', '/r', '--home', '/h']), /--home is for dogfood's own install; --release-dir installs nothing/);
-  assert.strictEqual(dogfood.releaseLine({checkout: '/src/ch-local', dir: '/r'}),
-    'CH_LOCAL_DEV=1 node /src/ch-local/bin/ch-local.js install --pack ci-failure-triage --from /r/release --unreleased-pins /r/pins.json');
-  assert.strictEqual(dogfood.releaseLine({checkout: '/my src', dir: '/r'}).split(' ')[2], "'/my", 'a path with a space is one quoted word');
-  // (the shape the setup skill runs from INSTALL.txt, and nothing more:
-  // business's condition on d2)
-  const line = dogfood.releaseLine({checkout: '/src/ch-local', dir: '/r'});
-  assert.match(line, /^CH_LOCAL_DEV=1 node \S+\/bin\/ch-local\.js install --pack \S+ --from \S+ --unreleased-pins \S+$/);
-  assert.ok(!/[;&|<>]/.test(line));
+  assert.throws(() => dogfood.parseArgs(['--release-dir', path.resolve('/r'), '--home', path.resolve('/h')]), /--home is for dogfood's own install; --release-dir installs nothing/);
+  assert.strictEqual(dogfood.releaseLine({dir: '/r/rel 1'}),
+    "CH_LOCAL_DEV=1 node '/r/rel 1/ch-local/bin/ch-local.js' install --pack ci-failure-triage --from '/r/rel 1/release' --unreleased-pins '/r/rel 1/pins.json'");
+  assert.strictEqual(dogfood.releaseLine({dir: 'C:\\Users\\m\\rel'}),
+    "CH_LOCAL_DEV=1 node 'C:/Users/m/rel/ch-local/bin/ch-local.js' install --pack ci-failure-triage --from 'C:/Users/m/rel/release' --unreleased-pins 'C:/Users/m/rel/pins.json'", 'Windows: forward slashes');
+  // (the skill's shape, slot by slot: one variable, single-quoted paths of
+  // the allowed characters, nothing chained)
+  const SHAPE = /^CH_LOCAL_DEV=1 node '[A-Za-z0-9_\/.:@%+=,~ -]+\/ch-local\/bin\/ch-local\.js' install --pack ci-failure-triage --from '[A-Za-z0-9_\/.:@%+=,~ -]+\/release' --unreleased-pins '[A-Za-z0-9_\/.:@%+=,~ -]+\/pins\.json'$/;
+  assert.match(dogfood.releaseLine({dir: path.resolve('/srv/rel')}), SHAPE);
+  for (const bad of ["/r/it's", '/r/$HOME', '/r/a`b', '/r/a"b', '/r/a\nb', '/r/caf\u00e9']) assert.strictEqual(dogfood.releaseLine({dir: bad}), null, JSON.stringify(bad));
 });
