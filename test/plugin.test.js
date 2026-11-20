@@ -55,13 +55,15 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
     '"countinghouse is ready. You can ask me what countinghouse can do for you, or how to design a composite scenario."',
     'Call `countinghouse_overview` and answer from it alone, in at most ten lines',
     'https://github.com/mchen6/countinghouse/blob/master/docs/module-development.md',
-    'that the sandbox is a security boundary; that modules cannot reach the network; that a module learns nothing about other files;'
+    'that the sandbox is a security boundary; that modules cannot reach the network; that a module learns nothing about other files;',
+    'Check only whether each is set, and never print its value: a proxy address can hold a password.',
+    'read its `INSTALL.txt` and run the command it gives instead.'
   ]) assert.ok(skill.includes(sentence), sentence);
   // (a dev server to build one's own tool comes with A-ownuse, not before)
   assert.ok(!/dev-server|countinghouse-dev|section 8/.test(skill));
   // (no credential handed through the conversation: no export of one, no value)
   assert.ok(!/\bexport [A-Z_]+=|GITHUB_TOKEN=|ghp_|github_pat_/.test(skill));
-  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), 'a296f2229918d2dcc79e2949e2b32193e8d7f80152b52f7154850f6227e691be', 'the checked text, byte for byte');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '0dabbe6e3c6cc44d6d0d8e47080caa0f70b03546c4885e1004c061a69de4a479', 'the checked text, byte for byte');
 });
 
 test('launch.js without an installed launcher exits non-zero with one line naming the install command', () => {

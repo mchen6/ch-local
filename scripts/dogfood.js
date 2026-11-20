@@ -11,6 +11,12 @@
 //
 //   node scripts/dogfood.js [--home <dir>] [--src <dir of clones>]
 //                           [--clone <repo>=<path>]... [--ref <repo>=<ref>]...
+//   node scripts/dogfood.js --release-dir <dir> [--src ...] [--clone ...] [--ref ...]
+//
+// --release-dir: build a prepared local release into <dir> (absolute, new or
+// empty) and install nothing: <dir>/release (the tarballs), <dir>/pins.json
+// and <dir>/INSTALL.txt (the command that installs from it). What the install
+// doc's pre-release variant runs (A-firstrun d2: Matt's acceptance run).
 //
 // --src: local clones, <dir>/<repo>, used at their last fetched origin/main
 // (origin/master for countinghouse), through git archive, so no working tree
@@ -27,7 +33,7 @@ const OWNER = 'mchen6';
 const PACK = 'ci-failure-triage';
 const SOURCES = [['countinghouse', 'origin/master'], ['ch-pack-ci-failure-triage', 'origin/main'], ['ch-access-github', 'origin/main'],
   ...['redact', 'log-clean', 'error-patterns', 'failure-signature', 'dedupe', 'owner-hint', 'report'].map((s) => [`ch-step-${s}`, 'origin/main'])];
-const USAGE = 'usage: node scripts/dogfood.js [--home <dir>] [--src <dir of clones>] [--clone <repo>=<path>]... [--ref <repo>=<ref>]...\n';
+const USAGE = 'usage: node scripts/dogfood.js [--home <dir> | --release-dir <dir>] [--src <dir of clones>] [--clone <repo>=<path>]... [--ref <repo>=<ref>]...\n';
 
 const sources = () => SOURCES.map(([repo, ref]) => ({repo, ref}));
 
@@ -56,6 +62,9 @@ function parseArgs(argv) {
     else if (a === '--ref') { const [r, v] = pair(next(), '--ref'); out.refs[r] = v; }
     else throw new Error(USAGE);
   }
+  // (nothing is installed with --release-dir: a home would be ignored, and
+  // the command it prints installs into the default home)
+  if (out.releaseDir != null && out.home != null) throw new Error(`--home is for dogfood's own install; --release-dir installs nothing\n${USAGE}`);
   return out;
 }
 
@@ -79,7 +88,7 @@ function homeFor(args, env = process.env) {
 // The install command for a prepared local release (--release-dir), as the
 // install doc's pre-release variant gives it: this checkout's launcher, with
 // CH_LOCAL_DEV=1 and the release's pins
-function releaseLine({checkout, dir}) {
+function releaseLine({checkout = ROOT, dir}) {
   return `CH_LOCAL_DEV=1 node ${word(path.join(checkout, 'bin', 'ch-local.js'))} install --pack ${PACK} --from ${word(path.join(dir, 'release'))} --unreleased-pins ${word(path.join(dir, 'pins.json'))}`;
 }
 
@@ -209,15 +218,32 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   // installed; the command that installs from it is printed
   if (args.releaseDir != null) {
     const dir = args.releaseDir;
-    if (fs.existsSync(dir) && fs.readdirSync(dir).length > 0) return fail(`${dir} is not empty: --release-dir builds into a new or empty directory`, 2);
-    fs.mkdirSync(dir, {recursive: true});
-    const built = await buildRelease(plan, dir, say);
-    if (built.problem != null) return fail(built.problem);
-    say('');
-    say(`A prepared local release is in ${dir}. Install from it with (nothing was installed):`);
-    say('');
-    say(`  ${releaseLine({checkout: path.join(__dirname, '..'), dir})}`);
-    return 0;
+    let st = null;
+    try { st = fs.statSync(dir); } catch (e) { st = null; }
+    if (st != null && (!st.isDirectory() || fs.readdirSync(dir).length > 0)) return fail(`${dir} is not a new or empty directory: --release-dir builds into one`, 2);
+    // built in a working directory (the sources, the lockfile's scratch),
+    // removed after; only the release, its pins and the command reach <dir>,
+    // and only once the whole build has succeeded (nothing half-made there)
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
+    try {
+      const built = await buildRelease(plan, work, say);
+      if (built.problem != null) return fail(built.problem);
+      fs.mkdirSync(dir, {recursive: true});
+      fs.cpSync(built.release, path.join(dir, 'release'), {recursive: true});
+      fs.copyFileSync(built.pinsFile, path.join(dir, 'pins.json'));
+      const line = releaseLine({dir});
+      fs.writeFileSync(path.join(dir, 'INSTALL.txt'), `Install pack 1 from this prepared local release (for bash: on Windows, Git Bash or WSL):\n\n  ${line}\n`);
+      say('');
+      if (process.platform === 'win32') say('This command is for bash: run it in Git Bash or WSL.');
+      say(`A prepared local release is in ${dir}; nothing was installed. Its INSTALL.txt holds the command that installs from it:`);
+      say('');
+      say(`  ${line}`);
+      return 0;
+    } catch (err) {
+      return fail(err.message);
+    } finally {
+      fs.rmSync(work, {recursive: true, force: true});
+    }
   }
 
   const {install} = require('../lib/install');
