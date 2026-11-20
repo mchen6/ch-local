@@ -417,11 +417,13 @@ test('a dead holder whose lock can\'t be cleared yet is waited for, and the chan
   const h = home();
   const dead = spawn(process.execPath, ['-e', '0']);
   await new Promise((r) => dead.on('close', r));
-  writeLock(h, {pid: dead.pid, host: lock.lockHost(), at: 'x'}, 10 * 60 * 1000);
+  // (a fresh heartbeat: gone by its dead pid alone, never by its age; a
+  // cap of a few seconds, so a lost timer fails fast: the medium, 5)
+  writeLock(h, {pid: dead.pid, host: lock.lockHost(), at: 'x'});
   fs.writeFileSync(`${lockFile(h)}.break`, '1');
   setTimeout(() => fs.rmSync(`${lockFile(h)}.break`, {force: true}), 400);
   const value = made();
-  const f = io(h, {readStdin: async() => value});
+  const f = io(h, {readStdin: async() => value, credentialsLockWaitMs: 5000});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-other-step', to: OTHER_ORIGIN, restart: false}, f), 0, f.err);
   assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), value);
 });
@@ -439,5 +441,27 @@ test('a held from one home\'s lock writes no other home', async () => {
   assert.strictEqual(code, 0);
   assert.ok(!fs.existsSync(path.join(b, 'credentials')));
   assert.notStrictEqual(valueOf(a, OTHER, 'OTHER_TOKEN'), null);
+});
+
+// the medium on #102's round 1, 1, 4 and 6: the home by its real path
+test('a held is for its home\'s real lock file: another spelling of it is taken; a link re-pointed to another home is refused, there and in uninstall\'s check', POSIX, async () => {
+  const a = home();
+  const b = home();
+  const alias = path.join(tmp('ch-credlock-alias-'), 'home');
+  fs.symlinkSync(a, alias);
+  const code = await store.withStoreLock(a, io(a), 'test', async(held) => {
+    // the same home, spelled through a link: taken
+    store.bind(alias, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {held});
+    // the link re-pointed to b: refused, nothing written there
+    fs.rmSync(alias);
+    fs.symlinkSync(b, alias);
+    assert.throws(() => store.bind(alias, OTHER, 'OTHER_TOKEN', {origin: OTHER_ORIGIN, source: 'stored', value: made()}, {held}), (e) => e.code === 'CREDENTIALS_LOCK');
+    assert.throws(() => store.checkHeld(held, b), (e) => e.code === 'CREDENTIALS_LOCK');
+    store.checkHeld(held, a);
+    return 0;
+  });
+  assert.strictEqual(code, 0);
+  assert.notStrictEqual(valueOf(a, OTHER, 'OTHER_TOKEN'), null);
+  assert.ok(!fs.existsSync(path.join(b, 'credentials')));
 });
 
