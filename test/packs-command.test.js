@@ -281,7 +281,9 @@ test('a lock is never empty to another ch-local, and an empty one is never taken
   assert.ok(!fs.readdirSync(home).some((n) => n.endsWith('.tmp')), 'no temporary file left');
 });
 
-test('another host\'s lock counts while its heartbeat is fresh, and is cleared once it is stale', async () => {
+// (post-rel packs.lock protocol: another host's clock may be skewed, so its
+// lock is never cleared by its age; it is named, with the file to remove)
+test('another host\'s lock counts while its heartbeat is fresh, and still once it is stale: named with the file to remove, never cleared', async () => {
   const {withLock, STALE_MS} = require('../lib/lock');
   const home = tmp('ch-home-');
   const lock = path.join(home, 'packs.lock');
@@ -290,8 +292,10 @@ test('another host\'s lock counts while its heartbeat is fresh, and is cleared o
   assert.strictEqual(await withLock({home}, f, async () => 0), 1, 'fresh: held');
   const old = new Date(Date.now() - STALE_MS - 1000);
   fs.utimesSync(lock, old, old);
-  assert.strictEqual(await withLock({home}, f, async () => 0), 0, 'stale: cleared');
-  assert.ok(!fs.existsSync(lock));
+  const g = fakeIo({env: {}});
+  assert.strictEqual(await withLock({home}, g, async () => 0), 1, 'stale: still held');
+  assert.match(g.err, /or remove .*packs\.lock if nothing is running on elsewhere/);
+  assert.ok(fs.existsSync(lock));
 });
 
 // Withdrawn by the record (#413 section 9.7): an upgrade to a release that no
