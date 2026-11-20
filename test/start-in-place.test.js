@@ -250,7 +250,13 @@ test('a pack whose modules are not in the module store is not loaded in place: s
   writeModulesRecord({modulesRecord: path.join(s.home, 'modules.json')}, {...rec, packs: {...rec.packs, other: {from: {release: '0.2.0'}, modules: {'@countinghouse/ch-pack-other': '0.3.0'}}}},
     {roleOf: roleOf(s.home), release: {packs: {'ci-failure-triage': {packages: Object.keys(TRIAGE_LOADED)}, other: {packages: ['@countinghouse/ch-pack-other']}}}});
   await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
-  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set' && m.type !== 'notice').map((m) => m.type), [], 'nothing loaded: the sessions are told why');
+  // (nothing loaded; the held-back list re-read, now naming the pack as
+  // missing: A-firstrun d1; the reread follows the history line, so it is
+  // waited for)
+  await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
+  assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set' && m.type !== 'notice').map((m) => m.type + (m.what ? ` ${m.what}` : '')), ['reread held-back'], 'nothing loaded: the sessions are told why');
+  const held = JSON.parse(fs.readFileSync(s.args()[s.args().indexOf('--heldBackFile') + 1], 'utf8')).modules;
+  assert.ok(held.some((e) => e.name === '@countinghouse/ch-pack-other' && e.reason === 'missing'), JSON.stringify(held));
   assert.match(s.history().find((h) => h.problem != null).problem, /its files are missing; run `ch-local install` again/);
   assert.match(s.f.err, /not loading ch-pack-other: its files are missing; run `ch-local install` again/);
   s.end();

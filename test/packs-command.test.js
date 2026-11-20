@@ -32,21 +32,21 @@ test('add-pack installs a second pack beside the first and shares an installed p
   assert.deepStrictEqual(io.execs, [], 'no npm: packs are unpacked');
 });
 
-// A-firstrun d1: add-pack's last line says what to do next, when it added
-// the pack; one already installed, or a refusal, says nothing of the kind
-test('add-pack ends with the fixed "next" line when it adds; not when the pack is already there, nor on a refusal', async () => {
+// A-firstrun d1: add-pack says whether it added the pack (the CLI's "next"
+// line, test/next-steps.test.js); one already installed answers 0 too
+test('add-pack reports whether it added the pack: yes when it adds, no when it is already there or refused', async () => {
   const s = await installed();
+  const added = {added: false};
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from, report: added}, s.io(), s.r.allow), 0);
+  assert.strictEqual(added.added, true);
+  const again = {added: false};
   const io = s.io();
-  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, io, s.r.allow), 0, io.err);
-  const out = io.out.trimEnd().split('\n');
-  assert.strictEqual(out[out.length - 1], 'Ready: in Claude Code, ask what countinghouse can do for you.');
-  const again = s.io();
-  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, again, s.r.allow), 0, again.err);
-  assert.match(again.out, /the pack "other" is already installed/);
-  assert.ok(!again.out.includes('Ready: in Claude Code'), again.out);
-  const refused = s.io();
-  assert.notStrictEqual(await addPack({pack: 'nope', from: s.r.from}, refused, s.r.allow), 0);
-  assert.ok(!(refused.out + refused.err).includes('Ready: in Claude Code'));
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from, report: again}, io, s.r.allow), 0, io.err);
+  assert.match(io.out, /the pack "other" is already installed/);
+  assert.strictEqual(again.added, false);
+  const refused = {added: false};
+  assert.notStrictEqual(await addPack({pack: 'nope', from: s.r.from, report: refused}, s.io(), s.r.allow), 0);
+  assert.strictEqual(refused.added, false);
 });
 
 test('add-pack refuses a pack the release does not pin', async () => {

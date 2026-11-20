@@ -61,3 +61,22 @@ test('written whole and private: a regular file under its own name, 0600 (POSIX)
   assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"v":1,"modules":[{"name":"x","reason":"off"}]}\n');
   assert.deepStrictEqual(fs.readdirSync(dir), [FILE], 'no temporary file left');
 });
+
+// the medium on d1, 6 and 7: the credential line names the launcher by its
+// real path, the one the overview names; a path a shell would read inside
+// double quotes gives the bare form instead
+test('the credential line: the launcher\'s real path in the launcher form; a path with a shell character in the bare form; both matched', () => {
+  const {credentialLine, isCredentialLine} = require('../lib/credentials-command');
+  const h = tmp('ch-held-');
+  fs.mkdirSync(path.join(h, 'bin'));
+  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), '');
+  const real = fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js'));
+  const good = credentialLine(whereIn(h), '@countinghouse/ch-access-github');
+  assert.strictEqual(good, `ch-access-github needs a credential: in your own terminal run \`node "${real}" credentials add ch-access-github\``);
+  assert.ok(isCredentialLine(good));
+  for (const odd of ['/home/a$b/.countinghouse', '/home/a"b/.countinghouse', '/home/a`b/.countinghouse']) {
+    const line = credentialLine({launcher: path.join(odd, 'bin', 'ch-local.js')}, '@countinghouse/ch-access-github');
+    assert.strictEqual(line, 'ch-access-github needs a credential: in your own terminal run `ch-local credentials add ch-access-github`', odd);
+    assert.ok(isCredentialLine(line));
+  }
+});

@@ -185,24 +185,10 @@ test('install\'s end: with no terminal, each module that needs a credential is n
   assert.strictEqual(await run(r, io), 0, io.err);
   // (the home's own launcher, which runs as printed: nothing puts ch-local
   // on PATH; A-firstrun d1, the fixed text business checked)
-  const launcher = path.join(h, 'bin', 'ch-local.js');
+  const launcher = fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js'));
   assert.ok(io.err.split('\n').includes(`ch-access-github needs a credential: in your own terminal run \`node "${launcher}" credentials add ch-access-github\``), io.err);
   assert.ok(!/GITHUB_TOKEN/.test(io.out), 'no environment variable is named');
   assert.ok(!(io.out + io.err).includes('secret-value-123'));
-});
-
-// A-firstrun d1: install's last line says what to do next, after the
-// credential lines; a refused install says nothing of the kind
-test('install\'s end: the last line on stdout is the fixed "next" line; a refused install prints none', async () => {
-  const r = release(); const h = home();
-  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
-  assert.strictEqual(await run(r, io), 0, io.err);
-  const out = io.out.trimEnd().split('\n');
-  assert.strictEqual(out[out.length - 1], 'Ready: in Claude Code, ask what countinghouse can do for you.');
-  assert.strictEqual(io.out.split('Ready: in Claude Code').length, 2, 'said once');
-  const refused = fakeIo({env: {COUNTINGHOUSE_HOME: home()}, exec: npm()});
-  assert.notStrictEqual(await install({pack: 'no-such-pack', from: r.from}, refused, r.allow), 0);
-  assert.ok(!(refused.out + refused.err).includes('Ready: in Claude Code'), refused.out);
 });
 
 test('install\'s end at a terminal: the add conversation stores the key; nothing entered skips the module, named', async () => {
@@ -219,7 +205,7 @@ test('install\'s end at a terminal: the add conversation stores the key; nothing
   const skip = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm()});
   Object.assign(skip, {terminal: true, readHidden: async () => '', ask: async () => 'n'});
   assert.strictEqual(await run(release(), skip), 0, skip.err);
-  assert.ok(skip.err.includes(`ch-access-github is not loaded until it has one: in your own terminal run \`node "${path.join(h2, 'bin', 'ch-local.js')}" credentials add ch-access-github\``), skip.err);
+  assert.ok(skip.err.includes(`ch-access-github is not loaded until it has one: in your own terminal run \`node "${fs.realpathSync.native(path.join(h2, 'bin', 'ch-local.js'))}" credentials add ch-access-github\``), skip.err);
 });
 
 // #413 section 9.4: install no longer drops the other packs; every installed
