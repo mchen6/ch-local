@@ -125,3 +125,23 @@ test('the launcher, the runtime\'s rule: none for a missing one, a backslash off
   }
   assert.strictEqual(safeLauncher(whereIn(path.join(base, 'none')), 'linux'), null, 'none installed');
 });
+
+// countinghouse #490's wire vectors for the file (heldBackFile, copied in
+// test/vectors/module-messages.json): every accepted file is one this writer
+// writes from the same verdict, and it never writes a refused one (the
+// reviewer's high on #106, 3, and round 2, 5)
+test('the runtime\'s heldBackFile vectors: each accepted file is written as given; no refused file is ever written', () => {
+  const V = require('./vectors/module-messages.json').heldBackFile;
+  assert.ok(V.accepted.length >= 5 && V.refused.length >= 16);
+  const h = tmp('ch-held-');   // no launcher here: the vectors carry none
+  const verdict = (modules) => new Map(modules.map((m) => [m.name, {kind: m.reason, root: m.root === 'not-installed' ? 'not installed' : m.root, via: m.via}]));
+  for (const {why, file} of V.accepted) {
+    assert.deepStrictEqual(JSON.parse(contentOf(whereIn(h), verdict(file.modules))), file, why);
+  }
+  for (const {why, file} of V.refused) {
+    const modules = Array.isArray(file.modules) ? file.modules.filter((m) => m != null && typeof m === 'object' && !Array.isArray(m)) : [];
+    let input;
+    try { input = verdict(modules); } catch (e) { continue; }
+    assert.notDeepStrictEqual(JSON.parse(contentOf(whereIn(h), input)), file, why);
+  }
+});
