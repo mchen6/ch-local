@@ -29,7 +29,7 @@ function home({accessUrl = `${GH}/mcp/`} = {}) {
   const where = layout({COUNTINGHOUSE_HOME: h}, () => '/nowhere');
   return {h, where, record: () => readModulesRecord(where)};
 }
-const bind = (h, m, v, entry) => store.bind(h, m, v, entry);
+const bind = (h, m, v, entry) => store.bind(h, m, v, entry, {held: require('./store-helpers').FIXTURE_HELD});
 const stored = (origin, value) => ({origin, source: 'stored', value});
 
 test('declared: the variable and origin of the one remote with a credential, from the active version', () => {
@@ -109,7 +109,7 @@ test('slotMatches and applyStates: a removed binding, a changed value, and one a
   assert.deepStrictEqual(mc.slotMatches(where, record(), ACCESS, id), {ok: true});
   bind(h, ACCESS, VAR, stored(GH, 'test-value-rotated'));
   assert.deepStrictEqual(mc.slotMatches(where, record(), ACCESS, id), {ok: false, why: 'changed'});
-  store.unbind(h, ACCESS);
+  store.unbind(h, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
   assert.deepStrictEqual(mc.slotMatches(where, record(), ACCESS, id), {ok: false, why: 'removed'});
   assert.strictEqual(mc.applyStates(where, record(), s.identities).get(ACCESS).state, 'removed');
   // added while running: usable in the store, no slot in this runtime
@@ -171,7 +171,7 @@ test('the carry-over, a version 2 store: read under the declared name, never rew
   // nothing is rewritten: the store keeps the earlier name until the user adds it
   assert.deepStrictEqual([...store.readStore(h).modules.get(ACCESS).keys()], [VAR]);
   // a remove deletes the module's binding whatever its name: nothing carries it back
-  store.unbind(h, ACCESS);
+  store.unbind(h, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
   const after = mc.bindings(where, record());
   assert.strictEqual(after.bindings.get(ACCESS), undefined);
   assert.deepStrictEqual(mc.carriedLines(after), []);

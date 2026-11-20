@@ -396,7 +396,7 @@ test('remove-pack: a module the pack raised goes back; one a remaining pack reco
 
 test('remove-pack: a removed module whose credential is stored says it is kept', async () => {
   const h = await devHome(release());
-  require('../lib/credential-store').bind(h.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-2'});
+  require('../lib/credential-store').bind(h.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-2'}, {held: require('./store-helpers').FIXTURE_HELD});
   const io = fakeIo({env: h.env});
   assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, io), 0, io.err);
   assert.match(io.out, /the credential stored for ch-access-github is kept: `ch-local credentials remove ch-access-github` removes it/);

@@ -92,7 +92,7 @@ test('remove: a key stored under COUNTINGHOUSE_GITHUB_TOKEN, read as GITHUB_TOKE
   const {storeModule, writeHome} = require('./store-helpers');
   storeModule(h, ACCESS, '0.2.0', {countinghouse: {role: 'part', remotes: [{name: 'github', url: `${ORIGIN}/mcp/`, credential: 'GITHUB_TOKEN'}]}});
   writeHome(h, {'ci-failure-triage': {[ACCESS]: '0.2.0'}});
-  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()});
+  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   const r = io(h);
   assert.strictEqual(await credentials({action: 'remove', name: 'ch-access-github'}, r), 0, r.err);
   assert.strictEqual(bound(h), null);
@@ -143,7 +143,7 @@ test('standard input: --to is required and must be the declared origin; never re
   assert.strictEqual(bound(h).value, rotated);
   // a binding for another origin is never replaced from standard input
   const other = home();
-  store.bind(other, ACCESS, VAR, {origin: 'https://old.example', source: 'stored', value: made()});
+  store.bind(other, ACCESS, VAR, {origin: 'https://old.example', source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   const rebind = io(other, {terminal: false, stdin: made()});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, rebind), 2);
   assert.match(rebind.err, /the credential stored for ch-access-github does not match this version: it sends its credential somewhere new \(https:\/\/api\.githubcopilot\.com; the stored one is for https:\/\/old\.example\); run `ch-local credentials add ch-access-github` at a terminal to allow that\. Nothing was changed\./);
@@ -157,7 +157,7 @@ test('standard input: --to is required and must be the declared origin; never re
 
 test('at a terminal, a binding for another origin is named before asking, then replaced', POSIX, async () => {
   const h = home();
-  store.bind(h, ACCESS, VAR, {origin: 'https://old.example', source: 'stored', value: made()});
+  store.bind(h, ACCESS, VAR, {origin: 'https://old.example', source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   const value = made();
   const f = io(h, {typed: value});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0, f.err);
@@ -265,7 +265,7 @@ test('uninstall removes the stored credentials, with or without --keep-data, and
   const {uninstall} = require('../lib/uninstall');
   for (const keepData of [false, true]) {
     const h = home();
-    store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()});
+    store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
     const f = fakeIo({env: {COUNTINGHOUSE_HOME: h}, homedir: tmp('ch-cred-user-'), answers: ['yes']});
     Object.assign(f, {pid: 4242, hostname: 'box-1', alive: () => false});
     assert.strictEqual(await uninstall({keepData}, f), 0, f.err);
@@ -290,7 +290,9 @@ test('a store that can\'t be written is said, nothing stored, never an unhandled
   try {
     const f = io(h, {typed: made()});
     assert.notStrictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0);
-    assert.match(f.err, /credentials could not be made \(EACCES\).*Nothing was changed\./s);
+    // (the store's lock, in the home, is the first thing made there: post-rel
+    // cred-race)
+    assert.match(f.err, /credentials\.lock could not be made \(EACCES\).*Nothing was changed\./s);
   } finally {
     fs.chmodSync(h, 0o700);
   }
@@ -303,7 +305,7 @@ test('a credentials file over 512 KiB, or one cut short around a value, is refus
   for (const shape of ['over', 'cut']) {
     const h = home();
     const value = made();
-    store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value});
+    store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value}, {held: require('./store-helpers').FIXTURE_HELD});
     const file = path.join(h, 'credentials', 'credentials.json');
     const whole = fs.readFileSync(file, 'utf8');
     if (shape === 'over') fs.writeFileSync(file, whole.replace('"v": 2', `"v": 2, "pad": "${'x'.repeat(520 * 1024)}"`));
@@ -334,8 +336,8 @@ test('Windows (win-acl stubbed): the home\'s own DACL is checked before a write;
   const seam = (homeAcl) => ({privateProblem, fileAcl: (p) => { if (p === realHome) { if (homeAcl instanceof Error) throw homeAcl; return homeAcl; } return mine; },
     makePrivateDirs: (dirs) => dirs.map(() => mine), createPrivate: (file, data) => fs.writeFileSync(file, data, {flag: 'wx'})});
   const entry = {origin: ORIGIN, source: 'stored', value: made()};
-  assert.throws(() => store.bind(h, ACCESS, VAR, entry, {platform: 'win32', acl: seam(open)}), /is accessible by S-1-5-32-545/);
-  assert.throws(() => store.bind(h, ACCESS, VAR, entry, {platform: 'win32', acl: seam(new Error('powershell failed'))}), /access list could not be read \(powershell failed\)/);
+  assert.throws(() => store.bind(h, ACCESS, VAR, entry, {held: require('./store-helpers').FIXTURE_HELD, platform: 'win32', acl: seam(open)}), /is accessible by S-1-5-32-545/);
+  assert.throws(() => store.bind(h, ACCESS, VAR, entry, {held: require('./store-helpers').FIXTURE_HELD, platform: 'win32', acl: seam(new Error('powershell failed'))}), /access list could not be read \(powershell failed\)/);
   assert.ok(!fs.existsSync(path.join(h, 'credentials')), 'nothing made under a home that failed');
 });
 
@@ -405,12 +407,12 @@ test('the hidden reader: input that ends mid-prompt aborts and restores the term
 // and removable, also with nothing installed
 test('remove: a key whose module is no longer installed is still removed, by its full or short name', async () => {
   const h = home();
-  store.bind(h, '@countinghouse/ch-gone', VAR, {origin: ORIGIN, source: 'stored', value: made()});
+  store.bind(h, '@countinghouse/ch-gone', VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   assert.strictEqual(await credentials({action: 'remove', name: 'ch-gone'}, io(h)), 0);
   assert.strictEqual(store.readStore(h).modules.get('@countinghouse/ch-gone'), undefined);
   // nothing installed at all
   fs.rmSync(path.join(h, 'modules.json'));
-  store.bind(h, '@countinghouse/ch-gone', VAR, {origin: ORIGIN, source: 'stored', value: made()});
+  store.bind(h, '@countinghouse/ch-gone', VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   const f = io(h);
   assert.strictEqual(await credentials({action: 'list'}, f), 0, f.err);
   assert.match(f.out, /^ch-gone {2}COUNTINGHOUSE_GITHUB_TOKEN {2}https:\/\/api\.githubcopilot\.com {2}stored {2}\(not installed/m);
@@ -450,7 +452,7 @@ test('the store takes every variable name the runtime takes: its grammar, copied
   assert.strictEqual(store.VARIABLE.source, '^[A-Za-z_][A-Za-z0-9_]*$');
   for (const v of ['lower_case', '_LEADING', `A${'B'.repeat(100)}`]) assert.ok(store.VARIABLE.test(v), v);
   const h = home();
-  store.bind(h, ACCESS, 'lower_case', {origin: ORIGIN, source: 'stored', value: made()});
+  store.bind(h, ACCESS, 'lower_case', {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   assert.ok(store.readStore(h).modules.get(ACCESS).has('lower_case'));
 });
 
@@ -471,7 +473,7 @@ test('standard input that held nothing, or stayed open and silent, is refused, n
 // origin is said as that, not as somewhere new
 test('a stored key for another variable name at the same origin is named as a rename', async () => {
   const h = home();
-  store.bind(h, ACCESS, 'OLD_NAME', {origin: ORIGIN, source: 'stored', value: made()});
+  store.bind(h, ACCESS, 'OLD_NAME', {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   const f = io(h, {terminal: false, stdin: `${made()}\n`});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, f), 2);
   assert.match(f.err, /it now names its credential COUNTINGHOUSE_GITHUB_TOKEN \(the stored key is OLD_NAME, for the same address, https:\/\/api\.githubcopilot\.com\)/);
@@ -491,7 +493,7 @@ test('install\'s end asks for each module, then says the restart once for all of
 // the Fable pass on L5a, F5: a gh login is only ever for GitHub's origin
 test('the store refuses an entry that pairs the gh login with another origin at add', () => {
   const h = home();
-  assert.throws(() => store.bind(h, ACCESS, VAR, {origin: 'https://api.example.com', source: 'gh'}), /a gh login is only ever used for https:\/\/api\.githubcopilot\.com/);
+  assert.throws(() => store.bind(h, ACCESS, VAR, {origin: 'https://api.example.com', source: 'gh'}, {held: require('./store-helpers').FIXTURE_HELD}), /a gh login is only ever used for https:\/\/api\.githubcopilot\.com/);
 });
 
 // the Fable pass on L5a, F2: where a key goes is said on standard error
@@ -509,7 +511,7 @@ test('add says the variable and destination on standard error, never only on sta
 // only its own module down, and the CLI can still remove it
 test('a variable named __proto__ is stored as an own key, and read back', () => {
   const h = home();
-  store.bind(h, ACCESS, '__proto__', {origin: ORIGIN, source: 'stored', value: made()});
+  store.bind(h, ACCESS, '__proto__', {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   assert.ok(store.readStore(h).modules.get(ACCESS).has('__proto__'));
 });
 
@@ -534,7 +536,7 @@ test('a hand-written gh entry for another origin is read, refused at use for tha
 // a file found wrong
 test('a read raced by an add is read again; raced twice it is transient, not a store problem that unloads', () => {
   const h = home();
-  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()});
+  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   const ownFile = require('../lib/own-file');
   const real = ownFile.readOwnFile;
   const raced = () => Object.assign(new Error('it changed while it was checked'), {code: 'NOT_PRIVATE', raced: true});
