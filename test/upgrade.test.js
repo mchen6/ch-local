@@ -256,7 +256,7 @@ test('offerAuto: a no leaves it off, and still unset is asked at the next instal
 
 // the review of #48 --------------------------------------------------------
 
-test('the yes is a person\'s at a terminal: a piped answer installs nothing; a no, an override and several packs are recorded too', async () => {
+test('the yes is a person\'s at a terminal: a piped answer installs nothing; a no and an override are recorded too', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const w = await npmWorld(release());
   try {
@@ -270,11 +270,8 @@ test('the yes is a person\'s at a terminal: a piped answer installs nothing; a n
     assert.match(no.out, /under semver a 0\.x minor or 0\.0\.x patch may break what works now/);
     const over = tty({env: {COUNTINGHOUSE_HOME: s.home, CH_LOCAL_DEV: '1'}, answers: ['yes'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, over, w.fromNpm), 1);
-    require('./store-helpers').editHome(s.home, (rec) => ({...rec, packs: {...rec.packs, other: {from: {release: '0.2.0'}, modules: {'@countinghouse/ch-pack-other': '0.3.0'}}}}));
-    const several = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], fetch: realFetch});
-    assert.strictEqual(await upgrade({}, several, w.fromNpm), 1);
     assert.deepStrictEqual(historyOf(s.home).map((e) => [e.outcome, e.reason || null]),
-      [['no-terminal', null], ['declined', null], ['override', 'CH_LOCAL_DEV'], ['several-packs', null]]);
+      [['no-terminal', null], ['declined', null], ['override', 'CH_LOCAL_DEV']]);
   } finally {
     await w.close();
     s.done();
@@ -431,3 +428,65 @@ test('a home with one pack and one the record lists as withdrawn upgrades: not "
     s.done();
   }
 });
+
+// L4 (#413 rev 3 section 9.6): a release is a tested set, installed as one.
+// Two packs share ch-step-redact at 0.2.0; ch-step-other is at 0.1.0. The
+// release pins ch-step-redact at 0.1.0 (back) and ch-step-other at 0.2.0.
+const TRIAGE_MODS = {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.1.0', '@countinghouse/ch-step-redact': '0.2.0'};
+const OTHER_MODS = {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.2.0', '@countinghouse/ch-step-other': '0.1.0'};
+function twoPacks() {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const {storeModule, editHome} = require('./store-helpers');
+  // (the store holds the versions the release does not pin, which it must
+  // keep, never sweep; one it pins comes from the release itself: install
+  // never puts other contents under a version the record names)
+  for (const [m, v] of [['@countinghouse/ch-step-redact', '0.2.0'], ['@countinghouse/ch-step-other', '0.1.0']]) storeModule(s.home, m, v, {countinghouse: {role: 'part'}, files: {kept: `${m}@${v}`}});
+  editHome(s.home, (r) => ({...r, packs: {'ci-failure-triage': {from: {release: '0.1.0'}, modules: TRIAGE_MODS}, other: {from: {release: '0.1.0'}, modules: OTHER_MODS}}}));
+  return s;
+}
+const stored = (home, m, v) => path.join(home, 'module-store', ...m.split('/'), v);
+
+test('L4: a home with two packs upgrades as one release: every pack to its pins, no version asked, each moving module said once with its packs, a move back said', async () => {
+  const s = twoPacks();
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /its modules move:\n  ch-step-other 0\.1\.0 -> 0\.2\.0 \(other\)\n  ch-step-redact 0\.2\.0 -> 0\.1\.0, back to an earlier version \(ci-failure-triage, other\)\n/);
+    assert.strictEqual(io.asked.length, 1, 'one question, the upgrade\'s own');
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0; ch-local rollback undoes it/);
+    const rec = recordOf(s.home);
+    assert.strictEqual(rec.packs['ci-failure-triage'].modules['@countinghouse/ch-step-redact'], '0.1.0');
+    assert.deepStrictEqual(rec.packs.other.modules, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});
+    assert.strictEqual(rec.modules['@countinghouse/ch-step-redact'].version, '0.1.0', 'the version that loads is the one the preview said');
+    assert.ok(!historyOf(s.home).some((e) => e.outcome === 'several-packs'));
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// the Reviewer on the L4 plan: a module moves back in one pack while another
+// pack (here withdrawn by the release, so not moved) holds it at the newer
+// version. The preview, what the store keeps and which version loads agree.
+test('L4: a module moving back in one pack while a withdrawn pack holds it newer: said for the pack that moves it, both versions kept, the moved one loads', async () => {
+  const s = twoPacks();
+  const w = await npmWorld(release(), {edit: withdrawFrom('other')});
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /it withdraws:\n  other /);
+    assert.match(io.out, /its modules move:\n  ch-step-redact 0\.2\.0 -> 0\.1\.0, back to an earlier version \(ci-failure-triage\)\n/);
+    assert.doesNotMatch(io.out, /ch-step-other 0\.1\.0 ->/, 'a withdrawn pack\'s modules do not move');
+    const rec = recordOf(s.home);
+    assert.strictEqual(rec.packs['ci-failure-triage'].modules['@countinghouse/ch-step-redact'], '0.1.0');
+    assert.strictEqual(rec.packs.other.modules['@countinghouse/ch-step-redact'], '0.2.0', 'the withdrawn pack keeps its own');
+    assert.strictEqual(rec.modules['@countinghouse/ch-step-redact'].version, '0.1.0', 'the live pack\'s version loads, as the preview said');
+    for (const v of ['0.1.0', '0.2.0']) assert.ok(fs.existsSync(stored(s.home, '@countinghouse/ch-step-redact', v)), `ch-step-redact ${v} kept in the store`);
+    assert.strictEqual(fs.readFileSync(path.join(stored(s.home, '@countinghouse/ch-step-redact', '0.2.0'), 'kept'), 'utf8'), '@countinghouse/ch-step-redact@0.2.0');
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
