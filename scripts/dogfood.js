@@ -14,9 +14,11 @@
 //   node scripts/dogfood.js --release-dir <dir> [--src ...] [--clone ...] [--ref ...]
 //
 // --release-dir: build a prepared local release into <dir> (absolute, new or
-// empty) and install nothing: <dir>/release (the tarballs), <dir>/pins.json
-// and <dir>/INSTALL.txt (the command that installs from it). What the install
-// doc's pre-release variant runs (A-firstrun d2: Matt's acceptance run).
+// empty) and install nothing. Self-contained, so the folder a person names is
+// the whole of what runs (the reviewer's high on #105, 1): <dir>/ch-local
+// (this checkout's launcher, packed and unpacked), <dir>/release (the
+// tarballs) and <dir>/pins.json. The setup skill and the install doc build
+// the one command that installs from it, from the folder alone (releaseLine).
 //
 // --src: local clones, <dir>/<repo>, used at their last fetched origin/main
 // (origin/master for countinghouse), through git archive, so no working tree
@@ -85,11 +87,25 @@ function homeFor(args, env = process.env) {
 // 2026-11-13). A home other than the default goes with every command, since
 // the launcher finds
 // its home by COUNTINGHOUSE_HOME.
-// The install command for a prepared local release (--release-dir), as the
-// install doc's pre-release variant gives it: this checkout's launcher, with
-// CH_LOCAL_DEV=1 and the release's pins
-function releaseLine({checkout = ROOT, dir}) {
-  return `CH_LOCAL_DEV=1 node ${word(path.join(checkout, 'bin', 'ch-local.js'))} install --pack ${PACK} --from ${word(path.join(dir, 'release'))} --unreleased-pins ${word(path.join(dir, 'pins.json'))}`;
+// The one command that installs from a prepared local release <dir>, as the
+// setup skill builds it: the folder's own launcher, each path one
+// single-quoted word, forward slashes (on Windows only, where a backslash
+// is the separator: anywhere else it is part of a name, and refused), the
+// folder's path absolute and only of CHARS's characters: on Windows X:/...
+// only (MSYS rewrites a /-rooted path for node.exe, so it could name a folder
+// never checked; //host neither), elsewhere one leading / (never one node
+// would read as an option or a shell as ~) (the high on #105, 2, and its
+// round 2, 3; the medium on round 1, 3 and 4) -> the line, or null
+// (a stage's name: <dir>/.partial-*, or .<name>.partial-* beside it)
+const STAGE = '.partial-';
+const CHARS = /^[A-Za-z0-9_/.:@%+=,~ -]*$/;
+const ROOTED = {win32: /^[A-Za-z]:\/(?!\/)/, other: /^\/(?!\/)/};
+const folderOk = (f, platform) => CHARS.test(f) && (platform === 'win32' ? ROOTED.win32 : ROOTED.other).test(f);
+const slashed = (dir, platform) => (platform === 'win32' ? String(dir).replace(/\\/g, '/') : String(dir)).replace(/(.)\/+$/, '$1');
+function releaseLine({dir}, platform = process.platform) {
+  const f = slashed(dir, platform);
+  if (!folderOk(f, platform)) return null;
+  return `CH_LOCAL_DEV=1 node '${f}/ch-local/bin/ch-local.js' install --pack ${PACK} --from '${f}/release' --unreleased-pins '${f}/pins.json'`;
 }
 
 function instructions({node, home, defaultHome = DEFAULT_HOME()}) {
@@ -189,6 +205,90 @@ async function buildRelease(plan, work, say) {
   return {release, pinsFile, pins};
 }
 
+// The prepared release put together as <dir>: release/, pins.json and the
+// folder's own launcher, ch-local/ (its tarball from the release, unpacked,
+// checked to hold every dependency it bundles: a checkout packed without
+// node_modules drops them silently). Assembled in a stage on <dir>'s own
+// file system (unpacked there, never renamed in from elsewhere), then:
+// - <dir> absent: its parent made now (after a successful build), the stage
+//   beside it, given the mode a new directory gets, renamed into place;
+// - <dir> an empty directory: the stage inside it (a mount point, or a link
+//   to another device, is its own file system), the parts moved up, pins.json
+//   last (its own mode, owner and ACL kept), and on a failure the parts moved
+//   removed.
+// Nothing half-made is left either way (the high on #105, 9, and its round
+// 2, 5; the medium on round 1, 1, 2, 6, 9 and 10) -> null, or the problem.
+function placeRelease({release, pinsFile, pins, dir}) {
+  const name = require('../package.json').name;
+  const own = pins[name] != null ? require('../lib/unpack').tarballName(name, pins[name].version) : null;
+  if (own == null || !fs.existsSync(path.join(release, own))) return `the release holds no ${name} tarball`;
+  const exists = fs.existsSync(dir);
+  let made = null;     // the first directory made above <dir>, removed on a failure
+  let stage = null;
+  const moved = [];
+  let done = false;
+  try {
+    if (!exists) made = fs.mkdirSync(path.dirname(dir), {recursive: true}) || null;
+    stage = fs.mkdtempSync(exists ? path.join(dir, STAGE) : path.join(path.dirname(dir), `.${path.basename(dir)}${STAGE}`));
+    fs.cpSync(release, path.join(stage, 'release'), {recursive: true});
+    fs.copyFileSync(pinsFile, path.join(stage, 'pins.json'));
+    // (the archive on stdin: GNU tar, Git Bash's, reads C:... as a host)
+    const tar = run('tar', ['-x', '-z', '-f', '-', '-C', stage], {input: fs.readFileSync(path.join(release, own)), encoding: 'buffer'});
+    if (tar.error != null || tar.signal != null || tar.status !== 0) return `${own} could not be unpacked (${tar.error != null ? tar.error.code : tar.signal != null ? tar.signal : `tar exit ${tar.status}`})`;
+    fs.renameSync(path.join(stage, 'package'), path.join(stage, 'ch-local'));
+    const problem = bundledProblem(path.join(stage, 'ch-local'), own);
+    if (problem != null) return problem;
+    if (!exists) {
+      // (a new directory's mode, not mkdtemp's 0700)
+      const umask = process.umask();
+      fs.chmodSync(stage, 0o777 & ~umask);
+      fs.renameSync(stage, dir);
+      stage = null;
+      done = true;
+      return null;
+    }
+    // (still empty but for this stage: nothing made meanwhile is replaced;
+    // the medium on round 2, 8)
+    const now = fs.readdirSync(dir).filter((n) => n !== path.basename(stage));
+    if (now.length > 0) return `${dir} is no longer empty (${now.slice(0, 3).join(', ')}): nothing was put there`;
+    for (const part of ['ch-local', 'release', 'pins.json']) {
+      fs.renameSync(path.join(stage, part), path.join(dir, part));
+      moved.push(part);
+    }
+    done = true;
+    return null;
+  } catch (err) {
+    return err.message;
+  } finally {
+    if (!done) {
+      for (const part of moved) fs.rmSync(path.join(dir, part), {recursive: true, force: true});
+      // (the parents this run made, with the stage in them: the medium on
+      // round 2, 1)
+      if (made != null) fs.rmSync(made, {recursive: true, force: true});
+    }
+    if (stage != null) fs.rmSync(stage, {recursive: true, force: true});
+  }
+}
+
+// The unpacked ch-local holds every dependency it bundles, each loadable
+// with its own dependencies (a checkout packed without node_modules drops
+// them silently; bundleDependencies true bundles them all) -> null, or the
+// problem, naming the tarball
+function bundledProblem(dir, own) {
+  let manifest;
+  try { manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch (err) { return `${own}: its package.json can't be read (${err.message})`; }
+  const listed = manifest.bundleDependencies != null ? manifest.bundleDependencies : manifest.bundledDependencies;
+  const bundled = listed === true ? Object.keys(manifest.dependencies || {}) : Array.isArray(listed) ? listed : [];
+  if (bundled.length === 0) return null;
+  // (each one loaded from the unpacked tree, as the launcher will: a
+  // dependency of a dependency missing fails here, not at the user's
+  // install)
+  const r = run(process.execPath, ['-e', `for (const d of ${JSON.stringify(bundled)}) { try { require(d); } catch (e) { console.log(d); } }`], {cwd: dir});
+  if (r.error != null || r.status !== 0) return `${own}: its bundled dependencies could not be checked (${r.error != null ? r.error.code : `exit ${r.status}`})`;
+  const lacking = String(r.stdout).split('\n').filter(Boolean);
+  return lacking.length > 0 ? `${own} lacks the dependencies it bundles (${lacking.join(', ')}): pack ch-local from a checkout with its node_modules installed (npm ci)` : null;
+}
+
 // Each local clone's ref, resolved to its commit -> null or a problem.
 function resolveRefs(plan) {
   for (const p of plan) {
@@ -217,27 +317,27 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   // a prepared local release only: built into the directory, kept, nothing
   // installed; the command that installs from it is printed
   if (args.releaseDir != null) {
-    const dir = args.releaseDir;
+    const dir = path.resolve(args.releaseDir);
+    if (releaseLine({dir}) == null) return fail(`${dir}: a release folder's path uses only ASCII letters, digits, spaces and _ / . : @ % + = , ~ - (the setup skill refuses any other)`, 2);
     let st = null;
     try { st = fs.statSync(dir); } catch (e) { st = null; }
-    if (st != null && (!st.isDirectory() || fs.readdirSync(dir).length > 0)) return fail(`${dir} is not a new or empty directory: --release-dir builds into one`, 2);
+    const left = st != null && st.isDirectory() ? fs.readdirSync(dir) : [];
+    // (a stage an interrupted run left is named, not hidden: the medium on
+    // round 2, 9)
+    if (left.length > 0 && left.every((n) => n.startsWith(STAGE))) return fail(`${dir} holds ${left.join(', ')}, left by an interrupted dogfood run: remove it, then run again`, 2);
+    if (st != null && (!st.isDirectory() || left.length > 0)) return fail(`${dir} is not a new or empty directory: --release-dir builds into one`, 2);
     // built in a working directory (the sources, the lockfile's scratch),
-    // removed after; only the release, its pins and the command reach <dir>,
-    // and only once the whole build has succeeded (nothing half-made there)
+    // removed after; the folder put together by placeRelease
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
     try {
       const built = await buildRelease(plan, work, say);
       if (built.problem != null) return fail(built.problem);
-      fs.mkdirSync(dir, {recursive: true});
-      fs.cpSync(built.release, path.join(dir, 'release'), {recursive: true});
-      fs.copyFileSync(built.pinsFile, path.join(dir, 'pins.json'));
-      const line = releaseLine({dir});
-      fs.writeFileSync(path.join(dir, 'INSTALL.txt'), `Install pack 1 from this prepared local release (for bash: on Windows, Git Bash or WSL):\n\n  ${line}\n`);
+      const problem = placeRelease({release: built.release, pinsFile: built.pinsFile, pins: built.pins, dir});
+      if (problem != null) return fail(problem);
       say('');
-      if (process.platform === 'win32') say('This command is for bash: run it in Git Bash or WSL.');
-      say(`A prepared local release is in ${dir}; nothing was installed. Its INSTALL.txt holds the command that installs from it:`);
+      say(`A prepared local release is in ${dir}; nothing was installed. It installs with this line, run as written in bash, zsh or Git Bash:`);
       say('');
-      say(`  ${line}`);
+      say(`  ${releaseLine({dir})}`);
       return 0;
     } catch (err) {
       return fail(err.message);
@@ -283,4 +383,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, releaseLine, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};
+module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};
