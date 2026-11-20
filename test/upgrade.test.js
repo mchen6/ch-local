@@ -28,7 +28,7 @@ const registry = (latest) => async (url) => {
 // ch-local, checked by its provenance, its pins read from its verified bytes,
 // shown with what it adds, and on a yes installed through install. A fake
 // registry and the test root reach it only as its test-only argument.
-const {npmWorld} = require('./npm-world');
+const {npmWorld, asInstalled} = require('./npm-world');
 const {release, npm} = require('./install-helpers');
 const recordOf = (home) => JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8'));
 const historyOf = (home) => { try { return fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (e) { return []; } };
@@ -162,7 +162,9 @@ test('what the new release adds is shown before the question', async () => {
   const w = await npmWorld(release(), {edit: (doc) => { doc.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
-    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    // (the running ch-local is the installed release: its pins verify the
+    // store's modules, the Reviewer's high on L4, 3)
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
     assert.match(io.out, /it adds:\n  ch-access-github's key goes to https:\/\/api\.example\.invalid as GITHUB_TOKEN \(was https:\/\/api\.githubcopilot\.com as GITHUB_TOKEN\)\n/);
   } finally {
     await w.close();
@@ -527,8 +529,17 @@ test('L4: releaseMoves judges each pack against its own new list: a module moved
   const allow = {packs: {a: {modules: ['p']}, y: {modules: ['m']}, back: {modules: ['q']}}, pins: {m: {version: '1.1.0'}, p: {version: '1.0.1'}, q: {version: '1.9.0'}}};
   assert.deepStrictEqual(releaseMoves(record, allow, ['a', 'back']), {
     moves: [{module: 'p', from: '1.0.0', to: '1.0.1', back: false, packs: ['a']}, {module: 'q', from: '2.0.0', to: '1.9.0', back: true, packs: ['back']}],
-    dropped: [{module: 'm', packs: ['a']}]
+    dropped: [{module: 'm', packs: ['a'], keptBy: []}]
   });
+  // (a module one pack drops and another moved pack keeps stays running
+  // through it: the Reviewer's high on L4, 6)
+  const both = {packs: {a: {modules: {m: '1.0.0'}}, b: {modules: {m: '1.0.0'}}}, modules: {m: {version: '1.0.0'}}};
+  const keep = {packs: {a: {modules: []}, b: {modules: ['m']}}, pins: {m: {version: '1.0.0'}}};
+  const r = releaseMoves(both, keep, ['a', 'b']);
+  assert.deepStrictEqual(r.dropped, [{module: 'm', packs: ['a'], keptBy: ['b']}]);
+  assert.deepStrictEqual(require('../lib/upgrade').movesLines(r), ['it no longer lists:\n  m (a): it stays running through b']);
+  // a pack not served (withdrawn in the record, say) keeps nothing running
+  assert.deepStrictEqual(releaseMoves(both, keep, ['a', 'b'], ['a']).dropped, [{module: 'm', packs: ['a'], keptBy: []}]);
 });
 
 // the medium on L4, 3: every pack an install moves is held to the operator's
@@ -557,3 +568,69 @@ test('L4: an upgrade moving a pack the operator\'s allowlist refuses moves nothi
   }
 });
 
+
+// the Reviewer's high on L4, 4: a pack the record has withdrawn that the
+// release lists again is served again: the preview says so, its modules are
+// what it adds, and its credentials are asked for, though nothing else of
+// the home is served
+test('L4: a withdrawn pack listed again: "served again" before the question; installed as a pack, its credentials asked', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
+  require('./store-helpers').editHome(s.home, (r) => r, {release: {packs: {}}});
+  assert.ok(recordOf(s.home).withdrawn.length > 0);
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
+    assert.match(io.out, /it adds:\n  ci-failure-triage is served again: its modules start after the upgrade\n/);
+    assert.deepStrictEqual(recordOf(s.home).withdrawn, []);
+    assert.match(io.err, /^ch-access-github needs a credential: run `ch-local credentials add ch-access-github`$/m);
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// the Reviewer's high on L4, 5: the allowlist check runs again on the plan
+// made under the lock, so a pack the record gained after install's first
+// read (another ch-local's add-pack) is held to it too
+test('L4: a pack added to the record while install fetched is held to the operator\'s allowlist under the lock', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage', 'other'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
+  const file = path.join(s.home, 'modules.json');
+  const both = fs.readFileSync(file, 'utf8');
+  require('./store-helpers').editHome(s.home, (r) => { delete r.packs.other; return r; });
+  assert.deepStrictEqual(Object.keys(recordOf(s.home).packs), ['ci-failure-triage']);
+  // the runtime's ceiling reader: the triage pack's modules only
+  const dir = path.join(s.home, 'app', 'node_modules', 'countinghouse', 'lib');
+  fs.mkdirSync(dir, {recursive: true});
+  const ceiling = {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], conversation: true,
+    modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact']}};
+  fs.writeFileSync(path.join(dir, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)})};\n`);
+  require('../lib/ceiling').resetForTests();
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    // between install's first read and its lock: the record gains "other"
+    const write = io.stdout.write.bind(io.stdout);
+    io.stdout.write = (x) => { if (/^fetching \d+ package/.test(String(x))) fs.writeFileSync(file, both); return write(x); };
+    assert.notStrictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0);
+    assert.match(io.err, /the pack "other" is not allowed on this machine/);
+    assert.strictEqual(recordOf(s.home).runtime.versions['@countinghouse/ch-local'], '0.1.0', 'nothing installed');
+    // allowed, it was still never fetched for: refused as a home that changed
+    // (the medium on the high round, 4)
+    fs.rmSync(path.join(s.home, 'app', 'node_modules', 'countinghouse'), {recursive: true, force: true});
+    require('../lib/ceiling').resetForTests();
+    require('./store-helpers').editHome(s.home, (r) => { delete r.packs.other; return r; });
+    const again = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    const write2 = again.stdout.write.bind(again.stdout);
+    again.stdout.write = (x) => { if (/^fetching \d+ package/.test(String(x))) fs.writeFileSync(file, both); return write2(x); };
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, again, w.fromNpm), w.installed), 1);
+    assert.match(again.err, /this home's packs changed while this install ran \(other\): run it again; nothing was installed/);
+    assert.strictEqual(recordOf(s.home).runtime.versions['@countinghouse/ch-local'], '0.1.0', 'nothing installed');
+  } finally {
+    require('../lib/ceiling').resetForTests();
+    await w.close();
+    s.done();
+  }
+});
