@@ -31,8 +31,9 @@ const writeStampFile = (h, doc, mode = 0o600) => { const f = path.join(h, 'upgra
 const stamp = (h) => { try { return JSON.parse(fs.readFileSync(path.join(h, 'upgrade-check.json'), 'utf8')); } catch (e) { return {}; } };
 const historyOf = (h) => { try { return fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch (e) { return []; } };
 // pins: the running release's, when a test's differ from the world's
-const run = (h, w, {now = Date.now(), env = {}, exec = npm(TO), pins = null} = {}) => {
-  const io = fakeIo({env: Object.assign({COUNTINGHOUSE_HOME: h}, env), exec, fetch: (u, o) => globalThis.fetch(u, o)});
+// onFetch: called before each registry request (a home changed meanwhile)
+const run = (h, w, {now = Date.now(), env = {}, exec = npm(TO), pins = null, onFetch = null} = {}) => {
+  const io = fakeIo({env: Object.assign({COUNTINGHOUSE_HOME: h}, env), exec, fetch: (u, o) => { if (onFetch != null) onFetch(u); return globalThis.fetch(u, o); }});
   const go = () => autoApply({io, now, fromNpm: w != null ? w.fromNpm : {}}).then((r) => Object.assign(r, {io}));
   return w != null && w.pinsDoc != null ? asInstalled(pins || w.pinsDoc.pins, go, w.installed) : go();
 };
@@ -187,6 +188,27 @@ test('L4: a home with two packs upgrades automatically after the wait: both pack
     assert.deepStrictEqual(Object.keys(after.packs).sort(), ['ci-failure-triage', 'other']);
     for (const [p, e] of Object.entries(after.packs)) for (const [m, v] of Object.entries(e.modules)) assert.strictEqual(v, w.pinsDoc.pins[m].version, `${p} ${m}`);
     assert.ok(!historyOf(h).some((e) => e.outcome === 'several-packs'));
+  } finally {
+    await w.close();
+  }
+});
+
+// the Reviewer's high on #101, round 2: a home changed while the automatic
+// upgrade was prepared is not installed; said once
+test('L4: a home changed while the automatic upgrade was prepared: not installed, said once', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home({packs: ['ci-failure-triage', 'other']});
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const file = path.join(h, 'modules.json');
+    let changed = null;
+    // after the record is judged, before the install: "other" is removed
+    const onFetch = () => { if (changed == null) { require('./store-helpers').editHome(h, (r) => { delete r.packs.other; return r; }); changed = fs.readFileSync(file, 'utf8'); } };
+    const r = await run(h, w, {now: now + 73 * H, onFetch});
+    assert.strictEqual(r.outcome, 'home-changed', r.line);
+    assert.strictEqual(r.line, `ch-local ${TO} was not installed: this home changed while the upgrade was prepared; the next check judges it again`);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), changed, 'nothing written');
   } finally {
     await w.close();
   }

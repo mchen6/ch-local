@@ -902,3 +902,33 @@ test('migration: pack.* settings become enabled.<module> in the same install, of
   const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: h});
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)).filter((e) => /ci-failure-triage/.test(e.setting)), []);
 });
+
+// the medium on #101 round 2, 2: an install that judged no record (install,
+// add-pack) refuses when the record gained a pack between its first read and
+// its lock: that pack was never fetched for, asked about or checked
+test('a pack the record gains while install reads its tarballs: refused, nothing installed', async () => {
+  const home = tmp('ch-home-');
+  const r = release();
+  require('./install-helpers').installedHome(home, ['ci-failure-triage', 'other'], {r, runtime: {'@countinghouse/ch-local': '0.2.0', countinghouse: '8.0.0'}});
+  const file = path.join(home, 'modules.json');
+  const both = fs.readFileSync(file, 'utf8');
+  require('./store-helpers').editHome(home, (rec) => { delete rec.packs.other; return rec; });
+  const one = fs.readFileSync(file, 'utf8');
+  // the first tarball read, before the lock: another ch-local adds "other"
+  const read = fs.readFileSync;
+  let changed = false;
+  fs.readFileSync = function (p, ...rest) {
+    if (!changed && typeof p === 'string' && p.startsWith(r.from) && p.endsWith('.tgz')) { changed = true; fs.writeFileSync(file, both); }
+    return read.call(this, p, ...rest);
+  };
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 1, io.err);
+    assert.ok(changed, 'the record changed during the read');
+    assert.match(io.err, /this home's packs changed while this install ran \(other\): run it again; nothing was installed/);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), both, 'nothing written');
+  } finally {
+    fs.readFileSync = read;
+  }
+  assert.notStrictEqual(one, both);
+});

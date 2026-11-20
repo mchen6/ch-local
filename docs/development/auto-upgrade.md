@@ -122,7 +122,12 @@ those are dropped anyway (below).
    unknown module holds the upgrade back, and everything the release has it
    send or call is listed, as for a new module.
 
-   A pack the record has withdrawn that the release lists again is served
+   What runs is start's own rule (`withdrawnNames`): a pack the running
+   release doesn't list, or one the record has withdrawn, is not running, and
+   neither is a module only such a pack lists. A module is verified by the
+   store holding it whole at the pin, its directory and its marker.
+
+   A pack that isn't running and that the release lists is served
    again ("<pack> is served again"). Its modules are new to the running set,
    so it holds an automatic upgrade back. `ch-local upgrade` installs it and
    asks for its credentials.
@@ -143,6 +148,15 @@ those are dropped anyway (below).
    earlier ch-local made is told to run `ch-local install` again. Every
    pack an install moves is held to the operator's allowlist, again under
    the lock.
+
+   **The install acts only on the record that was judged.** `ch-local upgrade`
+   and the automatic upgrade pass install a digest of the record they judged:
+   its packs with their versions, and its withdrawn list. Under the lock,
+   install refuses a record that differs ("this home changed while the
+   upgrade was prepared; run it again"). That covers a pack added during
+   the question, or one removed, or a rollback, during the fetch, and it
+   writes nothing back. The automatic upgrade says it once, and the next
+   check judges the home as it is then.
 
    **A pack the user hasn't installed** is never installed by an automatic
    upgrade. So a change to it, an identity change included, never blocks

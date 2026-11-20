@@ -479,7 +479,9 @@ test('L4: a module moving back in one pack while a withdrawn pack holds it newer
   const w = await npmWorld(release(), {edit: withdrawFrom('other')});
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
-    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    // (the running release serves both packs: start's rule, the Reviewer's
+    // high on #101, round 2)
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
     assert.match(io.out, /it withdraws:\n  other /);
     assert.match(io.out, /its modules move:\n  ch-step-redact 0\.2\.0 -> 0\.1\.0, back to an earlier version \(ci-failure-triage\)\n/);
     assert.doesNotMatch(io.out, /ch-step-other 0\.1\.0 ->/, 'a withdrawn pack\'s modules do not move');
@@ -591,46 +593,67 @@ test('L4: a withdrawn pack listed again: "served again" before the question; ins
   }
 });
 
-// the Reviewer's high on L4, 5: the allowlist check runs again on the plan
-// made under the lock, so a pack the record gained after install's first
-// read (another ch-local's add-pack) is held to it too
-test('L4: a pack added to the record while install fetched is held to the operator\'s allowlist under the lock', async () => {
+// the Reviewer's high on #101, round 2: install acts only on the record the
+// upgrade judged; a home changed during the question or the fetch refuses,
+// and nothing is written
+const changedDuring = async (s, w, {when, change}) => {
+  const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+  if (when === 'question') {
+    const ask = io.ask;
+    io.ask = async (q) => { change(); return ask(q); };
+  } else {
+    const write = io.stdout.write.bind(io.stdout);
+    io.stdout.write = (x) => { if (/^fetching \d+ package/.test(String(x))) change(); return write(x); };
+  }
+  const code = await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed);
+  return {code, io};
+};
+test('L4: a home changed while the upgrade was prepared refuses: a pack added during the question, one removed or a rollback during the fetch', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   require('./install-helpers').installedHome(s.home, ['ci-failure-triage', 'other'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
   const file = path.join(s.home, 'modules.json');
   const both = fs.readFileSync(file, 'utf8');
   require('./store-helpers').editHome(s.home, (r) => { delete r.packs.other; return r; });
-  assert.deepStrictEqual(Object.keys(recordOf(s.home).packs), ['ci-failure-triage']);
-  // the runtime's ceiling reader: the triage pack's modules only
-  const dir = path.join(s.home, 'app', 'node_modules', 'countinghouse', 'lib');
-  fs.mkdirSync(dir, {recursive: true});
-  const ceiling = {state: 'trusted', file: '/etc/countinghouse/ceiling.json', ceiling: {forbid: [], conversation: true,
-    modules: ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact']}};
-  fs.writeFileSync(path.join(dir, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)})};\n`);
-  require('../lib/ceiling').resetForTests();
+  const one = fs.readFileSync(file, 'utf8');
   const w = await npmWorld(release());
   try {
-    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
-    // between install's first read and its lock: the record gains "other"
-    const write = io.stdout.write.bind(io.stdout);
-    io.stdout.write = (x) => { if (/^fetching \d+ package/.test(String(x))) fs.writeFileSync(file, both); return write(x); };
-    assert.notStrictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0);
-    assert.match(io.err, /the pack "other" is not allowed on this machine/);
-    assert.strictEqual(recordOf(s.home).runtime.versions['@countinghouse/ch-local'], '0.1.0', 'nothing installed');
-    // allowed, it was still never fetched for: refused as a home that changed
-    // (the medium on the high round, 4)
-    fs.rmSync(path.join(s.home, 'app', 'node_modules', 'countinghouse'), {recursive: true, force: true});
-    require('../lib/ceiling').resetForTests();
-    require('./store-helpers').editHome(s.home, (r) => { delete r.packs.other; return r; });
-    const again = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
-    const write2 = again.stdout.write.bind(again.stdout);
-    again.stdout.write = (x) => { if (/^fetching \d+ package/.test(String(x))) fs.writeFileSync(file, both); return write2(x); };
-    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, again, w.fromNpm), w.installed), 1);
-    assert.match(again.err, /this home's packs changed while this install ran \(other\): run it again; nothing was installed/);
-    assert.strictEqual(recordOf(s.home).runtime.versions['@countinghouse/ch-local'], '0.1.0', 'nothing installed');
+    const cases = [
+      ['a pack added during the question', one, 'question', () => fs.writeFileSync(file, both)],
+      ['a pack removed during the fetch', both, 'fetch', () => fs.writeFileSync(file, one)],
+      // (a rollback: the same packs, another version)
+      ['a rollback during the fetch', one, 'fetch', () => {
+        const r = JSON.parse(one);
+        r.packs['ci-failure-triage'].modules['@countinghouse/ch-step-redact'] = '0.0.9';
+        r.modules['@countinghouse/ch-step-redact'].version = '0.0.9';
+        fs.writeFileSync(file, JSON.stringify(r));
+      }]
+    ];
+    for (const [what, start, when, change] of cases) {
+      fs.writeFileSync(file, start);
+      let changed = null;
+      const {code, io} = await changedDuring(s, w, {when, change: () => { change(); changed = fs.readFileSync(file, 'utf8'); }});
+      assert.strictEqual(code, 1, `${what}: ${io.err}`);
+      assert.match(io.err, /this home changed while the upgrade was prepared; run it again; nothing was installed/, what);
+      // the record is the changed one, untouched: no pack it lacks is written back
+      assert.strictEqual(fs.readFileSync(file, 'utf8'), changed, `${what}: nothing written`);
+    }
   } finally {
-    require('../lib/ceiling').resetForTests();
     await w.close();
     s.done();
   }
+});
+
+// the medium on #101 round 2, 3: a pack the record holds as live that
+// neither the running release nor the new one lists is withdrawn by this
+// upgrade (its modules go into the record's withdrawn list), so it is said
+test('releaseSelection: start\'s running rule; withdrawn is every pack the record has not withdrawn that the release does not list', () => {
+  const {releaseSelection} = require('../lib/packs');
+  const rec = {packs: {a: {modules: {m: '1.0.0'}}, x: {modules: {n: '1.0.0'}}, w: {modules: {k: '1.0.0'}}}, modules: {m: {version: '1.0.0'}, n: {version: '1.0.0'}, k: {version: '1.0.0'}}, withdrawn: ['k']};
+  const running = {packs: {a: {modules: ['m']}, w: {modules: ['k']}}};
+  // the new release lists a and w (w served again), not x
+  assert.deepStrictEqual(releaseSelection(rec, {packs: {a: {modules: ['m']}, w: {modules: ['k']}}}, running), {withdrawn: ['x'], served: ['a', 'w'], target: {pack: 'a'}});
+  // it lists only w: a is withdrawn, w is the target
+  assert.deepStrictEqual(releaseSelection(rec, {packs: {w: {modules: ['k']}}}, running), {withdrawn: ['a', 'x'], served: ['w'], target: {pack: 'w'}});
+  // none: the runtime only
+  assert.deepStrictEqual(releaseSelection(rec, {packs: {}}, running).target, {runtimeOnly: true});
 });
