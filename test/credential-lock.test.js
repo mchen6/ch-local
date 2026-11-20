@@ -319,7 +319,7 @@ test('held is branded: a look-alike is refused; the test-only factory and the fi
   assert.ok(!/FIXTURE_HELD/.test(text));
   // defined there, and nothing in the store calls it
   assert.match(text, /^function testOnlyHeld\(/m);
-  assert.ok(!/[^.\w]testOnlyHeld\(\)/.test(text.replace(/^function testOnlyHeld\(.*$/m, '')), 'never called in the store');
+  assert.ok(!/\btestOnlyHeld\s*\(/.test(text.replace(/^function testOnlyHeld\(.*$/m, '')), 'never called in the store, with or without arguments');
 });
 
 // the reviewer's high on #102, 1: with no home, remove never shows back its
@@ -364,11 +364,25 @@ test('uninstall: a store that can\'t be removed leaves the record and says so, e
   let r;
   try { r = await uninstall(h); } finally { fs.rmSync = rmSync; }
   assert.strictEqual(r.code, 1);
-  assert.match(r.u.err, /the stored credentials could not be removed \(EBUSY\); nothing else was removed\. Close what has .* open and run `ch-local uninstall` again\n/);
+  assert.match(r.u.err, /the stored credentials could not be removed \(EBUSY\)\. Close what has .* open and run `ch-local uninstall` again; meanwhile revoke the credentials you gave it: .*OTHER_TOKEN/);
   assert.ok(!/nothing was removed/.test(r.u.out), 'said once');
   assert.ok(fs.existsSync(path.join(h, 'modules.json')), 'the record left, so it can be run again');
   assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), value);
   assert.strictEqual((await uninstall(h)).code, 0, 'run again: done');
+
+  // (the medium on round 1, 1) the record failing after the keys went: said
+  // with the keys to revoke, exit 1, never an unhandled error
+  const j = home();
+  assert.strictEqual(await add(j, 'ch-other-step', made(), OTHER_ORIGIN), 0);
+  fs.rmSync = function(p, ...rest) {
+    if (path.basename(String(p)) === 'modules.json') throw Object.assign(new Error('perm'), {code: 'EPERM'});
+    return rmSync.call(this, p, ...rest);
+  };
+  let rec;
+  try { rec = await uninstall(j); } finally { fs.rmSync = rmSync; }
+  assert.strictEqual(rec.code, 1);
+  assert.match(rec.u.err, /the record \(the stored credentials are removed\) could not be removed \(EPERM\)\..*revoke the credentials you gave it: .*OTHER_TOKEN/);
+  assert.ok(!fs.existsSync(path.join(j, 'credentials')));
 
   const k = home();
   const rmdirSync = fs.rmdirSync;
@@ -379,7 +393,7 @@ test('uninstall: a store that can\'t be removed leaves the record and says so, e
   let left;
   try { left = await uninstall(k); } finally { fs.rmdirSync = rmdirSync; }
   assert.strictEqual(left.code, 0, left.u.err);
-  assert.match(left.u.out, /what is not ch-local's is left/);
+  assert.match(left.u.out, /itself could not be removed \(ENOTEMPTY\) and is left/);
   assert.match(left.u.out, /Revoke the credentials you gave it: /);
 });
 
