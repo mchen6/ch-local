@@ -243,3 +243,70 @@ test('auto-apply and upgrade judge additions by homeDescription, never the bundl
     assert.ok(!/\binstalledDescription\b/.test(text), f);
   }
 });
+
+// the reviewer's high on #103, 1: only an app that is not there is "no
+// app"; one there that is refused gives unknown pins, never the bundled
+// release's, even of the same version
+test('an app whose package.json is refused (a link, a directory, a FIFO, over the bound): unknown, never the bundled pins of the same version', () => {
+  const sameButOther = () => ({release: {version: '0.9.0', security: null}, packs: {a: {modules: [A, P]}}, modules: {[A]: DA, [P]: DP},
+    pins: {[A]: {version: '1.0.0', integrity: integrityOf(A, '1.0.0')}, [P]: {version: '2.0.0', integrity: integrityOf(P, '2.0.0')}}});
+  // (the bundled pins would describe both modules: they name the stored bytes)
+  {
+    const {where, record} = ownHome();
+    assert.deepStrictEqual(homeDescription(where, record, sameButOther()).modules, {[A]: DA, [P]: DP}, 'no app: the bundled pins');
+  }
+  const refused = {
+    'a directory': (f) => { fs.rmSync(f); fs.mkdirSync(f); },
+    'over the bound': (f) => fs.writeFileSync(f, ' '.repeat(64 * 1024 + 1)),
+  };
+  if (process.platform !== 'win32') {
+    refused['a link'] = (f) => { const real = `${f}.real`; fs.renameSync(f, real); fs.symlinkSync(real, f); };
+    refused['a FIFO'] = (f) => { fs.rmSync(f); require('node:child_process').execFileSync('mkfifo', [f]); };
+  }
+  for (const [label, make] of Object.entries(refused)) {
+    const {home, where, record} = ownHome();
+    const dir = app(home);
+    make(path.join(dir, 'package.json'));
+    assert.strictEqual(ownReleasePins(where, record, sameButOther()), null, label);
+    assert.deepStrictEqual(homeDescription(where, record, sameButOther()).modules, {[A]: null, [P]: null}, label);
+  }
+  // the app's directory there but its package.json missing: no app
+  const {home, where, record} = ownHome();
+  fs.rmSync(path.join(app(home), 'package.json'));
+  assert.deepStrictEqual(homeDescription(where, record, sameButOther()).modules, {[A]: DA, [P]: DP});
+});
+
+// the reviewer's high on #103, 2: an older running release doesn't list a
+// newer pack because it never knew it, not because it withdrew it
+test('a pack an older running release doesn\'t list is running; a release at least as new withdraws by not listing', () => {
+  const B = '@countinghouse/ch-pack-b';
+  const {home, where, record} = ownHome();
+  storeModule(home, B, '3.0.0');
+  const doc = ownDoc();
+  doc.packs.b = {modules: [B]};
+  doc.modules[B] = {...DA, calls: []};
+  doc.pins[B] = pinOf(B, '3.0.0', 3);
+  app(home, {doc});
+  const r = {...record, packs: {...record.packs, b: {modules: {[B]: '3.0.0'}}}, modules: {...record.modules, [B]: {version: '3.0.0'}}};
+  const older = {...bundled(), release: {version: '0.8.0', security: null}};
+  assert.deepStrictEqual(homeDescription(where, r, older).packs.b, {modules: [B]}, 'an older release never knew b');
+  assert.deepStrictEqual(homeDescription(where, r, bundled()).packs.b, {modules: [], withdrawn: true}, '1.4.0 no longer lists it');
+});
+
+// the reviewer's high on #103, 3: the reader's contract holds for a path
+// under a file (ENOTDIR), as for a link
+test('readBoundedFile: null under a path that is not a directory, never a throw', () => {
+  const {readBoundedFile} = require('../lib/own-file');
+  const dir = tmp('ch-read-');
+  fs.writeFileSync(path.join(dir, 'f'), 'x');
+  assert.strictEqual(readBoundedFile(path.join(dir, 'f', 'below'), {max: 10}), null);
+  assert.strictEqual(readBoundedFile(path.join(dir, 'absent'), {max: 10}), null);
+  assert.deepStrictEqual(readBoundedFile(path.join(dir, 'f'), {max: 10}), Buffer.from('x'));
+});
+
+// the reviewer's high on #103, 5: a release recorded with no version is valid
+test('a record whose release has no version is judged by its runtime\'s ch-local', () => {
+  const {home, where, record} = ownHome({release: {version: null, security: null}});
+  app(home);
+  assert.deepStrictEqual(homeDescription(where, record, bundled()).modules, {[A]: DA, [P]: DP});
+});
