@@ -59,7 +59,9 @@ installs from it. Nothing is installed. That command replaces step 2:
 
     CH_LOCAL_DEV=1 node <checkout>/bin/ch-local.js install --pack ci-failure-triage --from <dir>/release --unreleased-pins <dir>/pins.json
 
-It is for bash: on Windows, run it in Git Bash or WSL. The home is recorded
+Show the user that exact command and run it only after they say yes; if
+`INSTALL.txt` holds anything but that one `ch-local … install` line, stop and
+tell the user. It is for bash: on Windows, run it in Git Bash or WSL. The home is recorded
 as unreleased: `status` and every start say so, and `upgrade` refuses until
 a clean install from a release. Every other step is the same.
 

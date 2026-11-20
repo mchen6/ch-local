@@ -131,4 +131,9 @@ test('--release-dir takes an absolute path only; the command for a prepared rele
   assert.strictEqual(dogfood.releaseLine({checkout: '/src/ch-local', dir: '/r'}),
     'CH_LOCAL_DEV=1 node /src/ch-local/bin/ch-local.js install --pack ci-failure-triage --from /r/release --unreleased-pins /r/pins.json');
   assert.strictEqual(dogfood.releaseLine({checkout: '/my src', dir: '/r'}).split(' ')[2], "'/my", 'a path with a space is one quoted word');
+  // (the shape the setup skill runs from INSTALL.txt, and nothing more:
+  // business's condition on d2)
+  const line = dogfood.releaseLine({checkout: '/src/ch-local', dir: '/r'});
+  assert.match(line, /^CH_LOCAL_DEV=1 node \S+\/bin\/ch-local\.js install --pack \S+ --from \S+ --unreleased-pins \S+$/);
+  assert.ok(!/[;&|<>]/.test(line));
 });
