@@ -20,8 +20,9 @@ const H = 3600e3;
 const TO = '0.1.1';
 function home({autoUpgrade = true, installed = '0.1.0', packs = ['ci-failure-triage']} = {}) {
   const h = tmp('ch-auto-');
-  require('./store-helpers').writeHome(h, Object.fromEntries(packs.map((p) => [p, {[`@countinghouse/ch-pack-${p}`]: '0.1.0'}])),
-    {runtime: {'@countinghouse/ch-local': installed, countinghouse: '8.0.0'}});
+  // (as an install of the release leaves it: the baseline additions are
+  // judged against is the home's own modules, from the store: L4)
+  require('./install-helpers').installedHome(h, packs, {runtime: {'@countinghouse/ch-local': installed, countinghouse: '8.0.0'}});
   fs.writeFileSync(path.join(h, 'settings.json'), JSON.stringify({version: 1, values: {autoUpgrade}}));
   return h;
 }
@@ -316,7 +317,9 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
     const after = JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'));
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.1.1');
     assert.deepStrictEqual(Object.keys(after.packs), ['ci-failure-triage'], 'still recorded');
-    assert.deepStrictEqual(after.withdrawn, ['@countinghouse/ch-pack-ci-failure-triage']);
+    // (its modules the release lists in no pack; ch-step-redact stays, as
+    // other still lists it)
+    assert.deepStrictEqual(after.withdrawn, ['@countinghouse/ch-access-github', '@countinghouse/ch-pack-ci-failure-triage']);
     assert.deepStrictEqual(historyOf(h).filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', '0.1.1']]);
   } finally {
     await w.close();

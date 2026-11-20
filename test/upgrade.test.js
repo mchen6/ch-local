@@ -155,12 +155,15 @@ test('identity changes are shown before the question, marked as never taken auto
 
 test('what the new release adds is shown before the question', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  // (as an install leaves it: additions are judged against the home's own
+  // modules, from the store: L4)
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
   // (version 2: a module's key sent to a new origin)
-  const w = await npmWorld(release(), {edit: (doc) => { doc.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'COUNTINGHOUSE_GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
+  const w = await npmWorld(release(), {edit: (doc) => { doc.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
-    assert.match(io.out, /it adds:\n  ch-access-github(?:'s key goes to| sends a key \(COUNTINGHOUSE_GITHUB_TOKEN\) to) https:\/\/api\.example\.invalid/);
+    assert.match(io.out, /it adds:\n  ch-access-github's key goes to https:\/\/api\.example\.invalid as GITHUB_TOKEN \(was https:\/\/api\.githubcopilot\.com as GITHUB_TOKEN\)\n/);
   } finally {
     await w.close();
     s.done();
@@ -484,6 +487,29 @@ test('L4: a module moving back in one pack while a withdrawn pack holds it newer
     assert.strictEqual(rec.modules['@countinghouse/ch-step-redact'].version, '0.1.0', 'the live pack\'s version loads, as the preview said');
     for (const v of ['0.1.0', '0.2.0']) assert.ok(fs.existsSync(stored(s.home, '@countinghouse/ch-step-redact', v)), `ch-step-redact ${v} kept in the store`);
     assert.strictEqual(fs.readFileSync(path.join(stored(s.home, '@countinghouse/ch-step-redact', '0.2.0'), 'kept'), 'utf8'), '@countinghouse/ch-step-redact@0.2.0');
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+// L4 (#413 rev 3 sections 9.3 and 9.6; C's L4 notes): additions are judged
+// against what the home has installed, each module described from the store
+// at the version the record names, not against the bundled pins of the
+// ch-local that runs. Here the home keeps ch-access-github at 0.0.9, whose
+// manifest declares no key; the release's sends one, so it is said, though
+// the bundled pins already describe that key.
+test('L4: what a release adds is judged against the home\'s installed modules, not the bundled pins: a key a module kept off its pin never sent is said', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const {storeModule, editHome} = require('./store-helpers');
+  storeModule(s.home, '@countinghouse/ch-access-github', '0.0.9', {countinghouse: {role: 'part'}});
+  editHome(s.home, (r) => ({...r, packs: {'ci-failure-triage': {from: {release: '0.1.0'},
+    modules: {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0', '@countinghouse/ch-access-github': '0.0.9', '@countinghouse/ch-step-redact': '0.1.0'}}}}));
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /it adds:\n(  .*\n)*  ch-access-github sends a key \(GITHUB_TOKEN\) to https:\/\/api\.githubcopilot\.com/);
   } finally {
     await w.close();
     s.done();
