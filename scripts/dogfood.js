@@ -45,6 +45,13 @@ function parseArgs(argv) {
     const next = () => { if (i + 1 >= argv.length) throw new Error(USAGE); return argv[++i]; };
     if (a === '--src') out.src = next();
     else if (a === '--home') out.home = next();
+    // build a prepared local release into this (absolute, new or empty)
+    // directory and install nothing: what the install doc's pre-release
+    // command runs from (A-firstrun d2: Matt's acceptance run)
+    else if (a === '--release-dir') {
+      out.releaseDir = next();
+      if (!path.isAbsolute(out.releaseDir)) throw new Error(`--release-dir must be an absolute path\n${USAGE}`);
+    }
     else if (a === '--clone') { const [r, v] = pair(next(), '--clone'); out.clones[r] = v; }
     else if (a === '--ref') { const [r, v] = pair(next(), '--ref'); out.refs[r] = v; }
     else throw new Error(USAGE);
@@ -69,6 +76,13 @@ function homeFor(args, env = process.env) {
 // 2026-11-13). A home other than the default goes with every command, since
 // the launcher finds
 // its home by COUNTINGHOUSE_HOME.
+// The install command for a prepared local release (--release-dir), as the
+// install doc's pre-release variant gives it: this checkout's launcher, with
+// CH_LOCAL_DEV=1 and the release's pins
+function releaseLine({checkout, dir}) {
+  return `CH_LOCAL_DEV=1 node ${word(path.join(checkout, 'bin', 'ch-local.js'))} install --pack ${PACK} --from ${word(path.join(dir, 'release'))} --unreleased-pins ${word(path.join(dir, 'pins.json'))}`;
+}
+
 function instructions({node, home, defaultHome = DEFAULT_HOME()}) {
   const launcher = path.join(home, 'bin', 'ch-local.js');
   const other = path.resolve(home) !== path.resolve(defaultHome);
@@ -191,6 +205,21 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   const refProblem = resolveRefs(plan);
   if (refProblem != null) return fail(refProblem);
 
+  // a prepared local release only: built into the directory, kept, nothing
+  // installed; the command that installs from it is printed
+  if (args.releaseDir != null) {
+    const dir = args.releaseDir;
+    if (fs.existsSync(dir) && fs.readdirSync(dir).length > 0) return fail(`${dir} is not empty: --release-dir builds into a new or empty directory`, 2);
+    fs.mkdirSync(dir, {recursive: true});
+    const built = await buildRelease(plan, dir, say);
+    if (built.problem != null) return fail(built.problem);
+    say('');
+    say(`A prepared local release is in ${dir}. Install from it with (nothing was installed):`);
+    say('');
+    say(`  ${releaseLine({checkout: path.join(__dirname, '..'), dir})}`);
+    return 0;
+  }
+
   const {install} = require('../lib/install');
   const {ALLOWLIST} = require('../lib/allowlist');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
@@ -228,4 +257,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};
+module.exports = {main, instructions, releaseLine, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};

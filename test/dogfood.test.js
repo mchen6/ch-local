@@ -120,3 +120,13 @@ test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY |
   assert.strictEqual(works(), worksBefore, 'the work directory is removed');
   fs.rmSync(parent, {recursive: true, force: true});
 });
+
+// A-firstrun d2: a prepared local release for Matt's acceptance run, and the
+// install doc's pre-release command for it
+test('--release-dir takes an absolute path only; the command for a prepared release is this checkout\'s launcher with CH_LOCAL_DEV and its pins', () => {
+  assert.strictEqual(dogfood.parseArgs(['--release-dir', '/r']).releaseDir, '/r');
+  assert.throws(() => dogfood.parseArgs(['--release-dir', 'relative/r']), /--release-dir must be an absolute path/);
+  assert.strictEqual(dogfood.releaseLine({checkout: '/src/ch-local', dir: '/r'}),
+    'CH_LOCAL_DEV=1 node /src/ch-local/bin/ch-local.js install --pack ci-failure-triage --from /r/release --unreleased-pins /r/pins.json');
+  assert.strictEqual(dogfood.releaseLine({checkout: '/my src', dir: '/r'}).split(' ')[2], "'/my", 'a path with a space is one quoted word');
+});
