@@ -168,17 +168,44 @@ test('a ch-local whose bundled release is another judges the home by its own rel
   const d = homeDescription(where, record, bundled());
   assert.deepStrictEqual(d.modules, {[A]: DA, [P]: DP});
   assert.deepStrictEqual(d.packs, {a: {modules: [A, P]}});
-  assert.strictEqual(ownReleasePins(where, record, bundled()).release.version, '0.9.0');
+  assert.deepStrictEqual(Object.keys(ownReleasePins(where, record, bundled())), ['packs', 'modules', 'pins']);
   // a record with no release recorded: its runtime's ch-local is its version
   assert.deepStrictEqual(homeDescription(where, {...record, release: null}, bundled()).modules, {[A]: DA, [P]: DP});
 });
 
-test('the bundled release when it is the record\'s own: no app file read', () => {
-  const {where, record} = ownHome();
+test('no app: the bundled release when it has the record\'s version; an app there wins over a bundled release of the same version', () => {
+  const {home, where, record} = ownHome();
   const same = {...bundled(), release: {version: '0.9.0', security: null}, pins: {[A]: pinOf(A, '1.0.0', 1), [P]: pinOf(P, '2.0.0', 2)}};
   // (no app at all)
-  assert.strictEqual(ownReleasePins(where, record, same), same);
+  assert.deepStrictEqual(ownReleasePins(where, record, same), {packs: same.packs, modules: same.modules, pins: same.pins});
   assert.deepStrictEqual(homeDescription(where, record, same).modules, {[A]: DA, [P]: DP});
+  // (the medium on L4 baseline, 3) a checkout of the same version whose
+  // pins differ: the home's app is the baseline, not the checkout's pins
+  const otherPins = {...same, pins: {[A]: {version: '1.0.0', integrity: integrityOf(A, 'other')}, [P]: {version: '2.0.0', integrity: integrityOf(P, 'other')}}};
+  assert.deepStrictEqual(homeDescription(where, record, otherPins).modules, {[A]: null, [P]: null}, 'with no app, the bundled pins');
+  app(home);
+  assert.deepStrictEqual(homeDescription(where, record, otherPins).modules, {[A]: DA, [P]: DP}, 'the app\'s pins win');
+});
+
+// (the medium on L4 baseline, 1) a pack the running release withdraws is not
+// running either, though the home's own release lists it: a release serving
+// it again holds
+test('a pack withdrawn by the running release, or the home\'s, is not running', () => {
+  const B = '@countinghouse/ch-pack-b';
+  const {home, where, record} = ownHome();
+  storeModule(home, B, '3.0.0');
+  const doc = ownDoc();
+  doc.packs.b = {modules: [B]};
+  doc.modules[B] = {...DA, calls: []};
+  doc.pins[B] = pinOf(B, '3.0.0', 3);
+  app(home, {doc});
+  const r = {...record, packs: {...record.packs, b: {modules: {[B]: '3.0.0'}}}, modules: {...record.modules, [B]: {version: '3.0.0'}}};
+  const runningListsA = bundled();
+  const d = homeDescription(where, r, runningListsA);
+  assert.deepStrictEqual(d.packs.b, {modules: [], withdrawn: true});
+  assert.strictEqual(d.modules[B], undefined);
+  const both = {...bundled(), packs: {a: {modules: [A, P]}, b: {modules: [B]}}};
+  assert.deepStrictEqual(homeDescription(where, r, both).packs.b, {modules: [B]}, 'listed by both: running');
 });
 
 test('the own release\'s pins unknown: every running module unknown, never a throw (fail closed)', () => {
@@ -212,7 +239,7 @@ test('the own release\'s pins unknown: every running module unknown, never a thr
 test('auto-apply and upgrade judge additions by homeDescription, never the bundled pins alone', () => {
   for (const f of ['auto-apply.js', 'upgrade.js']) {
     const text = fs.readFileSync(path.join(__dirname, '..', 'lib', f), 'utf8');
-    assert.match(text, /require\('\.\/installed-description'\)\.homeDescription\(where, record, data\)/, f);
-    assert.ok(!/installedDescription\(/.test(text), f);
+    assert.match(text, /\bhomeDescription\(/, f);
+    assert.ok(!/\binstalledDescription\b/.test(text), f);
   }
 });
