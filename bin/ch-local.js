@@ -34,6 +34,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local settings reset <module>[.<setting>]
        ch-local credentials [list | add <module> [--to <origin>] | remove <module>]
        ch-local start --stdio [countinghouse options]
+       ch-local dev-server [--port <n>]
 `;
 
 // argv -> {flags, values, positional} | null when something is not understood.
@@ -103,6 +104,13 @@ async function main(argv, io) {
       // the last line, when it added the pack: what to do next (A-firstrun d1)
       if (code === 0 && report.added) io.stdout.write(`${require('../lib/next-steps').READY_LINE}\n`);
       return code;
+    }
+    // a local development server for the user's own tools (A-ownuse)
+    if (command === 'dev-server') {
+      const a = parse(rest, {values: ['--port']});
+      if (a == null || a.positional.length > 0) return usage();
+      const port = a.values['--port'] !== undefined ? Number(a.values['--port']) : undefined;
+      return await require('../lib/dev-server').devServer({port}, io);
     }
     if (command === 'remove-pack') {
       if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
