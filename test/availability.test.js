@@ -240,3 +240,18 @@ test('a caller\'s becauseOff: its direct callee turned off and its only blocker;
     assert.strictEqual(availability(direct.where, direct.record, {release: releaseOf(PACKS), seams}).unavailable.get(A).becauseOff, null, lacking);
   }
 });
+
+// A-firstrun d1 (the held-back file, countinghouse #490): a caller's via, the
+// module at the bottom of its chain, so the runtime's overview names the
+// module the user acts on (a credential added to it, turned on, installed);
+// for a callee not installed, the name it calls, as it declares it
+test('a caller\'s via: the module at the bottom of its chain, through parts; a callee not installed by its declared name; none on any other reason', () => {
+  const cred = {...NONE, credential: (m) => (m === B ? 'set B_TOKEN' : null)};
+  const chain = home({calls: {[A]: ['scenario', ['ch-step-x/s.go']], [X]: ['part', ['ch-pack-b/s.go']], [B]: ['scenario', []]}});
+  const u = availability(chain.where, chain.record, {release: releaseOf(PACKS), seams: cred}).unavailable;
+  assert.deepStrictEqual([u.get(A).kind, u.get(A).root, u.get(A).via], ['calls', 'credential', B]);
+  assert.strictEqual(u.get(B).via, null, 'its own reason: no via');
+  const gone = home({calls: {[A]: ['scenario', ['ch-nowhere/s.go']]}});
+  const g = availability(gone.where, gone.record, {release: releaseOf(PACKS), seams: NONE}).unavailable.get(A);
+  assert.deepStrictEqual([g.kind, g.root, g.via], ['calls', 'not installed', 'ch-nowhere']);
+});
