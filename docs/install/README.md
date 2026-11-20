@@ -30,3 +30,9 @@ the environment your client starts from, and no config entry sets or
 forwards one: `ch-local install` asks for it at its end, and
 `ch-local credentials add <module>` adds it any time. Each client's page
 says more under "Credentials".
+
+Changes to the store are made one at a time: `credentials add`,
+`credentials remove` and `uninstall` each take its lock for the moment
+they write (a key is typed before that). One that finds another
+ch-local changing it waits a few seconds, then says which command holds
+it and changes nothing; run it again when that one is done.

@@ -20,7 +20,7 @@ async function installed(r = release(), env = {}) {
   return {home, r, io: (more = {}) => Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home, ...env, ...more}, exec: npm()}), {release: r.allow})};
 }
 const stored = (home) => require('../lib/credential-store').bind(home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN',
-  {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'});
+  {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'}, {held: require('./store-helpers').FIXTURE_HELD});
 // a module's line: its short name and version, then what it is
 const lineOf = (out, short) => (out.split('\n').find((l) => new RegExp(`^  ${short} \\S+ +`).test(l)) || '').replace(/^ +\S+ \S+ +/, '');
 async function statusOf(io) {
@@ -110,7 +110,7 @@ test('a live start that wrote no chLocal (a ch-local from before) is a client on
 
 test('a credential from the gh login: gh is asked as a start asks it; one that gives no token makes the part not available', async () => {
   const s = await installed();
-  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'gh'});
+  require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'gh'}, {held: require('./store-helpers').FIXTURE_HELD});
   const io = Object.assign(s.io(), {exec: async (cmd) => { io.execs.push({cmd}); return {status: 1, stdout: '', stderr: 'not logged in'}; }});
   const {out} = await statusOf(io);
   assert.ok(io.execs.some((e) => e.cmd === 'gh'), 'gh asked');
