@@ -1,6 +1,6 @@
 ---
 name: countinghouse-setup
-description: Use when the user asks to install or set up countinghouse or a countinghouse pack, asks what countinghouse can do, or asks how to design a composite scenario.
+description: Use when the user asks to install or set up countinghouse or a countinghouse pack, asks what countinghouse can do, asks how to design a composite scenario, or wants to build a tool of their own with countinghouse.
 ---
 
 # Setting up countinghouse
@@ -39,7 +39,14 @@ Call `countinghouse_overview` and answer from it alone, in at most ten lines: wh
 
 ## 7. "How do I design a composite scenario?"
 
-Answer only from what this release has: a composite scenario is a module whose tool calls other modules' tools through `ctx.call`; https://github.com/mchen6/countinghouse/blob/master/docs/module-development.md and https://github.com/mchen6/countinghouse/blob/master/docs/composite-tools.md describe how to write one. Do not promise anything these docs do not describe.
+Answer only from what this release has: a composite scenario is a module whose tool calls other modules' tools through `ctx.call`; https://github.com/mchen6/countinghouse/blob/master/docs/module-development.md and https://github.com/mchen6/countinghouse/blob/master/docs/composite-tools.md describe how to write one. Offer section 8 to build one with the user. Do not promise anything these docs and section 8 do not describe.
+
+## 8. Build a tool of your own
+
+This runs on a separate local development server, not inside the installed packs. The tool is for the user's own Claude Code. It is not upgraded with the packs, and it can't be published or shared in this release. Say this before starting.
+
+1. Ask the user to run, in their own terminal, `node "<home>/bin/ch-local.js" dev-server`, and to leave it running. It prints one `claude mcp add` command; ask them to run that too, in a second terminal. It adds the server to Claude Code as `countinghouse-dev`. Your terminal fills in the key from a file, so it never appears in this conversation; Claude Code keeps it in its own settings on this machine, and the server listens only on 127.0.0.1. Then ask them to restart Claude Code.
+2. When `countinghouse-dev` is connected, follow the `countinghouse-module` skill: the need, what the tool may return, the split shown to the user and approved before any file is written, then validate, load and call.
 
 ## Never say
 

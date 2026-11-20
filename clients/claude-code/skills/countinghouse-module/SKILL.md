@@ -1,0 +1,139 @@
+---
+name: countinghouse-module
+description: Use when writing a new countinghouse module, or when a user asks for a tool to be hosted on a countinghouse runtime. Covers decomposing a requirement into services and actions, the module file layout, and the validate/load/call loop.
+---
+
+<!-- Copied from countinghouse a4665860e1b0b2283d29a07cf82754241583d357, .claude/skills/countinghouse-module/SKILL.md; its doc references point at that commit. Re-copied with each release's countinghouse (docs/development/release-checklist.md); never edited here. -->
+
+# Writing a countinghouse module
+
+A countinghouse module is a directory the runtime loads and exposes as one or
+more MCP tools. Your job is to turn a user's requirement into that directory,
+with the user approving the design before code exists.
+
+## Decide what it may return, before what it does
+
+The output schema is the guarantee. A tool whose output schema is
+`{type: 'object'}` promises nothing; a tool whose output schema has fields for
+findings and counts and no field that can hold a file cannot leak a file, no
+matter what its handler does or what a model asks it to do.
+
+So the first question is not "what does this tool do" but **"what is this tool
+allowed to return?"** Ask the user. If they say "summarize our logs", ask
+whether the summary may quote raw log lines. Their answer is a schema
+constraint, and encoding it is most of the value they came for.
+
+## Decomposing a requirement
+
+- **One action is one schema-typed operation.** If describing it needs the word
+  "and", consider two actions.
+- **A service groups related actions** on one device. Most modules need exactly
+  one service; reach for a second only when the two groups would sensibly be
+  used independently.
+- **A chain belongs in a composite action**, not in the model. If the user's
+  request is "read X, then check Y, then report" and the intermediate data is
+  large or sensitive, that is one action calling others via `ctx.serviceClient`
+  — not three tools the model has to join. See `https://github.com/mchen6/countinghouse/blob/a4665860e1b0b2283d29a07cf82754241583d357/docs/composite-tools.md`.
+- **Name for a reader who has never seen it.** The action `description` is what
+  an LLM reads to decide whether to call it, and an action with no description
+  is skipped entirely when `tools/list` is built.
+
+## If it must ask the user: ask first, act after
+
+An action may declare questions (`api.json`'s `questions`) and ask one with
+`ctx.ask(name, values)`. The handler does not wait: with no answer it ends
+(`ASK_PENDING`), and the client's retry runs it again from the top. So put
+every `ctx.ask` **before** anything the handler cannot do twice:
+
+- every `ctx.call` before the ask runs again on the retry and is **billed
+  again**;
+- a message sent, a record written or a payment made before the ask
+  **happens twice**, and has happened once even if the user declines.
+
+Never catch `ASK_PENDING` (from your own ask, or a part's through
+`ctx.call`): let it pass. Catch `ASK_UNAVAILABLE` to fall back when there is
+no one to ask. Keep a question's values the same on every run, and never
+treat an answer as proof of a person. Validate cannot check any of this;
+say it to the user when you show the split.
+
+## Show the split before writing files
+
+Present the proposed device, services, actions and — most importantly — what
+each action may return. Wait for the user. This is where a wrong assumption is
+cheap; after four files exist it is not.
+
+Then call `countinghouse_validate_plan` to check names, duplicates, missing
+descriptions and collisions with tools already on the runtime.
+
+## The layout
+
+```
+my-module/
+├── package.json   # name and version
+├── api.json       # device, services, actions, schema pointers
+├── schema.json    # JSON Schema 2020-12 documents
+└── handlers/
+    └── greetService/      # service SHORT name (after ":serviceID:")
+        └── hello.js       # one file per action
+```
+
+That is the only format: no `index.js`, no `device.js`, no `"main"` in
+`package.json`. A main entry without `handlers/` is refused
+(`MODULE_LAYOUT_UNSUPPORTED`); shared code goes in a plain file the handlers
+require.
+
+A handler is `async (input, ctx)`; `input` is already validated.
+
+```js
+module.exports = async (input, ctx) => ({output: {text: `hello ${input.name}`}});
+```
+
+To fail a call, return the module's own error code (never one of the
+runtime's):
+
+```js
+module.exports = async (input, ctx) => {
+  if (input.name.trim() === '') return ctx.error('INPUT_REJECTED', 'name must not be blank');
+  return {output: {text: `hello ${input.name}`}};
+};
+```
+
+Full reference: `https://github.com/mchen6/countinghouse/blob/a4665860e1b0b2283d29a07cf82754241583d357/docs/module-development.md`.
+
+## The loop
+
+1. `countinghouse_validate_plan` — before any file exists.
+2. Write `package.json`, `api.json`, `schema.json`, `handlers/`.
+3. `countinghouse_validate_module` — repeat until `ok: true`. It returns
+   *every* problem, each naming the stage and the fix; do not fix them one per
+   run.
+4. `countinghouse_load_module` — note the `toolNames` it returns. If
+   `discoveryComplete` is `false`, `toolNames` may be incomplete; the call is
+   worth retrying.
+5. `countinghouse_call_tool` with one of those names, and real arguments.
+6. Show the user the call and its output.
+
+Without a running server, `npx countinghouse-validate ./my-module` is the same
+check from a shell (exit 0 clean, 1 problems, 2 unusable path).
+
+The authoring tools need the runtime started with `--authoringTools` and an
+admin key. If they are missing from `tools/list`, that is why. Keep the
+default worker mode: a module whose handler file crashes or calls
+`process.exit()` while being required by `countinghouse_load_module` is a
+reported failure in worker mode, but takes the whole runtime down under
+`--no-workerThread`.
+
+## When it does not appear in tools/list
+
+`https://github.com/mchen6/countinghouse/blob/a4665860e1b0b2283d29a07cf82754241583d357/docs/module-development.md` has the full checklist. The five that account for
+almost everything:
+
+1. `MODULE_LAYOUT_UNSUPPORTED` — a main entry (`"main"` or `index.js`) and no
+   `handlers/`: the retired format; the error names the file.
+2. `DEVICE_SPEC_VALIDATION_FAIL` — `api.json` fails the meta-schema; the error
+   names the instance path.
+3. `MODULE_NO_DEVICE_ONLINE` — the device assembled from `api.json` failed;
+   the message quotes the earlier error.
+4. `LOAD_MODULE_FAIL` — a handler file threw while being required.
+5. Loaded but absent — an action with no `description` is skipped, and
+   `tools/list` is filtered per apiKey.
