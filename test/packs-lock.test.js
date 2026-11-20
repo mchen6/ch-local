@@ -59,19 +59,58 @@ test('a lock that can\'t be read: start waits at most its cap, then names the fi
   assert.match(waiting.err, /an unreadable lock .*packs\.lock\) is changing this home; .* if nothing is running there/);
 });
 
-test('a live holder here with its recorded start time is never cleared by its heartbeat\'s age; said without the hint; start waits for it', LINUX, async () => {
+test('a live holder here with its recorded start time is never cleared by its heartbeat\'s age; renewing, said without the hint and waited for', LINUX, async () => {
   const h = home();
-  holderAt(h, {pid: process.pid, host: lock.lockHost(), at: 'x', started: lock.processStarted(process.pid)}, HOUR);
+  holderAt(h, {pid: process.pid, host: lock.lockHost(), at: 'x', started: lock.processStarted(process.pid)});
   const now = fakeIo({});
   assert.strictEqual(await lock.withLock({home: h}, now, async() => 0), 1);
   assert.match(now.err, /another ch-local \(pid \d+\) is changing this home; try again when it is done\n/);
   assert.ok(!/remove/.test(now.err), 'no hint to remove a live holder\'s lock');
-  // start waits for it (no cap for a holder here), until its signal ends the wait
+  // start waits for it (its heartbeat fresh: no cap), until its signal ends the wait
   const ac = new AbortController();
   setTimeout(() => ac.abort(), 600);
   const waiting = Object.assign(fakeIo({}), {lockWaitMs: 100});
   assert.strictEqual(await lock.withLock({home: h}, waiting, async() => 0, {wait: true, signal: ac.signal}), 1);
   assert.ok(fs.existsSync(file(h)), 'the live holder\'s lock stands');
+});
+
+// the medium on post-rel packs.lock, 3: a holder kept by trustStarted that
+// stopped renewing (Ctrl-Z, hung) is never cleared, but never waited for
+// forever either, and the line says what to do
+test('a live holder here that stopped renewing (hour-old heartbeat) is not cleared; said with "end it", and start gives up at its cap', LINUX, async () => {
+  const h = home();
+  holderAt(h, {pid: process.pid, host: lock.lockHost(), at: 'x', started: lock.processStarted(process.pid)}, HOUR);
+  const now = fakeIo({});
+  assert.strictEqual(await lock.withLock({home: h}, now, async() => 0), 1);
+  assert.match(now.err, new RegExp(`has not renewed it for over 2 minutes: if it is stopped \\(Ctrl-Z\\) or hung, end it \\(kill ${process.pid}\\) and try again`));
+  const waiting = Object.assign(fakeIo({}), {lockWaitMs: 300});
+  const t0 = Date.now();
+  assert.strictEqual(await lock.withLock({home: h}, waiting, async() => 0, {wait: true}), 1);
+  assert.ok(Date.now() - t0 >= 250 && Date.now() - t0 < 5000, `gave up at the cap (${Date.now() - t0} ms)`);
+  assert.ok(fs.existsSync(file(h)));
+});
+
+// the medium on post-rel packs.lock, 4: the cap is per holder, not across a
+// series of them
+test('a new holder resets start\'s watch: another host\'s lock replaced by a third\'s is waited for afresh', async () => {
+  const h = home();
+  holderAt(h, {pid: 1, host: 'elsewhere', at: 'a'});
+  setTimeout(() => holderAt(h, {pid: 2, host: 'third', at: 'b'}), 250);
+  setTimeout(() => fs.rmSync(file(h), {force: true}), 550);
+  const waiting = Object.assign(fakeIo({}), {lockWaitMs: 400});
+  let ran = false;
+  assert.strictEqual(await lock.withLock({home: h}, waiting, async() => { ran = true; return 0; }, {wait: true}), 0, waiting.err);
+  assert.strictEqual(ran, true);
+});
+
+// the medium on post-rel packs.lock, 8: this machine's name in another PID
+// namespace is a container here, not another host
+test('a holder on this machine in another PID namespace is named as a container here', async () => {
+  const h = home();
+  holderAt(h, {pid: 1, host: `${require('node:os').hostname()}#pid:[4026599999]`, at: 'x'});
+  const io = fakeIo({});
+  assert.strictEqual(await lock.withLock({home: h}, io, async() => 0), 1);
+  assert.match(io.err, /\(pid 1 on another PID namespace on this machine \(a container\)\).* if nothing is running on another PID namespace on this machine/);
 });
 
 test('a holder here with no start time recorded (an older ch-local): judged as before, its heartbeat\'s age clears it', async () => {
