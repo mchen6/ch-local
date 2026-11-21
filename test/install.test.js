@@ -1040,3 +1040,32 @@ test('a shim already at its pin is not fetched again', async () => {
     await n.reg.close();
   }
 });
+
+// the medium on B-shim-allow's round 3: the shim step never throws past the
+// app swap (a rejection that is no Error), and a shim judged current before
+// the lock that changed meanwhile says to run install again
+test('a shim prepared with no error object, or changed since it was judged current: said, set aside, the record names none', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  const si = require('../lib/shim-install');
+  const realPrepare = si.prepareShim;
+  const realPlace = si.placeShim;
+  try {
+    si.prepareShim = async () => ({status: 'failed', name: 'x', version: '0.5.0', error: null});
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.strictEqual(record(h).shim, undefined);
+    assert.match(io.err, /the shared runtime's shim could not be installed/);
+    si.prepareShim = async () => ({status: 'current', name: 'x', version: '0.5.0'});
+    si.placeShim = () => { throw Object.assign(new Error('no longer the verified shim'), {code: 'SHIM_STALE'}); };
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io2, n.allow, n.fromNpm), 0, io2.err);
+    assert.match(io2.err, /the shared runtime's shim in place changed while this install ran: run `.*install` again to place it/);
+    assert.strictEqual(record(h).shim, undefined);
+  } finally {
+    si.prepareShim = realPrepare;
+    si.placeShim = realPlace;
+    await n.reg.close();
+  }
+});
+
