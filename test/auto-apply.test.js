@@ -501,3 +501,21 @@ test('an automatic upgrade keeps a held pack: its entry and its module versions'
     await w.close();
   }
 });
+
+// the reviewer on #122: an automatic upgrade on a home another user could
+// write into is refused with install's own line, never a bare "failed"
+test('an automatic upgrade on a group-writable home: not installed, said with install\'s line and its chmod', {skip: process.platform === 'win32' && 'POSIX modes'}, async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  try {
+    const h = home({packs: ['ci-failure-triage']});
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    fs.chmodSync(h, 0o775);
+    const r = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(r.outcome, 'failed', r.line);
+    assert.strictEqual(r.line, `ch-local ${TO} was not installed: this home is group- or world-writable (mode 0775), so another user could change what runs from it; run \`chmod 700 "${fs.realpathSync.native(h)}"\`, then install again`);
+    assert.strictEqual(fs.statSync(h).mode & 0o777, 0o775, 'not changed');
+  } finally {
+    await w.close();
+  }
+});

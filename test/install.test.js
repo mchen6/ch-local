@@ -993,7 +993,7 @@ test('an existing group-writable home: refused with the chmod line, nothing inst
   assert.strictEqual(await run(r, io), 1);
   assert.strictEqual(fs.statSync(h).mode & 0o777, 0o775, 'not changed');
   assert.deepStrictEqual(fs.readdirSync(h), [], 'nothing installed');
-  assert.ok(io.err.includes(`this home it is group- or world-writable (mode 0775), so another user could change what runs from it; run \`chmod 700 "${fs.realpathSync.native(h)}"\`, then install again`), io.err);
+  assert.ok(io.err.includes(`this home is group- or world-writable (mode 0775), so another user could change what runs from it; run \`chmod 700 "${fs.realpathSync.native(h)}"\`, then install again`), io.err);
   assert.match(io.err, /nothing was installed/);
   // a path the command line can't quote safely: refused the same, with no line to paste
   const odd = path.join(home(), 'my$home');
