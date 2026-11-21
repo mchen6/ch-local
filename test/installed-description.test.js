@@ -139,8 +139,13 @@ const SELF = '@countinghouse/ch-local';
 const pinOf = (name, version, n) => ({version, integrity: integrityOf(name, version), repository: `mchen6/${name.split('/').pop()}`, repositoryId: 4000000 + n, ownerId: 1168741,
   workflow: '.github/workflows/publish.yml', tag: `v${version}`});
 // the home's own release, as its pins file: packs a, its two modules pinned
-const ownDoc = () => ({...JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8')),
-  packs: {a: {modules: [A, P]}}, modules: {[A]: DA, [P]: DP}, pins: {[A]: pinOf(A, '1.0.0', 1), [P]: pinOf(P, '2.0.0', 2)}});
+// (the shipped floors name the shipped pack's modules: a test release with
+// its own pack carries none)
+const ownDoc = () => {
+  const {floors, ...shipped} = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
+  void floors;
+  return {...shipped, packs: {a: {modules: [A, P]}}, modules: {[A]: DA, [P]: DP}, pins: {[A]: pinOf(A, '1.0.0', 1), [P]: pinOf(P, '2.0.0', 2)}};
+};
 // <home>/app's ch-local: its package.json and lib/release-pins.json
 function app(home, {version = '0.9.0', name = SELF, doc = ownDoc(), pinsText = null} = {}) {
   const dir = path.join(home, 'app', 'node_modules', ...SELF.split('/'));

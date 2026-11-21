@@ -940,3 +940,22 @@ test('a pack the record gains while install reads its tarballs: refused, nothing
   }
   assert.notStrictEqual(one, both);
 });
+
+// the medium on the floors: a development pins file is held to the release's
+// floors too (an unreleased install never puts a part below one)
+test('--unreleased-pins refuses a pin below the release\'s floor, before anything is installed', async () => {
+  const r = release();
+  const REDACT = '@countinghouse/ch-step-redact';
+  const at = r.pins[REDACT].version;
+  for (const [floor, code] of [['9.0.0', 2], [at, 0]]) {
+    const h = home();
+    const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}, floors: {[REDACT]: floor}};
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+    const f = pinsFile(r, {pins: r.pins, runtimeLockfile: r.lockfile});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), code, io.err);
+    if (code === 2) {
+      assert.match(io.err, new RegExp(`${REDACT} ${at.replace(/\./g, '\\.')} is below its floor 9\\.0\\.0`));
+      assert.ok(!fs.existsSync(path.join(h, 'app', 'node_modules')), 'nothing installed');
+    }
+  }
+});

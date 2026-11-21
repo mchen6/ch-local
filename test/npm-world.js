@@ -27,6 +27,10 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
   const reg = await fakeRegistry();
   const root = testRoot();
   const doc = shipped();
+  // (the shipped floors are the shipped release's: a test world pins its own
+  // versions, so it carries none -- lib/release-pins.json's floors are
+  // tested in test/release-pins.test.js)
+  delete doc.floors;
   doc.packs = JSON.parse(JSON.stringify(r.allow.packs));
   // (version 2: the release's own descriptions of its packs' modules)
   doc.modules = JSON.parse(JSON.stringify(r.allow.modules));
