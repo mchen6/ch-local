@@ -14,7 +14,7 @@ not installed yet, the tool fails with one line naming the install command.
 Or add the server by hand. `ch-local snippet claude-code` prints the command
 for this machine, for example:
 
-    claude mcp add --scope user countinghouse -- /usr/local/bin/node /home/you/.countinghouse/bin/ch-local.js start --stdio
+    claude mcp add --scope user countinghouse -- /usr/local/bin/node /home/you/.countinghouse/bin/ch-local.js session --home /home/you/.countinghouse
 
 A path with a space is double-quoted. The line is for a POSIX shell (bash,
 zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`

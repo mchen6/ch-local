@@ -10,7 +10,7 @@ under `mcpServers`:
       "mcpServers": {
         "countinghouse": {
           "command": "/usr/local/bin/node",
-          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
+          "args": ["/home/you/.countinghouse/bin/ch-local.js", "session", "--home", "/home/you/.countinghouse"]
         }
       }
     }

@@ -54,7 +54,7 @@ install does.
 The script ends with the commands to run:
 
     gh auth login
-    claude mcp add --scope user countinghouse -- <node> <home>/bin/ch-local.js start --stdio
+    claude mcp add --scope user countinghouse -- <node> <home>/bin/ch-local.js session
     claude --resume
 
 `ch-local install` then asks for ch-access-github's credential: answer yes

@@ -10,7 +10,7 @@ format of `~/.copilot/mcp-config.json`. Merge it under `mcpServers`:
         "countinghouse": {
           "type": "stdio",
           "command": "/usr/local/bin/node",
-          "args": ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
+          "args": ["/home/you/.countinghouse/bin/ch-local.js", "session", "--home", "/home/you/.countinghouse"]
         }
       }
     }

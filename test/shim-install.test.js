@@ -348,3 +348,126 @@ test('Windows, real lib/win-acl.js (retried once if a PowerShell call times out)
   }
 });
 
+// the medium on B-shim-allow's round 2: a shim already in place is taken
+// only when the record names this package at this pin, and only from this
+// user's own private folder, checked again under the lock
+test('prepareShim: "current" only for the record\'s own package at this pin; placeShim checks the folder before taking it', async() => {
+  const w = await world();
+  const home = tmp('ch-shim-');
+  try {
+    const opts = {home, data: w.data, io, platform: w.platform, arch: w.arch, ...w.fromNpm};
+    const placed = await put(home, w);
+    const name = w.data.shim.packages[`${w.platform}-${w.arch}`];
+    const {prepareShim, placeShim} = require('../lib/shim-install');
+    assert.strictEqual((await prepareShim(Object.assign({record: {shim: {package: name, version: placed.version}}}, opts))).status, 'current');
+    assert.strictEqual((await prepareShim(Object.assign({record: {shim: {package: '@countinghouse/ch-shim-other', version: placed.version}}}, opts))).status, 'ready', 'another package at the same version: fetched and verified');
+    assert.strictEqual((await prepareShim(Object.assign({record: null}, opts))).status, 'ready');
+    if (process.platform !== 'win32') {
+      // the folder swapped for a link: refused under the lock, never taken
+      const real = path.join(home, 'shim');
+      const elsewhere = path.join(home, 'elsewhere');
+      fs.renameSync(real, elsewhere);
+      fs.symlinkSync(elsewhere, real);
+      assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_DIR');
+    }
+  } finally {
+    await w.reg.close();
+  }
+});
+
+// the medium's round 4: the real placeShim on a 'current' shim swapped for a
+// link, and on one whose versions.json can't be read
+test('placeShim "current": a link in place is refused; an unreadable versions.json is said as such', {skip: process.platform === 'win32'}, async() => {
+  const w = await world();
+  const home = tmp('ch-shim-');
+  try {
+    const placed = await put(home, w);
+    const name = w.data.shim.packages[`${w.platform}-${w.arch}`];
+    const {placeShim} = require('../lib/shim-install');
+    const target = path.join(home, 'shim', 'ch-shim');
+    const copy = path.join(home, 'copy');
+    fs.copyFileSync(target, copy);
+    fs.rmSync(target);
+    fs.symlinkSync(copy, target);
+    assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_STALE');
+    fs.rmSync(target);
+    fs.copyFileSync(copy, target);
+    fs.chmodSync(path.join(home, 'shim', 'versions.json'), 0o666);
+    assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_UNREADABLE');
+    // a ch-shim there that can't be read is said so, with its errno -- not
+    // "changed", which a rerun would never put right (the medium on #120)
+    fs.chmodSync(path.join(home, 'shim', 'versions.json'), 0o600);
+    if (process.getuid() !== 0) {
+      fs.chmodSync(target, 0o311);
+      assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_UNREADABLE' && /EACCES/.test(e.message));
+      fs.chmodSync(target, 0o755);
+    }
+  } finally {
+    await w.reg.close();
+  }
+});
+
+// the reviewer's high on #120, 2 and 3: every read of ch-shim and
+// ch-shim.previous is by lstat and an O_NOFOLLOW descriptor -- a link with
+// the verified bytes is never kept, a FIFO never blocks, a linked
+// ch-shim.previous is never renamed into place
+test('a link or a FIFO at ch-shim is never kept or read through; a linked ch-shim.previous is never put back', {skip: process.platform === 'win32'}, async() => {
+  const w = await world();
+  const home = tmp('ch-shim-');
+  try {
+    const placed = await put(home, w);
+    const name = w.data.shim.packages[`${w.platform}-${w.arch}`];
+    const {prepareShim, placeShim} = require('../lib/shim-install');
+    const target = path.join(home, 'shim', 'ch-shim');
+    const outside = path.join(home, 'outside');
+    fs.copyFileSync(target, outside);
+    // a link to the verified bytes: prepareShim never calls it current
+    fs.rmSync(target);
+    fs.symlinkSync(outside, target);
+    const opts = {home, data: w.data, io, platform: w.platform, arch: w.arch, ...w.fromNpm};
+    const ready = await prepareShim(Object.assign({record: {shim: {package: name, version: placed.version}}}, opts));
+    assert.strictEqual(ready.status, 'ready', 'fetched again, never "current" through a link');
+    // the ready path replaces it with a regular file
+    placeShim(home, ready, {platform: w.platform});
+    assert.ok(fs.lstatSync(target).isFile() && !fs.lstatSync(target).isSymbolicLink(), 'a regular file now');
+    // a FIFO at ch-shim: placed over, never read (no block under the lock)
+    fs.rmSync(target);
+    require('node:child_process').execFileSync('mkfifo', [target]);
+    placeShim(home, ready, {platform: w.platform});
+    assert.ok(fs.lstatSync(target).isFile());
+    // alignShim: a ch-shim.previous that is a link is never renamed into place
+    const prev = path.join(home, 'shim', 'ch-shim.previous');
+    fs.rmSync(prev, {force: true});
+    fs.symlinkSync(outside, prev);
+    fs.rmSync(target);
+    assert.notStrictEqual(alignShim(home, {restored: {version: placed.version}, platform: w.platform}), 'restored');
+    assert.ok(!fs.existsSync(target) || !fs.lstatSync(target).isSymbolicLink(), 'no link put in place');
+  } finally {
+    await w.reg.close();
+  }
+});
+
+
+test('a short write never places a cut binary: every byte is written, and synced, before the rename (the reviewer\'s high on #120, 5)', async() => {
+  const body = 'x'.repeat(10000);
+  const w = await world({body});
+  const home = tmp('ch-shim-');
+  const real = {writeSync: fs.writeSync, fsyncSync: fs.fsyncSync, renameSync: fs.renameSync};
+  const seen = [];
+  fs.writeSync = (fd, buf, off, len, ...rest) => (Buffer.isBuffer(buf) && typeof off === 'number' ? real.writeSync(fd, buf, off, Math.min(len, 1000), ...rest) : real.writeSync(fd, buf, off, len, ...rest));
+  fs.fsyncSync = (fd) => { seen.push('fsync'); return real.fsyncSync(fd); };
+  fs.renameSync = (a, b) => { if (path.basename(b) === 'ch-shim' || path.basename(b) === 'ch-shim.exe') seen.push('rename'); return real.renameSync(a, b); };
+  try {
+    const r = await put(home, w);
+    Object.assign(fs, real);
+    assert.strictEqual(r.status, 'installed');
+    assert.strictEqual(fs.readFileSync(r.path, 'utf8'), body, 'the whole binary, never the first 1000 bytes');
+    assert.ok(seen.indexOf('fsync') !== -1 && seen.indexOf('fsync') < seen.indexOf('rename'), `synced before the rename: ${seen.join(',')}`);
+    // and the folder, after it, before install writes the record (POSIX)
+    if (process.platform !== 'win32') assert.ok(seen.lastIndexOf('fsync') > seen.indexOf('rename'), `the folder synced after the rename: ${seen.join(',')}`);
+  } finally {
+    Object.assign(fs, real);
+    await w.reg.close();
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

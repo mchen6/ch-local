@@ -214,11 +214,11 @@ test('no lib/ code names `trust` or `registry` but the three that take them; ins
   const install = fs.readFileSync(path.join(lib, 'install.js'), 'utf8');
   const lines = install.split('\n').filter((l) => /fromNpm/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim());
   assert.deepStrictEqual(lines, [
-    'async function install({pack, from, unreleasedPins, runtimeOnly = false, judged = null}, io, release = ALLOWLIST, fromNpm = {}) {',
+    // (report: the shim's outcome, for an automatic upgrade: #120)
+    'async function install({pack, from, unreleasedPins, runtimeOnly = false, judged = null, report = null}, io, release = ALLOWLIST, fromNpm = {}) {',
     'version: allow.release.version, names, dir: path.join(fetched, \'release\'), io, verifiedSelf: allow.verifiedSelf || null, ...fromNpm});',
-    'if (fetched != null && allow.shim != null) await placeShim(allow, io, {say, fail}, fromNpm);',
-    'async function placeShim(allow, io, {say, fail}, fromNpm) {',
-    'r = await require(\'./shim-install\').installShim({home: where.home, data: {shim: allow.shim, pins: allow.pins}, io, ...fromNpm});'
+    // (the shim, fetched and verified before the lock: B-shim-allow)
+    'if (allow.shim != null) shimReady = await require(\'./shim-install\').prepareShim({data: {shim: allow.shim, pins: allow.pins}, record: home0.record, home: where0.home, io, ...fromNpm});'
   ]);
   // upgrade: likewise, its signature and its two pass-ons
   const upgrade = fs.readFileSync(path.join(lib, 'upgrade.js'), 'utf8');
@@ -275,7 +275,8 @@ test('bin/ and lib/: no code names `trust` or `registry` outside the three, and 
   // (the automatic upgrade's install says nothing of its own: its io is a quiet copy)
   // (target: {pack} or, for a release that withdraws the pack, {runtimeOnly: true})
   const passOn = {'lib/upgrade.js': 'const code = await require(\'\').install({...target, judged: judgedDigest(record)}, io, allow, fromNpm);',
-    'lib/auto-apply.js': 'const code = await require(\'\').install({...target, judged: judgedDigest(record)}, quiet, allow, fromNpm);'};
+    // (report: where install sets the shim's outcome, said in auto-apply's fixed words: #120)
+    'lib/auto-apply.js': 'const code = await require(\'\').install({...target, judged: judgedDigest(record), report}, quiet, allow, fromNpm);'};
   const odd = calls.filter(([f, fn, n, line]) => {
     if (fn === 'install') return !(n === 2 || passOn[f] === line);
     if (fn === 'upgrade') return n !== 2;

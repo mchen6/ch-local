@@ -4,8 +4,9 @@
       "command": "/usr/local/bin/node",
       "args": [
         "/home/dev/.countinghouse/bin/ch-local.js",
-        "start",
-        "--stdio"
+        "session",
+        "--home",
+        "/home/dev/.countinghouse"
       ]
     }
   }

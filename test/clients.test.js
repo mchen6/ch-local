@@ -21,7 +21,7 @@ function setup() {
   return {user, home, done: () => fs.rmSync(user, {recursive: true, force: true})};
 }
 const io = (s, answers = []) => fakeIo({env: {}, homedir: s.user, answers});
-const entryFor = (s, client) => snippet(client, {node: FAKE_NODE, launcher: path.join(s.home, 'bin', 'ch-local.js')}).text;
+const entryFor = (s, client) => snippet(client, {node: FAKE_NODE, launcher: path.join(s.home, 'bin', 'ch-local.js'), home: s.home}).text;
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
 test('add records what it wrote and uninstall removes exactly that', async () => {

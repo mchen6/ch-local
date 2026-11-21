@@ -31,7 +31,7 @@ test('snippet prints the entry for this machine: the running node and the home\'
   try {
     const r = run(['snippet', 'cursor'], {COUNTINGHOUSE_HOME: home, GITHUB_TOKEN: 'secret-value-123'});
     assert.strictEqual(r.status, 0, r.stderr);
-    assert.strictEqual(r.stdout, snippet('cursor', {node: process.execPath, launcher: path.join(home, 'bin', 'ch-local.js')}).text);
+    assert.strictEqual(r.stdout, snippet('cursor', {node: process.execPath, launcher: path.join(home, 'bin', 'ch-local.js'), home}).text);
     assert.ok(r.stderr.includes(process.execPath), 'names the node it pinned');
     assert.match(r.stderr, /upgrade changes this path; run `ch-local snippet cursor` again/);
     assert.ok(!(r.stdout + r.stderr).includes('secret-value-123'), 'never a credential value');
@@ -147,6 +147,11 @@ test('only bin/ch-local.js builds an io that claims a terminal, and only from th
       // (an assignment, or a shorthand key, claims one too)
       for (const m of line.matchAll(/\.(interactive|stdoutTTY|stdinIsTTY|terminal)\s*=(?!=)\s*([^;\n]+)/g)) claims.push(`${path.relative(ROOT, file).split(path.sep).join('/')}: ${m[1]} = ${m[2].trim()}`);
       for (const m of line.matchAll(/[{,]\s*(interactive|stdoutTTY|stdinIsTTY)\s*[,}]/g)) claims.push(`${path.relative(ROOT, file).split(path.sep).join('/')}: ${m[1]} (shorthand)`);
+      // (and a getter: bin/ch-local.js reads the real ones only when asked,
+      // so `session` never opens a stdio pipe before the shim runs: #120)
+      for (const m of line.matchAll(/\bget\s+(interactive|stdoutTTY|stdinIsTTY|terminal)\s*\(\)\s*\{\s*return\s+([^;}]+?)\s*;?\s*\}/g)) {
+        if (m[2].trim() !== 'false') claims.push(`${path.relative(ROOT, file).split(path.sep).join('/')}: ${m[1]}: ${m[2].trim()}`);
+      }
     }
   }
   assert.deepStrictEqual(claims.sort(), [
