@@ -152,7 +152,11 @@ The checks are grouped. Within a group, the order doesn't matter.
       below its floor (a pre-release, or anything not a version, counts as
       below), `node scripts/describe-release.js <tarballs>` refuses a
       release tarball below its floor, and an unreleased install
-      (`--unreleased-pins`) refuses a development pin below one. This line is the reminder
+      (`--unreleased-pins`) refuses a development pin below one.
+      A floor binds the release whose file names it. A later release may
+      lower or retire a floor, since its file is the maintainer's own
+      provenance-signed document. Do that only on purpose, saying why in
+      that release's notes. This line is the reminder
       to run that step on the release's own tarballs and to read its output.
     - Check: the step exits 0 on the release's tarballs, and `npm test`'s
       release-pins test passes on the tag's commit.
