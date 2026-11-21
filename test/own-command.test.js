@@ -264,3 +264,18 @@ test('the sandbox as a start runs it: audit the ceiling forbids is enforce, and 
   assert.strictEqual(await addModule({dir}, io, {where, ceiling}), 1);
   assert.deepStrictEqual(io.asked, ['Add it? [y/N] ']);
 });
+
+// the reviewer's ruling (c) on #113: never silently ignored
+test('settings an own module declares are said not to be adjustable in this release', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  pkg.countinghouse.settings = {limit: {type: 'integer', default: 5}};
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg));
+  const io = ioWith(home, ['n']);
+  await addModule({dir}, io, {where});
+  assert.match(io.out, /^Settings an own module declares aren't adjustable in this release; their defaults apply\.$/m);
+  const plainOne = ioWith(home, ['n']);
+  await addModule({dir: writeModule(path.join(base, 'work', 'other'), {name: 'my-other', friendlyName: 'my-other'})}, plainOne, {where});
+  assert.ok(!/Settings an own module/.test(plainOne.out));
+});
