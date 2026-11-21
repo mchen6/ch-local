@@ -89,14 +89,14 @@ test('the pin catches each form: a quoted command, a template\'s ${...}, a liter
   assert.ok(!FORMS.some((f) => f.test("'ch-local is the launcher'")), 'prose naming ch-local itself');
 });
 
-test('chLocal: the home\'s launcher by its real path, else the bare command', () => {
+test('chLocal: the home\'s launcher by its real path, else the npx form', () => {
   const h = tmp('ch-cmdline-');
   const where = layout({COUNTINGHOUSE_HOME: h});
-  assert.strictEqual(chLocal(where, 'install'), 'ch-local install', 'no launcher yet');
+  assert.strictEqual(chLocal(where, 'install'), 'npx @countinghouse/ch-local install', 'no launcher yet');
   fs.mkdirSync(path.join(h, 'bin'));
   fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), '');
   assert.strictEqual(chLocal(where, 'credentials add x'), `node "${fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js'))}" credentials add x`);
-  assert.strictEqual(chLocal(null, 'status'), 'ch-local status');
+  assert.strictEqual(chLocal(null, 'status'), 'npx @countinghouse/ch-local status');
   void fakeIo;
 });
 
@@ -222,4 +222,13 @@ test('every ch-local command a hint prints parses as the command line takes it',
   for (const argv of [['install', 'extra'], ['nope'], ['status', 'x'], ['credentials', 'add']]) {
     assert.strictEqual(parseCommand(argv), null, argv.join(' '));
   }
+});
+
+// the final pass's ch-local part, A11: before any install nothing puts
+// ch-local on PATH, so a hint with no launcher names the npx form, which
+// runs as printed
+test('chLocal with no launcher yet names the npx form', () => {
+  const h = tmp('ch-cmdline-npx-');
+  assert.strictEqual(chLocal(layout({COUNTINGHOUSE_HOME: h}), 'install --pack <name>'), 'npx @countinghouse/ch-local install --pack <name>');
+  assert.strictEqual(chLocal(null, 'status'), 'npx @countinghouse/ch-local status');
 });

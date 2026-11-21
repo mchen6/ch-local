@@ -105,7 +105,7 @@ test('add-pack before any install says to install first; an installed pack is le
   const r = release();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: tmp('ch-home-')}});
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, io, r.allow), 1);
-  assert.match(io.err, /nothing is installed yet; run `ch-local install --pack other/);
+  assert.match(io.err, /nothing is installed yet; run `npx @countinghouse\/ch-local install --pack other`/);
   const s = await installed();
   const again = s.io();
   assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: s.r.from}, again, s.r.allow), 0);
@@ -197,7 +197,8 @@ test('a part at another version names a way forward that exists: a clean install
   const newer = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
   const io = s.io();
   assert.strictEqual(await addPack({pack: 'other', from: newer.from}, io, newer.allow), 1);
-  assert.match(io.err, new RegExp(`install the newer release with \`${cmd(s.home, 'install --pack ci-failure-triage --from <its directory>')}\`, then add-pack other`));
+  // (upgrade from npm, then install --pack adds it: never --from, A11)
+  assert.match(io.err, new RegExp(`install the newer release with \`${cmd(s.home, 'upgrade')}\`, then add the pack with \`${cmd(s.home, 'install --pack other')}\``));
 });
 
 test('a home made by an earlier development launcher (installed.json only) is told to reinstall', async () => {
@@ -205,7 +206,7 @@ test('a home made by an earlier development launcher (installed.json only) is to
   fs.writeFileSync(path.join(home, 'installed.json'), JSON.stringify({pack: 'ci-failure-triage', versions: {}, credentials: []}));
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
   assert.strictEqual(await status({}, io), 1);
-  assert.match(io.out + io.err, /made by an earlier development ch-local; run `ch-local install --pack ci-failure-triage --from <dir>` again/);
+  assert.match(io.out + io.err, /made by an earlier development ch-local; run `[^`]*install --pack ci-failure-triage --from <dir>` again/);
 });
 
 // The reviewer's high review of #5.
@@ -383,7 +384,7 @@ test('status of a held pack this release lists says add-pack brings it back', as
   require('./store-helpers').editHome(s.home, (r) => ({...r, held: {other: {from: {release: '0.9.0'}, modules: {'@countinghouse/ch-pack-other': '0.3.0'}}}}));
   const io = s.io();
   assert.strictEqual(await status({}, io), 0, io.err);
-  assert.match(io.out, new RegExp(`other: in this release again, not started until added: \`${cmd(s.home, 'add-pack other')}\` adds it back`));
+  assert.match(io.out, new RegExp(`other: in this release again, not started until added: \`${cmd(s.home, 'install --pack other')}\` adds it back`));
   assert.doesNotMatch(io.out, /this release does not have it/);
 });
 
@@ -402,3 +403,20 @@ test('add-pack is not blocked by a part only a withdrawn pack holds at another v
 // (a module a running client stopped, and a client on another ch-local:
 // test/status-by-module.test.js)
 
+
+// the final pass's ch-local part, A11: the hints name commands that work.
+// add-pack takes tarballs on disk; from npm, install --pack adds a pack; and
+// nothing tells an npm user to pass --from
+test('add-pack with no --from names install --pack; status with nothing installed names install --pack, no --from', async () => {
+  const {addPack, status} = require('../lib/packs-command');
+  const h = require('./fake-io').tmp('ch-a11-');
+  const {fakeIo} = require('./fake-io');
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
+  assert.strictEqual(await addPack({pack: 'ci-failure-triage'}, io), 2);
+  assert.match(io.err, /add-pack adds a pack from tarballs on disk \(--from <directory of tarballs>\); to add one from npm, run `[^`]*install --pack ci-failure-triage`/);
+  assert.doesNotMatch(io.err, /arrives with the first release/);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
+  await status({}, io2);
+  assert.match(io2.out + io2.err, /nothing is installed; run `[^`]*install --pack <name>`/);
+  assert.doesNotMatch(io2.out + io2.err, /--from <dir>/);
+});
