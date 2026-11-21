@@ -242,8 +242,10 @@ test('the review of #48: a first pin for a name this install uses (the runtime, 
 // a fix a release must hold, and no pin may go below it.
 test('floors: optional; each a strict version of a module some pack lists; a pin below its floor refused', () => {
   const d = shipped();
-  // the shipped floors: the redaction and GitHub fixes (A-redact)
-  assert.deepStrictEqual(d.floors, {'@countinghouse/ch-access-github': '0.2.1', '@countinghouse/ch-step-log-clean': '0.2.2', '@countinghouse/ch-step-redact': '0.2.3'});
+  // the shipped floors: the redaction and GitHub fixes (A-redact), and the
+  // credential-leak fixes of 11-21 (report's userinfo, pack 1's step names)
+  assert.deepStrictEqual(d.floors, {'@countinghouse/ch-access-github': '0.2.2', '@countinghouse/ch-pack-ci-failure-triage': '0.7.1', '@countinghouse/ch-step-log-clean': '0.2.3',
+    '@countinghouse/ch-step-redact': '0.2.4', '@countinghouse/ch-step-report': '0.4.4'});
   assert.strictEqual(problemOf(d), undefined);
   const without = shipped();
   delete without.floors;
@@ -252,14 +254,16 @@ test('floors: optional; each a strict version of a module some pack lists; a pin
     [(x) => { x.floors = []; }, /floors must be an object/],
     [(x) => { x.floors['@countinghouse/ch-step-nope'] = '1.0.0'; }, /floor for @countinghouse\/ch-step-nope names no module/],
     [(x) => { x.floors['@countinghouse/ch-step-redact'] = '0.2'; }, /floor for @countinghouse\/ch-step-redact is no strict/],
-    [(x) => { x.pins['@countinghouse/ch-step-redact'] = pin('0.2.2'); }, /ch-step-redact 0\.2\.2 is below its floor 0\.2\.3/]
+    [(x) => { x.pins['@countinghouse/ch-step-redact'] = pin('0.2.3'); }, /ch-step-redact 0\.2\.3 is below its floor 0\.2\.4/],
+    // (a pack's own module has a floor too: pack 1's step-name fix)
+    [(x) => { x.pins['@countinghouse/ch-pack-ci-failure-triage'] = pin('0.7.0'); }, /ch-pack-ci-failure-triage 0\.7\.0 is below its floor 0\.7\.1/]
   ]) {
     const x = shipped();
     mutate(x);
     assert.match(problemOf(x) || '', re);
   }
   const at = shipped();
-  at.pins['@countinghouse/ch-step-redact'] = pin('0.2.3');
+  at.pins['@countinghouse/ch-step-redact'] = pin('0.2.4');
   at.pins['@countinghouse/ch-step-redact'].repository = 'mchen6/ch-step-redact';
   assert.strictEqual(problemOf(at), undefined, 'at its floor');
 });
