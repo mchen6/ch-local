@@ -108,7 +108,7 @@ test('the build-your-own-tool page: the key never in a conversation, kept in Cla
     'claude mcp remove --scope user countinghouse-dev', 'no credential is passed to it', 'It does not work through an HTTP proxy',
     'The first time, it makes an admin key and keeps it for later starts; `dev-server` never prints it.', '`dev-server --new-key` makes a new key and prints the two commands again',
     'On a machine other people log into, start it with --new-key each time: while the server is stopped, another account could listen on its port and catch the key Claude Code sends. Claude Code sends it at the start of every session, in every project, since the entry is the user\'s. The key lets whoever holds it run code as you on this machine',
-    'that output is sent nowhere (`>/dev/null`; `| Out-Null` in PowerShell)', 'run them in PowerShell',
+    'that output, errors included, is sent nowhere (`>/dev/null 2>&1`; `*> $null` in PowerShell)', 'run them in PowerShell',
     'the key is also in its command line', 'after each start, ask Claude Code to load your tool again', 'Stop it before `ch-local upgrade`, `rollback` or `uninstall`',
     'not inside your installed packs, not upgraded with them, and not published or shared']) assert.ok(page.includes(s), s);
   assert.ok(fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8').includes('(build-your-own-tool.md)'), 'linked from the index');

@@ -31,13 +31,13 @@ to Claude Code with that key. Run both in a second terminal, then restart
 Claude Code:
 
 ```bash
-claude mcp remove --scope user countinghouse-dev >/dev/null
-claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(cat "<home>/dev-auth/admin-key")" >/dev/null
+claude mcp remove --scope user countinghouse-dev >/dev/null 2>&1
+claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(cat "<home>/dev-auth/admin-key")" >/dev/null 2>&1
 ```
 
 `claude mcp add` repeats the header it was given, key included, in its own
-output, so that output is sent nowhere (`>/dev/null`; `| Out-Null` in
-PowerShell). Don't remove that part, and don't paste the output anywhere.
+output, so that output, errors included, is sent nowhere (`>/dev/null 2>&1`;
+`*> $null` in PowerShell). Don't remove that part, and don't paste the output anywhere.
 
 The first time, `remove` says there is no such server: that's fine. On
 Windows, run them in PowerShell: it prints the PowerShell form, which reads

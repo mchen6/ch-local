@@ -198,8 +198,8 @@ test('the lines said: the URL; with a new key the two Claude Code lines (PowerSh
   assert.deepStrictEqual(linesFor({...at, fresh: true}), [
     'countinghouse development server: http://127.0.0.1:7531/mcp (stop it with Ctrl-C)',
     'Its key is new: add it to Claude Code, in another terminal:',
-    '  claude mcp remove --scope user countinghouse-dev >/dev/null',
-    '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(cat "/h/dev-auth/admin-key")" >/dev/null',
+    '  claude mcp remove --scope user countinghouse-dev >/dev/null 2>&1',
+    '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(cat "/h/dev-auth/admin-key")" >/dev/null 2>&1',
     'Keep your tools\' modules in /h/dev/modules, and load them again after each start. They run here only: not inside your installed packs, not upgraded with them, and not published or shared.'
   ]);
   assert.deepStrictEqual(linesFor({...at, fresh: false}), [
@@ -211,7 +211,7 @@ test('the lines said: the URL; with a new key the two Claude Code lines (PowerSh
   assert.match(win[1], /in another terminal \(PowerShell\):$/);
   // (-LiteralPath: [ ] are no wildcards; the add's own output, which repeats
   // the key, sent nowhere: round 1, 2 and 5)
-  assert.strictEqual(win[3], '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(Get-Content -LiteralPath \'C:\\h\\dev-auth\\admin-key\')" | Out-Null');
+  assert.strictEqual(win[3], '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(Get-Content -LiteralPath \'C:\\h\\dev-auth\\admin-key\')" *> $null');
 });
 
 // round 1, 1: nothing is kept or said as working until the runtime is up
@@ -221,7 +221,7 @@ test('a runtime that ends before it listens: the new key is not kept, nothing is
   assert.strictEqual(await devServer({}, failed), 1);
   assert.match(failed.err, /the development server ended before it listened/);
   assert.strictEqual(failed.out, '', 'no lines');
-  assert.deepStrictEqual(fs.readdirSync(path.join(h, 'dev-auth')).sort(), ['auth.json'], 'no key kept, no port');
+  assert.deepStrictEqual(fs.readdirSync(path.join(h, 'dev-auth')).sort(), [], 'no key kept, no port, no auth.json naming it');
   assert.strictEqual(await devServer({}, io(h)), 0);
   const kept = io(h, {up: 'timeout'});
   assert.strictEqual(await devServer({}, kept), 1);
@@ -230,8 +230,9 @@ test('a runtime that ends before it listens: the new key is not kept, nothing is
   assert.deepStrictEqual(kept.killed, ['SIGTERM'], 'a runtime that never listened is stopped');
 });
 
-// round 1, 6: a port held by an earlier dev-server's runtime is said so
-test('a port held by an earlier dev-server\'s runtime, still alive: named by its pid', async () => {
+// round 1, 6, and its medium, 4 and 10: one dev-server per home; a busy port
+// with an earlier runtime's pid file names it as a maybe
+test('one dev-server per home: a second, while the first runs, is refused naming it; a busy port with an earlier runtime\'s pid is named as a maybe', async () => {
   const h = home();
   let end;
   const first = io(h);
@@ -239,11 +240,18 @@ test('a port held by an earlier dev-server\'s runtime, still alive: named by its
   const running = devServer({}, first);
   await new Promise((r) => setTimeout(r, 50));
   assert.strictEqual(fs.readFileSync(path.join(h, 'dev-auth', 'pid'), 'utf8'), '4321\n');
-  const second = io(h, {free: false});
-  second.alive = (pid) => pid === 4321;
-  assert.strictEqual(await devServer({}, second), 2);
-  assert.match(second.err, /port 7531 on 127\.0\.0\.1 is held by an earlier dev-server's runtime \(pid 4321\): stop it, then start again/);
+  const second = io(h);
+  second.alive = (pid) => pid === process.pid;
+  assert.strictEqual(await devServer({port: 7532, newKey: true}, second), 2);
+  assert.match(second.err, new RegExp(`another dev-server is running for .* \\(pid ${process.pid}\\): stop it first`));
+  assert.deepStrictEqual(second.spawned, []);
   end(0);
   await running;
-  assert.ok(!fs.existsSync(path.join(h, 'dev-auth', 'pid')), 'removed when it ends');
+  assert.deepStrictEqual(fs.readdirSync(path.join(h, 'dev-auth')).sort(), ['admin-key', 'auth.json', 'port'], 'its pid and lock gone when it ends');
+  // (a runtime left by a dev-server that was killed: its pid file stays)
+  fs.writeFileSync(path.join(h, 'dev-auth', 'pid'), '4321\n', {mode: 0o600});
+  const busy = io(h, {free: false});
+  busy.alive = (pid) => pid === 4321;
+  assert.strictEqual(await devServer({}, busy), 2);
+  assert.match(busy.err, /port 7531 on 127\.0\.0\.1 is in use, perhaps by an earlier dev-server's runtime \(pid 4321; check before stopping it\)/);
 });
