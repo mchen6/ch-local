@@ -973,3 +973,67 @@ test('an npm install whose allow comes from releaseAllow places the pinned, prov
     await n.reg.close();
   }
 });
+
+// the medium on B-shim-allow, 8: the shim is placed (and recorded) before
+// the daemon is asked to restart onto the new release
+test('the shim is in place and recorded before the daemon is asked to restart', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  const dr = require('../lib/daemon-requests');
+  const real = dr.requestUpgrade;
+  let atRestart = null;
+  dr.requestUpgrade = async (homeDir) => {
+    const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+    atRestart = {placed: fs.existsSync(path.join(homeDir, 'shim', exe)), recorded: record(homeDir).shim != null};
+  };
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.deepStrictEqual(atRestart, {placed: true, recorded: true});
+  } finally {
+    dr.requestUpgrade = real;
+    await n.reg.close();
+  }
+});
+
+// the medium on B-shim-allow, 2 and 3: a shim not placed leaves no shim in
+// the record (rollback would restore it); a busy one says what to do
+test('a shim that cannot be placed clears the record\'s shim; a busy one says how to get the shared runtime back', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  const si = require('../lib/shim-install');
+  const real = si.installShim;
+  try {
+    const io0 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io0, n.allow, n.fromNpm), 0, io0.err);
+    assert.ok(record(h).shim != null, 'placed first');
+    si.installShim = async () => { throw Object.assign(new Error('C:\\h\\shim\\ch-shim.previous could not be removed (EBUSY)'), {code: 'SHIM_BUSY'}); };
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.strictEqual(record(h).shim, undefined, 'the record matches: no shim');
+    assert.match(io.err, /the shared runtime's new shim could not replace the old one: a session still uses it\. Close that session \(or the client running it\), then run `.*install` to place it; until then each session runs its own runtime/);
+    si.installShim = async () => { throw Object.assign(new Error('the registry could not be reached'), {code: 'NPM_FETCH'}); };
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)}), n.allow, n.fromNpm), 0);
+    assert.strictEqual(record(h).shim, undefined);
+  } finally {
+    si.installShim = real;
+    await n.reg.close();
+  }
+});
+
+// the medium on B-shim-allow, 7: a shim already at its pin, verified when it
+// was placed, is not fetched again
+test('a shim already at its pin is not fetched again', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  try {
+    const io0 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io0, n.allow, n.fromNpm), 0, io0.err);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.ok(!io.fetches.some((u) => /ch-shim/.test(u)), JSON.stringify(io.fetches.filter((u) => /shim/.test(u))));
+    assert.ok(record(h).shim != null);
+  } finally {
+    await n.reg.close();
+  }
+});
