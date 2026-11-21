@@ -30,6 +30,15 @@ const setup = () => {
   return {base, where};
 };
 
+// (both path flavours, on every OS: a Windows path's drive is its root,
+// never a part of the way -- countinghouse #499's same walk looked up C:\\C:)
+test('pathsOnTheWay: each folder from below the root to the path, the root never a part', () => {
+  assert.deepStrictEqual(tree.pathsOnTheWay('C:\\Users\\me\\mod', path.win32), ['C:\\Users', 'C:\\Users\\me', 'C:\\Users\\me\\mod']);
+  assert.deepStrictEqual(tree.pathsOnTheWay('\\\\server\\share\\mod', path.win32), ['\\\\server\\share\\mod']);
+  assert.deepStrictEqual(tree.pathsOnTheWay('/home/me/mod', path.posix), ['/home', '/home/me', '/home/me/mod']);
+  assert.deepStrictEqual(tree.pathsOnTheWay('C:\\', path.win32), []);
+});
+
 test('a clean folder: its package, its spec and its entries', () => {
   const {base, where} = setup();
   const dir = writeModule(path.join(base, 'work', 'mine'));
