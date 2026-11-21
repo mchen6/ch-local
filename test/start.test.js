@@ -455,7 +455,8 @@ test('a record of another release under the home\'s own ch-local is judged by th
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(f.spawned[0].args.filter((a) => a === '--loadModule').length, 0, f.err);
   assert.match(f.err, /this release pins no version of it; run `ch-local install` again/);
-  assert.match(f.err, /this home's record is not this ch-local's release; run `ch-local install --pack ci-failure-triage` to bring the home to /);
+  // (this process is not the home's own ch-local: its own launcher, the home named)
+  assert.match(f.err, /this home's record is not this ch-local's release; run `(?:COUNTINGHOUSE_HOME="[^"]+" )?node "[^"]+" install --pack ci-failure-triage` to bring the home to /);
 });
 
 test('every start of an unreleased install says so in one stderr line', async () => {
@@ -1182,4 +1183,28 @@ test('start passes no proxy variable to a runtime of its own', {skip: process.pl
   const f = io(installedHome(), {env: {PATH: '/usr/bin', HTTPS_PROXY: 'http://proxy.example:3128', no_proxy: 'localhost'}});
   await start({passThrough: []}, f);
   assert.ok(!Object.keys(f.spawned[0].env).some((k) => /_proxy$/i.test(k)), JSON.stringify(Object.keys(f.spawned[0].env)));
+});
+
+// the reviewer on #124's round 20ab08e: "run install --pack <pack> to bring
+// the home to <ours>" is run by the ch-local whose release is <ours>, the one
+// that said it: from outside the home (a global ch-local over an older home),
+// its own launcher, with the home named; from the home's own app, the home's
+test('a record of another release: the install line names the ch-local that said it, never the home\'s launcher when that is another', {skip: process.platform === 'win32' && 'the POSIX form of the home variable'}, async () => {
+  const home = installedHome();
+  const {editHome} = require('./store-helpers');
+  // (the home's app is ch-local 0.5.0; its record's release, another)
+  editHome(home, (r) => ({...r, release: {version: '0.0.1', security: null}, runtime: {...r.runtime, versions: {...r.runtime.versions, '@countinghouse/ch-local': '0.5.0'}}}));
+  const {ALLOWLIST} = require('../lib/allowlist');
+  const release = {...ALLOWLIST, packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-access-github'], credentials: ['GITHUB_TOKEN']}}, pins: {}};
+  const self = fs.realpathSync.native(path.join(__dirname, '..', 'bin', 'ch-local.js'));
+  const outside = io(home);
+  outside.release = release;
+  assert.strictEqual(await start({passThrough: []}, outside), 0, outside.err);
+  assert.ok(outside.err.includes(`run \`COUNTINGHOUSE_HOME="${home}" node "${self}" install --pack ci-failure-triage\` to bring the home to ${ALLOWLIST.release.version}`), outside.err);
+  // from the home's own app (its ch-local is the one the record's runtime names)
+  const inside = Object.assign(io(home), {selfVersion: '0.5.0'});
+  inside.release = release;
+  assert.strictEqual(await start({passThrough: []}, inside), 0, inside.err);
+  assert.match(inside.err, /this home's record is not this ch-local's release; run `(?:node "[^"]+" |ch-local )install --pack ci-failure-triage` to bring the home to /);
+  assert.ok(!inside.err.includes(self), 'the home\'s own launcher, not this one');
 });
