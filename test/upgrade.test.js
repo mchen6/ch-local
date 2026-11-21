@@ -815,7 +815,7 @@ test('upgrade against a release in a later pins format names the npx install of 
     const want = process.platform === 'win32'
       ? `\`npx @countinghouse/ch-local@latest install --pack ci-failure-triage\` (with COUNTINGHOUSE_HOME set to "${s.home}")`
       : `\`COUNTINGHOUSE_HOME="${s.home}" npx @countinghouse/ch-local@latest install --pack ci-failure-triage\``;
-    assert.ok(io.err.includes(`a later ch-local reads that release's pins: install it with ${want}`), io.err);
+    assert.ok(io.err.includes(`this ch-local can't read that release's pins; to move to it, install it afresh: ${want} (a fresh install: it shows what it installs and asks you again, rather than comparing with what you have)`), io.err);
     assert.doesNotMatch(io.err, /@countinghouse\/ch-local@0\.2\.0: @countinghouse\/ch-local@0\.2\.0/, 'its name once');
   } finally {
     await w.close();
