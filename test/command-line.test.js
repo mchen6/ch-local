@@ -92,7 +92,8 @@ test('the pin catches each form: a quoted command, a template\'s ${...}, a liter
 test('chLocal: the home\'s launcher by its real path, else the npx form', () => {
   const h = tmp('ch-cmdline-');
   const where = layout({COUNTINGHOUSE_HOME: h});
-  assert.strictEqual(chLocal(where, 'install'), `COUNTINGHOUSE_HOME="${h}" npx @countinghouse/ch-local install`, 'no launcher yet (a home that is not the default, named)');
+  // (POSIX names the home before it; Windows not yet: A-chlocal-func)
+  assert.strictEqual(chLocal(where, 'install'), `${process.platform === 'win32' ? '' : `COUNTINGHOUSE_HOME="${h}" `}npx @countinghouse/ch-local install`, 'no launcher yet (a home that is not the default, named on POSIX)');
   fs.mkdirSync(path.join(h, 'bin'));
   fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), '');
   assert.strictEqual(chLocal(where, 'credentials add x'), `node "${fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js'))}" credentials add x`);
