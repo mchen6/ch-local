@@ -80,6 +80,11 @@ test('refused: the path, then the walk (nothing read), then the package', () => 
   cases.push([writeModule(path.join(work, 'deps'), {deps: {a: '1'}}), /npm dependencies/]);
   cases.push([writeModule(path.join(work, 'role'), {role: null}), /is a scenario/]);
   cases.push([writeModule(path.join(work, 'scope'), {name: '@countinghouse/x'}), /@countinghouse\/ scope/]);
+  // a version that would move the terminal's cursor (or hide a line of the
+  // question) is no version: refused
+  const ctl = writeModule(path.join(work, 'ctl'));
+  fs.writeFileSync(path.join(ctl, 'package.json'), JSON.stringify({name: 'my-tool', version: '1.0.0\r\u001b[2K', countinghouse: {role: 'scenario'}}));
+  cases.push([ctl, /package\.json's version is not a plain version/]);
   for (const [dir, want] of cases) {
     const r = tree.checkFolder(dir, where.home);
     assert.ok(Array.isArray(r.problems) && r.problems.some((p) => want.test(p)), `${dir}: ${JSON.stringify(r.problems)}`);

@@ -156,3 +156,15 @@ test('a key already stored for the name is said before the yes, with where it go
   await addModule({dir}, io, {where});
   assert.ok(io.out.includes('It will use the key already stored for my-tool (sent only to https://api.mine.example). Remove them first if this is a different module: `'), io.out);
 });
+
+test('the permissions it declares are said, and that the enforced sandbox grants none; a control character in them is shown as ?', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  pkg.countinghouse.permissions = {fs: [{path: '/etc/hosts', access: 'r'}], net: [{host: 'api.example.com'}], env: ['MY_SETTING', 'X\u001b[2K']};
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg));
+  const io = ioWith(home, ['n']);
+  await addModule({dir}, io, {where});
+  assert.ok(io.out.includes('It asks for the path /etc/hosts (read), the network host api.example.com, the environment variables MY_SETTING, X?[2K; under the enforced sandbox it gets none of them.\n'), io.out);
+  assert.ok(!io.out.includes('\u001b'), 'no escape reaches the terminal');
+});
