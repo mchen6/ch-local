@@ -45,7 +45,7 @@ test('nothing installed: refused, naming install; a port in use or not a port: r
   assert.match(none.err, /countinghouse is not installed in .*: install a pack first \(ch-local install\)/);
   const busy = io(home(), {free: false});
   assert.strictEqual(await devServer({}, busy), 2);
-  assert.match(busy.err, /port 7531 on 127\.0\.0\.1 is in use: choose another with --port <n>/);
+  assert.match(busy.err, /port 7531 on 127\.0\.0\.1 is in use: choose another with --port <n> --new-key/);
   const bad = io(home());
   assert.strictEqual(await devServer({port: 70000}, bad), 2);
   assert.deepStrictEqual([...none.spawned, ...busy.spawned, ...bad.spawned], []);
@@ -66,7 +66,7 @@ test('the home\'s runtime on 127.0.0.1, its port, the local store, the authoring
   assert.match(key, /^[0-9a-f]{64}$/);
   assert.deepStrictEqual(JSON.parse(f.spawned[0].auth), {[key]: {userName: 'dev', devices: ['*'], admin: true}});
   assert.ok(!(f.out + f.err).includes(key), 'the key is never printed');
-  const lines = (fresh) => linesFor({port: 7600, keyFile: path.join(h, 'dev-auth', 'admin-key'), modules: path.join(h, 'dev', 'modules'), platform: process.platform, fresh, launcher: path.join(h, 'bin', 'ch-local.js')});
+  const lines = (fresh) => linesFor({port: 7600, keyFile: path.join(h, 'dev-auth', 'admin-key'), modules: path.join(h, 'dev', 'modules'), platform: process.platform, fresh});
   assert.deepStrictEqual(f.out.trimEnd().split('\n'), lines(true), 'a new key: the lines to add it');
   // a stable key (Matt, 11-20): kept across starts, the entry from before
   // still works; --new-key replaces it and says how to add it again
@@ -81,6 +81,16 @@ test('the home\'s runtime on 127.0.0.1, its port, the local store, the authoring
   assert.notStrictEqual(rotated.spawned[0].key, key, '--new-key: a new key');
   assert.deepStrictEqual(rotated.out.trimEnd().split('\n'), lines(true));
   assert.ok(!(again.out + again.err + rotated.out + rotated.err).includes(rotated.spawned[0].key) && !(again.out + rotated.out).includes(key), 'never printed');
+  // a kept key serves the port its entry was added for: another needs
+  // --new-key (the medium on the stable key, 1)
+  const moved = io(h);
+  assert.strictEqual(await devServer({port: 7601}, moved), 2);
+  assert.match(moved.err, /entry was added for port 7600: start with --port 7601 --new-key to add it again for this one/);
+  assert.deepStrictEqual(moved.spawned, []);
+  const movedNew = io(h);
+  assert.strictEqual(await devServer({port: 7601, newKey: true}, movedNew), 0);
+  assert.strictEqual(fs.readFileSync(path.join(h, 'dev-auth', 'port'), 'utf8'), '7601\n');
+  assert.strictEqual(await devServer({port: 7601}, io(h)), 0, 'the new port, kept');
 });
 
 // a kept key is used only if it is still one this command made, private
@@ -90,7 +100,7 @@ test('a kept key open to others, a link, or not a key: refused, naming --new-key
   fs.chmodSync(path.join(loose, 'dev-auth', 'admin-key'), 0o644);
   const l = io(loose);
   assert.strictEqual(await devServer({}, l), 1);
-  assert.match(l.err, /admin-key is open to others: start with --new-key to replace it/);
+  assert.match(l.err, /admin-key: its mode is 0644, not 0600: start with --new-key to replace it/);
   const linked = home();
   assert.strictEqual(await devServer({}, io(linked)), 0);
   const elsewhere = path.join(linked, 'elsewhere-key');
@@ -99,7 +109,7 @@ test('a kept key open to others, a link, or not a key: refused, naming --new-key
   fs.symlinkSync(elsewhere, path.join(linked, 'dev-auth', 'admin-key'));
   const k = io(linked);
   assert.strictEqual(await devServer({}, k), 1);
-  assert.match(k.err, /admin-key is not a file this command made: start with --new-key to replace it/);
+  assert.match(k.err, /admin-key: it is not a regular file: start with --new-key to replace it/);
   const junk = home();
   assert.strictEqual(await devServer({}, io(junk)), 0);
   fs.writeFileSync(path.join(junk, 'dev-auth', 'admin-key'), 'not-a-key', {mode: 0o600});
@@ -175,7 +185,7 @@ test('the key and its auth config are private: dev-auth/ 0700, its files 0600', 
 });
 
 test('the lines said: the URL; with a new key the two Claude Code lines (PowerShell on Windows), else the entry from before and --new-key; where it runs only', () => {
-  const at = {port: 7531, keyFile: '/h/dev-auth/admin-key', modules: '/h/dev/modules', platform: 'linux', launcher: '/h/bin/ch-local.js'};
+  const at = {port: 7531, keyFile: '/h/dev-auth/admin-key', modules: '/h/dev/modules', platform: 'linux'};
   assert.deepStrictEqual(linesFor({...at, fresh: true}), [
     'countinghouse development server: http://127.0.0.1:7531/mcp (stop it with Ctrl-C)',
     'Its key is new: add it to Claude Code, in another terminal:',
@@ -185,10 +195,10 @@ test('the lines said: the URL; with a new key the two Claude Code lines (PowerSh
   ]);
   assert.deepStrictEqual(linesFor({...at, fresh: false}), [
     'countinghouse development server: http://127.0.0.1:7531/mcp (stop it with Ctrl-C)',
-    'Claude Code\'s countinghouse-dev entry from before still works. To make a new key: node "/h/bin/ch-local.js" dev-server --new-key',
+    'Claude Code\'s countinghouse-dev entry from before still works. To make a new key, start it again with --new-key.',
     'Keep your tools\' modules in /h/dev/modules, and load them again after each start. They run here only: not inside your installed packs, not upgraded with them, and not published or shared.'
   ]);
-  const win = linesFor({port: 7531, keyFile: 'C:\\h\\dev-auth\\admin-key', modules: 'C:\\h\\dev\\modules', platform: 'win32', fresh: true, launcher: 'C:\\h\\bin\\ch-local.js'});
+  const win = linesFor({port: 7531, keyFile: 'C:\\h\\dev-auth\\admin-key', modules: 'C:\\h\\dev\\modules', platform: 'win32', fresh: true});
   assert.match(win[1], /in another terminal \(PowerShell\):$/);
   assert.strictEqual(win[3], '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(Get-Content \'C:\\h\\dev-auth\\admin-key\')"');
 });

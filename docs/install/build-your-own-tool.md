@@ -39,9 +39,10 @@ Windows, run them in PowerShell: it prints the PowerShell form, which reads
 the key with `Get-Content` (cmd and Git Bash would not read the key there).
 (`<home>` is `~/.countinghouse`, or `$COUNTINGHOUSE_HOME` when it is set.)
 
-Later starts use the same key, so Claude Code's entry keeps working, and they
-print no commands. `dev-server --new-key` makes a new key and prints the two
-commands again.
+Later starts on the same port use the same key, so Claude Code's entry keeps
+working, and they print no commands. `dev-server --new-key` makes a new key
+and prints the two commands again; a start on another port needs it, and
+`dev-server` says so.
 
 On a machine other people log into, start it with --new-key each time: while
 the server is stopped, another account could listen on its port and catch the
