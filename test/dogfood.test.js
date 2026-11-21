@@ -261,10 +261,13 @@ test('shimInto: this machine\'s shim packed into the release as its platform pac
     const said = [];
     const packed = await dogfood.shimInto(npmIo, release, work, pins, (l) => said.push(l), {build: () => fake, platform: 'linux', arch: 'x64'});
     const version = require('../npm-shim/assemble').cargoVersion(path.join(__dirname, '..', 'shim', 'Cargo.toml'));
-    assert.strictEqual(packed, `@countinghouse/ch-shim-linux-x64@${version}`);
-    const file = require('../lib/unpack').tarballName('@countinghouse/ch-shim-linux-x64', version);
+    // (Cargo's version, -dev. and the binary's sha512: never a released
+    // version, each build its own -- the medium, 1-2)
+    const dev = `${version}-dev.${require('node:crypto').createHash('sha512').update('the built shim').digest('hex').slice(0, 12)}`;
+    assert.strictEqual(packed, `@countinghouse/ch-shim-linux-x64@${dev}`);
+    const file = require('../lib/unpack').tarballName('@countinghouse/ch-shim-linux-x64', dev);
     const bytes = fs.readFileSync(path.join(release, file));
-    assert.deepStrictEqual(pins['@countinghouse/ch-shim-linux-x64'], {version, integrity: require('../lib/integrity').integrityOf(bytes)});
+    assert.deepStrictEqual(pins['@countinghouse/ch-shim-linux-x64'], {version: dev, integrity: require('../lib/integrity').integrityOf(bytes)});
     assert.strictEqual(require('../lib/tar').readMember(bytes, 'bin/ch-shim').toString(), 'the built shim');
     const manifest = JSON.parse(require('../lib/tar').readMember(bytes, 'package.json').toString());
     assert.deepStrictEqual([manifest.os, manifest.cpu], [['linux'], ['x64']]);
@@ -274,4 +277,15 @@ test('shimInto: this machine\'s shim packed into the release as its platform pac
   } finally {
     fs.rmSync(work, {recursive: true, force: true});
   }
+});
+
+test('builtExecutable: the executable cargo names in its JSON messages, wherever its target dir is', () => {
+  const lines = [
+    JSON.stringify({reason: 'compiler-artifact', target: {name: 'libc'}, executable: null}),
+    'not json',
+    JSON.stringify({reason: 'compiler-artifact', target: {name: 'ch-shim'}, executable: '/elsewhere/x86_64-unknown-linux-musl/release/ch-shim'}),
+    JSON.stringify({reason: 'build-finished', success: true}),
+  ].join('\n');
+  assert.strictEqual(dogfood.builtExecutable(lines, 'ch-shim'), '/elsewhere/x86_64-unknown-linux-musl/release/ch-shim');
+  assert.strictEqual(dogfood.builtExecutable(lines, 'ch-shim.exe'), null);
 });

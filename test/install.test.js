@@ -461,10 +461,35 @@ test('--from with this platform\'s shim in the folder: placed by its pinned sha5
   // (end to end: the recorded version is versions.json's, so session execs it)
   const {sessionChoice} = require('../lib/session');
   assert.strictEqual(sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
-  // (again: the same shim is current, nothing moved)
+  // (again: the same shim, checked again, moves nothing)
   const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io2, withShim(r.allow, s)), 0, io2.err);
   assert.ok(!fs.existsSync(path.join(h, 'shim', 'ch-shim.previous')), 'the same binary moves nothing');
+  // (a rebuilt folder at the same version: its bytes are placed, never the
+  // one there kept by its version -- the medium, 1)
+  const rebuilt = Buffer.concat([hostProgram(), Buffer.from('rebuilt')]);
+  const s2 = folderShim(r, {body: rebuilt});
+  const io3 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io3, withShim(r.allow, s2)), 0, io3.err);
+  assert.ok(fs.readFileSync(path.join(h, 'shim', EXE_HERE)).equals(rebuilt), 'the rebuilt binary, placed');
+  assert.strictEqual(require('../lib/session').sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
+  // (and other bytes than the pin's are refused though the record names
+  // that version -- the medium, 3)
+  const s3 = folderShim(r, {lie: true});
+  const io4 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io4, withShim(r.allow, s3)), 1, io4.out);
+  assert.match(io4.err, /the tarball's integrity is not the pinned one/);
+  assert.ok(fs.readFileSync(path.join(h, 'shim', EXE_HERE)).equals(rebuilt), 'the one there kept');
+});
+
+test('--from with a release\'s whole set of shims: this machine\'s is placed, the others left alone', async () => {
+  const r = release(); const h = home();
+  const other = HOST_KEY === 'linux-arm64' ? 'linux-x64' : 'linux-arm64';
+  const ours = folderShim(r);
+  const theirs = folderShim(r, {key: other});
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, ours, theirs)), 0, io.err);
+  assert.deepStrictEqual(record(h).shim, {package: ours.name, version: '0.5.0'});
 });
 
 test('--unreleased-pins with a shim in the folder (dogfood --release-dir): placed and recorded, the home still unreleased', async () => {
@@ -493,7 +518,7 @@ test('--from refuses a folder\'s shim as it refuses a pack: other bytes than the
   };
   await refused((r) => [folderShim(r, {lie: true})], new RegExp(`${SHIM_PACKAGES[HOST_KEY] || `@countinghouse/ch-shim-${HOST_KEY}`}@0\\.5\\.0: the tarball's integrity is not the pinned one`));
   const other = HOST_KEY === 'linux-arm64' ? 'linux-x64' : 'linux-arm64';
-  await refused((r) => [folderShim(r, {key: other})], new RegExp(`@countinghouse/ch-shim-${other}@0\\.5\\.0 is the shim for ${other}, not for this machine \\(${HOST_KEY}\\)`));
+  await refused((r) => [folderShim(r, {key: other})], new RegExp(`@countinghouse/ch-shim-${other}@0\\.5\\.0 is the shim for ${other}, not for this machine \\(${HOST_KEY}\\), and the folder holds none for this one`));
   if (process.platform !== 'win32') {
     await refused((r) => [folderShim(r, {body: '#!/bin/sh\necho hi\n'})], new RegExp(`@0\\.5\\.0's bin/ch-shim is not a program this machine runs \\(${HOST_KEY}: not an? (ELF|Mach-O) program`));
   }

@@ -166,26 +166,44 @@ const run = (cmd, args, opts = {}) => spawnSync(cmd, args, {encoding: 'utf8', ma
 // --locked, the host target) and packed as its platform package, the shape
 // publish makes (npm-shim/assemble.js writeTarget), into release/: pinned by
 // its sha512 as the packs are, so install --from places and records it
-// (A-shim-from, the reviewer, 11-21). build: (shimDir, exe) -> the binary's
-// path (a test's own); null: no shim for this machine. -> the
-// `<name>@<version>` packed, or null
+// (A-shim-from, the reviewer, 11-21). Its version is Cargo's with
+// -dev.<the binary's sha512, 12 hex digits>: each build its own, and never
+// a released version, so an npm install never takes it for the verified
+// release (the medium on A-shim-from, 1-2). build: (shimDir, exe) -> the
+// binary's path (a test's own). -> the `<name>@<version>` packed, or null
+// (no target for this machine)
 async function shimInto(npmIo, release, work, pins, say, {build = cargoBuild, platform = process.platform, arch = process.arch} = {}) {
   const {writeTarget, cargoVersion, exe} = require('../npm-shim/assemble');
   const t = require('../npm-shim/targets').find((x) => x.os === platform && x.cpu === arch);
   if (t == null) { say(`ch-shim: no target for ${platform}-${arch}; the folder brings no shim`); return null; }
-  const version = cargoVersion(path.join(ROOT, 'shim', 'Cargo.toml'));
-  if (version == null) throw new Error('shim/Cargo.toml names no [package] version');
+  const cargo = cargoVersion(path.join(ROOT, 'shim', 'Cargo.toml'));
+  if (cargo == null) throw new Error('shim/Cargo.toml names no [package] version');
   const bin = build(path.join(ROOT, 'shim'), exe(t));
+  const version = `${cargo}-dev.${require('node:crypto').createHash('sha512').update(fs.readFileSync(bin)).digest('hex').slice(0, 12)}`;
   const dir = writeTarget(path.join(work, 'shim-package', `ch-shim-${t.key}`), t, version, bin);
   const {packInto} = require('../lib/release');
   const {name, integrity} = await packInto(npmIo, dir, release);
   pins[name] = {version, integrity};
   return `${name}@${version}`;
 }
+// (the binary where cargo says it put it: a CARGO_TARGET_DIR or a configured
+// target moves it -- the medium on A-shim-from, 6)
 function cargoBuild(shimDir, exeName) {
-  const r = run('cargo', ['build', '--release', '--locked'], {cwd: shimDir});
+  const r = run('cargo', ['build', '--release', '--locked', '--message-format=json-render-diagnostics'], {cwd: shimDir});
   if (r.error != null || r.status !== 0) throw new Error(`cargo build of the shim failed (${r.error != null ? r.error.code : `exit ${r.status}`}): ${String(r.stderr || '').split('\n').slice(-6).join('\n')}`);
-  return path.join(shimDir, 'target', 'release', exeName);
+  const bin = builtExecutable(r.stdout, exeName);
+  if (bin == null) throw new Error(`cargo built no ${exeName} it named`);
+  return bin;
+}
+// cargo's JSON messages -> the path of the executable named exeName, or null
+function builtExecutable(stdout, exeName) {
+  let found = null;
+  for (const line of String(stdout).split('\n')) {
+    let m;
+    try { m = JSON.parse(line); } catch (e) { continue; }
+    if (m != null && m.reason === 'compiler-artifact' && typeof m.executable === 'string' && path.basename(m.executable) === exeName) found = m.executable;
+  }
+  return found;
 }
 
 async function buildRelease(plan, work, say, {shim = null} = {}) {
@@ -220,8 +238,13 @@ async function buildRelease(plan, work, say, {shim = null} = {}) {
   }
   // (a prepared folder: this machine's shim too; not dogfood's own install
   // or acceptance, which run each session's own runtime)
+  // (a build that fails is the folder's problem, said, never a throw: the
+  // walk needs the shim -- the medium on A-shim-from, 5)
   if (shim != null) {
-    const packed = await shimInto(npmIo, release, work, pins, say, shim);
+    let packed;
+    try { packed = await shimInto(npmIo, release, work, pins, say, shim); } catch (err) {
+      return {problem: `--release-dir builds this machine's shim from shim/ with cargo (Rust, rustup.rs), and could not: ${err.message}`};
+    }
     if (packed != null) say(`ch-shim: this checkout's shim/ -> ${packed}`);
   }
   const missing = [...ALLOWLIST.runtime.packages, ...ALLOWLIST.packs[PACK].modules].filter((n) => pins[n] == null);
@@ -415,4 +438,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, resolveRefs, run, PACK};
+module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, builtExecutable, resolveRefs, run, PACK};
