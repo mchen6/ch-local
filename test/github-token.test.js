@@ -46,7 +46,11 @@ test('Windows: a system folder that can\'t be named is said, never thrown', asyn
   try {
     const r = await ghToken({env: {}, platform: 'win32', exec: async () => assert.fail('gh not run')}, tmp('ch-ghtoken-'));
     assert.strictEqual(r.token, undefined);
-    assert.match(String(r.why), /could not be found/);
+    // (on Windows the home's own check comes first, and its ACL read can't
+    // start either: refused there, said; elsewhere the home passes and the
+    // system folder is the step that refuses. Either way: a reason, gh never
+    // run, nothing thrown)
+    assert.match(String(r.why), process.platform === 'win32' ? /could not be found|ACL could not be read/ : /could not be found/);
   } finally {
     if (saved === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = saved;
   }
