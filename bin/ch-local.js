@@ -3,6 +3,9 @@
 // ch-local: the countinghouse packs' launcher.
 //
 //   ch-local install --pack <name> --from <dir>   the pack's pinned tarballs into <home>/app
+//   ch-local install [--from <dir>]               reinstalls what this home lists, at this
+//                                                 ch-local's own release: never adds a pack,
+//                                                 never moves to another release
 //   ch-local snippet <client>                     the client's config entry, on stdout alone
 //   ch-local add <client>                         writes that entry, and records it
 //   ch-local uninstall [--keep-data]              takes back what install and add wrote
@@ -24,6 +27,9 @@ const {check, offerNode} = require('../lib/node-check');
 const CLIENT_LIST = 'claude-code|cursor|vscode|codex|claude-desktop';
 const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local install --pack <name> --from <directory of tarballs>
+       ch-local install [--from <directory of tarballs>]
+                reinstalls what this home lists, at this ch-local's own release:
+                it never adds a pack, and never moves to another release
        ch-local add-pack <name> --from <directory of tarballs>
        ch-local remove-pack <name>
        ch-local add-module <directory of your own module>
@@ -53,6 +59,91 @@ function parse(argv, {flags = [], values = []}) {
     else return null;
   }
   return out;
+}
+
+// argv -> {command, ...its arguments} | null (a usage error). The command
+// line's syntax alone, the one place it is decided: main dispatches on what
+// this returns, and the hints' pin (test/command-line.test.js) parses every
+// printed command with it. Checks that read the disk (an absolute --home, a
+// directory) stay with the command.
+function parseCommand(argv) {
+  const [command, ...rest] = argv;
+  const one = () => rest.length === 1 && !rest[0].startsWith('--');
+  switch (command) {
+    case 'snippet': return rest.length === 1 ? {command, client: rest[0]} : null;
+    case 'install': {
+      const a = parse(rest, {values: ['--pack', '--from', '--unreleased-pins']});
+      if (a == null || a.positional.length > 0) return null;
+      // (no --pack: reinstall what the record lists; --unreleased-pins only
+      // with the pack it is for)
+      if (a.values['--pack'] === undefined && a.values['--unreleased-pins'] !== undefined) return null;
+      return {command, pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']};
+    }
+    case 'add-pack': {
+      const a = parse(rest, {values: ['--from', '--unreleased-pins']});
+      return a == null || a.positional.length !== 1 ? null : {command, pack: a.positional[0], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']};
+    }
+    case 'remove-pack': return one() ? {command, pack: rest[0]} : null;
+    case 'add-module': return one() ? {command, dir: rest[0]} : null;
+    case 'remove-module': return one() ? {command, name: rest[0]} : null;
+    case 'rollback': {
+      const a = parse(rest, {flags: ['--yes']});
+      return a == null || a.positional.length > 0 ? null : {command, yes: a.flags['--yes'] === true};
+    }
+    case 'status': return rest.length === 0 ? {command} : null;
+    case 'add': return rest.length === 1 ? {command, client: rest[0]} : null;
+    case 'credentials': {
+      const a = parse(rest, {values: ['--to']});
+      if (a == null) return null;
+      const [action = 'list', name, ...more] = a.positional;
+      if (more.length > 0 || (action === 'list' && (name !== undefined || a.values['--to'] !== undefined))) return null;
+      if ((action === 'add' || action === 'remove') && name === undefined) return null;
+      if (action === 'remove' && a.values['--to'] !== undefined) return null;
+      return {command, action, name, to: a.values['--to'] || null};
+    }
+    case 'uninstall': {
+      const a = parse(rest, {flags: ['--keep-data']});
+      return a == null || a.positional.length > 0 ? null : {command, keepData: a.flags['--keep-data'] === true};
+    }
+    case 'conditions': {
+      const a = parse(rest, {values: ['--for', '--home']});
+      return a == null || a.positional.length > 0 || a.values['--for'] === undefined || a.values['--home'] === undefined ? null : {command, pid: a.values['--for'], home: a.values['--home']};
+    }
+    case 'daemon': {
+      // --handoff: started by a daemon re-execing onto a new ch-local (C3b),
+      // with the session table on fd 3, never in argv or env
+      const a = parse(rest, {values: ['--home'], flags: ['--handoff']});
+      return a == null || a.positional.length > 0 || a.values['--home'] === undefined ? null : {command, home: a.values['--home'], handoff: a.flags['--handoff'] === true};
+    }
+    case 'session': {
+      // (--home: the entry clients add writes, so a client's
+      // COUNTINGHOUSE_HOME can't pick another home; the plugin's has none,
+      // and takes the home rule, as its launch.js found this launcher by)
+      const a = parse(rest, {values: ['--home']});
+      // (once at most: a second --home is refused, never the last one taken)
+      if (a == null || a.positional.length > 0 || rest.filter((x) => x === '--home').length > 1) return null;
+      return {command, home: a.values['--home']};
+    }
+    // (start's own options are read with the disk checks they need, below)
+    case 'start': return rest[0] === '--stdio' ? {command, rest} : null;
+    case 'settings': {
+      if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return {command, action: 'get'};
+      if ((rest.length === 3 || rest.length === 2) && rest[0] === 'set') return {command, action: 'set', name: rest[1], value: rest[2]};
+      if ((rest.length === 1 || rest.length === 2) && rest[0] === 'reset') return {command, action: 'reset', name: rest[1]};
+      if ((rest.length === 1 || rest.length === 2) && rest[0] === 'modules') return {command, action: 'modules', name: rest[1]};
+      return null;
+    }
+    case 'upgrade': {
+      const a = parse(rest, {values: ['--auto'], flags: ['--apply-auto', '--check']});
+      if (a == null || a.positional.length > 0) return null;
+      // (--check is read-only: never with another mode; the medium on the
+      // easy upgrades, 1)
+      if (a.flags['--check'] && (a.values['--auto'] !== undefined || a.flags['--apply-auto'])) return null;
+      if (a.flags['--apply-auto'] && a.values['--auto'] !== undefined) return null;
+      return {command, auto: a.values['--auto'], check: a.flags['--check'] === true, applyAuto: a.flags['--apply-auto'] === true};
+    }
+    default: return null;
+  }
 }
 
 function snippetCommand(client, io) {
@@ -85,17 +176,14 @@ async function main(argv, io) {
     await offerNode(io);
     return 1;
   }
-  const [command, ...rest] = argv;
   const usage = () => { io.stderr.write(USAGE); return 2; };
+  const p = parseCommand(argv);
+  if (p == null) return usage();
+  const {command} = p;
   try {
-    if (command === 'snippet') {
-      if (rest.length !== 1) return usage();
-      return snippetCommand(rest[0], io);
-    }
+    if (command === 'snippet') return snippetCommand(p.client, io);
     if (command === 'install') {
-      const a = parse(rest, {values: ['--pack', '--from', '--unreleased-pins']});
-      if (a == null || a.positional.length > 0 || a.values['--pack'] === undefined) return usage();
-      const code = await require('../lib/install').install({pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']}, io);
+      const code = await require('../lib/install').install({pack: p.pack, from: p.from, unreleasedPins: p.unreleasedPins}, io);
       // asked once whether to turn automatic upgrades on (off with no terminal)
       if (code === 0) await require('../lib/upgrade').offerAuto(io);
       // the last line: what to do next (A-firstrun d1)
@@ -103,80 +191,35 @@ async function main(argv, io) {
       return code;
     }
     if (command === 'add-pack') {
-      const a = parse(rest, {values: ['--from', '--unreleased-pins']});
-      if (a == null || a.positional.length !== 1) return usage();
       const report = {added: false};
-      const code = await require('../lib/packs-command').addPack({pack: a.positional[0], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins'], report}, io);
+      const code = await require('../lib/packs-command').addPack({pack: p.pack, from: p.from, unreleasedPins: p.unreleasedPins, report}, io);
       // the last line, when it added the pack: what to do next (A-firstrun d1)
       if (code === 0 && report.added) io.stdout.write(`${require('../lib/next-steps').READY_LINE}\n`);
       return code;
     }
-    if (command === 'remove-pack') {
-      if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
-      return await require('../lib/packs-command').removePack({pack: rest[0]}, io);
-    }
-    if (command === 'add-module') {
-      if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
-      return await require('../lib/own-command').addModule({dir: rest[0]}, io);
-    }
-    if (command === 'remove-module') {
-      if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
-      return await require('../lib/own-command').removeModule({name: rest[0]}, io);
-    }
-    if (command === 'rollback') {
-      const a = parse(rest, {flags: ['--yes']});
-      if (a == null || a.positional.length > 0) return usage();
-      return await require('../lib/rollback').rollback({yes: a.flags['--yes'] === true}, io);
-    }
-    if (command === 'status') {
-      if (rest.length !== 0) return usage();
-      return await require('../lib/packs-command').status({}, io);
-    }
-    if (command === 'add') {
-      if (rest.length !== 1) return usage();
-      return await require('../lib/clients').add(rest[0], io);
-    }
-    if (command === 'credentials') {
-      const a = parse(rest, {values: ['--to']});
-      if (a == null) return usage();
-      const [action = 'list', name, ...more] = a.positional;
-      if (more.length > 0 || (action === 'list' && (name !== undefined || a.values['--to'] !== undefined))) return usage();
-      if ((action === 'add' || action === 'remove') && name === undefined) return usage();
-      if (action === 'remove' && a.values['--to'] !== undefined) return usage();
-      return await require('../lib/credentials-command').credentials({action, name, to: a.values['--to'] || null}, io);
-    }
-    if (command === 'uninstall') {
-      const a = parse(rest, {flags: ['--keep-data']});
-      if (a == null || a.positional.length > 0) return usage();
-      return await require('../lib/uninstall').uninstall({keepData: a.flags['--keep-data'] === true}, io);
-    }
+    if (command === 'remove-pack') return await require('../lib/packs-command').removePack({pack: p.pack}, io);
+    if (command === 'add-module') return await require('../lib/own-command').addModule({dir: p.dir}, io);
+    if (command === 'remove-module') return await require('../lib/own-command').removeModule({name: p.name}, io);
+    if (command === 'rollback') return await require('../lib/rollback').rollback({yes: p.yes}, io);
+    if (command === 'status') return await require('../lib/packs-command').status({}, io);
+    if (command === 'add') return await require('../lib/clients').add(p.client, io);
+    if (command === 'credentials') return await require('../lib/credentials-command').credentials({action: p.action, name: p.name, to: p.to}, io);
+    if (command === 'uninstall') return await require('../lib/uninstall').uninstall({keepData: p.keepData}, io);
     if (command === 'conditions') {
-      const a = parse(rest, {values: ['--for', '--home']});
-      if (a == null || a.positional.length > 0 || a.values['--for'] === undefined || a.values['--home'] === undefined) return usage();
       const {isFullPath} = require('../lib/home');
-      if (!isFullPath(a.values['--home'])) { io.stderr.write('ch-local conditions: --home must be an absolute path\n'); return 2; }
-      return await require('../lib/conditions-command').conditions({pid: a.values['--for'], home: a.values['--home']}, io);
+      if (!isFullPath(p.home)) { io.stderr.write('ch-local conditions: --home must be an absolute path\n'); return 2; }
+      return await require('../lib/conditions-command').conditions({pid: p.pid, home: p.home}, io);
     }
     if (command === 'daemon') {
-      // --handoff: started by a daemon re-execing onto a new ch-local (C3b),
-      // with the session table on fd 3, never in argv or env
-      const a = parse(rest, {values: ['--home'], flags: ['--handoff']});
-      if (a == null || a.positional.length > 0 || a.values['--home'] === undefined) return usage();
       const {isFullPath} = require('../lib/home');
-      if (!isFullPath(a.values['--home'])) { io.stderr.write('ch-local daemon: --home must be an absolute path\n'); return 2; }
-      const handoff = a.flags['--handoff'] === true ? await io.readHandoff() : null;
-      return await require('../lib/daemon').daemon({home: a.values['--home'], handoff}, io);
+      if (!isFullPath(p.home)) { io.stderr.write('ch-local daemon: --home must be an absolute path\n'); return 2; }
+      const handoff = p.handoff ? await io.readHandoff() : null;
+      return await require('../lib/daemon').daemon({home: p.home, handoff}, io);
     }
     if (command === 'session') {
-      // (--home: the entry clients add writes, so a client's
-      // COUNTINGHOUSE_HOME can't pick another home; the plugin's has none,
-      // and takes the home rule, as its launch.js found this launcher by)
-      const a = parse(rest, {values: ['--home']});
-      // (once at most: a second --home is refused, never the last one taken)
-      if (a == null || a.positional.length > 0 || rest.filter((x) => x === '--home').length > 1) return usage();
       let home = null;
-      if (a.values['--home'] !== undefined) {
-        const v = a.values['--home'];
+      if (p.home !== undefined) {
+        const v = p.home;
         const {isFullPath} = require('../lib/home');
         if (!isFullPath(v)) { io.stderr.write('ch-local session: --home must be an absolute path\n'); return 2; }
         const fs = require('node:fs');
@@ -191,7 +234,7 @@ async function main(argv, io) {
       return await require('../lib/session').session({home}, io);
     }
     if (command === 'start') {
-      if (rest[0] !== '--stdio') return usage();
+      const rest = p.rest;
       // ch-local's own options, before any pass-through runtime flag: the
       // native shim's hand-over is `start --stdio --own-runtime --home <abs>`
       // (#236 section 5), so a client's COUNTINGHOUSE_HOME can't pick the home
@@ -233,28 +276,16 @@ async function main(argv, io) {
       }
       return await require('../lib/start').start({passThrough: rest.slice(i), home, ownRuntime}, io);
     }
-    if (command === 'settings') {
-      if (rest.length === 0 || (rest.length === 1 && rest[0] === 'get')) return await require('../lib/settings-command').settings({action: 'get'}, io);
-      if ((rest.length === 3 || rest.length === 2) && rest[0] === 'set') return await require('../lib/settings-command').settings({action: 'set', name: rest[1], value: rest[2]}, io);
-      if ((rest.length === 1 || rest.length === 2) && rest[0] === 'reset') return await require('../lib/settings-command').settings({action: 'reset', name: rest[1]}, io);
-      if ((rest.length === 1 || rest.length === 2) && rest[0] === 'modules') return await require('../lib/settings-command').settings({action: 'modules', name: rest[1]}, io);
-      return usage();
-    }
+    if (command === 'settings') return await require('../lib/settings-command').settings({action: p.action, name: p.name, value: p.value}, io);
     if (command === 'upgrade') {
-      const a = parse(rest, {values: ['--auto'], flags: ['--apply-auto', '--check']});
-      if (a == null || a.positional.length > 0) return usage();
-      // (--check is read-only: never with another mode; the medium on the
-      // easy upgrades, 1)
-      if (a.flags['--check'] && (a.values['--auto'] !== undefined || a.flags['--apply-auto'])) return usage();
       // start's background check runs this, in a child with the allowlisted
       // environment (lib/auto-upgrade.js); it re-checks everything itself
-      if (a.flags['--apply-auto']) {
-        if (a.values['--auto'] !== undefined) return usage();
+      if (p.applyAuto) {
         const r = await require('../lib/auto-apply').autoApply({io});
         if (r.line != null) io.stdout.write(`${r.line}\n`);
         return 0;
       }
-      return await require('../lib/upgrade').upgrade({auto: a.values['--auto'], check: a.flags['--check'] === true}, io);
+      return await require('../lib/upgrade').upgrade({auto: p.auto, check: p.check}, io);
     }
   } catch (err) {
     if (err.code === 'HOME_RELATIVE') { io.stderr.write(`ch-local: ${err.message}\n`); return 2; }
@@ -390,4 +421,4 @@ function run() {
 
 if (require.main === module) run();
 
-module.exports = {main, run};
+module.exports = {main, run, parseCommand};

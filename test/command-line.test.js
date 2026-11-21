@@ -135,3 +135,33 @@ test('terminalText: every control or format character is ?; a cut keeps whole co
   const cut = terminalText(`${'x'.repeat(79)}\u{1F600}yy`, 80);
   assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cut), JSON.stringify(cut));
 });
+
+// The reviewer on #120's high: a printed hint must name a command that
+// parses. Every command line made by chLocal(where, '<command>') in lib/ and
+// bin/ch-local.js is read lexically (a template's ${...} stands for one
+// word) and parsed by the CLI's own parser, never a copy of its rules.
+// (A shell command, such as a chmod line, is not chLocal's and is not read.)
+test('every ch-local command a hint prints parses as the command line takes it', () => {
+  const {parseCommand} = require('../bin/ch-local.js');
+  const CALL = /chLocal\(\s*[^,()]+,\s*(['`])((?:\\.|(?!\1)[^\\])*)\1/g;
+  const files = [...fs.readdirSync(LIB).filter((n) => n.endsWith('.js') && n !== 'command-line.js').map((n) => path.join(LIB, n)), BIN];
+  const seen = [];
+  const bad = [];
+  for (const file of files) {
+    const text = fs.readFileSync(file, 'utf8');
+    for (const m of text.matchAll(CALL)) {
+      // (a template's ${...} and a <placeholder> each stand for one word)
+      const line = m[2].replace(/\$\{[^}]*\}/g, 'x').replace(/<[^>]*>/g, 'x');
+      const argv = line.split(/\s+/).filter((w) => w !== '');
+      seen.push(line);
+      if (parseCommand(argv) == null) bad.push(`${path.basename(file)}: ch-local ${line}`);
+    }
+  }
+  assert.ok(seen.length >= 40, `the scan found ${seen.length} hints: it reads them`);
+  assert.ok(seen.includes('install'), 'the bare install hint is among them');
+  assert.deepStrictEqual(bad, [], `hints that do not parse:\n${bad.join('\n')}`);
+  // and the parser refuses what it should (the pin is not vacuous)
+  for (const argv of [['install', 'extra'], ['install', '--unreleased-pins', 'f'], ['nope'], ['status', 'x'], ['credentials', 'add']]) {
+    assert.strictEqual(parseCommand(argv), null, argv.join(' '));
+  }
+});
