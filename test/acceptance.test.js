@@ -61,6 +61,78 @@ test('the stand-in takes only the run\'s token, lists the recorded tools and ans
   }
 });
 
+// A-own-skill: the own module's key is a token of its own; the stand-in
+// takes exactly the run's tokens and records whose each call carried
+test('the stand-in takes exactly the run\'s tokens, and records whose token each call carried', async () => {
+  const s = await acceptance.startStandIn({fixtures: fixtures(), tokens: {pack: 'chacc_pack', own: 'chacc_own'}});
+  try {
+    assert.strictEqual((await post(s.port, 'chacc_other', {jsonrpc: '2.0', id: 1, method: 'tools/list'})).status, 401);
+    const call = (token, id) => post(s.port, token, {jsonrpc: '2.0', id, method: 'tools/call', params: {name: 'actions_list', arguments: {method: 'list_workflow_runs'}}});
+    await call('chacc_pack', 2);
+    await call('chacc_own', 3);
+    assert.deepStrictEqual([s.state.calls, s.state.by, s.state.refused], [['actions_list', 'actions_list'], ['pack', 'own'], 1]);
+  } finally {
+    await s.close();
+  }
+});
+
+test('reportText with the run\'s two tokens: either in a log fails the run, and neither is written', () => {
+  const report = {checks: [{name: 'x', ok: true}], detail: 'chacc_own_value'};
+  const text = acceptance.reportText(report, ['chacc_pack_value', 'chacc_own_value'], ['a line with chacc_pack_value']);
+  assert.ok(!text.includes('chacc_pack_value') && !text.includes('chacc_own_value'), text);
+  assert.strictEqual(JSON.parse(text).ok, false);
+});
+
+test('the acceptance own module passes ch-local\'s own folder check, declares its own key for GitHub\'s origin, and its tool counts the recorded commits', async () => {
+  const base = fs.realpathSync.native(tmp('ch-acc-own-'));
+  try {
+    const own = acceptance.writeOwnModule(path.join(base, 'work', 'own'));
+    const home = path.join(base, 'home');
+    fs.mkdirSync(home);
+    const checked = require('../lib/own-tree').checkFolder(own.dir, home);
+    assert.ok(checked.problems == null && checked.real === own.dir, JSON.stringify(checked.problems));
+    assert.strictEqual(checked.pkg.countinghouse.role, 'scenario');
+    const {credential} = require('../lib/describe-module').credentialOf(checked.pkg.countinghouse.remotes);
+    assert.deepStrictEqual([credential.variable, credential.origin], ['OWN_GITHUB_TOKEN', 'https://api.githubcopilot.com']);
+    const handler = require(path.join(own.dir, 'handlers', 'ownService', 'own_commit_count.js'));
+    const asked = [];
+    const ctx = {call: async (address, args) => { asked.push([address, args]); return {content: [{type: 'text', text: '[{"sha":"a"},{"sha":"b"}]'}]}; },
+      error: (code, message) => Object.assign(new Error(message), {code})};
+    assert.deepStrictEqual(await handler({repo: 'octo/x'}, ctx), {output: {commits: 2}});
+    assert.deepStrictEqual(asked, [['remote:github/list_commits', {owner: 'octo', repo: 'x', perPage: 5}]]);
+    await assert.rejects(handler({repo: 'octo/x'}, {...ctx, call: async () => ({isError: true, content: []})}), {code: 'REMOTE_FAILED'});
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
+  }
+});
+
+// The Windows step (no pty there): the installed ch-local's own calls,
+// as add-module makes them after its yes. Run here on any OS, the home's
+// installed ch-local being this tree: the copy placed is the one recorded,
+// whole, and addOwn says its hash.
+test('addOwn on Windows stands the yes in with the installed ch-local\'s own calls: the copy recorded is the copy placed, whole', () => {
+  const base = fs.realpathSync.native(tmp('ch-acc-win-'));
+  try {
+    const own = acceptance.writeOwnModule(path.join(base, 'work', 'own'));
+    const home = path.join(base, 'home');
+    const installed = path.join(home, 'app', 'node_modules', '@countinghouse');
+    fs.mkdirSync(installed, {recursive: true, mode: 0o700});
+    fs.chmodSync(home, 0o700);
+    fs.symlinkSync(path.join(__dirname, '..'), path.join(installed, 'ch-local'), process.platform === 'win32' ? 'junction' : 'dir');
+    const env = {COUNTINGHOUSE_HOME: home};
+    const added = acceptance.addOwn({home, node: process.execPath, launcher: null, dir: own.dir, env, platform: 'win32'});
+    assert.ok(added.ok, added.output);
+    assert.strictEqual(added.name, 'the yes stood in (no pty on Windows)');
+    const where = require('../lib/home').layout(env);
+    const rec = require('../lib/own-record').readOwnRecord(where).modules[own.name];
+    assert.ok(rec.tree.startsWith(added.hash) && added.hash.length === 12, `${added.hash} ${rec.tree}`);
+    assert.strictEqual(require('../lib/own-tree').copyIntact(where, own.name, rec.tree), true);
+    assert.deepStrictEqual([rec.version, rec.friendlyName, rec.from, rec.calls], ['1.0.0', own.name, own.dir, []]);
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
+  }
+});
+
 test('filesContaining finds a needle in any file below a directory, and nothing in an absent one', () => {
   const dir = tmp('ch-acc-scan-');
   fs.mkdirSync(path.join(dir, 'a', 'b'), {recursive: true});
