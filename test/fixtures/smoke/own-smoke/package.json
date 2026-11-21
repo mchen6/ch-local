@@ -1,0 +1,11 @@
+{
+  "name": "own-smoke",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test fixture for ch-local's smoke test: a user's own module, added with add-module, that calls the smoke pack's step.",
+  "license": "Apache-2.0",
+  "countinghouse": {
+    "role": "scenario",
+    "calls": ["ch-step-smoke/shoutService.shout"]
+  }
+}

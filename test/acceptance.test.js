@@ -33,8 +33,8 @@ function fixtures() {
   fs.writeFileSync(path.join(dir, 'get_job_logs-7.json'), env({content: [{type: 'text', text: 'log'}]}));
   return dir;
 }
-const post = async (port, token, body) => {
-  const r = await fetch(`http://127.0.0.1:${port}/mcp/`, {method: 'POST', headers: {'content-type': 'application/json', ...(token != null ? {authorization: `Bearer ${token}`} : {})}, body: JSON.stringify(body)});
+const post = async (port, token, body, headers = {}) => {
+  const r = await fetch(`http://127.0.0.1:${port}/mcp/`, {method: 'POST', headers: {'content-type': 'application/json', ...headers, ...(token != null ? {authorization: `Bearer ${token}`} : {})}, body: JSON.stringify(body)});
   return {status: r.status, body: r.status === 200 ? await r.json() : await r.text()};
 };
 
@@ -58,6 +58,123 @@ test('the stand-in takes only the run\'s token, lists the recorded tools and ans
     assert.deepStrictEqual(s.state.unexpected.map((u) => u.tool), ['get_job_logs']);
   } finally {
     await s.close();
+  }
+});
+
+// A-own-skill: the own module's key is a token of its own; the stand-in
+// takes exactly the run's tokens and records whose each call carried
+test('the stand-in takes exactly the run\'s tokens, and records whose token each call carried', async () => {
+  const s = await acceptance.startStandIn({fixtures: fixtures(), tokens: {pack: 'chacc_pack', own: 'chacc_own'}});
+  try {
+    assert.strictEqual((await post(s.port, 'chacc_other', {jsonrpc: '2.0', id: 1, method: 'tools/list'})).status, 401);
+    const call = (token, id) => post(s.port, token, {jsonrpc: '2.0', id, method: 'tools/call', params: {name: 'actions_list', arguments: {method: 'list_workflow_runs'}}});
+    await call('chacc_pack', 2);
+    await call('chacc_own', 3);
+    await post(s.port, 'chacc_own', {jsonrpc: '2.0', id: 4, method: 'initialize', params: {}}, {'X-CH-Acceptance-Module': 'own-acceptance'});
+    assert.deepStrictEqual([s.state.calls, s.state.by, s.state.refused], [['actions_list', 'actions_list'], ['pack', 'own'], 1]);
+    assert.deepStrictEqual(s.state.seen, [{method: 'tools/call', who: 'pack', module: null}, {method: 'tools/call', who: 'own', module: null},
+      {method: 'initialize', who: 'own', module: 'own-acceptance'}], 'every request, with its token and module header');
+  } finally {
+    await s.close();
+  }
+});
+
+test('reportText with the run\'s two tokens: either in a log fails the run, and neither is written', () => {
+  const report = {checks: [{name: 'x', ok: true}], detail: 'chacc_own_value'};
+  const text = acceptance.reportText(report, ['chacc_pack_value', 'chacc_own_value'], ['a line with chacc_pack_value']);
+  assert.ok(!text.includes('chacc_pack_value') && !text.includes('chacc_own_value'), text);
+  assert.strictEqual(JSON.parse(text).ok, false);
+});
+
+test('the acceptance own module passes ch-local\'s own folder check, declares its own key for GitHub\'s origin, and its tool counts the recorded commits', async () => {
+  const base = fs.realpathSync.native(tmp('ch-acc-own-'));
+  try {
+    const own = acceptance.writeOwnModule(path.join(base, 'work', 'own'));
+    const home = path.join(base, 'home');
+    fs.mkdirSync(home);
+    const checked = require('../lib/own-tree').checkFolder(own.dir, home);
+    assert.ok(checked.problems == null && checked.real === own.dir, JSON.stringify(checked.problems));
+    assert.strictEqual(checked.pkg.countinghouse.role, 'scenario');
+    const {credential} = require('../lib/describe-module').credentialOf(checked.pkg.countinghouse.remotes);
+    assert.deepStrictEqual([credential.variable, credential.origin], ['OWN_GITHUB_TOKEN', 'https://api.githubcopilot.com']);
+    const handler = require(path.join(own.dir, 'handlers', 'ownService', 'own_commit_count.js'));
+    const asked = [];
+    assert.deepStrictEqual(checked.pkg.countinghouse.remotes[0].headers, {'X-CH-Acceptance-Module': own.name});
+    const ctx = {call: async (address, args) => { asked.push([address, args]); return {content: [{type: 'text', text: '[{"sha":"a"},{"sha":"b"}]'}]}; },
+      error: (code, message) => Object.assign(new Error(message), {code})};
+    assert.deepStrictEqual(await handler({repo: 'octo/x'}, ctx), {output: {commits: 2}});
+    assert.deepStrictEqual(asked, [['remote:github/list_commits', {owner: 'octo', repo: 'x', perPage: 5}]]);
+    await assert.rejects(handler({repo: 'octo/x'}, {...ctx, call: async () => ({isError: true, content: []})}), {code: 'REMOTE_FAILED'});
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
+  }
+});
+
+// The Windows step (no pty there): the installed ch-local's own addModule,
+// answered y in process. Run here on any OS, the home's installed ch-local
+// being this tree: asked once, the copy placed is the one recorded, whole,
+// with what add-module records (its calls among them), and addOwn says its
+// hash.
+test('addOwn on Windows stands the yes in with the installed add-module, answered y: the copy recorded is the copy placed, whole', async () => {
+  const base = fs.realpathSync.native(tmp('ch-acc-win-'));
+  try {
+    const own = acceptance.writeOwnModule(path.join(base, 'work', 'own'));
+    const home = path.join(base, 'home');
+    // (an installed home: add-module refuses one with nothing installed)
+    fs.mkdirSync(home, {recursive: true, mode: 0o700});
+    fs.chmodSync(home, 0o700);
+    require('./install-helpers').installedHome(home, ['ci-failure-triage']);
+    // (its installed runtime can enforce on Windows, as a release-1 one does:
+    // the fs-broker virtual drive, countinghouse#195; B's 5d3a7e0)
+    const drive = path.join(home, 'app', 'node_modules', 'countinghouse', 'lib', 'fs-broker');
+    fs.mkdirSync(drive, {recursive: true});
+    fs.writeFileSync(path.join(drive, 'virtual-drive.js'), '');
+    const installed = path.join(home, 'app', 'node_modules', '@countinghouse');
+    fs.mkdirSync(installed, {recursive: true});
+    fs.rmSync(path.join(installed, 'ch-local'), {recursive: true, force: true});
+    fs.symlinkSync(path.join(__dirname, '..'), path.join(installed, 'ch-local'), process.platform === 'win32' ? 'junction' : 'dir');
+    const env = {COUNTINGHOUSE_HOME: home};
+    const added = await acceptance.addOwn({home, node: process.execPath, launcher: null, dir: own.dir, env, platform: 'win32'});
+    assert.ok(added.ok, added.output);
+    assert.strictEqual(added.name, 'the yes stood in (no pty on Windows): the installed add-module, answered y');
+    assert.match(added.output, /^It runs inside the same countinghouse runtime as your packs\.$/m);
+    const where = require('../lib/home').layout(env);
+    const rec = require('../lib/own-record').readOwnRecord(where).modules[own.name];
+    assert.ok(rec.tree.startsWith(added.hash) && added.hash.length === 12, `${added.hash} ${rec.tree}`);
+    assert.strictEqual(require('../lib/own-tree').copyIntact(where, own.name, rec.tree), true);
+    assert.deepStrictEqual([rec.version, rec.friendlyName, rec.from, rec.calls], ['1.0.0', own.name, own.dir, []]);
+  } finally {
+    acceptance.removeTree(base, path.join(base, 'home'));
+  }
+});
+
+// (on every OS, so acceptance's no-skip guard holds: a read-only file is
+// the read-only attribute on Windows, which a plain rm refuses there too, and
+// the link is a junction, which needs no privilege)
+test('removeTree removes a work directory whose home holds read-only copies, never follows a link out of it, and never throws', () => {
+  const base = fs.realpathSync.native(tmp('ch-acc-rm-'));
+  const outside = path.join(base, 'outside');
+  const kept = path.join(outside, 'kept');
+  try {
+    fs.mkdirSync(outside);
+    fs.writeFileSync(kept, 'x');
+    fs.chmodSync(kept, 0o444);
+    const work = path.join(base, 'work');
+    const own = path.join(work, 'home', 'own');
+    fs.mkdirSync(path.join(own, 'a'), {recursive: true});
+    fs.writeFileSync(path.join(own, 'a', 'f.js'), 'x');
+    fs.symlinkSync(outside, path.join(own, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    fs.chmodSync(path.join(own, 'a', 'f.js'), 0o444);
+    fs.chmodSync(path.join(own, 'a'), 0o555);
+    fs.chmodSync(own, 0o555);
+    assert.strictEqual(acceptance.removeTree(work), null);
+    assert.ok(!fs.existsSync(work));
+    assert.ok(fs.existsSync(kept), 'the link\'s target kept');
+    assert.strictEqual(fs.statSync(kept).mode & 0o200, 0, 'and still read-only: nothing made writable through the link');
+    assert.strictEqual(acceptance.removeTree(path.join(base, 'gone')), null, 'nothing there: nothing to do');
+  } finally {
+    try { fs.chmodSync(kept, 0o644); } catch (e) { /* not made */ }
+    fs.rmSync(base, {recursive: true, force: true});
   }
 });
 

@@ -83,13 +83,23 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
     // (the update path: A-own-skill's easy upgrades, the reviewer 11-20)
     'With the user\'s yes, run `node "<home>/bin/ch-local.js" upgrade --check`. It only checks; it installs nothing.',
     'Never run `upgrade` yourself: an upgrade runs new code with the user\'s keys, so the user installs it in their own terminal, with the line the check gives.',
-    'If the check says the countinghouse plugin moves with it, give the user the Claude Code steps it names, for after the upgrade.'
+    'If the check says the countinghouse plugin moves with it, give the user the Claude Code steps it names, for after the upgrade.',
+    // (§9, own modules: the approved design's flow and line 17's limits;
+    // A-own-skill)
+    'The sandbox limits what module code can do, but it is not a security boundary: code written to escape it could reach their other packs\' keys. It can send what it is given to any internet address.',
+    'Make it a scenario: `"countinghouse": {"role": "scenario"}` in its package.json, or its tools are never listed.',
+    'It has no npm dependencies and no `node_modules`: copy any code it needs into its folder.',
+    'Write the module in a folder the user chooses, outside the countinghouse home (never under `<home>`).',
+    'Ask the user to run, in their own terminal, `node "<home>/bin/ch-local.js" add-module "<folder>"`.',
+    'Never run `add-module` yourself, and never answer its question.',
+    'After any change to its code, the user runs `add-module` again, and confirms again.'
   ]) assert.ok(skill.includes(sentence), sentence);
-  // (a dev server to build one's own tool comes with A-ownuse, not before)
+  // (one's own tool comes through add-module in the user's own terminal
+  // (Option B, release 1), never a dev server: #108 was parked)
   assert.ok(!/dev-server|countinghouse-dev|section 8/.test(skill));
   // (no credential handed through the conversation: no export of one, no value)
   assert.ok(!/\bexport [A-Z_]+=|GITHUB_TOKEN=|ghp_|github_pat_/.test(skill));
-  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), 'bfcd7c56bc7b21916d9b37f1d7c0f38a277848583fd6a717aae65e786c7e6123', 'the checked text, byte for byte');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '4d63d88ed10d9cba8b6643bc7958fa7f2e0adbad5b52cc92d020fec36129b050', 'the checked text, byte for byte');
 });
 
 test('launch.js without an installed launcher exits non-zero with one line naming the install command', () => {
@@ -215,4 +225,21 @@ test('launch.js fetches nothing', () => {
   for (const word of ['fetch', 'http', 'https', 'net', 'dns', 'npx']) {
     assert.ok(!new RegExp(`require\\(['"](node:)?${word}['"]\\)|\\b${word}\\(`).test(src), word);
   }
+});
+
+// A-own-skill: the countinghouse-module skill the setup skill hands over to, a
+// copy of countinghouse's own (.claude/skills/countinghouse-module/SKILL.md)
+// at the recorded commit, its doc references pointing there. Re-copied with
+// each release's countinghouse (docs/development/release-checklist.md): the
+// record below moves with it, and a copy edited here fails.
+const MODULE_SKILL = {source: '279bd8412f04a88e80ed80b948bd23ecd8d5ee25', sha256: '45cfaf8150444644c8a7c45f2948a4d012ee8ec0ce56a7e05316f6e059b4490a'};
+test('the countinghouse-module skill: countinghouse\'s own at the recorded commit, its source said, never edited here', () => {
+  const skill = fs.readFileSync(path.join(PLUGIN, 'skills', 'countinghouse-module', 'SKILL.md'), 'utf8');
+  assert.match(skill, /^---\nname: countinghouse-module\ndescription: .+\n---\n/);
+  const header = /<!-- Copied from countinghouse ([0-9a-f]{40}), \.claude\/skills\/countinghouse-module\/SKILL\.md;/.exec(skill);
+  assert.ok(header != null, 'its source line');
+  assert.strictEqual(header[1], MODULE_SKILL.source, 'the recorded source commit');
+  for (const m of skill.matchAll(/github\.com\/mchen6\/countinghouse\/blob\/([0-9a-f]{40})\//g)) assert.strictEqual(m[1], MODULE_SKILL.source, 'every doc reference at that commit');
+  assert.ok(!/`docs\/[a-z0-9-]+\.md`/.test(skill), 'no reference left relative to a repository the plugin is not');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), MODULE_SKILL.sha256, 'the copy as recorded');
 });
