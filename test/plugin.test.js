@@ -341,3 +341,40 @@ test('launch.js and lib/home.js judge the folders above a home the same', {skip:
     fs.rmSync(parent, {recursive: true, force: true});
   }
 });
+
+// the reviewer's high on #126
+test('launch.js: a home open to group or others (0755) is refused, chmod 700 (M2); a launcher that is a link is refused (L3)', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const h = homeWithLauncher();
+  fs.chmodSync(h, 0o755); fs.chmodSync(path.join(h, 'bin'), 0o700);
+  const r = launchIn(h);
+  assert.strictEqual(r.status, 2, r.stderr);
+  assert.match(r.stderr, /is open to group or others \(mode 0755\), and its folders may be too, so another user could change what runs from it; run `chmod 700 "[^"]+"`; nothing was started/);
+  // a launcher that is a link: its real folder is never the one checked
+  const g = homeWithLauncher();
+  fs.chmodSync(g, 0o700); fs.chmodSync(path.join(g, 'bin'), 0o700);
+  const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-else-')));
+  fs.writeFileSync(path.join(elsewhere, 'x.js'), "process.stdout.write('RAN\\n');\n", {mode: 0o600});
+  fs.chmodSync(elsewhere, 0o777);
+  fs.rmSync(path.join(g, 'bin', 'ch-local.js'));
+  fs.symlinkSync(path.join(elsewhere, 'x.js'), path.join(g, 'bin', 'ch-local.js'));
+  const s = launchIn(g);
+  assert.strictEqual(s.status, 2, s.stderr);
+  assert.doesNotMatch(s.stdout, /RAN/);
+  assert.match(s.stderr, /ch-local\.js is a link, so another user could change what runs from it; install again to put a file there; nothing was started/);
+});
+
+test('launch.js prints a path only by lib\'s exact rule (L8): the same UNSAFE characters, a "not a file" without a wrong reason', () => {
+  const launch = fs.readFileSync(LAUNCH, 'utf8');
+  const {UNSAFE_SOURCE} = require(LAUNCH);
+  assert.strictEqual(UNSAFE_SOURCE, require('../lib/command-line').UNSAFE_ANY.source, 'one rule, copied');
+  assert.doesNotMatch(launch, /is not a \$\{directory \? 'folder' : 'file'\}, \$\{OPEN\}/, 'a wrong type is not "another user could change"');
+  // Windows: a launcher another SID owns is removed and reinstalled, never /setowner
+  const {homeProblem} = require(LAUNCH);
+  const ME = 'S-1-5-21-1-2-3-1001';
+  const PRIVATE = {user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  const THEIRS = {user: ME, owner: 'S-1-5-21-1-2-3-1002', otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  const h = homeWithLauncher();
+  const p = homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, THEIRS]}).problem;
+  assert.match(String(p), /is owned by S-1-5-21-1-2-3-1002.*; remove it and install again/);
+  assert.doesNotMatch(String(p), /setowner/);
+});

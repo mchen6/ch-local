@@ -637,8 +637,17 @@ test('start waits for an install for as long as it takes, saying so, and never s
   fs.writeFileSync(lock, JSON.stringify({pid: process.pid, host: lockHost(), at: new Date().toISOString()}));
   const f = io(home);
   f.lockProgressMs = 100;
-  setTimeout(() => fs.rmSync(lock), 450);
-  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  // (the lock goes once start says it waits, never on a clock: on Windows the
+  // home's ACL read before it can take seconds; a bound so a wait never said
+  // fails, never hangs)
+  const write = f.stderr.write.bind(f.stderr);
+  const bound = setTimeout(() => fs.rmSync(lock, {force: true}), 60000);
+  f.stderr.write = (x) => { const r = write(x); if (/waiting for another ch-local/.test(String(x))) setTimeout(() => fs.rmSync(lock, {force: true}), 50); return r; };
+  try {
+    assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  } finally {
+    clearTimeout(bound);
+  }
   assert.match(f.err, /waiting for another ch-local \(pid \d+\) to finish changing this home/);
   assert.doesNotMatch(f.err, /remove/);
   assert.strictEqual(f.spawned.length, 1);

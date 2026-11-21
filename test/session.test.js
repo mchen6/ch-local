@@ -385,3 +385,17 @@ test('a home under a folder another user could write in is refused; a sticky one
   assert.match(r.err, /group or others can write in it \(mode 777\); another user could move the home away/);
   assert.match(r.err, /nothing was started/);
 });
+
+// the reviewer's high on #126, L9: on Windows a session reads its home's ACL
+// once, for both of its checks (each read is a PowerShell run)
+test('Windows: session reads its home\'s ACL once for its owner and its DACL checks (ACLs given)', async() => {
+  const h = home();
+  const ME = 'S-1-5-21-1-2-3-1001';
+  const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
+  let reads = 0;
+  const said = [];
+  const io = {env: {}, homedir: os.homedir, platform: 'win32', winAcl: {fileAcl: () => { reads++; return OPEN; }}, stderr: {write: (s) => said.push(s)}, stdout: {write: () => true}};
+  const {session} = require('../lib/session');
+  assert.strictEqual(await session({home: h}, io), 2);
+  assert.strictEqual(reads, 1, said.join(''));
+});

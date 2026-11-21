@@ -1381,7 +1381,9 @@ test('Windows: install makes a new home private, and refuses an existing one ano
   const {unsafeHomeLine} = require('../lib/install');
   const made = [];
   const h = path.join(home(), 'new-home');
-  assert.strictEqual(ensureHome(h, 'win32', {makePrivateDirs: (dirs, read) => { made.push([dirs, read]); return []; }}), true);
+  const ME0 = 'S-1-5-21-1-2-3-1001';
+  const PRIVATE0 = {user: ME0, owner: ME0, otherAces: false, rules: [{sid: ME0, rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  assert.strictEqual(ensureHome(h, 'win32', {makePrivateDirs: (dirs, read) => { made.push([dirs, read]); return [PRIVATE0]; }}), true);
   // (read is never empty: makePrivateDirs refuses an empty list)
   assert.deepStrictEqual(made, [[[h], [h]]], 'made private as it is made, its ACL read back');
   const ME = 'S-1-5-21-1-2-3-1001';
@@ -1399,4 +1401,68 @@ test('Windows: a home install makes is private by its real DACL', {skip: process
   const h = path.join(home(), 'made-home');
   assert.strictEqual(ensureHome(h), true);
   assert.strictEqual(winAcl.privateProblem('it', winAcl.fileAcl(h), {directory: true}), null);
+});
+
+// the reviewer's high on #126, H1: a home another user could change has none
+// of its code run, by install, add-pack, status, settings or add-module.
+// install checks the home first, and every require from <home>/app (the
+// ceiling's reader, the module-settings reader) checks it before it loads
+const planted = (h) => {
+  const lib = path.join(h, 'app', 'node_modules', 'countinghouse', 'lib');
+  fs.mkdirSync(lib, {recursive: true});
+  const marker = path.join(path.dirname(h), `${path.basename(h)}-marker`);
+  for (const f of ['settings-ceiling.js', 'module-settings.js']) fs.writeFileSync(path.join(lib, f), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran'); module.exports = {};`);
+  return marker;
+};
+test('install, add-pack and the readers of <home>/app run none of a home\'s code when another user could change it (high H1)', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const r = release(); const h = path.join(home(), 'open');
+  fs.mkdirSync(h, {mode: 0o700});
+  const marker = planted(h);
+  fs.chmodSync(h, 0o777);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 1);
+  assert.match(io.err, /so another user could change what runs from it/);
+  assert.ok(!fs.existsSync(marker), 'install ran none of the home\'s code');
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  await require('../lib/packs-command').addPack({pack: 'other', from: r.from}, io2, r.allow);
+  assert.ok(!fs.existsSync(marker), 'add-pack ran none of it');
+  const where = layout({COUNTINGHOUSE_HOME: h});
+  const c = require('../lib/ceiling').ceilingFor(where, {platform: process.platform, env: {}});
+  assert.strictEqual(c.state, 'untrusted', JSON.stringify(c));
+  assert.match(c.problem, /so another user could change what runs from it/);
+  assert.throws(() => require('../lib/module-values').planModuleSetting(where, io2, 'ch-step-redact.x', '1'), (e) => /so another user could change what runs from it/.test(e.message));
+  assert.ok(!fs.existsSync(marker), 'the readers loaded none of it');
+});
+
+test('a home must be private: one open to group or others (0755, as an older install or a umask of 0022 leaves it) is refused, with chmod 700 (high M2)', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const {homeOpenProblem} = require('../lib/home');
+  const h = home();
+  fs.chmodSync(h, 0o755);
+  const p = homeOpenProblem(h);
+  assert.ok(p != null, 'refused');
+  assert.match(p.why, /^it is open to group or others \(mode 0755\), and its folders may be too$/);
+  assert.strictEqual(p.fix, `run \`chmod 700 "${fs.realpathSync.native(h)}"\``);
+  // (a path that can't be read is refused, never taken as no home: L4)
+  const f = path.join(home(), 'a-file');
+  fs.writeFileSync(f, 'x');
+  assert.ok(homeOpenProblem(path.join(f, 'home')) != null, 'ENOTDIR is refused');
+  assert.strictEqual(homeOpenProblem(path.join(home(), 'none-yet')), null, 'a home not there yet is not refused');
+});
+
+test('install writes its launcher 0600, even over an older 0664 one (high L6)', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const launcher = layout({COUNTINGHOUSE_HOME: h}).launcher;
+  fs.chmodSync(launcher, 0o664);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io2), 0, io2.err);
+  assert.strictEqual(fs.statSync(launcher).mode & 0o777, 0o600);
+});
+
+test('Windows: a new home whose DACL is not private after makePrivateDirs is refused (high L5)', () => {
+  const {ensureHome} = require('../lib/home');
+  const ME = 'S-1-5-21-1-2-3-1001';
+  const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
+  assert.throws(() => ensureHome(path.join(home(), 'h2'), 'win32', {makePrivateDirs: () => [OPEN]}), /could not be made private: it is accessible by S-1-1-0/);
 });

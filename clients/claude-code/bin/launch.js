@@ -50,8 +50,13 @@ const fail = (line, code = 1) => { process.stderr.write(`ch-packs: ${line}\n`); 
 // checks the two agree). fileAcl: a test's.
 const OPEN = 'so another user could change what runs from it';
 // a path for a command to copy: quoted when plain, else the placeholder (no
-// control, bidi or shell characters reach the terminal or the paste)
-const shown = (p) => (/^[A-Za-z0-9_\/.~@%+=,: \\-]+$/.test(p) ? `"${p}"` : '"<its folder>"');
+// control, bidi or shell characters reach the terminal or the paste). The
+// rule is lib/command-line.js UNSAFE_ANY's, copied (a test checks the two
+// agree: the reviewer's high on #126, L8); built when used, so a Node too old
+// for its \p{} still gets the one-line message below.
+const UNSAFE_SOURCE = "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\"`$\\\\%!^\\u2018-\\u201f\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2060-\\u2069\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff0-\\ufffb\\u{e0000}-\\u{e007f}]|[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]";
+const plain = (p, platform = process.platform) => !new RegExp(UNSAFE_SOURCE, 'u').test(platform === 'win32' ? p.replace(/\\/g, '/') : p);
+const shown = (p, platform = process.platform) => (plain(p, platform) ? `"${p}"` : '"<its folder>"');
 // The folders above a home (POSIX, as lib/home.js aboveProblem says it; the reviewer on #126 (a)), by countinghouse
 // #520's rule for its sqlite store's: along the path as given and its real
 // path, each this user's or root's, writable by no other unless sticky (as
@@ -91,17 +96,27 @@ function aboveProblem(home) {
 function homeProblem(home, launcher, {platform = process.platform, fileAcls = null} = {}) {
   const items = [[home, true], [path.dirname(launcher), true], [launcher, false]];
   const reals = [];
-  for (const [p, directory] of items) {
+  // (a launcher that is a link: its real folder is not the one checked, and
+  // a write through it lands elsewhere: refused, L3)
+  try {
+    if (fs.lstatSync(launcher).isSymbolicLink()) return {problem: `${launcher} is a link, ${OPEN}; install again to put a file there`};
+  } catch (err) { return {problem: `${launcher} could not be read (${err.code || err.message})`}; }
+  for (let i = 0; i < items.length; i++) {
+    const [p, directory] = items[i];
     let real;
     try { real = fs.realpathSync.native(p); } catch (err) { return {problem: `${p} could not be read (${err.code || err.message})`}; }
     let st;
     try { st = fs.statSync(real); } catch (err) { return {problem: `${real} could not be read (${err.code || err.message})`}; }
-    if (directory ? !st.isDirectory() : !st.isFile()) return {problem: `${real} is not a ${directory ? 'folder' : 'file'}, ${OPEN}`};
+    // (a wrong type is a broken install, not another user's: L8)
+    if (directory ? !st.isDirectory() : !st.isFile()) return {problem: `${real} is not a ${directory ? 'folder' : 'file'}; install again`};
     reals.push(real);
     if (platform === 'win32') continue;
     const euid = typeof process.geteuid === 'function' ? process.geteuid() : null;
     if (euid != null && st.uid !== euid) return {problem: `${real} is owned by uid ${st.uid}, not you, ${OPEN}; use a home only you own`};
     if ((st.mode & 0o022) !== 0) return {problem: `${real} is group- or world-writable (mode ${(st.mode & 0o777).toString(8).padStart(4, '0')}), ${OPEN}; run \`chmod ${directory ? '700' : '600'} ${shown(real)}\``};
+    // (the home itself private, as install makes it: its app and module
+    // store run with the keys, M2)
+    if (i === 0 && (st.mode & 0o077) !== 0) return {problem: `${real} is open to group or others (mode ${(st.mode & 0o777).toString(8).padStart(4, '0')}), and its folders may be too, ${OPEN}; run \`chmod 700 ${shown(real)}\``};
   }
   if (platform !== 'win32') {
     const above = aboveProblem(home);
@@ -116,7 +131,11 @@ function homeProblem(home, launcher, {platform = process.platform, fileAcls = nu
       const directory = items[i][1];
       const why = winAcl.privateProblem(reals[i], acls[i], {directory});
       if (why == null) continue;
-      const hint = /^[A-Za-z0-9_\/.~@%+=,: \\-]+$/.test(reals[i]) ? winAcl.fixHint(reals[i], acls[i]) : null;
+      // (owned by another: never /setowner, which would take what is theirs:
+      // remove it and install again, L8)
+      const a = acls[i];
+      if (a != null && typeof a.owner === 'string' && ![a.user, winAcl.SYSTEM, winAcl.ADMINISTRATORS].includes(a.owner)) return {problem: `${why}, ${OPEN}; remove it and install again`};
+      const hint = plain(reals[i], 'win32') ? winAcl.fixHint(reals[i], acls[i]) : null;
       return {problem: `${why}, ${OPEN}; make it a ${directory ? 'folder' : 'file'} only you can change${hint != null ? `: ${hint.split('\n').map((l) => l.trim()).join(', then ')}` : ''}`};
     }
   }
@@ -160,4 +179,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = {whereIs, nodeOk, isFullPath, canExec, homeProblem, aboveProblem};
+module.exports = {whereIs, nodeOk, isFullPath, canExec, homeProblem, aboveProblem, UNSAFE_SOURCE};
