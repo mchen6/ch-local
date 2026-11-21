@@ -157,4 +157,10 @@ test('a tarball below its floor is refused whole', () => {
   assert.match(refusal(() => describeRelease(r, {}, readTarballs(dirOf()))) || '', /ch-access-x 0\.2\.0 is below its floor 0\.3\.0/);
   const ok = {...release(), floors: {[ACCESS]: '0.2.0'}};
   assert.strictEqual(refusal(() => describeRelease(ok, {}, readTarballs(dirOf()))), null, 'at its floor');
+  // (a pre-release of the floor's own version comes before it)
+  const pre = {...release(), floors: {[ACCESS]: '0.2.1'}};
+  const dir = dirOf([PACK]);
+  const [manifest, files] = tarballs[ACCESS];
+  fs.writeFileSync(path.join(dir, 'countinghouse-ch-access-x-0.2.1-rc.1.tgz'), packageTgz({...manifest, version: '0.2.1-rc.1'}, files));
+  assert.match(refusal(() => describeRelease(pre, {}, readTarballs(dir))) || '', /ch-access-x 0\.2\.1-rc\.1 is below its floor 0\.2\.1/);
 });

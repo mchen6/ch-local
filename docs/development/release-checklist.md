@@ -149,8 +149,10 @@ The checks are grouped. Within a group, the order doesn't matter.
       reaches the model) and ch-access-github 0.2.1 (the GitHub remote asks
       for read-only tools).
     - How: the machine check holds it. lib/release-pins.js refuses a pin
-      below its floor, and `node scripts/describe-release.js <tarballs>`
-      refuses a release tarball below its floor. This line is the reminder
+      below its floor (a pre-release, or anything not a version, counts as
+      below), `node scripts/describe-release.js <tarballs>` refuses a
+      release tarball below its floor, and an unreleased install
+      (`--unreleased-pins`) refuses a development pin below one. This line is the reminder
       to run that step on the release's own tarballs and to read its output.
     - Check: the step exits 0 on the release's tarballs, and `npm test`'s
       release-pins test passes on the tag's commit.

@@ -263,3 +263,15 @@ test('floors: optional; each a strict version of a module some pack lists; a pin
   at.pins['@countinghouse/ch-step-redact'].repository = 'mchen6/ch-step-redact';
   assert.strictEqual(problemOf(at), undefined, 'at its floor');
 });
+
+// the medium on the floors, 1: a pre-release comes before its version, and
+// what is no version is below every floor (fail closed)
+test('belowFloor: semver precedence, pre-releases below their version, a non-version below every floor', () => {
+  const {belowFloor} = require('../lib/release-pins');
+  assert.strictEqual(belowFloor('0.2.3', '0.2.3'), false);
+  assert.strictEqual(belowFloor('0.2.4', '0.2.3'), false);
+  assert.strictEqual(belowFloor('0.10.0', '0.2.3'), false);
+  assert.strictEqual(belowFloor('0.2.2', '0.2.3'), true);
+  for (const v of ['0.2.3-rc.1', '0.2.2-rc.1', '0.2', 'x', '', undefined]) assert.strictEqual(belowFloor(v, '0.2.3'), true, String(v));
+  assert.deepStrictEqual(require('../lib/allowlist').ALLOWLIST.floors, shipped().floors, 'the allowlist carries the floors');
+});
