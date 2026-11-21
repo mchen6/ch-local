@@ -48,8 +48,10 @@ The checks are grouped. Within a group, the order doesn't matter.
 6. **Audit mode warns, and refuses a pack's writes outside its own area.**
    - How: `ch-local start --stdio --moduleSandbox audit`, and a start with
      `moduleSandbox: audit` stored, and a start on Windows.
-   - Check: each says "audit watches what a pack reads and never lets it
-     change files outside its own area" exactly once. countinghouse's audit
+   - Check: each says "audit watches what a pack reads and refuses its file
+     writes outside its own area, but only reports, and does not stop, a
+     process, a thread or native code it starts; only enforce confines it"
+     exactly once. countinghouse's audit
      writes test passes.
    - Evidence: `test/start.test.js` (ch-local), countinghouse's
      `test/sandbox/60-audit-writes.js`, and one hand start's stderr.

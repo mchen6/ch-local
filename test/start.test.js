@@ -717,7 +717,7 @@ test('on Windows with a runtime older than countinghouse#195: audit, said; an ex
   const f = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
-  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; audit watches what a pack reads and never lets it change files outside its own area; `npx @countinghouse\/ch-local upgrade` installs one that can/);
+  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; audit watches what a pack reads and refuses its file writes outside its own area, but only reports, and does not stop, a process, a thread or native code it starts; only enforce confines it; `npx @countinghouse\/ch-local upgrade` installs one that can/);
   for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
     const g = io(home, {platform: 'win32'});
     assert.notStrictEqual(await start({passThrough}, g), 0);
@@ -759,9 +759,11 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
 });
 
 // The maintainer's decision: under audit, countinghouse refuses a pack's
-// writes outside its own area; reads are allowed and logged. Start says so,
-// once, whenever the runtime runs under audit.
-const AUDIT_TEXT = /audit watches what a pack reads and never lets it change files outside its own area/g;
+// file writes outside its own area; reads are allowed and logged. A process,
+// a thread or native code a pack starts is reported, not stopped: only
+// enforce confines it. Start says so, once, whenever the runtime runs under
+// audit.
+const AUDIT_TEXT = /audit watches what a pack reads and refuses its file writes outside its own area, but only reports, and does not stop, a process, a thread or native code it starts; only enforce confines it/g;
 test('audit, passed, stored or forced on Windows, says what it watches and that it refuses writes outside the pack\'s area, once', async () => {
   const count = (f) => (f.err.match(AUDIT_TEXT) || []).length;
   const home = installedHome();
