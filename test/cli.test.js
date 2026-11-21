@@ -231,3 +231,24 @@ test('upgrade --apply-auto on a home another user could change: paused, said, ex
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// the reviewer on #126's round 2, (6): uninstall stays refused on an open
+// home (installed-clients.json, which names the files it would edit, lives
+// in it), but says which client entries to remove by hand, from ch-local's
+// own list of the files `add` writes, never read from the home
+test('uninstall on a home another user could change names the client entries to remove by hand', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const user = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-user-'));
+  const home = path.join(user, '.countinghouse');
+  fs.mkdirSync(home, {mode: 0o700});
+  fs.chmodSync(home, 0o777);
+  try {
+    const r = run(['uninstall'], {COUNTINGHOUSE_HOME: home, HOME: user, CODEX_HOME: ''});
+    assert.strictEqual(r.status, 2, r.stderr);
+    for (const f of [path.join(user, '.cursor', 'mcp.json'), path.join(user, '.copilot', 'mcp-config.json'), path.join(user, '.codex', 'config.toml')]) assert.ok(r.stderr.includes(f), `${f}: ${r.stderr}`);
+    assert.match(r.stderr, /remove the "countinghouse" server from each of these by hand, if it is there/);
+    assert.match(r.stderr, /or move the home aside, install again, and uninstall then/);
+  } finally {
+    fs.chmodSync(home, 0o700);
+    fs.rmSync(user, {recursive: true, force: true});
+  }
+});

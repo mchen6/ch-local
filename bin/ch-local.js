@@ -190,7 +190,18 @@ async function main(argv, io) {
     if (ON_HOME.has(command) && !(command === 'upgrade' && p.applyAuto)) {
       const {layout, openHomeLine} = require('../lib/home');
       const open = openHomeLine(layout(io.env, io.homedir).home);
-      if (open != null) { io.stderr.write(`ch-local: ${open}; nothing was changed\n`); return 2; }
+      if (open != null) {
+        io.stderr.write(`ch-local: ${open}; nothing was changed\n`);
+        // (uninstall: the client entries it would remove are named from
+        // ch-local's own list of the files `add` writes, never from the home's
+        // record of them: the reviewer on #126's round 2, (6))
+        if (command === 'uninstall') {
+          const {FILES} = require('../lib/clients');
+          const files = Object.values(FILES).map((f) => f(io.homedir(), io.env));
+          io.stderr.write(`ch-local: the client entries \`add\` writes are not removed from a home that can't be trusted: remove the "countinghouse" server from each of these by hand, if it is there: ${files.join(', ')}; or move the home aside, install again, and uninstall then\n`);
+        }
+        return 2;
+      }
     }
     if (command === 'snippet') return snippetCommand(p.client, io);
     if (command === 'install') {
