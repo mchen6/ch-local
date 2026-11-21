@@ -20,15 +20,25 @@ const LIB = path.join(__dirname, '..', 'lib');
 // (a file's source without its comments: a comment never stands in for a call)
 const code = (file) => fs.readFileSync(path.join(LIB, `${file}.js`), 'utf8').split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
 
-test('preloadForSwap loads every module of lib and every JSON file lib requires (a fresh process)', () => {
+test('preloadForSwap loads every module of lib and every JSON file lib requires, and nothing more happens (a fresh process)', () => {
+  // (loaded in a process that never loaded them -- an install, a rollback,
+  // the daemon -- each module's top level runs: none may add a listener, a
+  // timer or other handle, change the environment or add a global)
   const script = `
-    const path = require('path');
+    const EVENTS = ['exit', 'SIGINT', 'SIGTERM', 'SIGHUP', 'uncaughtException', 'unhandledRejection', 'warning', 'beforeExit'];
+    const state = () => ({resources: process.getActiveResourcesInfo().slice().sort(), listeners: EVENTS.map((e) => process.listenerCount(e)),
+      env: JSON.stringify(process.env), globals: Object.getOwnPropertyNames(globalThis).sort()});
+    const before = state();
     require(${JSON.stringify(path.join(LIB, 'swap-preload.js'))}).preloadForSwap();
-    process.stdout.write(JSON.stringify(Object.keys(require.cache)));
+    // (read before process.stdout is touched: its first use opens a pipe)
+    const after = state();
+    process.stdout.write(JSON.stringify({loaded: Object.keys(require.cache), before, after}));
   `;
   const r = spawnSync(process.execPath, ['-e', script], {encoding: 'utf8', timeout: 60000});
   assert.strictEqual(r.status, 0, r.stderr);
-  const loaded = new Set(JSON.parse(r.stdout));
+  const out = JSON.parse(r.stdout);
+  assert.deepStrictEqual(out.after, out.before, 'the preload leaves no listener, timer, handle, environment change or global');
+  const loaded = new Set(out.loaded);
   const modules = fs.readdirSync(LIB).filter((f) => f.endsWith('.js')).map((f) => path.join(LIB, f));
   assert.deepStrictEqual(modules.filter((m) => !loaded.has(m)), [], 'every lib module loaded');
   for (const j of JSON_FILES) assert.ok(loaded.has(path.resolve(LIB, j)), `${j} loaded`);
