@@ -172,7 +172,7 @@ test('the runtime\'s heldBackFile vectors: each accepted file is written as give
 // A-heldback-win: the file is born private on Windows too: the temporary
 // file is made by win-acl createPrivate (an owner-only protected DACL, in
 // the call that creates it), then renamed in place
-test('on Windows the file is made by createPrivate, owner-only from its first instant, then renamed in place', () => {
+test('the win32 branch: the file is made by createPrivate under a temporary name, then renamed (POSIX rename semantics here)', () => {
   const dir = tmp('ch-held-win-');
   const made = [];
   const acl = {createPrivate: (file, data) => { made.push(path.basename(file)); fs.writeFileSync(file, data, {flag: 'wx'}); }};
@@ -183,9 +183,17 @@ test('on Windows the file is made by createPrivate, owner-only from its first in
   assert.deepStrictEqual(fs.readdirSync(dir), [FILE], 'renamed in place');
 });
 
-// (the Windows leg: a real write's ACL passes the owner-only rule)
-test('on Windows a real write\'s ACL is this user\'s alone (privateProblem)', {skip: process.platform !== 'win32' && 'Windows ACLs'}, () => {
+// (the Windows leg: in a directory whose ACL grants Users read, inherited by
+// what is made there, a plain file is not private, and the real write is:
+// nothing inherited; the medium on A-heldback-win, 1)
+test('on Windows a real write is this user\'s alone even where the directory grants others read', {skip: process.platform !== 'win32' && 'Windows ACLs'}, () => {
   const winAcl = require('../lib/win-acl');
-  const file = write(tmp('ch-held-acl-'), '{"v":1,"modules":[]}\n');
+  const dir = tmp('ch-held-acl-');
+  const granted = require('node:child_process').spawnSync('icacls', [dir, '/grant', '*S-1-5-32-545:(OI)(CI)(R)'], {encoding: 'utf8', windowsHide: true});
+  assert.strictEqual(granted.status, 0, `${granted.stdout}${granted.stderr}`);
+  const plain = path.join(dir, 'plain.json');
+  fs.writeFileSync(plain, '{}');
+  assert.notStrictEqual(winAcl.privateProblem(plain, winAcl.fileAcl(plain)), null, 'premise: a plain file there inherits the grant');
+  const file = write(dir, '{"v":1,"modules":[]}\n');
   assert.strictEqual(winAcl.privateProblem(file, winAcl.fileAcl(file)), null);
 });
