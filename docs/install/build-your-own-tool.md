@@ -38,7 +38,7 @@ about to add and asks you. For a module that calls a pack's module and a
 service of its own, it looks like this:
 
 ```text
-Add your own module csv-summary 1.0.0 (code fa0fb7b899ae, 3 files)?
+Add your own module csv-summary 1.0.0 (code ba385218dcf1, 4 files)?
 It runs inside the same countinghouse runtime as your packs.
 It can connect to the internet and send what it is given.
 It calls ch-access-github.
@@ -59,11 +59,11 @@ Add it? [y/N]
 - If a key or data is already kept under the module's name (from an earlier
   add), a line says the module will use them.
 
-Only a yes there adds it: "Added csv-summary (own, fa0fb7b899ae): your
+Only a yes there adds it: "Added csv-summary (own, ba385218dcf1): your
 clients see it now." Claude Code never runs this command for you and never
 answers its question. `countinghouse_load_module` tells the agent the same:
 in this setup it never loads a module itself. Running it again on unchanged
-files changes nothing ("csv-summary fa0fb7b899ae is already added: nothing
+files changes nothing ("csv-summary ba385218dcf1 is already added: nothing
 changed.").
 
 What a module needs to be added:
@@ -100,7 +100,7 @@ not load it:
 
 ```text
 own modules:
-  csv-summary (own, unpinned, fa0fb7b899ae)   on; tools: summarise_csv
+  csv-summary (own, unpinned, ba385218dcf1)   on; tools: summarise_csv
 ```
 
 or, for example, `not loaded: calls ch-access-github, which needs a

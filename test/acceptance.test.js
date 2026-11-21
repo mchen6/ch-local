@@ -33,8 +33,8 @@ function fixtures() {
   fs.writeFileSync(path.join(dir, 'get_job_logs-7.json'), env({content: [{type: 'text', text: 'log'}]}));
   return dir;
 }
-const post = async (port, token, body) => {
-  const r = await fetch(`http://127.0.0.1:${port}/mcp/`, {method: 'POST', headers: {'content-type': 'application/json', ...(token != null ? {authorization: `Bearer ${token}`} : {})}, body: JSON.stringify(body)});
+const post = async (port, token, body, headers = {}) => {
+  const r = await fetch(`http://127.0.0.1:${port}/mcp/`, {method: 'POST', headers: {'content-type': 'application/json', ...headers, ...(token != null ? {authorization: `Bearer ${token}`} : {})}, body: JSON.stringify(body)});
   return {status: r.status, body: r.status === 200 ? await r.json() : await r.text()};
 };
 
@@ -70,7 +70,10 @@ test('the stand-in takes exactly the run\'s tokens, and records whose token each
     const call = (token, id) => post(s.port, token, {jsonrpc: '2.0', id, method: 'tools/call', params: {name: 'actions_list', arguments: {method: 'list_workflow_runs'}}});
     await call('chacc_pack', 2);
     await call('chacc_own', 3);
+    await post(s.port, 'chacc_own', {jsonrpc: '2.0', id: 4, method: 'initialize', params: {}}, {'X-CH-Acceptance-Module': 'own-acceptance'});
     assert.deepStrictEqual([s.state.calls, s.state.by, s.state.refused], [['actions_list', 'actions_list'], ['pack', 'own'], 1]);
+    assert.deepStrictEqual(s.state.seen, [{method: 'tools/call', who: 'pack', module: null}, {method: 'tools/call', who: 'own', module: null},
+      {method: 'initialize', who: 'own', module: 'own-acceptance'}], 'every request, with its token and module header');
   } finally {
     await s.close();
   }
@@ -96,6 +99,7 @@ test('the acceptance own module passes ch-local\'s own folder check, declares it
     assert.deepStrictEqual([credential.variable, credential.origin], ['OWN_GITHUB_TOKEN', 'https://api.githubcopilot.com']);
     const handler = require(path.join(own.dir, 'handlers', 'ownService', 'own_commit_count.js'));
     const asked = [];
+    assert.deepStrictEqual(checked.pkg.countinghouse.remotes[0].headers, {'X-CH-Acceptance-Module': own.name});
     const ctx = {call: async (address, args) => { asked.push([address, args]); return {content: [{type: 'text', text: '[{"sha":"a"},{"sha":"b"}]'}]}; },
       error: (code, message) => Object.assign(new Error(message), {code})};
     assert.deepStrictEqual(await handler({repo: 'octo/x'}, ctx), {output: {commits: 2}});
@@ -106,11 +110,12 @@ test('the acceptance own module passes ch-local\'s own folder check, declares it
   }
 });
 
-// The Windows step (no pty there): the installed ch-local's own calls,
-// as add-module makes them after its yes. Run here on any OS, the home's
-// installed ch-local being this tree: the copy placed is the one recorded,
-// whole, and addOwn says its hash.
-test('addOwn on Windows stands the yes in with the installed ch-local\'s own calls: the copy recorded is the copy placed, whole', () => {
+// The Windows step (no pty there): the installed ch-local's own addModule,
+// answered y in process. Run here on any OS, the home's installed ch-local
+// being this tree: asked once, the copy placed is the one recorded, whole,
+// with what add-module records (its calls among them), and addOwn says its
+// hash.
+test('addOwn on Windows stands the yes in with the installed add-module, answered y: the copy recorded is the copy placed, whole', async () => {
   const base = fs.realpathSync.native(tmp('ch-acc-win-'));
   try {
     const own = acceptance.writeOwnModule(path.join(base, 'work', 'own'));
@@ -120,9 +125,10 @@ test('addOwn on Windows stands the yes in with the installed ch-local\'s own cal
     fs.chmodSync(home, 0o700);
     fs.symlinkSync(path.join(__dirname, '..'), path.join(installed, 'ch-local'), process.platform === 'win32' ? 'junction' : 'dir');
     const env = {COUNTINGHOUSE_HOME: home};
-    const added = acceptance.addOwn({home, node: process.execPath, launcher: null, dir: own.dir, env, platform: 'win32'});
+    const added = await acceptance.addOwn({home, node: process.execPath, launcher: null, dir: own.dir, env, platform: 'win32'});
     assert.ok(added.ok, added.output);
-    assert.strictEqual(added.name, 'the yes stood in (no pty on Windows)');
+    assert.strictEqual(added.name, 'the yes stood in (no pty on Windows): the installed add-module, answered y');
+    assert.match(added.output, /^It runs inside the same countinghouse runtime as your packs\.$/m);
     const where = require('../lib/home').layout(env);
     const rec = require('../lib/own-record').readOwnRecord(where).modules[own.name];
     assert.ok(rec.tree.startsWith(added.hash) && added.hash.length === 12, `${added.hash} ${rec.tree}`);

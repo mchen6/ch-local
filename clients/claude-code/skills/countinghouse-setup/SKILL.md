@@ -65,7 +65,7 @@ Before starting, say this: the tool is a module you write together, which the us
 1. Agree on the need with the user: what the tool does and what it may return. Then follow the `countinghouse-module` skill: show the split into services and actions, and wait for the user's yes before writing any file.
 2. Write the module in a folder the user chooses, outside the countinghouse home (never under `<home>`). Make it a scenario: `"countinghouse": {"role": "scenario"}` in its package.json, or its tools are never listed. It has no npm dependencies and no `node_modules`: copy any code it needs into its folder.
 3. Check it with `countinghouse_validate_module` on that folder. It checks without running the code.
-4. Ask the user to run, in their own terminal, `node "<home>/bin/ch-local.js" add-module "<folder>"`. It shows them what the module can reach and asks them to confirm. Never run `add-module` yourself, and never answer its question. `countinghouse_load_module` gives the same line: it never loads a module here.
+4. Ask the user to run, in their own terminal, `node "<home>/bin/ch-local.js" add-module "<folder>"`. It shows them what the module declares and which modules it calls, and asks them to confirm. Never run `add-module` yourself, and never answer its question. `countinghouse_load_module` gives the same line: it never loads a module here.
 5. If the module calls a service that needs a key, the user adds it in their own terminal with `node "<home>/bin/ch-local.js" credentials add <name>`, as for a pack.
 6. Once it is added, call its tool. After any change to its code, the user runs `add-module` again, and confirms again.
 

@@ -69,7 +69,9 @@ function recordedAnswer(fixtures, tool, args) {
 // counted.
 function startStandIn({fixtures, token, tokens = {pack: token}}) {
   const tools = JSON.parse(fs.readFileSync(path.join(fixtures, 'tools-list.json'), 'utf8')).tools;
-  const state = {requests: 0, refused: 0, calls: [], by: [], unexpected: []};
+  // (seen: every authorised request -- handshakes too -- with whose token it
+  // carried and the module header it came with, OWN_HEADER's value or null)
+  const state = {requests: 0, refused: 0, calls: [], by: [], seen: [], unexpected: []};
   const whose = (header) => { for (const [who, t] of Object.entries(tokens)) if (header === `Bearer ${t}`) return who; return null; };
   const server = http.createServer((req, res) => {
     let body = '';
@@ -86,6 +88,8 @@ function startStandIn({fixtures, token, tokens = {pack: token}}) {
       if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
       let msg;
       try { msg = JSON.parse(body); } catch (err) { res.writeHead(400); return res.end(); }
+      const module = req.headers[OWN_HEADER.toLowerCase()];
+      state.seen.push({method: msg != null ? msg.method : null, who, module: typeof module === 'string' ? module : null});
       const answer = (result) => { res.writeHead(200, {'content-type': 'application/json'}); res.end(JSON.stringify({jsonrpc: '2.0', id: msg.id, result})); };
       if (msg.id === undefined) { res.writeHead(202); return res.end(); }
       if (msg.method === 'initialize') {
@@ -255,11 +259,14 @@ function trapSignals(cleanup, exit = (code) => process.exit(code)) {
 // commits it is given. Written to `dir`, outside the home. -> {dir, name}
 const OWN_NAME = 'own-acceptance';
 const OWN_TOOL = 'own_commit_count';
+// (a header the own module's remote declares, so the stand-in knows each
+// request's module -- handshakes too -- apart from the token it carried)
+const OWN_HEADER = 'X-CH-Acceptance-Module';
 function writeOwnModule(dir) {
   const svc = 'urn:ch-local-acceptance:serviceID:ownService';
   fs.mkdirSync(path.join(dir, 'handlers', 'ownService'), {recursive: true});
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: OWN_NAME, version: '1.0.0', private: true, countinghouse: {role: 'scenario',
-    remotes: [{name: 'github', transport: 'streamable-http', url: `${GITHUB}/mcp/`, credential: {env: 'OWN_GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]}}, null, 2));
+    remotes: [{name: 'github', transport: 'streamable-http', url: `${GITHUB}/mcp/`, headers: {[OWN_HEADER]: OWN_NAME}, credential: {env: 'OWN_GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]}}, null, 2));
   fs.writeFileSync(path.join(dir, 'api.json'), JSON.stringify({device: {friendlyName: OWN_NAME, manufacturer: 'ch-local-acceptance', modelDescription: 'The acceptance run\'s own module: counts a repository\'s recent commits through GitHub\'s origin.',
     serviceList: {[svc]: {actionList: [{name: OWN_TOOL, description: 'Counts the recent commits of a repository (owner/name).', input: {schema: `/ownService/${OWN_TOOL}/input`}, output: {schema: `/ownService/${OWN_TOOL}/output`}}]}}}}, null, 2));
   fs.writeFileSync(path.join(dir, 'schema.json'), JSON.stringify({$schema: 'https://json-schema.org/draft/2020-12/schema', $id: '#/', type: 'object',
@@ -282,32 +289,33 @@ function writeOwnModule(dir) {
 // The own module added as the user adds it (A-own-skill). Linux and macOS:
 // `add-module` itself, its question answered y on a pseudo-terminal
 // (test/pty-answer.py). Windows has no pseudo-terminal here, so the yes is
-// stood in: the installed ch-local's own checkFolder, treeHash, placeCopy and
-// writeOwnRecord, the calls add-module makes after its yes, under the
-// home's layout (no variable and no flag loosens add-module itself).
-// -> {name (the check's), ok, hash (the short hash added), output}
-function addOwn({home, node, launcher, dir, env, platform = process.platform}) {
+// stood in: the installed ch-local's own addModule, run in this process with
+// an io that answers y -- every check add-module makes before and after its
+// yes, its lock and its record, only the terminal stood in (no variable and
+// no flag loosens add-module itself). -> {name (the check's), ok, hash (the
+// short hash added), output}
+async function addOwn({home, node, launcher, dir, env, platform = process.platform}) {
+  const added = (out) => new RegExp(`Added ${OWN_NAME} \\(own, ([0-9a-f]{12})\\): your clients see it now\\.`).exec(out);
   if (platform !== 'win32') {
     const r = spawnSync('python3', [path.join(__dirname, '..', 'test', 'pty-answer.py'), 'y', 'Add it? [y/N]', node, launcher, 'add-module', dir], {env, encoding: 'utf8', timeout: 120000});
     const out = `${r.stdout || ''}${r.stderr || ''}${r.error != null ? r.error.message : ''}`;
-    const m = new RegExp(`Added ${OWN_NAME} \\(own, ([0-9a-f]{12})\\): your clients see it now\\.`).exec(out);
+    const m = added(out);
     return {name: 'add-module: the own module added, its question answered y at a terminal', ok: r.status === 0 && m != null && /^It runs inside the same countinghouse runtime as your packs\.\r?$/m.test(out),
       hash: m != null ? m[1] : null, output: out};
   }
   const lib = (n) => require(path.join(home, 'app', 'node_modules', '@countinghouse', 'ch-local', 'lib', n));
+  const name = 'the yes stood in (no pty on Windows): the installed add-module, answered y';
+  let out = '';
+  const asked = [];
   try {
-    const where = lib('home.js').layout(env);
-    const {checkFolder, treeHash, placeCopy} = lib('own-tree.js');
-    const checked = checkFolder(dir, home);
-    if (checked.problems != null) return {name: 'the yes stood in (no pty on Windows)', ok: false, hash: null, output: checked.problems.join('; ')};
-    const tree = treeHash(checked.real, checked.entries);
-    const now = () => new Date();
-    placeCopy(where, OWN_NAME, checked.real, checked.entries, tree, {now});
-    lib('own-record.js').writeOwnRecord(where, {v: 1, modules: {[OWN_NAME]: {tree, version: checked.pkg.version, friendlyName: checked.spec.device.friendlyName,
-      addedAt: now().toISOString(), from: checked.real, calls: []}}});
-    return {name: 'the yes stood in (no pty on Windows)', ok: true, hash: tree.slice(0, 12), output: `placed ${OWN_NAME} ${tree.slice(0, 12)}`};
+    const io = {stdout: {write: (t) => { out += t; }}, stderr: {write: (t) => { out += t; }}, env, node, version: process.version, platform: process.platform, homedir: os.homedir,
+      pid: process.pid, alive: lib('run-liveness.js').processAlive, hostname: os.hostname(), interactive: true, stdoutTTY: true,
+      ask: async (q) => { asked.push(q); return 'y'; }};
+    const code = await lib('own-command.js').addModule({dir}, io, {where: lib('home.js').layout(env, os.homedir)});
+    const m = added(out);
+    return {name, ok: code === 0 && m != null && asked.length === 1 && asked[0] === 'Add it? [y/N] ', hash: m != null ? m[1] : null, output: out};
   } catch (err) {
-    return {name: 'the yes stood in (no pty on Windows)', ok: false, hash: null, output: err.stack || err.message};
+    return {name, ok: false, hash: null, output: `${out}${err.stack || err.message}`};
   }
 }
 
@@ -394,7 +402,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
 
     // The user's own module (A-own-skill), added before the start.
     const own = writeOwnModule(path.join(work, 'own-acceptance'));
-    const ownAdded = addOwn({home, node, launcher, dir: own.dir, env: launcherEnv(home)});
+    const ownAdded = await addOwn({home, node, launcher, dir: own.dir, env: launcherEnv(home)});
     ownLogs.push(ownAdded.output);
     if (!check(ownAdded.name, ownAdded.ok, ownAdded.output)) return 1;
     const ownKey = spawnSync(node, [launcher, 'credentials', 'add', own.name, '--to', GITHUB],
@@ -491,9 +499,15 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       `${JSON.stringify(ownCalled).slice(0, 1200)}\n--- runtime stderr ---\n${stderr.split('\n').filter((l) => /own|error|refused/i.test(l)).slice(-25).join('\n')}`);
     const packBy = standIn.state.by.slice(0, packCalls);
     const ownBy = standIn.state.by.slice(packCalls);
-    check('each token reached the stand-in only on its own module\'s calls: the pack\'s calls the pack\'s, the own tool\'s its own',
-      packBy.length > 0 && packBy.every((w) => w === 'pack') && ownBy.length > 0 && ownBy.every((w) => w === 'own') && standIn.state.refused === 0,
-      JSON.stringify({calls: standIn.state.calls, by: standIn.state.by}));
+    // (every request, handshakes too, by the module it came from: the own
+    // module's remote alone sends OWN_HEADER)
+    const seenOwn = standIn.state.seen.filter((r) => r.module === OWN_NAME);
+    const seenPack = standIn.state.seen.filter((r) => r.module == null);
+    check('each token reached the stand-in only on its own module\'s requests: the pack\'s the pack\'s, the own module\'s its own, handshakes included',
+      packBy.length > 0 && packBy.every((w) => w === 'pack') && ownBy.length > 0 && ownBy.every((w) => w === 'own') &&
+      seenOwn.length > 0 && seenOwn.every((r) => r.who === 'own') && seenPack.length > 0 && seenPack.every((r) => r.who === 'pack') &&
+      seenOwn.length + seenPack.length === standIn.state.seen.length && standIn.state.refused === 0 && standIn.state.unexpected.length === 0,
+      JSON.stringify({calls: standIn.state.calls, by: standIn.state.by, seen: standIn.state.seen, unexpected: standIn.state.unexpected}));
 
     child.stdin.end();
     const code2 = await Promise.race([exited, new Promise((r) => setTimeout(() => r('timeout'), 30000))]);

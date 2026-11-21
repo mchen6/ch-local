@@ -39,6 +39,7 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
     const home = path.join(work, 'home');
     const io = realIo({...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'});
     let child = null;
+    let grouped = false;
     try {
       // The release directory -- this launcher, the runtime, the fixture
       // pack, and the runtime's lockfile, as a release builds them -- and
@@ -131,7 +132,10 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       assert.match(ownStatus.stdout, new RegExp(`own-smoke \\(own, unpinned, ${hash[1]}\\)\\s+on; tools: own_shout`), ownStatus.stdout);
 
       let stderr2 = '';
-      child = spawn(process.execPath, [launcher, 'start', '--stdio'], {cwd: repo, env: {...process.env, COUNTINGHOUSE_HOME: home}, stdio: ['pipe', 'pipe', 'pipe']});
+      // (in a process group of its own, so a failure here ends the runtime it
+      // started too: the finally block kills the group)
+      child = spawn(process.execPath, [launcher, 'start', '--stdio'], {cwd: repo, env: {...process.env, COUNTINGHOUSE_HOME: home}, stdio: ['pipe', 'pipe', 'pipe'], detached: true});
+      grouped = true;
       child.stderr.on('data', (d) => { stderr2 += d; });
       const exited2 = new Promise((resolve) => child.on('exit', (c) => resolve(c)));
       const mcp2 = session(child);
@@ -155,8 +159,11 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       const code2 = await Promise.race([exited2, new Promise((resolve) => setTimeout(() => resolve('timeout'), 30000))]);
       assert.notStrictEqual(code2, 'timeout', 'the runtime exits when the client closes stdin');
       child = null;
+      grouped = false;
     } finally {
-      if (child != null) child.kill('SIGKILL');
+      if (child != null) {
+        if (grouped) { try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { /* gone */ } } else child.kill('SIGKILL');
+      }
       fs.rmSync(work, {recursive: true, force: true});
     }
   });
