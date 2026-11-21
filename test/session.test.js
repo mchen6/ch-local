@@ -191,6 +191,21 @@ test('the plugin\'s path (launch.js session, the home rule) and the entry client
   }
 });
 
+// The Reviewer on #123: the plugin's path ends as ONE process per session.
+// launch.js execs the home's launcher (POSIX), which execs the shim, so no
+// launch.js Node stays beside it; and nothing touched stdio before either
+// exec, so the shim's pipes are as the client gave them.
+test('POSIX: the plugin\'s path (launch.js session) ends as one process, the shim, with its stdio blocking', {skip: NO_PROBE}, async() => {
+  const launch = path.join(ROOT, 'clients', 'claude-code', 'bin', 'launch.js');
+  const h = home();
+  fs.mkdirSync(path.join(h, 'bin'), {recursive: true});
+  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`);
+  const r = await runIt(process.execPath, [launch, 'session'], envWith({COUNTINGHOUSE_HOME: h}));
+  assert.strictEqual(r.code, 0, r.err);
+  assert.match(r.out, new RegExp(`^SHIM pid=${r.pid} args=--home `, 'm'), `the same pid: launch.js became the session, which became the shim: ${r.out}`);
+  assert.deepStrictEqual([...r.out.matchAll(/^fd(\d) nonblock=(\d)$/gm)].map((m) => `${m[1]}:${m[2]}`), ['0:0', '1:0', '2:0'], `no stdio reaches the shim O_NONBLOCK: ${r.out}`);
+});
+
 // Windows, and a Node with no execve: a child with this process's stdio,
 // its exit code the session's; one that can't start at all hands back to
 // the session's own runtime

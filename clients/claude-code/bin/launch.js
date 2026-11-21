@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 // The plugin's entry: runs the installed launcher, <home>/bin/ch-local.js, with
-// this process's arguments and stdio, passes a stop on to it, and ends the way
-// it ended. It fetches and installs nothing. The plugin is copied on its own,
+// this process's arguments and stdio. On POSIX it becomes the launcher
+// (process.execve), so a session is one process (the launcher then becomes
+// the shim): no Node of this script stays beside it (the Reviewer on #123).
+// Elsewhere, or on a Node with no execve, it runs the launcher as a child,
+// passes a stop on to it, and ends the way it ended. It fetches and installs nothing. The plugin is copied on its own,
 // so the home rule is repeated from lib/home.js (a test checks they agree).
 // Plain require names, so a Node too old for 'node:' still gets the one-line
 // message below.
@@ -30,6 +33,12 @@ function whereIs(env) {
   return path.join(path.normalize(set), 'bin', 'ch-local.js');
 }
 
+// POSIX, a Node with execve, and its own executable runnable -> true
+function canExec(platform, execve, execPath) {
+  if (platform === 'win32' || typeof execve !== 'function') return false;
+  try { fs.accessSync(execPath, fs.constants.X_OK); return true; } catch { return false; }
+}
+
 const fail = (line) => { process.stderr.write(`ch-packs: ${line}\n`); process.exit(1); };
 
 function main() {
@@ -37,6 +46,13 @@ function main() {
   const launcher = whereIs(process.env);
   if (launcher == null) fail(`COUNTINGHOUSE_HOME must be an absolute path, not "${process.env.COUNTINGHOUSE_HOME}"`);
   if (!fs.existsSync(launcher)) fail(`the launcher is not installed at ${launcher}; install it with: npx @countinghouse/ch-local install --pack ci-failure-triage`);
+  // (a failed execve ends Node 22 and 24 outright, so only a call that can't
+  // fail is made: POSIX, this Node's own executable, runnable from where it
+  // is. And nothing touches stdin, stdout or stderr before it, so the pipes
+  // reach the launcher, and the shim after it, as the client gave them.)
+  if (canExec(process.platform, process.execve, process.execPath)) {
+    process.execve(process.execPath, [process.execPath, launcher, ...process.argv.slice(2)], process.env);
+  }
   const child = spawn(process.execPath, [launcher, ...process.argv.slice(2)], {stdio: 'inherit'});
   child.on('error', (err) => fail(`could not start ${launcher} (${err.code || err.message})`));
   const forward = (signal) => {
@@ -57,4 +73,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = {whereIs, nodeOk, isFullPath};
+module.exports = {whereIs, nodeOk, isFullPath, canExec};

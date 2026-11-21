@@ -247,3 +247,14 @@ test('the countinghouse-module skill: countinghouse\'s own at the recorded commi
   assert.ok(!/`docs\/[a-z0-9-]+\.md`/.test(skill), 'no reference left relative to a repository the plugin is not');
   assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), MODULE_SKILL.sha256, 'the copy as recorded');
 });
+
+// the Reviewer on #123: launch.js execs only where the call can't fail (a
+// failed execve ends Node 22 and 24); else it spawns, as before
+test('launch.js canExec: POSIX with execve and a runnable Node only', () => {
+  const {canExec} = require(path.join(PLUGIN, 'bin', 'launch.js'));
+  const fn = () => {};
+  assert.strictEqual(canExec('linux', fn, process.execPath), process.platform !== 'win32');
+  assert.strictEqual(canExec('win32', fn, process.execPath), false, 'Windows spawns');
+  assert.strictEqual(canExec('linux', undefined, process.execPath), false, 'a Node with no execve spawns');
+  assert.strictEqual(canExec('linux', fn, path.join(__dirname, 'no-such-node')), false, 'a Node that is not there spawns');
+});
