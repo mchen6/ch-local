@@ -99,3 +99,22 @@ test('chLocal: the home\'s launcher by its real path, else the bare command', ()
   assert.strictEqual(chLocal(null, 'status'), 'ch-local status');
   void fakeIo;
 });
+
+// the reviewer on ch-local#110, 2: the launcher written into a home runs on
+// that home when COUNTINGHOUSE_HOME is unset, so a printed command acts on
+// the home it names; an explicit variable still wins
+test('the home\'s launcher runs on its own home unless COUNTINGHOUSE_HOME names another', () => {
+  const {spawnSync} = require('node:child_process');
+  const {launcherText} = require('../lib/install');
+  const h = tmp('ch-launcher-');
+  // (an installed ch-local that says which home it was given)
+  const bin = path.join(h, 'fake-bin.js');
+  fs.writeFileSync(bin, "module.exports = {run: () => process.stdout.write(String(process.env.COUNTINGHOUSE_HOME))};\n");
+  const launcher = path.join(h, 'ch-local.js');
+  fs.writeFileSync(launcher, launcherText(bin, '/alt/home'));
+  const env = {...process.env};
+  delete env.COUNTINGHOUSE_HOME;
+  assert.strictEqual(spawnSync(process.execPath, [launcher], {env, encoding: 'utf8'}).stdout, '/alt/home', 'unset: its own home');
+  assert.strictEqual(spawnSync(process.execPath, [launcher], {env: {...env, COUNTINGHOUSE_HOME: '/elsewhere'}, encoding: 'utf8'}).stdout, '/elsewhere', 'set: the variable wins');
+  assert.strictEqual(spawnSync(process.execPath, [launcher], {env: {...env, COUNTINGHOUSE_HOME: ''}, encoding: 'utf8'}).stdout, '/alt/home', 'empty: its own home');
+});
