@@ -122,7 +122,7 @@ function instructions({node, home, defaultHome = DEFAULT_HOME()}) {
     '',
     'Add the server to Claude Code, then restart your session so it loads it:',
     '',
-    `  claude mcp add --scope user countinghouse${homeFlag} -- ${word(node)} ${word(launcher)} start --stdio`,
+    `  claude mcp add --scope user countinghouse${homeFlag} -- ${word(node)} ${word(launcher)} session`,
     '  claude --resume',
     '',
     'What is installed, and how to take it all back:',

@@ -7,7 +7,7 @@
 
     [mcp_servers.countinghouse]
     command = "/usr/local/bin/node"
-    args = ["/home/you/.countinghouse/bin/ch-local.js", "start", "--stdio"]
+    args = ["/home/you/.countinghouse/bin/ch-local.js", "session", "--home", "/home/you/.countinghouse"]
 
 The entry forwards no variable of Codex's environment
 ([docs](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)): a module's

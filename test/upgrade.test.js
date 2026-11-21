@@ -779,3 +779,25 @@ test('upgrade --check with --apply-auto or --auto: refused as usage, nothing run
     assert.deepStrictEqual([io.fetches, io.execs], [[], []]);
   }
 });
+
+// the medium on B-shim-allow, 6: the allow an upgrade installs with carries
+// the release's shim (releaseAllow), never one a test made by hand
+test('an upgrade installs with an allow that carries the release\'s shim', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release());
+  const inst = require('../lib/install');
+  const real = inst.install;
+  let seen = null;
+  inst.install = async (opts, io, allow, fromNpm) => { seen = allow; return real(opts, io, allow, fromNpm); };
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
+    const shipped = require('../lib/release-pins').parseReleasePins(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'))).pins;
+    assert.ok(seen != null && seen.shim != null, 'install was given the shim');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(seen.shim)), JSON.parse(JSON.stringify(shipped.shim)));
+  } finally {
+    inst.install = real;
+    await w.close();
+    s.done();
+  }
+});

@@ -363,7 +363,10 @@ async function npmRelease(r, {lie = null, shim = false} = {}) {
   }
   const allow = Object.assign({}, r.allow, {pins, self, shim: shimSection, release: {version: r.pins['@countinghouse/ch-local'].version, security: null},
     runtime: Object.assign({}, r.allow.runtime, {lockfile})});
-  return {reg, allow, fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}};
+  // the release's data as release-pins.json parses it, for the production
+  // builders (lib/npm-upgrade.js releaseAllow) to make the allow from
+  const data = {release: {security: null}, self, shim: shimSection, runtime: allow.runtime, packs: r.allow.packs, modules: r.allow.modules, pins};
+  return {reg, allow, data, fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}};
 }
 
 test('no --from: every package from the registry, checked by its pin and its provenance, then installed as from a directory', async () => {
@@ -939,6 +942,156 @@ test('a pack the record gains while install reads its tarballs: refused, nothing
     fs.readFileSync = read;
   }
   assert.notStrictEqual(one, both);
+});
+
+// The reviewer's targeted high (11-21): ALLOWLIST and releaseAllow carried
+// no shim, so `allow.shim` was null outside tests (the shim test injects
+// it) and every install or upgrade from npm set the shim aside: the shared
+// runtime never ran on an installed home. The production builders, never an
+// allow made by hand.
+test('the production allows carry the release\'s shim: ALLOWLIST from release-pins.json, and releaseAllow', () => {
+  const {ALLOWLIST} = require('../lib/allowlist');
+  const shipped = require('../lib/release-pins').parseReleasePins(require('../lib/release-pins.json')).pins;
+  assert.ok(ALLOWLIST.shim != null, 'ALLOWLIST.shim');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(ALLOWLIST.shim)), JSON.parse(JSON.stringify(shipped.shim)));
+  const {releaseAllow} = require('../lib/npm-upgrade');
+  assert.deepStrictEqual(releaseAllow(shipped, '9.9.9').shim, shipped.shim);
+});
+
+test('an npm install whose allow comes from releaseAllow places the pinned, provenance-checked shim', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  try {
+    const allow = require('../lib/npm-upgrade').releaseAllow(n.data, r.pins['@countinghouse/ch-local'].version);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, allow, n.fromNpm), 0, io.err);
+    const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+    assert.strictEqual(fs.readFileSync(path.join(h, 'shim', exe), 'utf8'), 'the shim');
+    assert.deepStrictEqual(record(h).shim, {package: `@countinghouse/ch-shim-${process.platform}-${process.arch}`, version: '0.5.0'});
+    assert.ok(!/set aside/.test(io.out), io.out);
+  } finally {
+    await n.reg.close();
+  }
+});
+
+// the medium on B-shim-allow, 8: the shim is placed (and recorded) before
+// the daemon is asked to restart onto the new release
+test('the shim is in place and recorded before the daemon is asked to restart', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  const dr = require('../lib/daemon-requests');
+  const real = dr.requestUpgrade;
+  let atRestart = null;
+  dr.requestUpgrade = async (homeDir) => {
+    const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+    atRestart = {placed: fs.existsSync(path.join(homeDir, 'shim', exe)), recorded: record(homeDir).shim != null};
+  };
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.deepStrictEqual(atRestart, {placed: true, recorded: true});
+  } finally {
+    dr.requestUpgrade = real;
+    await n.reg.close();
+  }
+});
+
+// the medium on B-shim-allow, 2 and 3: a shim not placed leaves no shim in
+// the record (rollback would restore it); a busy one says what to do
+test('a shim that cannot be placed clears the record\'s shim; a busy one says how to get the shared runtime back', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  const si = require('../lib/shim-install');
+  const realPlace = si.placeShim;
+  const realPrepare = si.prepareShim;
+  try {
+    const io0 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io0, n.allow, n.fromNpm), 0, io0.err);
+    assert.ok(record(h).shim != null, 'placed first');
+    si.placeShim = () => { throw Object.assign(new Error('C:\\h\\shim\\ch-shim.previous could not be removed (EBUSY)'), {code: 'SHIM_BUSY'}); };
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.strictEqual(record(h).shim, undefined, 'the record matches: no shim');
+    assert.match(io.err, /the shared runtime's shim could not be replaced: a session still uses the old one\. Close that session \(or the client running it\), then run `.*install` to place the new one; until then each session runs its own runtime/);
+    si.placeShim = realPlace;
+    si.prepareShim = async () => ({status: 'failed', name: 'x', version: '0.5.0', error: Object.assign(new Error('the registry could not be reached'), {code: 'NPM_FETCH'})});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)}), n.allow, n.fromNpm), 0);
+    assert.strictEqual(record(h).shim, undefined);
+  } finally {
+    si.placeShim = realPlace;
+    si.prepareShim = realPrepare;
+    await n.reg.close();
+  }
+});
+
+// the medium on B-shim-allow, 7: a shim already at its pin, verified when it
+// was placed, is not fetched again
+test('a shim already at its pin is not fetched again', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  try {
+    const io0 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io0, n.allow, n.fromNpm), 0, io0.err);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.ok(!io.fetches.some((u) => /ch-shim/.test(u)), JSON.stringify(io.fetches.filter((u) => /shim/.test(u))));
+    assert.ok(record(h).shim != null);
+  } finally {
+    await n.reg.close();
+  }
+});
+
+// the medium on B-shim-allow's round 3: the shim step never throws past the
+// app swap (a rejection that is no Error), and a shim judged current before
+// the lock that changed meanwhile says to run install again
+test('a shim prepared with no error object, or changed since it was judged current: said, set aside, the record names none', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  const si = require('../lib/shim-install');
+  const realPrepare = si.prepareShim;
+  const realPlace = si.placeShim;
+  try {
+    si.prepareShim = async () => ({status: 'failed', name: 'x', version: '0.5.0', error: null});
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.strictEqual(record(h).shim, undefined);
+    assert.match(io.err, /the shared runtime's shim could not be installed/);
+    si.prepareShim = async () => ({status: 'current', name: 'x', version: '0.5.0'});
+    si.placeShim = () => { throw Object.assign(new Error('no longer the verified shim'), {code: 'SHIM_STALE'}); };
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io2, n.allow, n.fromNpm), 0, io2.err);
+    assert.match(io2.err, /the shared runtime's shim in place changed while this install ran: run `.*install` again to place it/);
+    assert.strictEqual(record(h).shim, undefined);
+  } finally {
+    si.prepareShim = realPrepare;
+    si.placeShim = realPlace;
+    await n.reg.close();
+  }
+});
+
+// the medium's round 4: a real throw inside the shim step after a binary was
+// placed: set aside, the record naming none, the install not failed
+test('a throw inside the shim step after placing: the binary set aside, the record names none', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  const si = require('../lib/shim-install');
+  const realPlace = si.placeShim;
+  const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+  try {
+    si.placeShim = (homeDir) => {
+      fs.mkdirSync(path.join(homeDir, 'shim'), {recursive: true});
+      fs.writeFileSync(path.join(homeDir, 'shim', exe), 'placed');
+      return null;   // what follows reads r.version: a TypeError
+    };
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.strictEqual(record(h).shim, undefined);
+    assert.strictEqual(fs.existsSync(path.join(h, 'shim', exe)), false, 'set aside');
+    assert.match(io.err, /the shared runtime's shim could not be installed \(.+\); each session runs its own runtime/);
+  } finally {
+    si.placeShim = realPlace;
+    await n.reg.close();
+  }
 });
 
 // the medium on the floors: a development pins file is held to the release's

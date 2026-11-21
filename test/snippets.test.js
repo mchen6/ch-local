@@ -9,7 +9,7 @@ const path = require('node:path');
 const {snippet, CLIENTS} = require('../lib/snippets');
 
 const GOLDEN = path.join(__dirname, 'fixtures', 'snippets');
-const POSIX = {node: '/usr/local/bin/node', launcher: '/home/dev/.countinghouse/bin/ch-local.js'};
+const POSIX = {node: '/usr/local/bin/node', launcher: '/home/dev/.countinghouse/bin/ch-local.js', home: '/home/dev/.countinghouse'};
 const golden = (client) => fs.readFileSync(path.join(GOLDEN, `${client}.txt`), 'utf8').replace(/\r\n/g, '\n');
 
 test('snippets match the fixtures per client', () => {
@@ -23,7 +23,9 @@ test('snippets match the fixtures per client', () => {
 test('JSON snippets parse and name the pinned node and the launcher', () => {
   const cursor = JSON.parse(snippet('cursor', POSIX).text).mcpServers['countinghouse'];
   assert.deepStrictEqual(cursor.command, POSIX.node);
-  assert.deepStrictEqual(cursor.args, [POSIX.launcher, 'start', '--stdio']);
+  // (session: the home's launcher decides, at each start, between the
+  // shared runtime's shim and the session's own runtime: lib/session.js, #120)
+  assert.deepStrictEqual(cursor.args, [POSIX.launcher, 'session', '--home', POSIX.home]);
   assert.ok(!('type' in cursor), 'Cursor\'s entry has no type');
   const vscode = JSON.parse(snippet('vscode', POSIX).text).mcpServers['countinghouse'];
   assert.strictEqual(vscode.type, 'stdio');
@@ -31,7 +33,7 @@ test('JSON snippets parse and name the pinned node and the launcher', () => {
 });
 
 test('Windows paths are escaped for JSON and TOML', () => {
-  const win = {node: 'C:\\Program Files\\nodejs\\node.exe', launcher: 'C:\\Users\\dev\\.countinghouse\\bin\\ch-local.js'};
+  const win = {node: 'C:\\Program Files\\nodejs\\node.exe', launcher: 'C:\\Users\\dev\\.countinghouse\\bin\\ch-local.js', home: 'C:\\Users\\dev\\.countinghouse'};
   assert.strictEqual(JSON.parse(snippet('cursor', win).text).mcpServers['countinghouse'].command, win.node);
   const toml = snippet('codex', win).text;
   assert.ok(toml.includes('command = "C:\\\\Program Files\\\\nodejs\\\\node.exe"'), toml);
