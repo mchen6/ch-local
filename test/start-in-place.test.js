@@ -727,9 +727,16 @@ test('a withdrawn pack whose unload is refused is tried once more, then the clie
   const s = await running({answer: (m) => (m.type === 'unload' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
   try {
     withdrawHeld(s.home, 'ci-failure-triage');
-    const unloads = () => s.requests.filter((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-ci-failure-triage').length;
-    await until(() => notices(s).some(([, t]) => /could not be stopped in place: restart your client now/.test(t)));
-    assert.strictEqual(unloads(), 2, 'tried twice');
+    const isUnload = (m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-ci-failure-triage';
+    const isStuck = (m) => m.type === 'notice' && /could not be stopped in place: restart your client now/.test(m.text);
+    await until(() => s.requests.some(isStuck));
+    // (counted in the one ordered log, up to the restart notice: tried twice,
+    // then told. A later pass may try again, as it should, without telling
+    // again: never counted on a clock, which a slower runner outran, main's
+    // Windows push run 44950229590)
+    const told = s.requests.findIndex(isStuck);
+    assert.strictEqual(s.requests.slice(0, told).filter(isUnload).length, 2, 'tried twice before the restart notice');
+    assert.strictEqual(s.requests.filter(isStuck).length, 1, 'told once');
   } finally {
     s.end();
     await s.done;
