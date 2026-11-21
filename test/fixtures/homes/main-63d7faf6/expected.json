@@ -1,0 +1,51 @@
+{
+  "credentials": {
+    "modules": {
+      "@countinghouse/ch-step-smoke": {
+        "SMOKE_TOKEN": {
+          "origin": "https://api.smoke.invalid",
+          "source": "stored",
+          "value": "fake-smoke-credential-0001"
+        }
+      }
+    },
+    "version": 2
+  },
+  "modules": {
+    "@countinghouse/ch-pack-smoke": {
+      "marker": {
+        "integrity": "sha512-pcTDPWTtANyV46fXTmcJfgkNfYB2leiWrr9OqxbpJnxZOiLF9kkHgNkDr14gWhKsd21wjBhwQ54TT6cSpCek8Q==",
+        "name": "@countinghouse/ch-pack-smoke",
+        "version": "0.0.1"
+      },
+      "role": "scenario",
+      "version": "0.0.1"
+    },
+    "@countinghouse/ch-step-smoke": {
+      "marker": {
+        "integrity": "sha512-kBhU9QvRaPsfODkJGM3TTRIWCHi30iu/0w35fZI8Mwd+J8y5reGXtarrklva18ruaMNatP3bdfDVR+xJGT4Rrw==",
+        "name": "@countinghouse/ch-step-smoke",
+        "version": "0.0.1"
+      },
+      "role": "part",
+      "version": "0.0.1"
+    }
+  },
+  "packs": {
+    "smoke": {
+      "modules": {
+        "@countinghouse/ch-pack-smoke": "0.0.1",
+        "@countinghouse/ch-step-smoke": "0.0.1"
+      }
+    }
+  },
+  "settings": {
+    "error": null,
+    "kept": {
+      "module.@countinghouse/ch-pack-smoke.defaultRepo": "octo/smoke"
+    },
+    "unreadable": false,
+    "values": {},
+    "warning": null
+  }
+}
