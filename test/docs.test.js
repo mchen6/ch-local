@@ -104,5 +104,7 @@ test('the Claude Code page\'s updates: the read-only check, the user installs, C
   const section = page.slice(at, page.indexOf('\n## ', at + 1)).replace(/\s+/g, ' ');
   for (const s of ['`ch-local upgrade --check` says whether a newer release is out and what it changes, and installs nothing',
     'an upgrade runs new code with your keys, so an agent never runs it for you',
-    'claude plugin marketplace update ch-packs claude plugin update ch-packs@ch-packs', 'then restart Claude Code']) assert.ok(section.includes(s), s);
+    'claude plugin marketplace update ch-packs claude plugin update ch-packs@ch-packs', 'then restart Claude Code',
+    'The plugin comes from this repository\'s marketplace entry (`.claude-plugin/marketplace.json`), not from the npm release whose provenance `upgrade` checks.',
+    'the code that runs with your keys comes only through the checked upgrade']) assert.ok(section.includes(s), s);
 });

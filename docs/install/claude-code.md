@@ -159,6 +159,12 @@ claude plugin update ch-packs@ch-packs
 
 then restart Claude Code.
 
+The plugin comes from this repository's marketplace entry
+(`.claude-plugin/marketplace.json`), not from the npm release whose
+provenance `upgrade` checks. It carries the skills and the MCP entry that
+starts countinghouse; the code that runs with your keys comes only through
+the checked upgrade.
+
 ## Remove
 
     claude plugin uninstall ch-packs@ch-packs
