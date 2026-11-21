@@ -1,5 +1,9 @@
 'use strict';
 require('./tmp-dirs');
+// (the home named before an npx hint, COUNTINGHOUSE_HOME="<home>" npx ..., left out
+// of a comparison of the rest: lib/command-line.js pins it, test/command-line.test.js)
+const unhomed = (s) => String(s).replace(/COUNTINGHOUSE_HOME="[^"]+" /g, '');
+
 // B-own-add: the user's own modules in what loads (lib/availability.js with
 // `own`; the own-modules design §2.2). An own module is top-level, after
 // the packs; it loads only from an intact copy, only under enforce, only
@@ -68,7 +72,7 @@ test('a copy changed since the yes: held back (changed), the line naming add-mod
   fs.appendFileSync(path.join(ownTree.copyDir(h.where, 'my-tool', tree), 'api.json'), ' ');
   const u = run(h).unavailable.get('my-tool');
   assert.deepStrictEqual([u.kind, u.via], ['changed', null]);
-  assert.strictEqual(u.line, `not loading my-tool: its files changed since you added it: run \`npx @countinghouse\/ch-local add-module "${h.ownRecord.modules['my-tool'].from}"\` again`);
+  assert.strictEqual(unhomed(u.line), `not loading my-tool: its files changed since you added it: run \`npx @countinghouse\/ch-local add-module "${h.ownRecord.modules['my-tool'].from}"\` again`);
 });
 
 test('the sandbox not enforced: every own module held back (sandbox); the packs load', () => {

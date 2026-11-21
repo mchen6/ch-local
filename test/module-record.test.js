@@ -1,5 +1,9 @@
 'use strict';
 require('./tmp-dirs');
+// (the home named before an npx hint, COUNTINGHOUSE_HOME="<home>" npx ..., left out
+// of a comparison of the rest: lib/command-line.js pins it, test/command-line.test.js)
+const unhomed = (s) => String(s).replace(/COUNTINGHOUSE_HOME="[^"]+" /g, '');
+
 // <home>/modules.json (module-level install, #413 section 9.2, L1a-1 Task
 // 2): the shape, its derived modules (the highest version any pack records,
 // with that version's role) and withdrawn list, and its checks.
@@ -69,7 +73,7 @@ test('a record whose modules is not what its packs give is refused, as is each m
     const r = JSON.parse(JSON.stringify(good));
     mutate(r);
     fs.writeFileSync(w.modulesRecord, JSON.stringify(r));
-    assert.throws(() => rec.readModulesRecord(w), (e) => e.message.includes(why) && /run `npx @countinghouse\/ch-local install` again/.test(e.message), why);
+    assert.throws(() => rec.readModulesRecord(w), (e) => e.message.includes(why) && /run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local install` again/.test(e.message), why);
   };
   bad((r) => { r.modules['@countinghouse/ch-access-github'].version = '0.3.0'; }, 'modules is not what packs give');
   bad((r) => { r.modules['weather-tool'] = {version: '1.0.0', role: null}; }, 'modules is not what packs give');
@@ -107,7 +111,7 @@ test('nothing installed is null; only an earlier ch-local\'s packs.json says to 
   assert.strictEqual(rec.readModulesRecord(w), null);
   fs.mkdirSync(w.home, {recursive: true});
   fs.writeFileSync(w.packs, JSON.stringify({runtime: {versions: {}}, packs: {}}));
-  assert.throws(() => rec.readModulesRecord(w), {message: 'this home was made by an earlier ch-local; run `npx @countinghouse\/ch-local install` again'});
+  assert.throws(() => rec.readModulesRecord(w), (e) => unhomed(e.message) === 'this home was made by an earlier ch-local; run `npx @countinghouse\/ch-local install` again');
   // a migration cut short between writing modules.json and removing packs.json
   rec.writeModulesRecord(w, base({'ci-failure-triage': triage()}), {roleOf, release: RELEASE_V1});
   assert.strictEqual(rec.readModulesRecord(w).packs['ci-failure-triage'].modules['@countinghouse/ch-access-github'], '0.2.0');
@@ -117,7 +121,7 @@ test('an interrupted rollback is finished first', () => {
   const w = where();
   rec.writeModulesRecord(w, base({'ci-failure-triage': triage()}), {roleOf, release: RELEASE_V1});
   fs.writeFileSync(w.journal, '{}');
-  assert.throws(() => rec.readModulesRecord(w), /a rollback was interrupted; run `npx @countinghouse\/ch-local rollback` to finish it/);
+  assert.throws(() => rec.readModulesRecord(w), /a rollback was interrupted; run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local rollback` to finish it/);
 });
 
 // the medium review of L1a-1

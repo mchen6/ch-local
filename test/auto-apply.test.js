@@ -1,5 +1,9 @@
 'use strict';
 require('./tmp-dirs');
+// (the home named before an npx hint, COUNTINGHOUSE_HOME="<home>" npx ..., left out
+// of a comparison of the rest: lib/command-line.js pins it, test/command-line.test.js)
+const unhomed = (s) => String(s).replace(/COUNTINGHOUSE_HOME="[^"]+" /g, '');
+
 // lib/auto-apply.js, `npx @countinghouse\/ch-local upgrade --apply-auto` (docs/development/
 // auto-upgrade.md, "The child that applies it", "The 72-hour wait",
 // "Announcements"): it re-checks everything itself, then installs a newer
@@ -142,7 +146,7 @@ test('identity changes, a first pin, or additions block: announced, never instal
       const r = await asInstalled(installedPins || w.pinsDoc.pins, () => autoApply({io, now, fromNpm: w.fromNpm}), w.installed);
       assert.strictEqual(r.outcome, 'needs-upgrade');
       assert.match(r.line, why);
-      assert.match(r.line, /run npx @countinghouse\/ch-local upgrade/);
+      assert.match(r.line, /run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade/);
       assert.deepStrictEqual(io.execs, []);
     } finally {
       await w.close();
@@ -167,7 +171,7 @@ test('L4: a release held back for what it adds is announced once: the next check
     };
     const first = await check();
     assert.strictEqual(first.outcome, 'needs-upgrade');
-    assert.match(first.line, /run npx @countinghouse\/ch-local upgrade/);
+    assert.match(first.line, /run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade/);
     assert.deepStrictEqual(stamp(h).announced.map((e) => e.version), [TO]);
     const again = await check();
     assert.deepStrictEqual([again.outcome, again.line], ['announced', undefined], 'said once');
@@ -255,7 +259,7 @@ test('L4: a home whose record cannot be read is not upgraded automatically, and 
     const r = await run(h, w);
     assert.strictEqual(r.outcome, 'record-unreadable');
     // (no path named; recorded in history: the Reviewer's high on L4, 7)
-    assert.strictEqual(r.line, 'automatic upgrades are paused: this home\'s record can\'t be read: run `npx @countinghouse\/ch-local status`');
+    assert.strictEqual(unhomed(r.line), 'automatic upgrades are paused: this home\'s record can\'t be read: run `npx @countinghouse\/ch-local status`');
     assert.deepStrictEqual(w.reg.requests, []);
     const last = fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).pop();
     assert.deepStrictEqual([last.how, last.outcome, last.reason], ['auto', 'record-unreadable', 'RECORD_FORMAT']);
@@ -265,12 +269,12 @@ test('L4: a home whose record cannot be read is not upgraded automatically, and 
     fs.writeFileSync(path.join(e, 'packs.json'), '{}');
     const old = await run(e, w);
     assert.strictEqual(old.outcome, 'record-unreadable');
-    assert.strictEqual(old.line, 'automatic upgrades are paused: this home was made by an earlier ch-local: run `npx @countinghouse\/ch-local install` again to bring it to this one');
+    assert.strictEqual(unhomed(old.line), 'automatic upgrades are paused: this home was made by an earlier ch-local: run `npx @countinghouse\/ch-local install` again to bring it to this one');
     // a development launcher's home keeps its own advice: its pack and --from
     const dev = home();
     fs.unlinkSync(path.join(dev, 'modules.json'));
     fs.writeFileSync(path.join(dev, 'installed.json'), '{"pack": "ci-failure-triage"}');
-    assert.strictEqual((await run(dev, w)).line, 'automatic upgrades are paused: this home was made by an earlier development ch-local; run `npx @countinghouse\/ch-local install --pack ci-failure-triage --from <dir>` again');
+    assert.strictEqual(unhomed((await run(dev, w)).line), 'automatic upgrades are paused: this home was made by an earlier development ch-local; run `npx @countinghouse\/ch-local install --pack ci-failure-triage --from <dir>` again');
   } finally {
     await w.close();
   }
@@ -284,7 +288,7 @@ test('the review of #48: a 0.x minor is a major here, announced and never instal
     writeStampFile(h, {firstSeen: {'0.2.0': now - 200 * H}});
     const r = await run(h, w, {now, exec: npm('0.2.0')});
     assert.strictEqual(r.outcome, 'major');
-    assert.match(r.line, /0\.2\.0 may break what 0\.1\.0 does .*run npx @countinghouse\/ch-local upgrade/);
+    assert.match(r.line, /0\.2\.0 may break what 0\.1\.0 does .*run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade/);
     assert.deepStrictEqual(r.io.execs, []);
   } finally {
     await w.close();
@@ -299,7 +303,7 @@ test('the re-check of #48: a major is never installed here, nothing of it fetche
     writeStampFile(h, {firstSeen: {'1.0.0': now - 200 * H}});
     const r = await run(h, w, {now, exec: npm('1.0.0')});
     assert.strictEqual(r.outcome, 'major');
-    assert.match(r.line, /ch-local 1\.0\.0 is a major upgrade: run npx @countinghouse\/ch-local upgrade to install it/);
+    assert.match(r.line, /ch-local 1\.0\.0 is a major upgrade: run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade to install it/);
     assert.deepStrictEqual(r.io.execs, []);
     assert.ok(!w.reg.requests.some((u) => u.endsWith('.tgz')));
   } finally {
