@@ -130,3 +130,19 @@ test('a key or data already kept for the name is said before the yes', async () 
   await addModule({dir}, io, {where});
   assert.ok(io.out.includes(`and the data kept in ${path.join(where.moduleData, 'my-tool')}`), io.out);
 });
+
+test('the sandbox set to audit, or one the runtime can\'t enforce here: refused before anything is asked', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /Own modules run only with the sandbox enforced: run `.*settings set moduleSandbox enforce` first\./);
+  assert.deepStrictEqual(io.asked, []);
+  fs.rmSync(where.settings);
+  const win = Object.assign(ioWith(home, ['y']), {platform: 'win32'});
+  assert.strictEqual(await addModule({dir}, win, {where}), 2);
+  assert.match(win.err, /Own modules run only with the sandbox enforced, and the installed runtime can't enforce it on this computer\./);
+  assert.deepStrictEqual(win.asked, []);
+  assert.strictEqual(readOwnRecord(where), null);
+});
