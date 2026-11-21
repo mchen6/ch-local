@@ -105,7 +105,9 @@ test('set pack.<x> is refused, naming the enabled.<scenario> command to use', as
   const h = await installed();
   const r = await cli(h.home, 'settings', 'set', 'pack.ci-failure-triage', 'off');
   assert.notStrictEqual(r.code, 0);
-  assert.match(r.io.err, /pack\.ci-failure-triage is no longer a setting: run `ch-local settings set enabled\.@countinghouse\/ch-pack-ci-failure-triage off`/);
+  // (the home's launcher, which the install wrote: lib/command-line.js)
+  const set = require('../lib/command-line').chLocal(require('../lib/home').layout({COUNTINGHOUSE_HOME: h.home}), 'settings set enabled.@countinghouse/ch-pack-ci-failure-triage off');
+  assert.ok(r.io.err.includes(`pack.ci-failure-triage is no longer a setting: run \`${set}\``), r.io.err);
   assert.ok(!fs.existsSync(path.join(h.home, 'settings.json')));
 });
 

@@ -13,6 +13,12 @@ const {addPack, removePack} = require('../lib/packs-command');
 const {start} = require('../lib/start');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm} = require('./install-helpers');
+const {chLocal} = require('../lib/command-line');
+const {layout} = require('../lib/home');
+// a command as the home names it once an install wrote its launcher
+// (lib/command-line.js); cmd: the same, as a regular expression's source
+const said = (home, args) => chLocal(layout({COUNTINGHOUSE_HOME: home}), args);
+const cmd = (home, args) => said(home, args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // what a control request names: a load's or unload's name, a reload's names
 // (the module form, #413 section 7.3)
@@ -120,7 +126,7 @@ test('no pack has its credential: the runtime starts with no pack, and the clien
     await until(() => [/not loading ch-pack-ci-failure-triage/, /no module is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
     const told = notices(s).map(([, t]) => t);
     const why = told.find((t) => /not loading ch-pack-ci-failure-triage/.test(t));
-    assert.match(why, /it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`/);
+    assert.match(why, new RegExp(`it calls ch-access-github, which needs a credential: run \`${cmd(s.home, 'credentials add ch-access-github')}\``));
     assert.doesNotMatch(why, /\(above\)/, 'self-contained: the client never saw a line above');
     assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   } finally {
@@ -258,8 +264,8 @@ test('a pack whose modules are not in the module store is not loaded in place: s
   assert.deepStrictEqual(s.requests.filter((m) => m.type !== 'set' && m.type !== 'notice').map((m) => m.type + (m.what ? ` ${m.what}` : '')), ['reread held-back'], 'nothing loaded: the sessions are told why');
   const held = JSON.parse(fs.readFileSync(s.args()[s.args().indexOf('--heldBackFile') + 1], 'utf8')).modules;
   assert.ok(held.some((e) => e.name === '@countinghouse/ch-pack-other' && e.reason === 'missing'), JSON.stringify(held));
-  assert.match(s.history().find((h) => h.problem != null).problem, /its files are missing; run `ch-local install` again/);
-  assert.match(s.f.err, /not loading ch-pack-other: its files are missing; run `ch-local install` again/);
+  assert.match(s.history().find((h) => h.problem != null).problem, new RegExp(`its files are missing; run \`${cmd(s.home, 'install')}\` again`));
+  assert.match(s.f.err, new RegExp(`not loading ch-pack-other: its files are missing; run \`${cmd(s.home, 'install')}\` again`));
   s.end();
   await s.done;
 });
@@ -619,7 +625,7 @@ test('B3: a load and an unload from the settings are in the module form; the unl
 // record is marked only by --unreleased-pins, which needs CH_LOCAL_DEV=1),
 // and says so at every start; a released one never is, whatever its env.
 const withdrawnRelease = () => ({...require('../lib/allowlist').ALLOWLIST, packs: {}});
-const LINE = 'module ch-pack-ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it';
+const LINE = (home) => `module ch-pack-ci-failure-triage was withdrawn in this release and was not started; \`${said(home, 'remove-pack ci-failure-triage')}\` removes it`;
 // every file of the home a start must leave as it was: the record, and the pack's tree and data
 function packFiles(home) {
   const out = {};
@@ -649,9 +655,9 @@ test('a withdrawn pack is not started: told once (stderr and the client), its re
   try {
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false, JSON.stringify(s.args()));
-    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, LINE]], 'once, to the client');
-    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(LINE)).length, 1, s.f.err);
-    assert.ok(!/\/|\\\\/.test(LINE.replace(/`[^`]*`/g, '')), 'no path in the notice');
+    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, LINE(s.home)]], 'once, to the client');
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(LINE(s.home))).length, 1, s.f.err);
+    assert.ok(!/\/|\\\\/.test(LINE(s.home).replace(/`[^`]*`/g, '')), 'no path in the notice');
   } finally {
     s.end();
     await s.done;
@@ -664,7 +670,7 @@ test('a released install started with CH_LOCAL_DEV=1 is still refused its withdr
   try {
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false);
-    assert.ok(notices(s).some(([, t]) => t === LINE));
+    assert.ok(notices(s).some(([, t]) => t === LINE(s.home)));
   } finally {
     s.end();
     await s.done;
@@ -708,7 +714,7 @@ test('a running start stops serving a pack an upgrade withdraws: unloaded, and t
     assert.strictEqual(loadsPack(s), true);
     withdrawHeld(s.home, 'ci-failure-triage');
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-ci-failure-triage'));
-    const now = 'module ch-pack-ci-failure-triage was withdrawn in this release and is no longer served; `ch-local remove-pack ci-failure-triage` removes it';
+    const now = `module ch-pack-ci-failure-triage was withdrawn in this release and is no longer served; \`${said(s.home, 'remove-pack ci-failure-triage')}\` removes it`;
     await until(() => s.requests.some((m) => (m.type === 'unload' && m.notice === now) || (m.type === 'notice' && m.text === now)));
   } finally {
     s.end();
@@ -1023,7 +1029,7 @@ test('another release\'s record: a pack added is not loaded in place, and the he
 test('a pack whose module has no credential stored is told once, in start\'s words, through a later change', async () => {
   const s = await running({bound: null});
   try {
-    const line = 'not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`';
+    const line = `not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${said(s.home, 'credentials add ch-access-github')}\``;
     await until(() => notices(s).some(([, t]) => t === line));
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
@@ -1229,7 +1235,7 @@ test('a record older than this ch-local, while running: judged by this release, 
   const s = await running();
   try {
     editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
-    const line = `this home's record is not this ch-local's release; run \`ch-local install\` to bring the home to ${require('../lib/allowlist').ALLOWLIST.release.version}`;
+    const line = `this home's record is not this ch-local's release; run \`${said(s.home, 'install')}\` to bring the home to ${require('../lib/allowlist').ALLOWLIST.release.version}`;
     await until(() => notices(s).some(([, t]) => t === line));
     // not frozen: a pack added loads
     assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
@@ -1343,7 +1349,7 @@ test('a home rolled back under a running start: "ch-local in this home is now <v
     await settled(s);
     assert.strictEqual(notices(s).filter(([, t]) => t === line).length, 1);
     assert.ok(!s.requests.some((m) => m.type === 'unload'), JSON.stringify(s.requests.filter((m) => m.type === 'unload')));
-    assert.ok(!notices(s).some(([, t]) => /this release pins|run `ch-local install`/.test(t)));
+    assert.ok(!notices(s).some(([, t]) => new RegExp(`this release pins|run \`${cmd(s.home, 'install')}\``).test(t)));
   } finally {
     s.end();
     await s.done;
@@ -1809,7 +1815,7 @@ test('a key stored under COUNTINGHOUSE_GITHUB_TOKEN: the pack loads, the start s
   const s = await running({bound: null, beforeStart: (home) => require('../lib/credential-store').bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: STORED}, {held: require('./store-helpers').FIXTURE_HELD})});
   try {
     assert.ok(loadsPack(s), 'loaded with the key read under GITHUB_TOKEN');
-    const line = 'ch-access-github\'s key is read from its earlier name; `ch-local credentials add ch-access-github` stores it again under GITHUB_TOKEN';
+    const line = `ch-access-github's key is read from its earlier name; \`${said(s.home, 'credentials add ch-access-github')}\` stores it again under GITHUB_TOKEN`;
     assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(line)).length, 1, s.f.err);
     assert.deepStrictEqual([...require('../lib/credential-store').readStore(s.home).modules.get(ACCESS).keys()], ['COUNTINGHOUSE_GITHUB_TOKEN'], 'never rewritten');
   } finally {
