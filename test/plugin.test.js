@@ -308,3 +308,36 @@ test('launch.js\'s home check on Windows (its ACL check, with ACLs given): a pri
 test('the plugin carries lib/win-acl.js unchanged (launch.js checks a Windows home with it, never with the home\'s own code)', () => {
   assert.strictEqual(fs.readFileSync(path.join(PLUGIN, 'bin', 'win-acl.js'), 'utf8'), fs.readFileSync(path.join(ROOT, 'lib', 'win-acl.js'), 'utf8'));
 });
+
+// the reviewer on #126 (a): launch.js checks the folders above the home too
+test('launch.js runs nothing from a home under a folder another user could write in (POSIX)', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-above-')));
+  const h = path.join(parent, 'home');
+  fs.mkdirSync(path.join(h, 'bin'), {recursive: true, mode: 0o700});
+  fs.chmodSync(h, 0o700); fs.chmodSync(path.join(h, 'bin'), 0o700);
+  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), "process.stdout.write('RAN\\n');\n", {mode: 0o600});
+  fs.chmodSync(parent, 0o777);
+  const r = launchIn(h);
+  assert.strictEqual(r.status, 2, r.stderr);
+  assert.doesNotMatch(r.stdout, /RAN/);
+  assert.match(r.stderr, /is under .*, and group or others can write in it \(mode 777\); another user could move the home away and put theirs in its place/);
+  fs.chmodSync(parent, 0o1777);
+  assert.match(launchIn(h).stdout, /RAN/, 'a sticky folder above is fine');
+});
+
+test('launch.js and lib/home.js judge the folders above a home the same', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const {aboveProblem: fromLaunch} = require(LAUNCH);
+  const {aboveProblem: fromLib} = require('../lib/home');
+  for (const mode of [0o700, 0o755, 0o775, 0o777, 0o1777, 0o757]) {
+    const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-above-agree-')));
+    const h = path.join(parent, 'home');
+    fs.mkdirSync(h, {mode: 0o700});
+    fs.chmodSync(parent, mode);
+    const a = fromLaunch(h);
+    const b = fromLib(h);
+    assert.strictEqual(a == null, b == null, mode.toString(8));
+    if (a != null) assert.strictEqual(a.why, b.why, mode.toString(8));
+    fs.chmodSync(parent, 0o700);
+    fs.rmSync(parent, {recursive: true, force: true});
+  }
+});

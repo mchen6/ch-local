@@ -52,6 +52,39 @@ const OPEN = 'so another user could change what runs from it';
 // a path for a command to copy: quoted when plain, else the placeholder (no
 // control, bidi or shell characters reach the terminal or the paste)
 const shown = (p) => (/^[A-Za-z0-9_\/.~@%+=,: \\-]+$/.test(p) ? `"${p}"` : '"<its folder>"');
+// The folders above a home (POSIX, as lib/home.js aboveProblem says it; the reviewer on #126 (a)), by countinghouse
+// #520's rule for its sqlite store's: along the path as given and its real
+// path, each this user's or root's, writable by no other unless sticky (as
+// /tmp: no one else can rename what this user owns there), nor by a group
+// other than this user's own primary group (a user-private group, as a umask
+// of 0002 leaves a home's folders). Otherwise another user could move the
+// home away and put one of theirs in its place. Windows: the ancestors' DACLs
+// are not checked. -> {why, fix} | null
+function aboveProblem(home) {
+  const QUOTE = shown;
+  const given = path.resolve(home);
+  let real;
+  try { real = fs.realpathSync.native(given); } catch (e) { return {why: `it could not be read (${e.code || e.message})`, fix: null}; }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const gid = typeof process.getgid === 'function' ? process.getgid() : null;
+  for (const start of [given, real]) {
+    for (let at = path.dirname(start); ; at = path.dirname(at)) {
+      let st;
+      try { st = fs.statSync(at); } catch (e) { return {why: `it is under ${at}, which could not be checked (${e.code || e.message})`, fix: null}; }
+      if (uid != null && st.uid !== uid && st.uid !== 0) return {why: `it is under ${at}, which is not yours (nor root's); another user could move the home away and put theirs in its place`, fix: null};
+      const sticky = (st.mode & 0o1000) !== 0;
+      const others = (st.mode & 0o002) !== 0 && !sticky;
+      const group = (st.mode & 0o020) !== 0 && !sticky && st.gid !== gid;
+      if (others || group) {
+        const mine = uid != null && st.uid === uid;
+        return {why: `it is under ${at}, and group or others can write in it (mode ${(st.mode & 0o7777).toString(8)}); another user could move the home away and put theirs in its place`, fix: mine ? `run \`chmod go-w ${QUOTE(at)}\`` : null};
+      }
+      if (path.dirname(at) === at) break;
+    }
+  }
+  return null;
+}
+
 // home, launcher: as found by the home rule -> {problem} (the line, with the
 // fix) | {launcher} (the launcher's real path, the one checked and the one to
 // run: the medium on A-home-check, 3). fileAcls: a test's.
@@ -69,6 +102,10 @@ function homeProblem(home, launcher, {platform = process.platform, fileAcls = nu
     const euid = typeof process.geteuid === 'function' ? process.geteuid() : null;
     if (euid != null && st.uid !== euid) return {problem: `${real} is owned by uid ${st.uid}, not you, ${OPEN}; use a home only you own`};
     if ((st.mode & 0o022) !== 0) return {problem: `${real} is group- or world-writable (mode ${(st.mode & 0o777).toString(8).padStart(4, '0')}), ${OPEN}; run \`chmod ${directory ? '700' : '600'} ${shown(real)}\``};
+  }
+  if (platform !== 'win32') {
+    const above = aboveProblem(home);
+    if (above != null) return {problem: `${home}: ${above.why}, ${OPEN}${above.fix != null ? `; ${above.fix}` : ''}`};
   }
   if (platform === 'win32') {
     // (the three in one PowerShell run, which costs 1 to 10 s: the medium, 2)
@@ -123,4 +160,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = {whereIs, nodeOk, isFullPath, canExec, homeProblem};
+module.exports = {whereIs, nodeOk, isFullPath, canExec, homeProblem, aboveProblem};

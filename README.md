@@ -26,7 +26,16 @@ yours, or is group- or world-writable on Linux and macOS, or has a DACL that
 isn't private on Windows. `session`, `start` and the Claude Code plugin's
 launcher each refuse it with exit 2 and name the fix (the `chmod` or `icacls`
 line). What runs from a home is given every stored key, so its code must be
-yours alone.
+yours alone. The folders above the home are checked too, along its path and
+its real path. On Linux and macOS each must be yours or root's, and writable
+by no one else, except a sticky one such as `/tmp` or your own primary
+group's. Otherwise another user could move the home away and put theirs in
+its place. Your primary group is accepted because most Linux systems give each
+user a private group of their own, and a umask of `0002` leaves the folders in
+a home group-writable with no one else in that group. If your primary group
+is shared with other users, keep the home under folders that group can't
+write in. On Windows the folders above the home are not checked: keep it under
+your own profile.
 
 No entry sets or forwards a credential: a module's credential is stored
 with `ch-local credentials add <module>`, bound to the one address the

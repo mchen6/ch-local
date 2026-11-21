@@ -354,3 +354,34 @@ test('a shim that can\'t be run from where it is (a noexec mount: EACCES at acce
   assert.match(c.note, /the shared runtime's shim can't be run from .*shim \(EACCES; a folder mounted noexec\?\); this session runs its own runtime/);
   assert.strictEqual(choose(h).shim, path.join(h, 'shim', EXE), 'and with access, the shim');
 });
+
+// the reviewer on #126 (a): the folders above a home are checked too, by
+// countinghouse #520's rule for its sqlite store, along the path as given and
+// its real path: each this user's or root's, writable by no other unless
+// sticky, nor by a group other than this user's own primary group (a
+// user-private group, as a umask of 0002 leaves them). Otherwise another user
+// could move the home away and put one of theirs in its place.
+test('a home under a folder another user could write in is refused; a sticky one, or your own group\'s, is not', {skip: !POSIX && 'POSIX modes'}, async() => {
+  const {homeOpenProblem} = require('../lib/home');
+  const under = (mode) => {
+    const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-above-')));
+    roots.push(parent);
+    const h = path.join(parent, 'home');
+    fs.mkdirSync(h, {mode: 0o700});
+    fs.chmodSync(h, 0o700);
+    fs.chmodSync(parent, mode);
+    return {parent, h};
+  };
+  const open = under(0o777);
+  const p = homeOpenProblem(open.h);
+  assert.ok(p != null, 'refused');
+  assert.match(p.why, new RegExp(`it is under ${open.parent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, and group or others can write in it \\(mode 777\\); another user could move the home away and put theirs in its place`));
+  assert.strictEqual(p.fix, `run \`chmod go-w "${open.parent}"\``);
+  assert.strictEqual(homeOpenProblem(under(0o1777).h), null, 'sticky, as /tmp');
+  assert.strictEqual(homeOpenProblem(under(0o775).h), null, 'writable by this user\'s own primary group (umask 0002)');
+  // and the session refuses it, exit 2, nothing started
+  const r = await runIt(process.execPath, [path.join(ROOT, 'bin', 'ch-local.js'), 'session', '--home', open.h], envWith({}));
+  assert.strictEqual(r.code, 2, r.err);
+  assert.match(r.err, /group or others can write in it \(mode 777\); another user could move the home away/);
+  assert.match(r.err, /nothing was started/);
+});
