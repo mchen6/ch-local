@@ -412,9 +412,10 @@ included (as the acceptance run's security review showed). So:
   you change it back. [y/N]`.
   - `y` or `yes` turns them on, through `cliSet`, under the operator's
     ceiling.
-  - Anything else stores off, never asked again. With no terminal, the
-    install says: `automatic upgrades are off (no terminal to ask); ch-local
-    upgrade --auto on turns them on`, and leaves it unset.
+  - Any other answer stores off, never asked again. A refusal by the
+    operator's ceiling leaves it unset, so the next install asks again. With
+    no terminal, the install says: `automatic upgrades are off (no terminal
+    to ask); ch-local upgrade --auto on turns them on`, and leaves it unset.
 - A bare `install` and `add-pack` never ask.
 - `ch-local upgrade --auto on|off` stays as it is.
 

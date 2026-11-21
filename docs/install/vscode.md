@@ -18,8 +18,8 @@ format of `~/.copilot/mcp-config.json`. Merge it under `mcpServers`:
     }
 
 VS Code's Copilot reads `~/.copilot/mcp-config.json` (`$COPILOT_HOME/mcp-config.json`
-when that is set), with its servers under `mcpServers`, as the Copilot CLI
-does. The editor-managed files, `.vscode/mcp.json` and the profile's
+when that is set, where `ch-local add vscode` writes it too), with its servers
+under `mcpServers`, as the Copilot CLI does. The editor-managed files, `.vscode/mcp.json` and the profile's
 `mcp.json`, with their servers under `servers`, belong to VS Code's Local
 harness, which is deprecated for removal in February 2027, so they are not the
 target here. (Checked by hand against VS Code's MCP configuration reference

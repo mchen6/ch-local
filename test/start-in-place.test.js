@@ -1894,12 +1894,23 @@ test('an own module the runtime refuses: held back as refused with its code, its
     const a = placeOwn(s.home, 'my-tool');
     writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
     await until(() => ownAsks(s).length === 1);
-    s.ask({type: 'module-stopped', name: 'my-tool', code: 'MODULE_INVALID', when: 'restart'});
+    // (a stop at a restart is a stop like any other's)
+    s.ask({type: 'module-stopped', name: 'my-tool', code: 'MODULE_SUSPENDED', when: 'restart'});
+    await until(() => notices(s).some(([, t]) => t === 'my-tool stopped (MODULE_SUSPENDED); restart your client'));
+    await until(() => held().some((m) => m.name === 'my-tool'));
+    assert.deepStrictEqual(held().find((m) => m.name === 'my-tool'), {name: 'my-tool', reason: 'stopped'});
+    // (refused as it was started: this release's runtime refuses it)
+    const b = placeOwn(s.home, 'my-tool', {body: '// another copy\n'});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': b.entry}});
+    await until(() => ownAsks(s).filter((m) => m.type === 'load').length === 2);
+    s.ask({type: 'module-stopped', name: 'my-tool', code: 'MODULE_INVALID', when: 'start'});
     const said = `my-tool, your own module, is not loaded: this release's runtime refuses it (MODULE_INVALID); \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'status')}\` says why, \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'remove-module my-tool')}\` removes it`;
     await until(() => notices(s).some(([, t]) => t === said));
     await until(() => held().some((m) => m.name === 'my-tool'));
     assert.deepStrictEqual(held().find((m) => m.name === 'my-tool'), {name: 'my-tool', reason: 'refused', code: 'MODULE_INVALID'});
     assert.ok(s.history().some((h) => h.module === 'my-tool' && h.change === 'stopped' && h.notice === said));
+    const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    assert.deepStrictEqual(run.refused, {'my-tool': 'MODULE_INVALID'});
   } finally {
     s.end();
     await s.done;

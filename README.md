@@ -106,7 +106,7 @@ needs the other first). No pack in this release calls outside itself.
 Three facts you can check on your own machine, with your home as `<home>`:
 
 - **The packs' only remote host is `https://api.githubcopilot.com`**, GitHub's MCP server, reached by ch-access-github. `node <home>/bin/ch-local.js credentials list` shows each stored key's origin.
-- **The triage cache holds no log text**: one `fingerprints.json` per repository (`/data/<owner>__<name>/fingerprints.json` inside the pack), with run and job ids, commit SHAs, times and hashes (the failure's signature, the step's name and the error lines, each hashed). `find <home>/module_data -name fingerprints.json` lists them.
+- **The triage cache holds no log text**: one `fingerprints.json` per repository (`/data/<owner>__<name>/fingerprints.json` inside the pack), with run and job ids, commit SHAs, times, the algorithm that signed each entry, GitHub's conclusion word for a run with no job, and hashes (the failure's signature, the step's name and the error lines, each hashed). `find <home>/module_data -name fingerprints.json` lists them.
 - **Usage is recorded on this machine**, in `<home>/store/usage`. `node <home>/app/node_modules/countinghouse/bin/countinghouse-usage.js --usageDir <home>/store/usage` prints the report outside any conversation (`--since 7d`, `--groupBy tool`, `--json` or `--csv`).
 
 `<home>` is `$COUNTINGHOUSE_HOME` (an absolute path) or `~/.countinghouse`. Every
