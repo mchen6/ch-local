@@ -98,6 +98,13 @@ test('remove-module: the entry dropped, its copies gone, its data and key kept a
   assert.ok(!has(where, 'my-tool', a.tree) && has(where, '@me/other', b.tree));
   assert.ok(fs.existsSync(data), 'its data is kept');
   assert.match(io.out, new RegExp(`^Removed my-tool\\. Its data is kept in ${data.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.$`, 'm'));
+  // a key kept is named too (the store a map, read as one)
+  const c = place('my-keyed');
+  writeOwnRecord(where, {v: 1, modules: {...readOwnRecord(where).modules, 'my-keyed': c.entry}});
+  require('../lib/credential-store').bind(where.home, 'my-keyed', 'MY_TOKEN', {origin: 'https://api.mine.example', source: 'stored', value: `t${Date.now()}`}, {held: require('./store-helpers').FIXTURE_HELD});
+  const keyed = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: where.home}}), opts);
+  assert.strictEqual(await removeModule({name: 'my-keyed'}, keyed, {where}), 0, keyed.err);
+  assert.match(keyed.out, /^Removed my-keyed\. Its key is kept: `.*credentials remove my-keyed` removes it\.$/m);
   // by its short name too
   const io2 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: where.home}}), opts);
   assert.strictEqual(await removeModule({name: 'other'}, io2, {where}), 0, io2.err);

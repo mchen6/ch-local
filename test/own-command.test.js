@@ -25,7 +25,8 @@ function writeModule(dir, {name = 'my-tool', friendlyName = 'my-tool', calls = [
 function setup() {
   const base = fs.realpathSync.native(tmp('ch-owncmd-'));
   const home = path.join(base, 'home');
-  fs.mkdirSync(home, {recursive: true});
+  fs.mkdirSync(home, {recursive: true, mode: 0o700});
+  fs.chmodSync(home, 0o700);
   installedHome(home, ['ci-failure-triage']);
   const where = layout({COUNTINGHOUSE_HOME: home});
   return {base, home, where};
@@ -145,4 +146,13 @@ test('the sandbox set to audit, or one the runtime can\'t enforce here: refused 
   assert.match(win.err, /Own modules run only with the sandbox enforced, and the installed runtime can't enforce it on this computer\./);
   assert.deepStrictEqual(win.asked, []);
   assert.strictEqual(readOwnRecord(where), null);
+});
+
+test('a key already stored for the name is said before the yes, with where it goes (the store a map, read as one)', async () => {
+  const {base, home, where} = setup();
+  require('../lib/credential-store').bind(home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.mine.example', source: 'stored', value: `t${Date.now()}`}, {held: require('./store-helpers').FIXTURE_HELD});
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const io = ioWith(home, ['n']);
+  await addModule({dir}, io, {where});
+  assert.ok(io.out.includes('It will use the key already stored for my-tool (sent only to https://api.mine.example). Remove them first if this is a different module: `'), io.out);
 });
