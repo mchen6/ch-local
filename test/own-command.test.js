@@ -321,3 +321,12 @@ test('a name another\'s is once Windows trims its trailing dots: refused (#113 h
   assert.strictEqual(await addModule({dir}, io, {where}), 2);
   assert.match(io.err, /my-tool is already used here by pack module my-tool\./);
 });
+
+test('module text in a refusal is shown with nothing that moves the cursor (#113 high, trivia)', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'), {calls: ['ch-\u001b[2Knowhere/s.go']});
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.ok(!io.err.includes('\u001b'), JSON.stringify(io.err));
+  assert.match(io.err, /my-tool calls ch-\?\[2Knowhere\/s\.go, and nothing installed here answers it/);
+});

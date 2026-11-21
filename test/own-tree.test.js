@@ -66,6 +66,10 @@ test('refused: the path, then the walk (nothing read), then the package', () => 
   fs.rmSync(path.join(pkgLink, 'package.json'));
   fs.symlinkSync(secret, path.join(pkgLink, 'package.json'));
   cases.push([pkgLink, /holds a link \(package\.json\)/]);
+  // a link's name with an escape in it is said with ? (the reviewer's high on #113)
+  const odd = writeModule(path.join(work, 'odd'));
+  fs.symlinkSync(secret, path.join(odd, 'x\u001b[2Ky'));
+  cases.push([odd, /holds a link \(x\?\[2Ky\)/]);
   const twice = writeModule(path.join(work, 'twice'));
   fs.rmSync(path.join(twice, 'package.json'));
   fs.linkSync(secret, path.join(twice, 'package.json'));

@@ -118,3 +118,11 @@ test('the home\'s launcher runs on its own home unless COUNTINGHOUSE_HOME names 
   assert.strictEqual(spawnSync(process.execPath, [launcher], {env: {...env, COUNTINGHOUSE_HOME: '/elsewhere'}, encoding: 'utf8'}).stdout, '/elsewhere', 'set: the variable wins');
   assert.strictEqual(spawnSync(process.execPath, [launcher], {env: {...env, COUNTINGHOUSE_HOME: ''}, encoding: 'utf8'}).stdout, '/alt/home', 'empty: its own home');
 });
+
+// the reviewer's high on #113: the invisible characters a terminal shows as
+// nothing (fillers, variation selectors, tag characters) are unsafe too
+test('terminalText shows every unsafe character as ?, the invisible fillers and tag characters included', () => {
+  const {terminalText, folderArg} = require('../lib/command-line');
+  assert.strictEqual(terminalText('aㅤb͏c️d\u{e0041}e᠎fᅟg'), 'a?b?c?d?e?f?g');
+  assert.strictEqual(folderArg('/home/u/myㅤtool', 'linux'), '"<its folder>"');
+});
