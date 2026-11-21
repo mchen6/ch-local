@@ -465,7 +465,7 @@ test('--from with this platform\'s shim in the folder: placed by its pinned sha5
   // (status names it: the reviewer's high, F2)
   const st = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
   await require('../lib/packs-command').status({}, st);
-  assert.match(st.out, /^the shared runtime's shim: 0\.5\.0$/m);
+  assert.match(st.out, /^the shared runtime's shim, as recorded: 0\.5\.0$/m);
   // (again: the same shim, checked again, moves nothing)
   const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io2, withShim(r.allow, s)), 0, io2.err);
@@ -556,7 +556,12 @@ test('F1: an unreleased install\'s shim must carry a pre-release version; an npm
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
   const f = pinsFile(r, {pins: {...r.pins, [s.name]: s.pin}, runtimeLockfile: r.lockfile});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 1);
-  assert.match(io.err, /@0\.5\.0: an unreleased install's shim carries a pre-release version \(dogfood's -dev\.<hash>\), never a release's/);
+  assert.match(io.err, /@0\.5\.0: an unreleased install's shim carries dogfood's version \(<x\.y\.z>-dev\.<12 hex>\), never one a release could use/);
+  // (a pre-release a release could publish is refused too: the medium, 1)
+  const rc = folderShim(r, {version: '0.5.0-rc.1'});
+  const io3 = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pinsFile(r, {pins: {...r.pins, [rc.name]: rc.pin}, runtimeLockfile: r.lockfile})}, io3, allow), 1);
+  assert.match(io3.err, /@0\.5\.0-rc\.1: an unreleased install's shim carries dogfood's version/);
   assert.match(io.err, /nothing was installed/);
   // (an npm install over an unreleased home whose record names the same
   // version: fetched and verified, never kept as current)
@@ -1369,7 +1374,7 @@ test('install with no --pack and no network: one line naming install --from, and
     assert.strictEqual(await install({}, io2, {...ours(r), self: ALLOWLIST.self}), 1);
     const lines = io2.err.trim().split('\n').filter((l) => /npm registry|--from/.test(l));
     assert.strictEqual(lines.length, 1, io2.err);
-    assert.match(lines[0], new RegExp(`could not fetch this release from the npm registry \\(the packument of countinghouse could not be fetched \\(ENOTFOUND\\)\\); with no network, run \`${cmd(h, 'install --from <release directory>')}\` with this release's tarballs; nothing was installed`));
+    assert.match(lines[0], new RegExp(`could not fetch this release from the npm registry \\(the packument of countinghouse could not be fetched \\(ENOTFOUND\\)\\); with no network, run \`${cmd(h, 'install --from <release directory>')}\` with this release's tarballs \\(its packs', its runtime's and this machine's shim's\\); nothing was installed`));
   } finally {
     nr.fetchRelease = real;
   }
