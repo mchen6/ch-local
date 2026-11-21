@@ -45,6 +45,17 @@ test('the skill carries the plan\'s sentence verbatim', () => {
   assert.ok(skill.includes('when a CI run failed, call `ci_failure_triage` first and show its receipt line verbatim'));
 });
 
+// The final pass on the packs (A13): a missing credential unloads the tool
+// too, and the command it gives is the launcher's, never the bare ch-local
+// (installing puts none on the PATH, as the setup skill says).
+test('the triage skill: every reason the tool is missing, and the launcher\'s command form', () => {
+  const skill = fs.readFileSync(path.join(PLUGIN, 'skills', 'ci-failure-triage', 'SKILL.md'), 'utf8');
+  assert.ok(!/the launcher is not installed/.test(skill));
+  assert.match(skill, /a module without its credential does not load/);
+  assert.ok(!/(?<![/\\.])\bch-local (?:credentials|install|add-module|status)\b/.test(skill.replace(/ch-local\.js/g, '')), 'no bare ch-local command');
+  assert.ok(skill.includes('`node "<home>/bin/ch-local.js" credentials add ch-access-github`'));
+});
+
 // A-firstrun d2: the setup skill, in the words business checked
 // (ch-business tech/plans/2026-11-20-a-firstrun-ownuse-plan.md, Fixed text 3
 // and 4, amended after the claim check). A change to any word is a change to
