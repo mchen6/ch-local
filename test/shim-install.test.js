@@ -374,3 +374,28 @@ test('prepareShim: "current" only for the record\'s own package at this pin; pla
     await w.reg.close();
   }
 });
+
+// the medium's round 4: the real placeShim on a 'current' shim swapped for a
+// link, and on one whose versions.json can't be read
+test('placeShim "current": a link in place is refused; an unreadable versions.json is said as such', {skip: process.platform === 'win32'}, async() => {
+  const w = await world();
+  const home = tmp('ch-shim-');
+  try {
+    const placed = await put(home, w);
+    const name = w.data.shim.packages[`${w.platform}-${w.arch}`];
+    const {placeShim} = require('../lib/shim-install');
+    const target = path.join(home, 'shim', 'ch-shim');
+    const copy = path.join(home, 'copy');
+    fs.copyFileSync(target, copy);
+    fs.rmSync(target);
+    fs.symlinkSync(copy, target);
+    assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_STALE');
+    fs.rmSync(target);
+    fs.copyFileSync(copy, target);
+    fs.chmodSync(path.join(home, 'shim', 'versions.json'), 0o666);
+    assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_UNREADABLE');
+  } finally {
+    await w.reg.close();
+  }
+});
+

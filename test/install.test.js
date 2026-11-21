@@ -1012,7 +1012,7 @@ test('a shim that cannot be placed clears the record\'s shim; a busy one says ho
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
     assert.strictEqual(record(h).shim, undefined, 'the record matches: no shim');
-    assert.match(io.err, /the shared runtime's new shim could not replace the old one: a session still uses it\. Close that session \(or the client running it\), then run `.*install` to place it; until then each session runs its own runtime/);
+    assert.match(io.err, /the shared runtime's shim could not be replaced: a session still uses the old one\. Close that session \(or the client running it\), then run `.*install` to place the new one; until then each session runs its own runtime/);
     si.placeShim = realPlace;
     si.prepareShim = async () => ({status: 'failed', name: 'x', version: '0.5.0', error: Object.assign(new Error('the registry could not be reached'), {code: 'NPM_FETCH'})});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)}), n.allow, n.fromNpm), 0);
@@ -1064,6 +1064,31 @@ test('a shim prepared with no error object, or changed since it was judged curre
     assert.strictEqual(record(h).shim, undefined);
   } finally {
     si.prepareShim = realPrepare;
+    si.placeShim = realPlace;
+    await n.reg.close();
+  }
+});
+
+// the medium's round 4: a real throw inside the shim step after a binary was
+// placed: set aside, the record naming none, the install not failed
+test('a throw inside the shim step after placing: the binary set aside, the record names none', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  const si = require('../lib/shim-install');
+  const realPlace = si.placeShim;
+  const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+  try {
+    si.placeShim = (homeDir) => {
+      fs.mkdirSync(path.join(homeDir, 'shim'), {recursive: true});
+      fs.writeFileSync(path.join(homeDir, 'shim', exe), 'placed');
+      return null;   // what follows reads r.version: a TypeError
+    };
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    assert.strictEqual(record(h).shim, undefined);
+    assert.strictEqual(fs.existsSync(path.join(h, 'shim', exe)), false, 'set aside');
+    assert.match(io.err, /the shared runtime's shim could not be installed \(.+\); each session runs its own runtime/);
+  } finally {
     si.placeShim = realPlace;
     await n.reg.close();
   }
