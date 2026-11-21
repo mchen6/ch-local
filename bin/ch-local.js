@@ -10,6 +10,7 @@
 //   ch-local start --stdio [options]              what a client runs: the runtime with the installed packs
 //   ch-local add-pack <name> --from <dir>         another pack beside the installed ones
 //   ch-local remove-pack <name>                   a pack, and the parts no other pack calls
+//   ch-local add-module <dir>                     your own module, asked in your own terminal
 //   ch-local status                               the installed packs, their tools and missing credentials
 //   ch-local rollback [--yes]                     back to the release the last install replaced
 //
@@ -23,6 +24,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local install --pack <name> --from <directory of tarballs>
        ch-local add-pack <name> --from <directory of tarballs>
        ch-local remove-pack <name>
+       ch-local add-module <directory of your own module>
        ch-local status
        ch-local rollback [--yes]
        ch-local add <cursor|vscode|codex>
@@ -108,6 +110,10 @@ async function main(argv, io) {
     if (command === 'remove-pack') {
       if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
       return await require('../lib/packs-command').removePack({pack: rest[0]}, io);
+    }
+    if (command === 'add-module') {
+      if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
+      return await require('../lib/own-command').addModule({dir: rest[0]}, io);
     }
     if (command === 'rollback') {
       const a = parse(rest, {flags: ['--yes']});
@@ -262,6 +268,8 @@ function realIo() {
     terminal: Boolean(process.stdin.isTTY && process.stderr.isTTY),
     // (a terminal on standard input alone: credentials add refuses it)
     stdinIsTTY: Boolean(process.stdin.isTTY),
+    // (add-module's lines are seen: standard output a terminal too)
+    stdoutTTY: Boolean(process.stdout.isTTY),
     readHidden: (prompt) => require('../lib/hidden-input').readHidden(prompt),
     // standard input, read whole up to max bytes (credentials add --to: a
     // key piped in); more than max is cut there, and the caller refuses it

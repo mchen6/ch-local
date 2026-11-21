@@ -97,3 +97,22 @@ test('a yes answered on stdin reaches the command: uninstall over a pipe removes
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// B-own-add: add-module is the user's own act at a terminal; over a pipe it
+// is refused before anything is read or asked, a "y" on stdin included.
+test('add-module over a pipe is refused, naming the command; without a folder, usage', () => {
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-own-')));
+  try {
+    const home = path.join(base, 'home');
+    fs.mkdirSync(home);
+    const r = spawnSync(process.execPath, [BIN, 'add-module', path.join(base, 'mine')], {encoding: 'utf8', input: 'y\n', env: {...process.env, COUNTINGHOUSE_HOME: home}});
+    assert.strictEqual(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /add-module asks you, in your own terminal: run `.*add-module ".+mine"` there\./);
+    assert.ok(!fs.existsSync(path.join(home, 'own.json')));
+    const u = run(['add-module'], {COUNTINGHOUSE_HOME: home});
+    assert.strictEqual(u.status, 2);
+    assert.match(u.stderr, /ch-local add-module <directory of your own module>/);
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
+  }
+});

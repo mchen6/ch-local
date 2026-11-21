@@ -30,7 +30,7 @@ function setup() {
   const where = layout({COUNTINGHOUSE_HOME: home});
   return {base, home, where};
 }
-const ioWith = (home, answers, interactive = true) => Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}, answers}), {interactive});
+const ioWith = (home, answers, interactive = true) => Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}, answers}), {interactive, stdoutTTY: interactive});
 const GH = 'https://api.githubcopilot.com';
 
 test('asked at a terminal only: elsewhere refused, naming the command', async () => {
@@ -39,6 +39,16 @@ test('asked at a terminal only: elsewhere refused, naming the command', async ()
   const io = ioWith(home, [], false);
   assert.strictEqual(await addModule({dir}, io, {where}), 2);
   assert.match(io.err, /add-module asks you, in your own terminal: run `.*add-module ".+mine"` there\./);
+  assert.strictEqual(readOwnRecord(where), null);
+});
+
+test('a terminal on standard input whose output is not one: refused, nothing asked (the lines must be seen)', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const io = Object.assign(ioWith(home, ['y']), {stdoutTTY: false});
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /add-module asks you, in your own terminal: run `.*add-module ".+mine"` there\./);
+  assert.deepStrictEqual(io.asked, []);
   assert.strictEqual(readOwnRecord(where), null);
 });
 
