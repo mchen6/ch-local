@@ -61,7 +61,12 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
   const installed = JSON.parse(JSON.stringify({packs: doc.packs, modules: doc.modules}));
   if (edit != null) edit(doc);
   // (plugin: the release's Claude Code plugin version, in its manifest)
-  const selfBytes = packageTgz({name: SELF, version}, {'lib/release-pins.json': JSON.stringify(doc),
+  // (as ch-local's real tarball is: it bundles its @sigstore libraries
+  // under node_modules/, package.json bundleDependencies; the final pass's
+  // ch-local part, A1: an upgrade's read of it refused that, and no test had
+  // a tarball carrying one)
+  const selfBytes = packageTgz({name: SELF, version, bundleDependencies: ['@sigstore/verify']}, {'lib/release-pins.json': JSON.stringify(doc),
+    'node_modules/@sigstore/verify/package.json': JSON.stringify({name: '@sigstore/verify', version: '3.0.0'}),
     ...(plugin != null ? {'clients/claude-code/.claude-plugin/plugin.json': JSON.stringify({name: 'ch-packs', version: plugin})} : {})});
   reg.publish(SELF, version, selfBytes, {latest: true});
   attest(SELF, version, selfBytes, Object.assign({}, signedAs || doc.self, {tag: `v${version}`}));
