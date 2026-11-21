@@ -66,10 +66,13 @@ test('refused: the path, then the walk (nothing read), then the package', () => 
   fs.rmSync(path.join(pkgLink, 'package.json'));
   fs.symlinkSync(secret, path.join(pkgLink, 'package.json'));
   cases.push([pkgLink, /holds a link \(package\.json\)/]);
-  // a link's name with an escape in it is said with ? (the reviewer's high on #113)
-  const odd = writeModule(path.join(work, 'odd'));
-  fs.symlinkSync(secret, path.join(odd, 'x\u001b[2Ky'));
-  cases.push([odd, /holds a link \(x\?\[2Ky\)/]);
+  // a link's name with an escape in it is said with ? (the reviewer's high on
+  // #113; Windows allows no control character in a name, so not there)
+  if (process.platform !== 'win32') {
+    const odd = writeModule(path.join(work, 'odd'));
+    fs.symlinkSync(secret, path.join(odd, 'x\u001b[2Ky'));
+    cases.push([odd, /holds a link \(x\?\[2Ky\)/]);
+  }
   const twice = writeModule(path.join(work, 'twice'));
   fs.rmSync(path.join(twice, 'package.json'));
   fs.linkSync(secret, path.join(twice, 'package.json'));
@@ -231,3 +234,32 @@ test('a repair whose unlock fails keeps the old copy\'s marker', {skip: process.
     assert.ok(fs.existsSync(tree.markerOf(where, 'my-tool', h)), 'the marker stays');
   } finally { fs.chmodSync(file, 0o444); }
 });
+
+// the reviewer on #113 at 10220b9: fchmod on a handle opened to read is
+// refused on Windows (EPERM), so the read-only lock never worked there. The
+// Windows branch, taken by its platform argument, pinned on every OS: a
+// file made read-only and back; a link refused (where this OS can make one)
+for (const platform of ['win32', 'posix']) {
+  test(`chmodNoFollow (${platform}): a file read-only and back; a link refused, its target unchanged`, () => {
+    const {base} = setup();
+    const file = path.join(base, 'f.txt');
+    fs.writeFileSync(file, 'x');
+    if (platform === 'posix' && process.platform === 'win32') return;   // (the POSIX branch needs O_NOFOLLOW)
+    // (as Windows answers fchmod on a handle opened to read: the Windows
+    // branch must never need it)
+    const realFchmod = fs.fchmodSync;
+    if (platform === 'win32') fs.fchmodSync = () => { throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), {code: 'EPERM'}); };
+    try {
+      tree.chmodNoFollow(file, 0o444, platform);
+      assert.strictEqual(fs.statSync(file).mode & 0o222, 0);
+      tree.chmodNoFollow(file, 0o644, platform);
+      assert.notStrictEqual(fs.statSync(file).mode & 0o200, 0);
+    } finally { fs.fchmodSync = realFchmod; }
+    const link = path.join(base, 'l');
+    try { fs.symlinkSync(file, link); } catch (e) { return; }   // (Windows without the symlink privilege)
+    fs.chmodSync(file, 0o644);
+    assert.throws(() => tree.chmodNoFollow(link, 0o444, platform), (e) => e.code === 'ELOOP' || e.code === 'EMLINK');
+    assert.notStrictEqual(fs.statSync(file).mode & 0o200, 0, 'the target unchanged');
+  });
+}
+
