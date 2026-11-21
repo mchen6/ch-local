@@ -99,7 +99,7 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
   assert.ok(!/dev-server|countinghouse-dev|section 8/.test(skill));
   // (no credential handed through the conversation: no export of one, no value)
   assert.ok(!/\bexport [A-Z_]+=|GITHUB_TOKEN=|ghp_|github_pat_/.test(skill));
-  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), 'a1cd455de0ec0958f100fc82d67bde003757d33a2b2ba9113ba58fa5394f0ee2', 'the checked text, byte for byte');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '4d63d88ed10d9cba8b6643bc7958fa7f2e0adbad5b52cc92d020fec36129b050', 'the checked text, byte for byte');
 });
 
 test('launch.js without an installed launcher exits non-zero with one line naming the install command', () => {

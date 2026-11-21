@@ -117,7 +117,9 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       // add-module asks only at a terminal whose output is seen: a run
       // with no terminal is refused and adds nothing; on a pseudo-terminal
       // (test/pty-answer.py) the question is shown and answered y.
-      const own = path.join(work, 'own-smoke');
+      // (by its real path: on macOS os.tmpdir() is under /var, a link to
+      // /private/var, and add-module refuses a folder named through a link)
+      const own = path.join(fs.realpathSync.native(work), 'own-smoke');
       fs.cpSync(path.join(ROOT, 'test', 'fixtures', 'smoke', 'own-smoke'), own, {recursive: true});
       const launcher = path.join(home, 'bin', 'ch-local.js');
       const noTerminal = spawnSync(process.execPath, [launcher, 'add-module', own], {env: plain, encoding: 'utf8', timeout: 60000});

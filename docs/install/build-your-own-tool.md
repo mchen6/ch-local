@@ -75,6 +75,9 @@ What a module needs to be added:
 - Its name and device name are its own: not a pack's, a part's or another
   module's, and not in the `@countinghouse/` scope.
 - The sandbox is enforced (the default).
+- Its folder is named by its real path, not through a link. On macOS `/tmp`
+  and `/var` are links (to `/private/tmp` and `/private/var`): keep the
+  folder under your home folder, or give its real path (`/private/tmp/…`).
 
 What is added is the copy you confirmed, by the hash of its files. If the
 folder changes afterwards, nothing changes in countinghouse until you run
