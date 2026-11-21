@@ -27,11 +27,15 @@ test('the marketplace lists ch-packs from a relative source that exists', () => 
   assert.strictEqual(json(path.join(PLUGIN, '.claude-plugin', 'plugin.json')).name, 'ch-packs');
 });
 
-test('the plugin\'s .mcp.json runs launch.js with node and sets no environment', () => {
+// the plugin's entry runs `session`, as every entry clients add does: the
+// shared runtime through the installed shim when it can be used, else the
+// session's own (B's #120; the reviewer, 2026-11-21). launch.js passes the
+// arguments through; test/session.test.js checks both make the same choice.
+test('the plugin\'s .mcp.json runs launch.js session with node and sets no environment', () => {
   const entry = json(path.join(PLUGIN, '.mcp.json')).mcpServers['countinghouse'];
   assert.deepStrictEqual(entry, {
     command: 'node',
-    args: ['${CLAUDE_PLUGIN_ROOT}/bin/launch.js', 'start', '--stdio']
+    args: ['${CLAUDE_PLUGIN_ROOT}/bin/launch.js', 'session']
   });
 });
 
