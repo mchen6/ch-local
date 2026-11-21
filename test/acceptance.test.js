@@ -148,28 +148,32 @@ test('addOwn on Windows stands the yes in with the installed add-module, answere
   }
 });
 
-test('removeTree removes a work directory whose home holds read-only copies, never follows a link out of it, and never throws', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+// (on every OS, so acceptance's no-skip guard holds: a read-only file is
+// the read-only attribute on Windows, which a plain rm refuses there too, and
+// the link is a junction, which needs no privilege)
+test('removeTree removes a work directory whose home holds read-only copies, never follows a link out of it, and never throws', () => {
   const base = fs.realpathSync.native(tmp('ch-acc-rm-'));
   const outside = path.join(base, 'outside');
+  const kept = path.join(outside, 'kept');
   try {
     fs.mkdirSync(outside);
-    fs.writeFileSync(path.join(outside, 'kept'), 'x');
-    fs.chmodSync(outside, 0o555);
+    fs.writeFileSync(kept, 'x');
+    fs.chmodSync(kept, 0o444);
     const work = path.join(base, 'work');
     const own = path.join(work, 'home', 'own');
     fs.mkdirSync(path.join(own, 'a'), {recursive: true});
     fs.writeFileSync(path.join(own, 'a', 'f.js'), 'x');
-    fs.symlinkSync(outside, path.join(own, 'link'));
+    fs.symlinkSync(outside, path.join(own, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
     fs.chmodSync(path.join(own, 'a', 'f.js'), 0o444);
     fs.chmodSync(path.join(own, 'a'), 0o555);
     fs.chmodSync(own, 0o555);
     assert.strictEqual(acceptance.removeTree(work), null);
     assert.ok(!fs.existsSync(work));
-    assert.strictEqual(fs.statSync(outside).mode & 0o777, 0o555, 'the link\'s target untouched');
-    assert.ok(fs.existsSync(path.join(outside, 'kept')));
+    assert.ok(fs.existsSync(kept), 'the link\'s target kept');
+    assert.strictEqual(fs.statSync(kept).mode & 0o200, 0, 'and still read-only: nothing made writable through the link');
     assert.strictEqual(acceptance.removeTree(path.join(base, 'gone')), null, 'nothing there: nothing to do');
   } finally {
-    try { fs.chmodSync(outside, 0o755); } catch (e) { /* not made */ }
+    try { fs.chmodSync(kept, 0o644); } catch (e) { /* not made */ }
     fs.rmSync(base, {recursive: true, force: true});
   }
 });
