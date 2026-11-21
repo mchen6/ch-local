@@ -128,3 +128,7 @@ On Windows, clear their read-only attribute instead:
 ```bat
 attrib -r "%USERPROFILE%\.countinghouse\own\*" /s /d
 ```
+
+(These are the default home's paths. With `COUNTINGHOUSE_HOME` set, use its
+`own` folder instead: `chmod -R u+w "$COUNTINGHOUSE_HOME/own"`, or
+`attrib -r "%COUNTINGHOUSE_HOME%\own\*" /s /d`.)
