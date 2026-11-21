@@ -154,7 +154,7 @@ test('a module turned off is said with the enabled.* command that turns it on', 
   const {moduleSeams} = require('../lib/module-seams');
   const record = {packs: {p: {modules: {[SCENARIO]: '1.0.0'}}}, modules: {[SCENARIO]: {version: '1.0.0', role: 'scenario'}}};
   const seams = moduleSeams({settings: {version: 1, values: {[`enabled.${SCENARIO}`]: false}}, ceiling: {state: 'none'}, record});
-  assert.strictEqual(seams.off(SCENARIO), `it is turned off (\`ch-local settings set enabled.${SCENARIO} on\`)`);
+  assert.strictEqual(seams.off(SCENARIO), `it is turned off (\`npx @countinghouse\/ch-local settings set enabled.${SCENARIO} on\`)`);
 });
 
 // the medium on L3, 6: a write that fails after a leftover's removal line

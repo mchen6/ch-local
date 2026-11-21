@@ -287,7 +287,7 @@ test('migration: packs.json, its trees and held packs become modules.json and th
   assert.deepStrictEqual(rec.packs.other.modules, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});
   // held after a rollback: not carried over, named (the Reviewer's one rule)
   assert.strictEqual(rec.held, undefined);
-  assert.match(io.out, new RegExp(`not carried over: old; add it again with \`${cmd(h, 'add-pack old')}\` once a release lists it`));
+  assert.match(io.out, new RegExp(`not carried over: old; add it again with \`${cmd(h, 'install --pack old')}\` once a release lists it`));
   assert.strictEqual(fs.existsSync(path.join(h, 'packs.json')), false);
   // the earlier ch-local's packs/ kept whole beside the home, never collected
   assert.strictEqual(fs.existsSync(path.join(h, 'packs')), false);
@@ -392,7 +392,7 @@ test('no --from: a release lower than the installed ch-local is refused, nothing
     fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: {'@countinghouse/ch-local': '0.9.0', countinghouse: '8.0.0'}}, packs: {}}));
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 1);
-    assert.match(io.err, /0\.2\.0 is lower than the installed 0\.9\.0: ch-local rollback is the way back/);
+    assert.match(io.err, /0\.2\.0 is lower than the installed 0\.9\.0: npx @countinghouse\/ch-local rollback is the way back/);
     assert.deepStrictEqual(io.fetches, []);
   } finally {
     await n.reg.close();
@@ -672,7 +672,7 @@ test('a record that cannot be read is set aside and named; the install goes on, 
   const aside = fs.readdirSync(h).filter((n) => n.startsWith('modules.json.unreadable-'));
   assert.strictEqual(aside.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(h, aside[0]), 'utf8'), '{"v": 2', 'kept as it was');
-  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`${cmd(h, 'add-pack <pack>')}\``));
+  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`${cmd(h, 'install --pack <pack>')}\``));
   assert.deepStrictEqual(Object.keys(record(h).packs), ['other']);
   assert.ok(fs.existsSync(path.join(h, 'previous', 'keep')), 'the rollback target kept');
 });
@@ -761,7 +761,7 @@ test('a migration carries over only the packs these pins list: a held one and an
   assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
   assert.strictEqual(record(h).held, undefined);
   // this release lists it: add-pack brings it back
-  assert.match(io.out, new RegExp(`not carried over: other; add it again with \`${cmd(h, 'add-pack other')}\`\n`));
+  assert.match(io.out, new RegExp(`not carried over: other; add it again with \`${cmd(h, 'install --pack other')}\`\n`));
 });
 
 // the medium review of #83's fixes
@@ -862,7 +862,7 @@ test('under development pins a pack the pins do not pin is not carried over, wit
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
   assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
   assert.match(io.out, /not carried over: other; these pins do not pin all of its modules/);
-  assert.match(io.out, new RegExp(`not carried over: kept; add it again with \`${cmd(h, 'add-pack kept')}\` once a release lists it`));
+  assert.match(io.out, new RegExp(`not carried over: kept; add it again with \`${cmd(h, 'install --pack kept')}\` once a release lists it`));
   assert.strictEqual((io.out.match(/not carried over: /g) || []).length, 2, 'each once');
 });
 
@@ -1126,7 +1126,7 @@ test('install with no --pack: nothing installed is refused with the --pack line'
   const r = release(); const h = home();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await install({from: r.from}, io, r.allow), 2);
-  assert.match(io.err, /nothing is installed here, so there is nothing to reinstall: run `ch-local install --pack <name>`/);
+  assert.match(io.err, /nothing is installed here, so there is nothing to reinstall: run `npx @countinghouse\/ch-local install --pack <name>`/);
   assert.deepStrictEqual(fs.readdirSync(h), [], 'nothing written');
 });
 

@@ -69,10 +69,10 @@ test('a home an earlier ch-local made (packs.json) is read as such: the readers 
   const home = tmp('ch-home-');
   fs.writeFileSync(path.join(home, 'packs.json'), JSON.stringify({runtime: {versions: {}}, packs: {}}));
   const where = layout({COUNTINGHOUSE_HOME: home});
-  assert.throws(() => installedPacks(where), {message: 'this home was made by an earlier ch-local; run `ch-local install` again'});
+  assert.throws(() => installedPacks(where), {message: 'this home was made by an earlier ch-local; run `npx @countinghouse\/ch-local install` again'});
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
   assert.strictEqual(await require('../lib/packs-command').status({}, io), 1);
-  assert.match(io.err, /made by an earlier ch-local; run `ch-local install` again/);
+  assert.match(io.err, /made by an earlier ch-local; run `npx @countinghouse\/ch-local install` again/);
   const r = release();
   const inst = fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, inst, r.allow), 0, inst.err);

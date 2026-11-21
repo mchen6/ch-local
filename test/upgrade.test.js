@@ -24,7 +24,7 @@ const registry = (latest) => async (url) => {
   return {ok: true, status: 200, json: async () => ({name, 'dist-tags': {latest: latest[name]}})};
 };
 
-// `ch-local upgrade` from npm (docs/development/auto-upgrade.md): the newer
+// `npx @countinghouse\/ch-local upgrade` from npm (docs/development/auto-upgrade.md): the newer
 // ch-local, checked by its provenance, its pins read from its verified bytes,
 // shown with what it adds, and on a yes installed through install. A fake
 // registry and the test root reach it only as its test-only argument.
@@ -189,7 +189,7 @@ test('the automatic-upgrade setting is off by default, stored on request, and as
     assert.strictEqual(await upgrade({auto: 'on'}, on), 0);
     assert.match(on.asked[0], /Loosen autoUpgrade from off to on\?/);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: true}});
-    assert.match(on.out, /installs automatically 72 hours after it is published, and runs new code with your keys; ch-local rollback undoes one/);
+    assert.match(on.out, /installs automatically 72 hours after it is published, and runs new code with your keys; npx @countinghouse\/ch-local rollback undoes one/);
     assert.strictEqual(await upgrade({auto: 'off'}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}})), 0);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: false}});
     assert.deepStrictEqual(on.fetches, []);
@@ -222,7 +222,7 @@ test('offerAuto: at a terminal, asked once (cliSet\'s own question); a yes turns
     const quiet = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
     quiet.interactive = false;
     await offerAuto(quiet);
-    assert.match(quiet.out, /automatic upgrades are off \(no terminal to ask\); ch-local upgrade --auto on turns them on/);
+    assert.match(quiet.out, /automatic upgrades are off \(no terminal to ask\); npx @countinghouse\/ch-local upgrade --auto on turns them on/);
     assert.deepStrictEqual(quiet.asked, []);
     assert.strictEqual(readSettings(where).values.autoUpgrade, undefined);
     const yes = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes']});
@@ -270,7 +270,7 @@ test('the yes is a person\'s at a terminal: a piped answer installs nothing; a n
   try {
     const piped = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
     assert.strictEqual(await upgrade({}, piped, w.fromNpm), 2);
-    assert.match(piped.err, /installing 0\.2\.0 is confirmed at a terminal: run ch-local upgrade in one; nothing changed/);
+    assert.match(piped.err, /installing 0\.2\.0 is confirmed at a terminal: run npx @countinghouse\/ch-local upgrade in one; nothing changed/);
     assert.deepStrictEqual([piped.asked.length, piped.execs.length], [0, 0]);
     const no = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, no, w.fromNpm), 0);
@@ -319,7 +319,7 @@ test('a release that withdraws the home\'s one pack upgrades: the runtime instal
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     // said before the question, and after the install
-    assert.match(io.out, /it withdraws:\n  ci-failure-triage \(it stays installed and is not started after the upgrade; `ch-local remove-pack ci-failure-triage` removes it\)/);
+    assert.match(io.out, /it withdraws:\n  ci-failure-triage \(it stays installed and is not started after the upgrade; `npx @countinghouse\/ch-local remove-pack ci-failure-triage` removes it\)/);
     assert.match(io.out, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.2\\.0; ${cmd(s.home, 'rollback')} undoes it`));
     assert.match(io.out, new RegExp(`pack ci-failure-triage was withdrawn in this release and was not started; \`${cmd(s.home, 'remove-pack ci-failure-triage')}\` removes it`));
     assert.doesNotMatch(io.out, /was dropped/);

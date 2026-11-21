@@ -364,7 +364,7 @@ test('uninstall: a store that can\'t be removed leaves the record and says so, e
   let r;
   try { r = await uninstall(h); } finally { fs.rmSync = rmSync; }
   assert.strictEqual(r.code, 1);
-  assert.match(r.u.err, /the stored credentials could not be removed \(EBUSY\)\. Close what has .* open and run `ch-local uninstall` again; meanwhile revoke the credentials you gave it: .*OTHER_TOKEN/);
+  assert.match(r.u.err, /the stored credentials could not be removed \(EBUSY\)\. Close what has .* open and run `npx @countinghouse\/ch-local uninstall` again; meanwhile revoke the credentials you gave it: .*OTHER_TOKEN/);
   assert.ok(!/nothing was removed/.test(r.u.out), 'said once');
   assert.ok(fs.existsSync(path.join(h, 'modules.json')), 'the record left, so it can be run again');
   assert.strictEqual(valueOf(h, OTHER, 'OTHER_TOKEN'), value);
