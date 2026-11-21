@@ -198,7 +198,7 @@ async function main(argv, io) {
         if (command === 'uninstall') {
           const {FILES} = require('../lib/clients');
           const files = Object.values(FILES).map((f) => f(io.homedir(), io.env));
-          io.stderr.write(`ch-local: the client entries \`add\` writes are not removed from a home that can't be trusted: remove the "countinghouse" server from each of these by hand, if it is there: ${files.join(', ')}; or move the home aside, install again, and uninstall then\n`);
+          io.stderr.write(`ch-local: the client entries \`add\` writes are not removed from a home that can't be trusted: remove the "countinghouse" server from each of these by hand, if it is there: ${files.join(', ')}; or move the home aside, install again, and uninstall then. (add writes no file for Claude Code or Claude Desktop: the Claude Code plugin is removed with Claude Code's own /plugin)\n`);
         }
         return 2;
       }

@@ -247,6 +247,10 @@ test('uninstall on a home another user could change names the client entries to 
     for (const f of [path.join(user, '.cursor', 'mcp.json'), path.join(user, '.copilot', 'mcp-config.json'), path.join(user, '.codex', 'config.toml')]) assert.ok(r.stderr.includes(f), `${f}: ${r.stderr}`);
     assert.match(r.stderr, /remove the "countinghouse" server from each of these by hand, if it is there/);
     assert.match(r.stderr, /or move the home aside, install again, and uninstall then/);
+    // (every file add writes is listed: it writes none for Claude Code or
+    // Claude Desktop, whose plugin Claude Code itself removes)
+    assert.deepStrictEqual(Object.keys(require('../lib/clients').FILES).sort(), ['codex', 'cursor', 'vscode']);
+    assert.match(r.stderr, /the Claude Code plugin is removed with Claude Code's own \/plugin/);
   } finally {
     fs.chmodSync(home, 0o700);
     fs.rmSync(user, {recursive: true, force: true});
