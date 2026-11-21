@@ -86,7 +86,9 @@ pub fn unreachable(id: &[u8], reason: &str) -> Vec<u8> {
     error(
         id,
         -32603,
-        &format!("countinghouse could not reach its shared runtime ({reason}); try again; if it keeps failing, countinghouse's status in your own terminal says why"),
+        &format!(
+            "countinghouse could not reach its shared runtime ({reason}); try again; if it keeps failing, countinghouse's status in your own terminal says why"
+        ),
     )
 }
 
