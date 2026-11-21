@@ -43,7 +43,9 @@ const io = (h, {terminal = true, typed = null, stdin = null, answers = [], gh = 
   const f = fakeIo({env: {COUNTINGHOUSE_HOME: h}, homedir: '/nowhere', answers});
   Object.assign(f, {terminal, pid: 4242, hostname: 'box-1'});
   f.exec = async (cmd) => (cmd === 'gh' && gh != null ? {status: 0, stdout: `${gh}\n`, stderr: ''} : {status: 1, stdout: '', stderr: 'not logged in'});
-  if (typed !== null) f.readHidden = async (prompt) => { f.prompts = [...(f.prompts || []), prompt]; if (typed instanceof Error) throw typed; return typed; };
+  // (typed: one answer for every hidden prompt, or a list answered in turn)
+  const hidden = Array.isArray(typed) ? [...typed] : null;
+  if (typed !== null) f.readHidden = async (prompt) => { f.prompts = [...(f.prompts || []), prompt]; if (typed instanceof Error) throw typed; return hidden != null ? (hidden.length > 0 ? hidden.shift() : '') : typed; };
   if (stdin !== null) f.readStdin = async () => stdin;
   return f;
 };
@@ -100,27 +102,45 @@ test('remove: a key stored under COUNTINGHOUSE_GITHUB_TOKEN, read as GITHUB_TOKE
   assert.deepStrictEqual([last.change, last.variable], ['removed', VAR]);
 });
 
+// (its y/N is read hidden, as the key is: a key pasted there is never
+// echoed -- the reviewer's targeted high, 11-21)
+const GH_Q = /^Use your gh login's token for ch-access-github\? \[y\/N\] $/;
 test('the gh offer: only at a terminal, with a gh login, for exactly https://api.githubcopilot.com; yes stores no value, no asks for one', POSIX, async () => {
   const h = home();
-  const yes = io(h, {typed: made(), gh: made(), answers: ['y']});
+  const yes = io(h, {typed: ['y'], gh: made()});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, yes), 0, yes.err);
-  assert.match(yes.asked[0], /^Use your gh login's token for ch-access-github\? \[y\/N\] $/);
+  assert.deepStrictEqual(yes.asked, [], 'never asked with echo');
+  assert.strictEqual(yes.prompts.length, 1);
+  assert.match(yes.prompts[0], GH_Q);
   assert.deepStrictEqual(bound(h), {origin: ORIGIN, source: 'gh'});
-  assert.strictEqual(yes.prompts, undefined, 'no value asked');
   assert.match(yes.err, /stored for ch-access-github: your gh login's token, asked at each start/);
-  const no = io(h, {typed: made(), gh: made(), answers: ['']});
+  const key = made();
+  const no = io(h, {typed: ['', key], gh: made()});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, no), 0, no.err);
   assert.strictEqual(bound(h).source, 'stored', 'the default is No: a value is asked');
+  assert.strictEqual(bound(h).value, key);
   // no login: no question
   const none = io(home(), {typed: made()});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, none), 0, none.err);
-  assert.deepStrictEqual(none.asked, []);
+  assert.ok(!none.prompts.some((p) => GH_Q.test(p)), 'no offer');
   // a look-alike, another port, or http: no offer
   for (const url of ['https://api.githubcopilot.com.example/mcp/', 'https://api.githubcopilot.com:8443/mcp/', 'https://api-githubcopilot.com/mcp/']) {
-    const f = io(home({url}), {typed: made(), gh: made(), answers: ['y']});
+    const f = io(home({url}), {typed: made(), gh: made()});
     assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0, f.err);
-    assert.deepStrictEqual(f.asked, [], url);
+    assert.ok(!f.prompts.some((p) => GH_Q.test(p)), url);
   }
+});
+
+test('a key pasted at the gh offer\'s y/N is never shown: taken as no, said so, and the key is asked for hidden', POSIX, async () => {
+  const h = home();
+  const pasted = made();
+  const key = made();
+  const f = io(h, {typed: [pasted, key], gh: made()});
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0, f.err);
+  assert.deepStrictEqual(f.asked, [], 'never asked with echo');
+  assert.ok(!(f.out + f.err).includes(pasted), 'the pasted text is never shown');
+  assert.match(f.err + f.out, /that was not y or n, so your gh login's token is not used/);
+  assert.strictEqual(bound(h).value, key);
 });
 
 test('standard input: --to is required and must be the declared origin; never re-binds another destination; a rotated key is fine; one line of at most 4096 bytes', POSIX, async () => {
