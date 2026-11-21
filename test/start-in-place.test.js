@@ -1888,3 +1888,24 @@ test('an own.json that can\'t be read while start runs: its modules unloaded, sa
   s.end();
   await s.done;
 });
+
+// the reviewer's high on #113, 5: own A calls own B; B's code changes. A is
+// never left calling B's old code: A is unloaded before B's swap and loaded
+// after it, callers out first, callees in first.
+test('an own module whose own callee\'s code changed is unloaded around the callee\'s swap, and loaded after it', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  const b = placeOwn(s.home, 'my-b');
+  const a = placeOwn(s.home, 'my-a', {calls: ['my-b/toolService.run']});
+  writeOwnRecord(b.where, {v: 1, modules: {'my-b': b.entry, 'my-a': a.entry}});
+  await until(() => ownAsks(s, 'my-a').length === 1 && ownAsks(s, 'my-b').length === 1);
+  const b2 = placeOwn(s.home, 'my-b', {body: '// edited\n'});
+  const at = s.requests.length;
+  writeOwnRecord(b.where, {v: 1, modules: {'my-b': b2.entry, 'my-a': a.entry}});
+  await until(() => s.requests.slice(at).filter((m) => ['load', 'unload', 'reload'].includes(m.type)).length === 4);
+  const seq = s.requests.slice(at).filter((m) => ['load', 'unload', 'reload'].includes(m.type)).map((m) => `${m.type} ${named(m)}`);
+  assert.deepStrictEqual(seq, ['unload my-a', 'unload my-b', 'load my-b', 'load my-a']);
+  const loadA = s.requests.slice(at).find((m) => m.type === 'load' && m.name === 'my-a');
+  assert.strictEqual(loadA.dirs['my-b'], ownTree.copyDir(b.where, 'my-b', b2.tree), 'A loads with B\'s new code');
+  s.end();
+  await s.done;
+});
