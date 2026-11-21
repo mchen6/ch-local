@@ -117,6 +117,29 @@ test('--keep-data keeps the data and removes the program, the identity secret an
   }
 });
 
+// B-own-add (the own-modules design §2.6): the user's own modules' copies
+// and their record are program, the user's folders elsewhere untouched;
+// an own module's data is data.
+test('uninstall: the own modules\' copies and own.json go with the program; their data is kept with --keep-data', async () => {
+  const s = setup();
+  try {
+    const tree = 'a'.repeat(64);
+    fs.mkdirSync(path.join(s.home, 'own', 'my-tool', tree), {recursive: true});
+    fs.writeFileSync(path.join(s.home, 'own', 'my-tool', tree, 'api.json'), '{}');
+    fs.writeFileSync(path.join(s.home, 'own.json'), '{}');
+    fs.mkdirSync(path.join(s.home, 'module_data', 'my-tool'), {recursive: true});
+    fs.writeFileSync(path.join(s.home, 'module_data', 'my-tool', 'x'), 'x');
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({keepData: true}, u), 0, u.err);
+    assert.ok(!/own(\.json)?  \(not ch-local's: left\)/.test(u.out), u.out);
+    const has = (f) => fs.existsSync(path.join(s.home, f));
+    for (const gone of ['own', 'own.json']) assert.ok(!has(gone), gone);
+    assert.ok(has('module_data/my-tool/x'));
+  } finally {
+    s.done();
+  }
+});
+
 // From /code-review medium on #2.
 test('uninstall removes only what is ch-local\'s: a home set to a shared directory keeps everything else', async () => {
   const s = setup();
