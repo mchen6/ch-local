@@ -155,3 +155,14 @@ test('start makes <home>/own private (0700), whatever the umask', {skip: process
   try { assert.strictEqual(await start({passThrough: []}, f), 0, f.err); } finally { process.umask(old); }
   assert.strictEqual(fs.statSync(where.own).mode & 0o777, 0o700);
 });
+
+// the /code-review medium on B-own-settings, 8: an existing <home>/own made
+// before is made private too
+test('start makes an existing <home>/own private (0700)', {skip: process.platform === 'win32' && 'the home\'s ACL applies'}, async () => {
+  const {home, where} = ownHome();
+  fs.mkdirSync(where.own, {mode: 0o755});
+  fs.chmodSync(where.own, 0o755);
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.strictEqual(fs.statSync(where.own).mode & 0o777, 0o700);
+});

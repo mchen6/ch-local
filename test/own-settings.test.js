@@ -142,5 +142,37 @@ test('stored settings are said before the yes (8a), and kept by remove-module, w
   assert.match(rm.out, /^Removed my-tool\. Its settings stay stored: `.*settings reset my-tool` resets them\.$/m);
   const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h.home}, answers: ['n']}), {interactive: true, stdoutTTY: true});
   await addModule({dir: src}, io, {where: h.where});
-  assert.match(io.out, /^It will use no stored key and the settings stored for my-tool \(units\)\. Remove them first if this is a different module: `.*credentials remove my-tool`, and `.*settings reset my-tool`\.$/m);
+  assert.match(io.out, /^It will use the settings stored for my-tool \(units\)\. Remove it first if this is a different module: `.*settings reset my-tool`\.$/m);
+  // the advised command works on a removed module's name (the medium, 1)
+  const reset = await cli(h.home, ['settings', 'reset', 'my-tool']);
+  assert.strictEqual(reset.code, 0, reset.io.err);
+  assert.strictEqual(fileValues(h.home)['module.my-tool.units'], undefined);
+});
+
+// the /code-review medium on B-own-settings
+test('a declared title or description is shown with nothing that moves the cursor (2)', async () => {
+  const h = await installed();
+  h.own({units: {type: 'enum', values: ['a', 'b'], default: 'a', title: 'Units\u001b[2K', description: 'x‮y'}});
+  const r = await cli(h.home, ['settings', 'modules', 'my-tool']);
+  assert.ok(!/[\u001b‮]/.test(r.io.out), JSON.stringify(r.io.out));
+  assert.match(r.io.out, /\(Units\?\[2K; default a/);
+});
+
+test('an own module\'s exact name beside a pack\'s same short name is ambiguous, never taken silently (4)', async () => {
+  const h = await installed();
+  h.own(MINE, 'ch-step-redact');
+  const r = await cli(h.home, ['settings', 'modules', 'ch-step-redact']);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.io.err, /more than one installed module is named ch-step-redact: .*@countinghouse\/ch-step-redact.*; give the full name/);
+});
+
+test('an own.json that cannot be read is said, not taken for no own module (5)', async () => {
+  const h = await installed();
+  h.own();
+  fs.writeFileSync(h.where.ownRecord, '{');
+  const set = await cli(h.home, ['settings', 'set', 'my-tool.units', 'imperial']);
+  assert.strictEqual(set.code, 2);
+  assert.match(set.io.err, /your own modules could not be read \(.*own\.json/);
+  const list = await cli(h.home, ['settings', 'modules']);
+  assert.match(list.io.out + list.io.err, /your own modules could not be read/);
 });

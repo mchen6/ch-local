@@ -134,7 +134,7 @@ test('a key or data already kept for the name is said before the yes', async () 
   const dir = writeModule(path.join(base, 'work', 'mine'));
   const io = ioWith(home, ['n']);
   await addModule({dir}, io, {where});
-  assert.ok(io.out.includes(`and the data kept in ${path.join(where.moduleData, 'my-tool')}`), io.out);
+  assert.ok(io.out.includes(`It will use the data kept in ${path.join(where.moduleData, 'my-tool')}. Remove it first if this is a different module: delete ${path.join(where.moduleData, 'my-tool')}.`), io.out);
 });
 
 test('the sandbox set to audit, or one the runtime can\'t enforce here: refused before anything is asked', async () => {
@@ -161,7 +161,7 @@ test('a key already stored for the name is said before the yes, with where it go
   const dir = writeModule(path.join(base, 'work', 'mine'));
   const io = ioWith(home, ['n']);
   await addModule({dir}, io, {where});
-  assert.ok(io.out.includes('It will use the key already stored for my-tool (sent only to https://api.mine.example). Remove them first if this is a different module: `'), io.out);
+  assert.ok(io.out.includes('It will use the key already stored for my-tool (sent only to https://api.mine.example). Remove it first if this is a different module: `'), io.out);
 });
 
 test('the permissions it declares are said, and that the enforced sandbox grants none; a control character in them is shown as ?', async () => {
