@@ -10,7 +10,10 @@ require('./tmp-dirs');
 // origin is on GitHub). It then speaks MCP over stdio: initialize, tools/list
 // (exactly, sorted: countinghouse_overview (countinghouse #490),
 // countinghouse_settings (listed under --settingsFile since countinghouse
-// #183), countinghouse_usage_report and the tool), and one tools/call,
+// #183), countinghouse_usage_report, the three for building your own module
+// (countinghouse_load_module, countinghouse_validate_module and
+// countinghouse_validate_plan, in the same profile since countinghouse #499)
+// and the tool), and one tools/call,
 // which answers through the step, with its own setting defaultRepo and a
 // receipt of zero server calls.
 //
