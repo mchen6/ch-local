@@ -1002,21 +1002,24 @@ test('a shim that cannot be placed clears the record\'s shim; a busy one says ho
   const r = release(); const h = home();
   const n = await npmRelease(r, {shim: true});
   const si = require('../lib/shim-install');
-  const real = si.installShim;
+  const realPlace = si.placeShim;
+  const realPrepare = si.prepareShim;
   try {
     const io0 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, io0, n.allow, n.fromNpm), 0, io0.err);
     assert.ok(record(h).shim != null, 'placed first');
-    si.installShim = async () => { throw Object.assign(new Error('C:\\h\\shim\\ch-shim.previous could not be removed (EBUSY)'), {code: 'SHIM_BUSY'}); };
+    si.placeShim = () => { throw Object.assign(new Error('C:\\h\\shim\\ch-shim.previous could not be removed (EBUSY)'), {code: 'SHIM_BUSY'}); };
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
     assert.strictEqual(record(h).shim, undefined, 'the record matches: no shim');
     assert.match(io.err, /the shared runtime's new shim could not replace the old one: a session still uses it\. Close that session \(or the client running it\), then run `.*install` to place it; until then each session runs its own runtime/);
-    si.installShim = async () => { throw Object.assign(new Error('the registry could not be reached'), {code: 'NPM_FETCH'}); };
+    si.placeShim = realPlace;
+    si.prepareShim = async () => ({status: 'failed', name: 'x', version: '0.5.0', error: Object.assign(new Error('the registry could not be reached'), {code: 'NPM_FETCH'})});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)}), n.allow, n.fromNpm), 0);
     assert.strictEqual(record(h).shim, undefined);
   } finally {
-    si.installShim = real;
+    si.placeShim = realPlace;
+    si.prepareShim = realPrepare;
     await n.reg.close();
   }
 });

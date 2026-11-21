@@ -348,3 +348,29 @@ test('Windows, real lib/win-acl.js (retried once if a PowerShell call times out)
   }
 });
 
+// the medium on B-shim-allow's round 2: a shim already in place is taken
+// only when the record names this package at this pin, and only from this
+// user's own private folder, checked again under the lock
+test('prepareShim: "current" only for the record\'s own package at this pin; placeShim checks the folder before taking it', async() => {
+  const w = await world();
+  const home = tmp('ch-shim-');
+  try {
+    const opts = {home, data: w.data, io, platform: w.platform, arch: w.arch, ...w.fromNpm};
+    const placed = await put(home, w);
+    const name = w.data.shim.packages[`${w.platform}-${w.arch}`];
+    const {prepareShim, placeShim} = require('../lib/shim-install');
+    assert.strictEqual((await prepareShim(Object.assign({record: {shim: {package: name, version: placed.version}}}, opts))).status, 'current');
+    assert.strictEqual((await prepareShim(Object.assign({record: {shim: {package: '@countinghouse/ch-shim-other', version: placed.version}}}, opts))).status, 'ready', 'another package at the same version: fetched and verified');
+    assert.strictEqual((await prepareShim(Object.assign({record: null}, opts))).status, 'ready');
+    if (process.platform !== 'win32') {
+      // the folder swapped for a link: refused under the lock, never taken
+      const real = path.join(home, 'shim');
+      const elsewhere = path.join(home, 'elsewhere');
+      fs.renameSync(real, elsewhere);
+      fs.symlinkSync(elsewhere, real);
+      assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_DIR');
+    }
+  } finally {
+    await w.reg.close();
+  }
+});
