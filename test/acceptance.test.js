@@ -120,9 +120,13 @@ test('addOwn on Windows stands the yes in with the installed add-module, answere
   try {
     const own = acceptance.writeOwnModule(path.join(base, 'work', 'own'));
     const home = path.join(base, 'home');
-    const installed = path.join(home, 'app', 'node_modules', '@countinghouse');
-    fs.mkdirSync(installed, {recursive: true, mode: 0o700});
+    // (an installed home: add-module refuses one with nothing installed)
+    fs.mkdirSync(home, {recursive: true, mode: 0o700});
     fs.chmodSync(home, 0o700);
+    require('./install-helpers').installedHome(home, ['ci-failure-triage']);
+    const installed = path.join(home, 'app', 'node_modules', '@countinghouse');
+    fs.mkdirSync(installed, {recursive: true});
+    fs.rmSync(path.join(installed, 'ch-local'), {recursive: true, force: true});
     fs.symlinkSync(path.join(__dirname, '..'), path.join(installed, 'ch-local'), process.platform === 'win32' ? 'junction' : 'dir');
     const env = {COUNTINGHOUSE_HOME: home};
     const added = await acceptance.addOwn({home, node: process.execPath, launcher: null, dir: own.dir, env, platform: 'win32'});
@@ -135,8 +139,29 @@ test('addOwn on Windows stands the yes in with the installed add-module, answere
     assert.strictEqual(require('../lib/own-tree').copyIntact(where, own.name, rec.tree), true);
     assert.deepStrictEqual([rec.version, rec.friendlyName, rec.from, rec.calls], ['1.0.0', own.name, own.dir, []]);
   } finally {
-    fs.rmSync(base, {recursive: true, force: true});
+    acceptance.removeTree(base);
   }
+});
+
+test('removeTree removes a tree whose parts are read-only, and never follows a link out of it', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const base = fs.realpathSync.native(tmp('ch-acc-rm-'));
+  const outside = path.join(base, 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'kept'), 'x');
+  fs.chmodSync(outside, 0o555);
+  const tree = path.join(base, 'tree');
+  fs.mkdirSync(path.join(tree, 'own', 'a'), {recursive: true});
+  fs.writeFileSync(path.join(tree, 'own', 'a', 'f.js'), 'x');
+  fs.symlinkSync(outside, path.join(tree, 'own', 'link'));
+  fs.chmodSync(path.join(tree, 'own', 'a', 'f.js'), 0o444);
+  fs.chmodSync(path.join(tree, 'own', 'a'), 0o555);
+  fs.chmodSync(path.join(tree, 'own'), 0o555);
+  acceptance.removeTree(tree);
+  assert.ok(!fs.existsSync(tree));
+  assert.strictEqual(fs.statSync(outside).mode & 0o777, 0o555, 'the link\'s target untouched');
+  assert.ok(fs.existsSync(path.join(outside, 'kept')));
+  fs.chmodSync(outside, 0o755);
+  fs.rmSync(base, {recursive: true, force: true});
 });
 
 test('filesContaining finds a needle in any file below a directory, and nothing in an absent one', () => {

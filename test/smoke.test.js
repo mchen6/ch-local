@@ -32,6 +32,8 @@ const ROOT = path.join(__dirname, '..');
 const RUNTIME = process.env.CH_SMOKE_RUNTIME_TGZ;
 // (the I/O and the MCP session over stdio, shared with the upgrade path's test)
 const {realIo, session, releaseFor, installWith} = require('./upgrade-helpers');
+// (the own-module stage leaves read-only copies in the home: ch-local#113)
+const {removeTree} = require('../scripts/acceptance');
 
 test('the smoke test: a no-remote pack installed with --unreleased-pins, started through ch-local, answers over MCP with a receipt',
   {timeout: 900000, skip: RUNTIME == null && 'CH_SMOKE_RUNTIME_TGZ is not set (CI\'s smoke job sets it to a countinghouse tarball)'}, async () => {
@@ -164,6 +166,6 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       if (child != null) {
         if (grouped) { try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { /* gone */ } } else child.kill('SIGKILL');
       }
-      fs.rmSync(work, {recursive: true, force: true});
+      removeTree(work);
     }
   });

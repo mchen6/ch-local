@@ -319,6 +319,22 @@ async function addOwn({home, node, launcher, dir, env, platform = process.platfo
   }
 }
 
+// A directory removed whole, its read-only parts too: the copies of the
+// user's own modules are kept read-only in the home (ch-local#113), so a
+// plain rm fails on them. Each entry made writable first, never through a
+// link (a link is removed, not followed).
+function removeTree(dir) {
+  const walk = (p) => {
+    let st;
+    try { st = fs.lstatSync(p); } catch (e) { return; }
+    if (st.isSymbolicLink()) return;
+    try { fs.chmodSync(p, (st.mode & 0o777) | (st.isDirectory() ? 0o700 : 0o600)); } catch (e) { /* removed below, or said by rm */ }
+    if (st.isDirectory()) for (const e of fs.readdirSync(p)) walk(path.join(p, e));
+  };
+  walk(dir);
+  fs.rmSync(dir, {recursive: true, force: true});
+}
+
 async function main(argv, io = {stdout: process.stdout, stderr: process.stderr}) {
   const say = (s) => io.stdout.write(s + '\n');
   // generated per run, never a real one; redacted from every check's detail
@@ -370,7 +386,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       fs.writeFileSync(reportFile, reportText(report, [token, ownToken], [stderr, offStderr, ...ownLogs]));
       say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'})`);
     } finally {
-      fs.rmSync(work, {recursive: true, force: true});
+      removeTree(work);
     }
   })());
   const untrap = trapSignals(() => finish('interrupted by a signal'));
@@ -546,4 +562,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`acceptance: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, reportText, trapSignals, startStandIn, recordedAnswer, filesContaining, launcherEnv, waitForText, stopTree, endTree, writeOwnModule, addOwn, RECEIPT};
+module.exports = {main, reportText, trapSignals, startStandIn, recordedAnswer, filesContaining, launcherEnv, waitForText, stopTree, endTree, writeOwnModule, addOwn, removeTree, RECEIPT};
