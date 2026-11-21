@@ -23,7 +23,7 @@ const shipped = () => JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib
 // carries before it is packed.
 // signedAs: the identity ch-local's certificate names (the installed self, by
 // default the document's)
-async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = null, signedAs = null, at = new Date(Date.now() - 100 * 3600e3)} = {}) {
+async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = null, signedAs = null, at = new Date(Date.now() - 100 * 3600e3), plugin = null} = {}) {
   const reg = await fakeRegistry();
   const root = testRoot();
   const doc = shipped();
@@ -56,7 +56,9 @@ async function npmWorld(r, {version = r.pins[SELF].version, edit = null, lie = n
   // test's edit (so only what a test changes is new: asInstalled)
   const installed = JSON.parse(JSON.stringify({packs: doc.packs, modules: doc.modules}));
   if (edit != null) edit(doc);
-  const selfBytes = packageTgz({name: SELF, version}, {'lib/release-pins.json': JSON.stringify(doc)});
+  // (plugin: the release's Claude Code plugin version, in its manifest)
+  const selfBytes = packageTgz({name: SELF, version}, {'lib/release-pins.json': JSON.stringify(doc),
+    ...(plugin != null ? {'clients/claude-code/.claude-plugin/plugin.json': JSON.stringify({name: 'ch-packs', version: plugin})} : {})});
   reg.publish(SELF, version, selfBytes, {latest: true});
   attest(SELF, version, selfBytes, Object.assign({}, signedAs || doc.self, {tag: `v${version}`}));
   return {reg, pinsDoc: doc, installed, selfIntegrity: sri(selfBytes),

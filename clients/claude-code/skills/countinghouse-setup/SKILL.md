@@ -54,6 +54,10 @@ Call `countinghouse_overview` and answer from it alone, in at most ten lines: wh
 
 Answer only from what this release has: a composite scenario is a module whose tool calls other modules' tools through `ctx.call`; https://github.com/mchen6/countinghouse/blob/master/docs/module-development.md and https://github.com/mchen6/countinghouse/blob/master/docs/composite-tools.md describe how to write one. Leave out metering and billing, even where composite-tools.md describes them. Do not promise anything these docs do not describe.
 
+## 8. "Is there an update?"
+
+With the user's yes, run `node "<home>/bin/ch-local.js" upgrade --check`. It only checks; it installs nothing. Tell the user what it says: the newer version, what it adds or changes, and anything it calls a major change. Never run `upgrade` yourself: an upgrade runs new code with the user's keys, so the user installs it in their own terminal, with the line the check gives. If the check says the countinghouse plugin moves with it, give the user the Claude Code steps it names, for after the upgrade.
+
 ## Never say
 
 That countinghouse is faster, saves tokens or money, works with any npm library, or works through a proxy; that the sandbox is a security boundary; that modules cannot reach the network; that a module learns nothing about other files; anything about tenancy, billing or metering. Show a tool's receipt line as it prints it.

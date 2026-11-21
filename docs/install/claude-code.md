@@ -141,6 +141,24 @@ then `claude mcp remove --scope user countinghouse` and add the new line.
 The plugin runs `node` from the `PATH` Claude Code sees, which must be Node
 22.16 or later; below that it stops with one line saying so.
 
+## Updates
+
+`ch-local upgrade --check` says whether a newer release is out and what it
+changes, and installs nothing. It ends with the line that installs it, which
+you run in your own terminal: an upgrade runs new code with your keys, so an
+agent never runs it for you. `ch-local upgrade` shows the same and asks before
+installing.
+
+When the countinghouse plugin in Claude Code changes with a release, both say
+so, with Claude Code's own steps for after the upgrade:
+
+```bash
+claude plugin marketplace update ch-packs
+claude plugin update ch-packs@ch-packs
+```
+
+then restart Claude Code.
+
 ## Remove
 
     claude plugin uninstall ch-packs@ch-packs

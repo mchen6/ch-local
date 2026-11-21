@@ -660,3 +660,107 @@ test('releaseSelection: start\'s running rule; withdrawn is every pack the recor
   // none: the runtime only
   assert.deepStrictEqual(releaseSelection(rec, {packs: {}}, running).target, {runtimeOnly: true});
 });
+
+// A-own-skill's easy upgrades (the reviewer's approval, 11-20): `upgrade
+// --check` is upgrade's own find and lines up to its question, then the
+// install line for the user's own terminal; nothing asked or installed, no
+// terminal needed, nothing in history; its result in upgrade-available.json
+const availableOf = (home) => JSON.parse(fs.readFileSync(path.join(home, 'upgrade-available.json'), 'utf8'));
+test('upgrade --check: what upgrade shows, then the install line for the user\'s own terminal; nothing asked, installed or recorded, no terminal needed; its result written', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release());
+  try {
+    // (no terminal: fakeIo is not interactive)
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, fetch: realFetch});
+    const before = fs.readFileSync(path.join(s.home, 'modules.json'), 'utf8');
+    assert.strictEqual(await upgrade({check: true}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /ch-local 0\.1\.0 -> 0\.2\.0, its provenance checked/);
+    assert.match(io.out, new RegExp(`To install it, run in your own terminal: \`${cmd(s.home, 'upgrade')}\`\\n$`));
+    assert.deepStrictEqual(io.asked, []);
+    assert.deepStrictEqual(io.execs, []);
+    assert.strictEqual(fs.readFileSync(path.join(s.home, 'modules.json'), 'utf8'), before, 'nothing installed');
+    assert.deepStrictEqual(historyOf(s.home).filter((e) => e.kind === 'upgrade'), [], 'nothing recorded');
+    const a = availableOf(s.home);
+    assert.match(a.checkedAt, /^\d{4}-\d\d-\d\dT/);
+    assert.deepStrictEqual({...a, checkedAt: null}, {v: 1, checkedAt: null, installed: '0.1.0', available: '0.2.0', major: false, breaking: true, plugin: null});
+    assert.ok(!fs.existsSync(path.join(s.home, 'upgrade-check.json')), 'never the automatic upgrade\'s stamp');
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+test('upgrade --check: up to date, said and written as none available; a check that can\'t be made keeps the last result, exit 1', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.2.0'});
+  const w = await npmWorld(release());
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, fetch: realFetch});
+    assert.strictEqual(await upgrade({check: true}, io, w.fromNpm), 0, io.err);
+    assert.match(io.out, /everything is up to date/);
+    assert.strictEqual(availableOf(s.home).available, null);
+  } finally {
+    await w.close();
+  }
+  // (a release whose provenance fails, over the home now at 0.1.0)
+  const rec = recordOf(s.home);
+  rec.runtime.versions['@countinghouse/ch-local'] = '0.1.0';
+  const kept = fs.readFileSync(path.join(s.home, 'upgrade-available.json'), 'utf8');
+  require('./store-helpers').writeHome(s.home, {'ci-failure-triage': {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0'}}, {runtime: rec.runtime.versions});
+  const bad = await npmWorld(release(), {lie: '@countinghouse/ch-local'});
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, fetch: realFetch});
+    assert.strictEqual(await upgrade({check: true}, io, bad.fromNpm), 1);
+    assert.match(io.err, /PROVENANCE_IDENTITY/);
+    assert.strictEqual(fs.readFileSync(path.join(s.home, 'upgrade-available.json'), 'utf8'), kept, 'the last good result kept');
+    assert.deepStrictEqual(historyOf(s.home).filter((e) => e.kind === 'upgrade'), [], 'nothing recorded by a check');
+  } finally {
+    await bad.close();
+    s.done();
+  }
+});
+
+// the plugin step: Claude Code's own steps, said whenever the release's
+// plugin version differs from the installed release's (this ch-local's own
+// manifest here: the test home has no installed app); never when the same
+test('the plugin step: said when the release\'s plugin version moved (check and install), not when it is the same', async () => {
+  const own = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'clients', 'claude-code', '.claude-plugin', 'plugin.json'), 'utf8')).version;
+  const STEP = /The countinghouse plugin in Claude Code (moves|moved) with it \(([\d.]+) -> ([\d.]+)\): (after the upgrade, )?run `claude plugin marketplace update ch-packs`, then `claude plugin update ch-packs@ch-packs`, then restart Claude Code\./;
+  for (const [plugin, said] of [['9.9.9', true], [own, false]]) {
+    const s = setup({'@countinghouse/ch-local': '0.1.0'});
+    const w = await npmWorld(release(), {plugin});
+    try {
+      const check = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, fetch: realFetch});
+      assert.strictEqual(await upgrade({check: true}, check, w.fromNpm), 0, check.err);
+      const m = STEP.exec(check.out);
+      assert.strictEqual(m != null, said, `${plugin}: ${check.out}`);
+      if (said) assert.deepStrictEqual([m[1], m[2], m[3], m[4]], ['moves', own, '9.9.9', 'after the upgrade, ']);
+      assert.deepStrictEqual(availableOf(s.home).plugin, {installed: own, latest: plugin});
+      // (the install writes the new release's manifest into the home's app,
+      // as a real one does: the step compares with the one before it)
+      const exec = npm();
+      // (npm runs in the app's staging directory, which then becomes the app:
+      // the manifest goes where npm ran)
+      let wrote = false;
+      const manifestAfterInstall = async (cmd, args, opts = {}) => {
+        const r = await exec(cmd, args, opts);
+        if (opts.cwd != null && fs.existsSync(path.join(opts.cwd, 'node_modules', '@countinghouse', 'ch-local'))) {
+          const dir = path.join(opts.cwd, 'node_modules', '@countinghouse', 'ch-local', 'clients', 'claude-code', '.claude-plugin');
+          fs.mkdirSync(dir, {recursive: true});
+          fs.writeFileSync(path.join(dir, 'plugin.json'), JSON.stringify({name: 'ch-packs', version: plugin}));
+          wrote = true;
+        }
+        return r;
+      };
+      const yes = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: manifestAfterInstall, fetch: realFetch});
+      assert.strictEqual(await upgrade({}, yes, w.fromNpm), 0, yes.err);
+      assert.ok(wrote, 'premise: the install\'s npm wrote the new manifest');
+      assert.strictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'app', 'node_modules', '@countinghouse', 'ch-local', 'clients', 'claude-code', '.claude-plugin', 'plugin.json'), 'utf8')).version, plugin, 'premise: the home\'s app holds it now');
+      const n = STEP.exec(yes.out);
+      assert.strictEqual(n != null, said, `${plugin} installed: ${yes.out}`);
+      if (said) assert.strictEqual(n[1], 'moved');
+    } finally {
+      await w.close();
+      s.done();
+    }
+  }
+});

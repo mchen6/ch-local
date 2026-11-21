@@ -6,7 +6,7 @@
 //   ch-local snippet <client>                     the client's config entry, on stdout alone
 //   ch-local add <client>                         writes that entry, and records it
 //   ch-local uninstall [--keep-data]              takes back what install and add wrote
-//   ch-local upgrade [--auto on|off]              installed and available versions; asks once
+//   ch-local upgrade [--check | --auto on|off]    installed and available versions; asks once (--check: never)
 //   ch-local start --stdio [options]              what a client runs: the runtime with the installed packs
 //   ch-local add-pack <name> --from <dir>         another pack beside the installed ones
 //   ch-local remove-pack <name>                   a pack, and the parts no other pack calls
@@ -27,7 +27,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local rollback [--yes]
        ch-local add <cursor|vscode|codex>
        ch-local uninstall [--keep-data]
-       ch-local upgrade [--auto on|off]
+       ch-local upgrade [--check | --auto on|off]
        ch-local settings [get | set <name> <value> | reset]
        ch-local settings modules [<module>]
        ch-local settings set <module>.<setting> [<value>]
@@ -204,7 +204,7 @@ async function main(argv, io) {
       return usage();
     }
     if (command === 'upgrade') {
-      const a = parse(rest, {values: ['--auto'], flags: ['--apply-auto']});
+      const a = parse(rest, {values: ['--auto'], flags: ['--apply-auto', '--check']});
       if (a == null || a.positional.length > 0) return usage();
       // start's background check runs this, in a child with the allowlisted
       // environment (lib/auto-upgrade.js); it re-checks everything itself
@@ -214,7 +214,8 @@ async function main(argv, io) {
         if (r.line != null) io.stdout.write(`${r.line}\n`);
         return 0;
       }
-      return await require('../lib/upgrade').upgrade({auto: a.values['--auto']}, io);
+      if (a.flags['--check'] && (a.values['--auto'] !== undefined || a.flags['--apply-auto'])) return usage();
+      return await require('../lib/upgrade').upgrade({auto: a.values['--auto'], check: a.flags['--check'] === true}, io);
     }
   } catch (err) {
     if (err.code === 'HOME_RELATIVE') { io.stderr.write(`ch-local: ${err.message}\n`); return 2; }

@@ -94,3 +94,15 @@ test('pages that pin a node say an upgrade changes it and how to reprint', () =>
     assert.match(page, /upgrade\s+changes\s+(this|that|the)\s+path/i, client); // across a line wrap
   }
 });
+
+// A-own-skill's easy upgrades: the Claude Code page says how to check, who
+// installs, and Claude Code's own plugin steps (from its CLI help)
+test('the Claude Code page\'s updates: the read-only check, the user installs, Claude Code\'s own plugin steps', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
+  const at = page.indexOf('## Updates');
+  assert.ok(at > 0);
+  const section = page.slice(at, page.indexOf('\n## ', at + 1)).replace(/\s+/g, ' ');
+  for (const s of ['`ch-local upgrade --check` says whether a newer release is out and what it changes, and installs nothing',
+    'an upgrade runs new code with your keys, so an agent never runs it for you',
+    'claude plugin marketplace update ch-packs claude plugin update ch-packs@ch-packs', 'then restart Claude Code']) assert.ok(section.includes(s), s);
+});
