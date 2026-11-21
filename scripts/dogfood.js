@@ -162,7 +162,33 @@ const run = (cmd, args, opts = {}) => spawnSync(cmd, args, {encoding: 'utf8', ma
 // Packs ch-local (this checkout) and every source in `plan` into
 // <work>/release, writes the pins and the runtime lockfile as a release would
 // -> {release, pinsFile, pins} or {problem}. Shared with scripts/acceptance.js.
-async function buildRelease(plan, work, say) {
+// This machine's shim, built from this checkout (cargo build --release
+// --locked, the host target) and packed as its platform package, the shape
+// publish makes (npm-shim/assemble.js writeTarget), into release/: pinned by
+// its sha512 as the packs are, so install --from places and records it
+// (A-shim-from, the reviewer, 11-21). build: (shimDir, exe) -> the binary's
+// path (a test's own); null: no shim for this machine. -> the
+// `<name>@<version>` packed, or null
+async function shimInto(npmIo, release, work, pins, say, {build = cargoBuild, platform = process.platform, arch = process.arch} = {}) {
+  const {writeTarget, cargoVersion, exe} = require('../npm-shim/assemble');
+  const t = require('../npm-shim/targets').find((x) => x.os === platform && x.cpu === arch);
+  if (t == null) { say(`ch-shim: no target for ${platform}-${arch}; the folder brings no shim`); return null; }
+  const version = cargoVersion(path.join(ROOT, 'shim', 'Cargo.toml'));
+  if (version == null) throw new Error('shim/Cargo.toml names no [package] version');
+  const bin = build(path.join(ROOT, 'shim'), exe(t));
+  const dir = writeTarget(path.join(work, 'shim-package', `ch-shim-${t.key}`), t, version, bin);
+  const {packInto} = require('../lib/release');
+  const {name, integrity} = await packInto(npmIo, dir, release);
+  pins[name] = {version, integrity};
+  return `${name}@${version}`;
+}
+function cargoBuild(shimDir, exeName) {
+  const r = run('cargo', ['build', '--release', '--locked'], {cwd: shimDir});
+  if (r.error != null || r.status !== 0) throw new Error(`cargo build of the shim failed (${r.error != null ? r.error.code : `exit ${r.status}`}): ${String(r.stderr || '').split('\n').slice(-6).join('\n')}`);
+  return path.join(shimDir, 'target', 'release', exeName);
+}
+
+async function buildRelease(plan, work, say, {shim = null} = {}) {
   const {packInto, runtimeLockfile} = require('../lib/release');
   const {ALLOWLIST} = require('../lib/allowlist');
   const npmIo = {node: process.execPath, exec: async (cmd, a, {cwd}) => run(cmd, a, {cwd})};
@@ -191,6 +217,12 @@ async function buildRelease(plan, work, say) {
       fs.rmSync(path.join(tree, '.git'), {recursive: true, force: true});
     }
     say(`${p.repo}: ${p.dir != null ? `${p.dir} ` : 'GitHub '}${p.ref} ${String(p.commit).slice(0, 7)} -> ${await pack(tree)}`);
+  }
+  // (a prepared folder: this machine's shim too; not dogfood's own install
+  // or acceptance, which run each session's own runtime)
+  if (shim != null) {
+    const packed = await shimInto(npmIo, release, work, pins, say, shim);
+    if (packed != null) say(`ch-shim: this checkout's shim/ -> ${packed}`);
   }
   const missing = [...ALLOWLIST.runtime.packages, ...ALLOWLIST.packs[PACK].modules].filter((n) => pins[n] == null);
   if (missing.length > 0) return {problem: `the build has no ${missing.join(', ')}`};
@@ -330,7 +362,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     // removed after; the folder put together by placeRelease
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-dogfood-work-'));
     try {
-      const built = await buildRelease(plan, work, say);
+      const built = await buildRelease(plan, work, say, {shim: {}});
       if (built.problem != null) return fail(built.problem);
       const problem = placeRelease({release: built.release, pinsFile: built.pinsFile, pins: built.pins, dir});
       if (problem != null) return fail(problem);
@@ -383,4 +415,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, resolveRefs, run, PACK};
+module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, resolveRefs, run, PACK};

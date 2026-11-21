@@ -35,6 +35,20 @@ function common(version) {
   };
 }
 
+// One target's package at dir: bin/<exe> from the binary at `from` (0755)
+// and its package.json -- the shape publish makes, and dogfood --release-dir
+// makes for this machine's target (A-shim-from). -> dir
+function writeTarget(dir, t, version, from) {
+  fs.mkdirSync(path.join(dir, 'bin'), {recursive: true});
+  fs.copyFileSync(from, path.join(dir, 'bin', exe(t)));
+  fs.chmodSync(path.join(dir, 'bin', exe(t)), 0o755);
+  const pkg = Object.assign({name: `@countinghouse/ch-shim-${t.key}`,
+    description: `ch-shim for ${t.key} (built from ${t.rust}); installed by @countinghouse/ch-shim`},
+  common(version), {os: [t.os], cpu: [t.cpu], files: ['bin/']});
+  fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+  return dir;
+}
+
 function assemble({version, artifacts, out, cargoToml}) {
   if (!/^\d+\.\d+\.\d+$/.test(String(version))) throw new Error(`version ${version}: a release x.y.z only`);
   // 0.0.0 is the scaffold's, which is not wired to a runtime: never published
@@ -45,14 +59,7 @@ function assemble({version, artifacts, out, cargoToml}) {
   for (const t of targets) {
     const from = path.join(artifacts, `ch-shim-${t.key}`, exe(t));
     if (!fs.existsSync(from)) throw new Error(`no binary for ${t.key} at ${from}`);
-    const dir = path.join(out, `ch-shim-${t.key}`);
-    fs.mkdirSync(path.join(dir, 'bin'), {recursive: true});
-    fs.copyFileSync(from, path.join(dir, 'bin', exe(t)));
-    fs.chmodSync(path.join(dir, 'bin', exe(t)), 0o755);
-    const pkg = Object.assign({name: `@countinghouse/ch-shim-${t.key}`,
-      description: `ch-shim for ${t.key} (built from ${t.rust}); installed by @countinghouse/ch-shim`},
-    common(version), {os: [t.os], cpu: [t.cpu], files: ['bin/']});
-    fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+    writeTarget(path.join(out, `ch-shim-${t.key}`), t, version, from);
   }
   const dir = path.join(out, 'ch-shim');
   fs.mkdirSync(dir, {recursive: true});
@@ -76,4 +83,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = {assemble, cargoVersion};
+module.exports = {assemble, cargoVersion, writeTarget, exe};

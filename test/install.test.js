@@ -424,6 +424,81 @@ test('no --from: this platform\'s native shim is installed too, and recorded; wi
   }
 });
 
+// A-shim-from (the reviewer, 11-21): a prepared folder carries this
+// platform's shim, pinned by its sha512 as its packs are, and --from places
+// and records it as the npm path does. A program header this machine's
+// session check takes (lib/session.js formatProblem).
+function hostProgram() {
+  const b = Buffer.alloc(4096);
+  if (process.platform === 'linux') { b.writeUInt32BE(0x7f454c46, 0); b[4] = 2; b[5] = 1; b.writeUInt16LE(process.arch === 'arm64' ? 0xb7 : 0x3e, 18); }
+  else if (process.platform === 'darwin') { b.writeUInt32LE(0xfeedfacf, 0); b.writeInt32LE(process.arch === 'arm64' ? 0x0100000c : 0x01000007, 4); }
+  else b.write('MZ', 0);
+  return b;
+}
+const HOST_KEY = `${process.platform}-${process.arch}`;
+const SHIM_PACKAGES = Object.fromEntries(['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'].map((t) => [t, `@countinghouse/ch-shim-${t}`]));
+// a shim package's tarball put in the folder -> {name, version, pin} (lie: a
+// pin naming other bytes)
+function folderShim(r, {key = HOST_KEY, body = hostProgram(), version = '0.5.0', lie = false} = {}) {
+  const name = SHIM_PACKAGES[key] || `@countinghouse/ch-shim-${key}`;
+  const exe = key.startsWith('win32') ? 'ch-shim.exe' : 'ch-shim';
+  const bytes = require('./tgz').packageTgz({name, version}, {[`bin/${exe}`]: body});
+  fs.writeFileSync(path.join(r.from, require('../lib/install').tarballName(name, version)), bytes);
+  const integrity = `sha512-${require('node:crypto').createHash('sha512').update(lie ? Buffer.from('other') : bytes).digest('base64')}`;
+  return {name, version, pin: {version, integrity}};
+}
+const withShim = (allow, ...shims) => ({...allow, shim: {packages: SHIM_PACKAGES}, pins: {...allow.pins, ...Object.fromEntries(shims.map((x) => [x.name, x.pin]))}});
+const EXE_HERE = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+
+test('--from with this platform\'s shim in the folder: placed by its pinned sha512, recorded, and the one a session runs', async () => {
+  const r = release(); const h = home();
+  const s = folderShim(r);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, s)), 0, io.err);
+  assert.ok(fs.readFileSync(path.join(h, 'shim', EXE_HERE)).equals(hostProgram()), 'the tarball\'s binary, placed');
+  assert.deepStrictEqual(record(h).shim, {package: s.name, version: '0.5.0'});
+  assert.match(io.out, /the shared runtime's shim 0\.5\.0 is at /);
+  // (end to end: the recorded version is versions.json's, so session execs it)
+  const {sessionChoice} = require('../lib/session');
+  assert.strictEqual(sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
+  // (again: the same shim is current, nothing moved)
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io2, withShim(r.allow, s)), 0, io2.err);
+  assert.ok(!fs.existsSync(path.join(h, 'shim', 'ch-shim.previous')), 'the same binary moves nothing');
+});
+
+test('--unreleased-pins with a shim in the folder (dogfood --release-dir): placed and recorded, the home still unreleased', async () => {
+  const r = release(); const h = home();
+  const s = folderShim(r);
+  const allow = {...r.allow, pins: {}, shim: {packages: SHIM_PACKAGES}, runtime: {...r.allow.runtime, lockfile: null}};
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  const f = pinsFile(r, {pins: {...r.pins, [s.name]: s.pin}, runtimeLockfile: r.lockfile});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
+  assert.deepStrictEqual(record(h).shim, {package: s.name, version: '0.5.0'});
+  assert.strictEqual(record(h).unreleased, true);
+  assert.match(io.err, /this is an unreleased install \(development only\)/);
+  assert.strictEqual(require('../lib/session').sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
+});
+
+test('--from refuses a folder\'s shim as it refuses a pack: other bytes than the pin\'s, another platform\'s, or not a program this machine runs', async () => {
+  const refused = async (shims, re) => {
+    const r = release(); const h = home();
+    const made = shims(r);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, ...made)), 1, io.out);
+    assert.match(io.err, re);
+    assert.match(io.err, /nothing was installed/);
+    assert.ok(!fs.existsSync(path.join(h, 'modules.json')), 'nothing recorded');
+    assert.ok(!fs.existsSync(path.join(h, 'shim', EXE_HERE)), 'nothing placed');
+  };
+  await refused((r) => [folderShim(r, {lie: true})], new RegExp(`${SHIM_PACKAGES[HOST_KEY] || `@countinghouse/ch-shim-${HOST_KEY}`}@0\\.5\\.0: the tarball's integrity is not the pinned one`));
+  const other = HOST_KEY === 'linux-arm64' ? 'linux-x64' : 'linux-arm64';
+  await refused((r) => [folderShim(r, {key: other})], new RegExp(`@countinghouse/ch-shim-${other}@0\\.5\\.0 is the shim for ${other}, not for this machine \\(${HOST_KEY}\\)`));
+  if (process.platform !== 'win32') {
+    await refused((r) => [folderShim(r, {body: '#!/bin/sh\necho hi\n'})], new RegExp(`@0\\.5\\.0's bin/ch-shim is not a program this machine runs \\(${HOST_KEY}: not an? (ELF|Mach-O) program`));
+  }
+});
+
 test('a shim from before is set aside by an install that brings none: from --from, or from npm with none pinned', async () => {
   const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
   const plant = (h) => { fs.mkdirSync(path.join(h, 'shim'), {recursive: true}); fs.writeFileSync(path.join(h, 'shim', exe), 'stale'); };

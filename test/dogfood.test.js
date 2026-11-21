@@ -244,3 +244,34 @@ test('bundledProblem: each bundled dependency must load, its own dependencies in
     fs.rmSync(base, {recursive: true, force: true});
   }
 });
+
+// A-shim-from (the reviewer, 11-21): a prepared folder brings this machine's
+// shim, packed as its platform package and pinned by its sha512, which
+// install --from checks before placing it
+test('shimInto: this machine\'s shim packed into the release as its platform package, pinned by its sha512', async () => {
+  const {spawnSync} = require('node:child_process');
+  const work = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'ch-dogfood-shim-')));
+  try {
+    const release = path.join(work, 'release');
+    fs.mkdirSync(release);
+    const fake = path.join(work, 'built');
+    fs.writeFileSync(fake, 'the built shim');
+    const pins = {};
+    const npmIo = {node: process.execPath, exec: async (cmd, a, {cwd}) => spawnSync(cmd, a, {cwd, encoding: 'utf8', shell: process.platform === 'win32'})};
+    const said = [];
+    const packed = await dogfood.shimInto(npmIo, release, work, pins, (l) => said.push(l), {build: () => fake, platform: 'linux', arch: 'x64'});
+    const version = require('../npm-shim/assemble').cargoVersion(path.join(__dirname, '..', 'shim', 'Cargo.toml'));
+    assert.strictEqual(packed, `@countinghouse/ch-shim-linux-x64@${version}`);
+    const file = require('../lib/unpack').tarballName('@countinghouse/ch-shim-linux-x64', version);
+    const bytes = fs.readFileSync(path.join(release, file));
+    assert.deepStrictEqual(pins['@countinghouse/ch-shim-linux-x64'], {version, integrity: require('../lib/integrity').integrityOf(bytes)});
+    assert.strictEqual(require('../lib/tar').readMember(bytes, 'bin/ch-shim').toString(), 'the built shim');
+    const manifest = JSON.parse(require('../lib/tar').readMember(bytes, 'package.json').toString());
+    assert.deepStrictEqual([manifest.os, manifest.cpu], [['linux'], ['x64']]);
+    // (no target for the machine: no shim, said)
+    assert.strictEqual(await dogfood.shimInto(npmIo, release, work, {}, (l) => said.push(l), {build: () => fake, platform: 'sunos', arch: 'x64'}), null);
+    assert.match(said.join('\n'), /no target for sunos-x64; the folder brings no shim/);
+  } finally {
+    fs.rmSync(work, {recursive: true, force: true});
+  }
+});
