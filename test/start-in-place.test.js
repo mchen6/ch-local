@@ -1881,6 +1881,37 @@ test('an own module added while start runs loads from its copy; changed code: un
   await s.done;
 });
 
+// F9 (the feature audit): an own module this release's runtime refuses to
+// load is held back with its own reason, refused, and the runtime's code;
+// its notice says it is the user's own and where to look, never the generic
+// "stopped (<CODE>)".
+test('an own module the runtime refuses: held back as refused with its code, its own notice; a pack\'s stays stopped', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  try {
+    await until(() => s.args() != null);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    const held = () => JSON.parse(fs.readFileSync(file, 'utf8')).modules;
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => ownAsks(s).length === 1);
+    s.ask({type: 'module-stopped', name: 'my-tool', code: 'MODULE_INVALID', when: 'restart'});
+    const said = `my-tool, your own module, is not loaded: this release's runtime refuses it (MODULE_INVALID); \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'status')}\` says why, \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'remove-module my-tool')}\` removes it`;
+    await until(() => notices(s).some(([, t]) => t === said));
+    await until(() => held().some((m) => m.name === 'my-tool'));
+    assert.deepStrictEqual(held().find((m) => m.name === 'my-tool'), {name: 'my-tool', reason: 'refused', code: 'MODULE_INVALID'});
+    assert.ok(s.history().some((h) => h.module === 'my-tool' && h.change === 'stopped' && h.notice === said));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('the held-back writer: refused only with a code it can name, else stopped', () => {
+  const where = layout({COUNTINGHOUSE_HOME: tmp('ch-held-')});
+  const text = require('../lib/held-back').contentOf(where, new Map([['my-a', {kind: 'refused', code: 'MODULE_INVALID'}], ['my-b', {kind: 'refused', code: 'not a code'}], ['my-c', {kind: 'refused'}]]));
+  assert.deepStrictEqual(JSON.parse(text).modules, [{name: 'my-a', reason: 'refused', code: 'MODULE_INVALID'}, {name: 'my-b', reason: 'stopped'}, {name: 'my-c', reason: 'stopped'}]);
+});
+
 test('an own.json that can\'t be read while start runs: its modules unloaded, said once; the pack stays', {skip: OWN_SKIP}, async () => {
   const s = await running();
   const a = placeOwn(s.home, 'my-tool');
