@@ -14,7 +14,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {spawnSync} = require('node:child_process');
-const {JSON_FILES} = require('../lib/swap-preload');
+const {JSON_FILES, DEPENDENCIES} = require('../lib/swap-preload');
 
 const LIB = path.join(__dirname, '..', 'lib');
 // (a file's source without its comments: a comment never stands in for a call)
@@ -42,6 +42,22 @@ test('preloadForSwap loads every module of lib and every JSON file lib requires,
   const modules = fs.readdirSync(LIB).filter((f) => f.endsWith('.js')).map((f) => path.join(LIB, f));
   assert.deepStrictEqual(modules.filter((m) => !loaded.has(m)), [], 'every lib module loaded');
   for (const j of JSON_FILES) assert.ok(loaded.has(path.resolve(LIB, j)), `${j} loaded`);
+  // (and ch-local's own dependencies -- resolved through <home>/app too)
+  assert.deepStrictEqual(DEPENDENCIES, Object.keys(require('../package.json').dependencies));
+  for (const dep of DEPENDENCIES) assert.ok(loaded.has(require.resolve(dep, {paths: [LIB]})), `${dep} loaded`);
+});
+
+test('every package a lib module requires by name is a dependency the preload loads, or Node\'s own', () => {
+  // (a bare name that isn't Node's: it resolves through <home>/app/node_modules)
+  const builtin = new Set(require('node:module').builtinModules);
+  const named = new Set();
+  for (const f of fs.readdirSync(LIB).filter((n) => n.endsWith('.js'))) {
+    for (const m of fs.readFileSync(path.join(LIB, f), 'utf8').matchAll(/require\(['"`]([^'"`./][^'"`]*)['"`]\)/g)) {
+      const name = m[1].startsWith('node:') ? null : (m[1].startsWith('@') ? m[1].split('/').slice(0, 2).join('/') : m[1].split('/')[0]);
+      if (name != null && !builtin.has(name)) named.add(name);
+    }
+  }
+  assert.deepStrictEqual([...named].filter((n) => !DEPENDENCIES.includes(n)).sort(), []);
 });
 
 test('the JSON list names every JSON file a lib module requires', () => {
