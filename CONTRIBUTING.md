@@ -30,7 +30,10 @@ Before a release is published:
    and commit `test/fixtures/homes/<version>/`, so the release's exact formats
    are read by every later tree.
 2. Add the release commit to `FROM` in `test/upgrade-path.test.js`, so every
-   later tree is upgraded from it.
+   later tree is upgraded from it. From release 1 on, a release has own
+   modules, so its entry also adds one with its own `add-module` and checks
+   the record and copies survive. Until then only the `self` entry (this
+   tree under another version) runs that step.
 
 `scripts/capture-home.js` refuses to capture a file that holds a path of the
 machine it ran on (the temporary home, the user's home, the node binary):

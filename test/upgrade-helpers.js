@@ -143,6 +143,80 @@ async function userDataWith(code, io, home) {
     {origin: CREDENTIAL.origin, source: 'stored', value: CREDENTIAL.value}, {held}));
 }
 
+// The user's own module (B-own-add), added by a tree's own add-module: the
+// folder written, the sandbox set to enforce (an own module loads only
+// there), and add-module run in-process, as the user's own act at their
+// terminal -- an io that is interactive, its output a terminal, answering
+// yes. The question itself is the acceptance and smoke tests' (through a
+// pty); here what matters is that the record and the copy survive. -> the
+// module's tree hash.
+const OWN = {name: 'upgrade-own-probe', tool: 'own_probe', output: {own: 'here'}};
+function writeOwnModule(dir) {
+  fs.mkdirSync(path.join(dir, 'handlers', 'probeService'), {recursive: true});
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: OWN.name, version: '1.0.0', private: true, countinghouse: {role: 'scenario', calls: []}}, null, 2));
+  fs.writeFileSync(path.join(dir, 'api.json'), JSON.stringify({device: {friendlyName: OWN.name, manufacturer: 'ch-local-test', modelDescription: 'the upgrade-path test\'s own module',
+    serviceList: {'urn:ch-local-test:serviceID:probeService': {actionList: [{name: OWN.tool, description: 'Says it is here.',
+      input: {schema: `/probeService/${OWN.tool}/input`}, output: {schema: `/probeService/${OWN.tool}/output`}}]}}}}, null, 2));
+  fs.writeFileSync(path.join(dir, 'schema.json'), JSON.stringify({$schema: 'https://json-schema.org/draft/2020-12/schema', $id: '#/', type: 'object',
+    probeService: {[OWN.tool]: {input: {type: 'object', additionalProperties: false},
+      output: {type: 'object', properties: {own: {type: 'string'}}, required: ['own'], additionalProperties: false}}}}, null, 2));
+  fs.writeFileSync(path.join(dir, 'handlers', 'probeService', `${OWN.tool}.js`), `'use strict';\nmodule.exports = async () => ({output: ${JSON.stringify(OWN.output)}});\n`);
+}
+const hasOwnModules = (code) => fs.existsSync(path.join(code, 'lib', 'own-command.js'));
+async function ownWith(code, io, home, work) {
+  run(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'settings', 'set', 'moduleSandbox', 'enforce'], {env: io.env, timeout: 60000});
+  // (by its real path: add-module refuses a folder reached through a link,
+  // and the temporary directory can be one -- /var on macOS is /private/var.
+  // Only this folder: the work tree and the home stay where tmp-dirs made them)
+  const dir = path.join(fs.realpathSync.native(work), 'own-src');
+  writeOwnModule(dir);
+  const asked = [];
+  const tty = Object.assign(io, {interactive: true, stdoutTTY: true, ask: async (q) => { asked.push(q); return 'y'; }});
+  const code0 = await lib(code, 'own-command').addModule({dir}, tty);
+  if (code0 !== 0 || asked.length !== 1) throw new Error(`add-module: ${code0}, asked ${asked.length}\n${io.out}\n${io.err}`);
+  return JSON.parse(fs.readFileSync(path.join(home, 'own.json'), 'utf8')).modules[OWN.name].tree;
+}
+// <home>/own.json and everything under <home>/own: the record and the
+// copies, byte for byte, with their modes. <home>/own itself is not data:
+// every start of a tree with own modules makes it, the modules root, for
+// one added while it runs (lib/start.js), so an older release's home has it
+// once this tree has started there.
+function ownFiles(home) {
+  const out = {};
+  const add = (rel) => {
+    const p = path.join(home, rel);
+    const st = fs.lstatSync(p);
+    if (st.isDirectory()) { out[`${rel}/`] = {mode: st.mode & 0o777}; for (const n of fs.readdirSync(p).sort()) add(path.join(rel, n)); }
+    else out[rel] = {bytes: fs.readFileSync(p).toString('base64'), mode: st.mode & 0o777};
+  };
+  if (fs.existsSync(path.join(home, 'own.json'))) add('own.json');
+  if (fs.existsSync(path.join(home, 'own'))) add('own');
+  delete out['own/'];
+  return out;
+}
+
+// A test's tree removed, with the read-only folders under `readOnly` (an
+// own module's copies, <home>/own) made writable by their owner first --
+// only those, never following a link. A failure here is said, never thrown
+// over the test's own.
+function removeTree(dir, readOnly = []) {
+  const open = (p) => {
+    let st;
+    try { st = fs.lstatSync(p); } catch (e) { return; }
+    if (!st.isDirectory()) return;
+    try { fs.chmodSync(p, st.mode | 0o700); } catch (e) { /* as it is */ }
+    let names = [];
+    try { names = fs.readdirSync(p); } catch (e) { /* as it is */ }
+    for (const n of names) open(path.join(p, n));
+  };
+  try {
+    for (const r of readOnly) open(r);
+    fs.rmSync(dir, {recursive: true, force: true});
+  } catch (err) {
+    process.stderr.write(`(the upgrade-path test's work tree ${dir} could not be removed: ${err.message})\n`);
+  }
+}
+
 // The home's data as a tree's own readers read it: what must survive.
 function summaryWith(code, env) {
   const where = lib(code, 'home').layout(env);
@@ -168,7 +242,11 @@ function summaryWith(code, env) {
     return v;
   };
   // (a reader's error names the file by its path: the home's own, as <home>)
-  const homeless = (v) => (typeof v === 'string' ? v.split(home).join('<home>') : v);
+  // (in either spelling: as given, or its real path -- /private/var on macOS,
+  // the long name for an 8.3 one on Windows)
+  let realHome = home;
+  try { realHome = fs.realpathSync.native(home); } catch (e) { /* as given */ }
+  const homeless = (v) => (typeof v === 'string' ? v.split(realHome).join('<home>').split(home).join('<home>') : v);
   return plain({
     // (each pack's modules at their versions; the record's runtime versions
     // name the installed ch-local itself, which an upgrade changes by design)
@@ -230,7 +308,7 @@ function session(child) {
 // --stdio, in a repository whose origin is elsewhere), the pack's tool
 // called once: -> {tools, output, stderr}. The client then closes its end
 // and the runtime must exit.
-async function startAndCall(home, work, env = process.env) {
+async function startAndCall(home, work, env = process.env, {alsoCall = null} = {}) {
   const {spawn} = require('node:child_process');
   const repo = fs.mkdtempSync(path.join(work, 'repo-'));
   fs.mkdirSync(path.join(repo, '.git'), {recursive: true});
@@ -250,18 +328,28 @@ async function startAndCall(home, work, env = process.env) {
     let listed = null;
     for (const until = Date.now() + 60000; Date.now() < until;) {
       listed = await mcp.request('tools/list', {});
-      if ((listed.result.tools || []).some((x) => x.name === 'smoke_echo')) break;
+      // (every tool this start should answer with listed: the pack's, and the
+      // own module's when one is called -- they load as separate units)
+      const names = (listed.result.tools || []).map((x) => x.name);
+      if (names.includes('smoke_echo') && (alsoCall == null || names.includes(alsoCall))) break;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     const tools = (listed.result.tools || []).map((t) => t.name).sort();
     const called = await mcp.request('tools/call', {name: 'smoke_echo', arguments: {text: 'hello'}});
     if (called.result == null || called.result.isError !== false) throw new Error(JSON.stringify(called).slice(0, 2000) + tail());
+    // (and another tool, an own module's: its output)
+    let also = null;
+    if (alsoCall != null) {
+      const r = await mcp.request('tools/call', {name: alsoCall, arguments: {}});
+      if (r.result == null || r.result.isError !== false) throw new Error(JSON.stringify(r).slice(0, 2000) + tail());
+      also = r.result.structuredContent;
+    }
     child.stdin.end();
     const code = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve('timeout'), 30000))]);
     if (code === 'timeout') throw new Error('the runtime did not exit when the client closed stdin' + tail());
     const runs = fs.existsSync(path.join(home, 'run')) ? fs.readdirSync(path.join(home, 'run')) : [];
     if (runs.length > 0) throw new Error(`the run directory is left: ${runs.join(', ')}` + tail());
-    return {tools, output: called.result.structuredContent, stderr};
+    return {tools, output: called.result.structuredContent, also, stderr};
   } finally {
     // (the whole group, its leader gone or not: the runtime it started too.
     // A Ctrl-C to the test runner does not reach it: a known limit)
@@ -273,4 +361,4 @@ async function startAndCall(home, work, env = process.env) {
 // The ch-local a home runs (its launcher's version)
 const launcherVersion = (home) => JSON.parse(fs.readFileSync(path.join(home, 'app', 'node_modules', '@countinghouse', 'ch-local', 'package.json'), 'utf8')).version;
 
-module.exports = {commitHere, session, startAndCall, launcherVersion, ROOT, SCENARIO, STEP, CREDENTIAL, SETTING, run, realIo, setVersion, treeAt, workingTree, releaseFor, installWith, userDataWith, summaryWith, dataFiles, DATA_FILES};
+module.exports = {removeTree, OWN, writeOwnModule, hasOwnModules, ownWith, ownFiles, commitHere, session, startAndCall, launcherVersion, ROOT, SCENARIO, STEP, CREDENTIAL, SETTING, run, realIo, setVersion, treeAt, workingTree, releaseFor, installWith, userDataWith, summaryWith, dataFiles, DATA_FILES};

@@ -29,10 +29,18 @@ const os = require('node:os');
 const path = require('node:path');
 const h = require('./upgrade-helpers');
 
-// The releases a home is upgraded from: for now main at the commit this
-// test was written against; release 1's own commit joins it once it exists
-// (release gating, CONTRIBUTING.md).
-const FROM = ['63d7faf6a162b23a1813c2af3b12659f81e031ec'];
+// The releases a home is upgraded from: main at the commit this test was
+// written against, and this tree itself under another version ('self': the
+// own-module step runs from it now); release 1's own commit joins them once
+// it exists (release gating, CONTRIBUTING.md).
+//
+// A tree that has own modules (lib/own-command.js, B-own-add) also adds one
+// with its own add-module: <home>/own.json and <home>/own must survive the
+// upgrade and the rollback byte for byte, and the module load from its copy,
+// with its hash, each time.
+// (own: whether that tree has own modules, said here so an entry that
+// should add one can never pass without it)
+const FROM = [{commit: 'self', own: true}, {commit: '63d7faf6a162b23a1813c2af3b12659f81e031ec', own: false}];
 const RUNTIME = process.env.CH_SMOKE_RUNTIME_TGZ;
 const OUTPUT = {shout: 'HELLO', defaultRepo: 'octo/smoke'};
 // (the runtime's tools follow the runtime tarball, CH_SMOKE_RUNTIME_TGZ,
@@ -40,13 +48,13 @@ const OUTPUT = {shout: 'HELLO', defaultRepo: 'octo/smoke'};
 // countinghouse #499's, the three for building your own module)
 const TOOLS = ['countinghouse_load_module', 'countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report', 'countinghouse_validate_module', 'countinghouse_validate_plan', 'smoke_echo'];
 
-for (const commit of FROM) {
+for (const {commit, own} of FROM) {
   test(`a home built by ${commit.slice(0, 8)}, upgraded to this tree: every data file kept, read and started; rolled back, as it was`,
     {timeout: 1800000, skip: RUNTIME == null && 'CH_SMOKE_RUNTIME_TGZ is not set (a countinghouse tarball, as for the smoke test)'}, async () => {
       const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-upgrade-path-'));
       try {
-        const short = commit.slice(0, 8);
-        const old = h.treeAt(commit, path.join(work, 'old'), `0.1.0-from.${short}`);
+        const short = commit === 'self' ? 'self' : commit.slice(0, 8);
+        const old = commit === 'self' ? h.workingTree(path.join(work, 'old'), '0.1.0-from.self') : h.treeAt(commit, path.join(work, 'old'), `0.1.0-from.${short}`);
         const now = h.workingTree(path.join(work, 'new'), `0.1.0-to.${short}`);
         const home = path.join(work, 'home');
         const env = {...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'};
@@ -55,10 +63,26 @@ for (const commit of FROM) {
         const relOld = await h.releaseFor(old, h.realIo(env), path.join(work, 'r-old'), RUNTIME);
         await h.installWith(old, h.realIo(env), relOld);
         await h.userDataWith(old, h.realIo(env), home);
+        // (and the user's own module, by that tree's own add-module, when it has them)
+        assert.strictEqual(h.hasOwnModules(old), own, `${short}: own modules ${own ? '' : 'not '}expected in that tree (lib/own-command.js)`);
+        const tree = own ? await h.ownWith(old, h.realIo(env), home, work) : null;
+        const tools = own ? [...TOOLS, h.OWN.tool].sort() : TOOLS;
+        const started = (s, when) => {
+          assert.deepStrictEqual([s.tools, s.output], [tools, OUTPUT], when);
+          if (!own) return;
+          assert.deepStrictEqual(s.also, h.OWN.output, `${when}: the own module answers`);
+          assert.ok(s.stderr.includes(`ch-local: own modules: ${h.OWN.name} ${tree.slice(0, 12)}\n`), `${when}: the own module loads from its copy, with its hash\n${s.stderr.slice(-2000)}`);
+        };
+        const startOpts = own ? {alsoCall: h.OWN.tool} : {};
         assert.strictEqual(h.launcherVersion(home), relOld.version);
-        const first = await h.startAndCall(home, work);
-        assert.deepStrictEqual([first.tools, first.output], [TOOLS, OUTPUT], 'the older release starts, with its setting');
-        const before = {summary: h.summaryWith(old, env), files: h.dataFiles(home)};
+        const first = await h.startAndCall(home, work, process.env, startOpts);
+        started(first, 'the older release starts, with its setting');
+        const before = {summary: h.summaryWith(old, env), files: h.dataFiles(home), own: h.ownFiles(home)};
+        // (the record and the copy both: its folder, <home>/own/<name>/<hash>/, and its files)
+        const copy = path.join('own', h.OWN.name, String(tree));
+        const copied = Object.keys(before.own).filter((k) => k.startsWith(`${copy}${path.sep}`));
+        assert.deepStrictEqual([Object.keys(before.own).includes('own.json'), Object.keys(before.own).includes(`${copy}/`), copied.length > 2], [own, own, own],
+          own ? 'an own module is added: its record and its copy' : 'no own module');
         assert.ok(Object.keys(before.files).includes(path.join('credentials', 'credentials.json')), 'a credential is stored');
 
         // the upgrade: this tree's install over it
@@ -67,9 +91,10 @@ for (const commit of FROM) {
         assert.strictEqual(h.launcherVersion(home), relNew.version, 'this tree is the launcher now');
         assert.ok(fs.existsSync(path.join(home, 'previous', 'app')), 'the older release kept for rollback');
         assert.deepStrictEqual(h.dataFiles(home), before.files, 'every data file kept, byte for byte, its mode too');
+        assert.deepStrictEqual(h.ownFiles(home), before.own, 'the own modules\' record and copies kept, byte for byte');
         assert.deepStrictEqual(h.summaryWith(now, env), before.summary, 'this tree reads the home as the older release read it');
-        const upgraded = await h.startAndCall(home, work);
-        assert.deepStrictEqual([upgraded.tools, upgraded.output], [TOOLS, OUTPUT], 'started after the upgrade, with the setting the older release stored');
+        const upgraded = await h.startAndCall(home, work, process.env, startOpts);
+        started(upgraded, 'started after the upgrade, with the setting the older release stored');
 
         // the rollback, by this tree's own command, as a user runs it
         h.run(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'rollback', '--yes'], {env, timeout: 300000});
@@ -84,11 +109,13 @@ for (const commit of FROM) {
         const kept = {...before.files};
         delete kept['upgrade-check.json'];
         assert.deepStrictEqual(after, kept, 'every other data file as it was');
+        assert.deepStrictEqual(h.ownFiles(home), before.own, 'the own modules\' record and copies as they were');
         assert.deepStrictEqual(h.summaryWith(old, env), before.summary, 'the older release reads its home as before');
-        const back = await h.startAndCall(home, work);
-        assert.deepStrictEqual([back.tools, back.output], [TOOLS, OUTPUT], 'the older release starts again');
+        const back = await h.startAndCall(home, work, process.env, startOpts);
+        started(back, 'the older release starts again');
       } finally {
-        fs.rmSync(work, {recursive: true, force: true});
+        // (an own module's copy is read-only: made writable to be removed)
+        h.removeTree(work, [path.join(work, 'home', 'own')]);
       }
     });
 }
