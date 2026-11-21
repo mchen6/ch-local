@@ -113,3 +113,18 @@ node ~/.countinghouse/bin/ch-local.js remove-module <module name>
 
 removes it ("Removed csv-summary."). Its data and its key are kept, and the
 command says where the data is and how to remove the key.
+
+Remove a tool with `remove-module`, and everything with `ch-local
+uninstall`: both handle the copies of your tools, which the home keeps
+read-only (under `own`). Deleting the home by hand fails on those copies
+with "Permission denied" until you make them writable again:
+
+```bash
+chmod -R u+w ~/.countinghouse/own
+```
+
+On Windows, clear their read-only attribute instead:
+
+```bat
+attrib -r "%USERPROFILE%\.countinghouse\own\*" /s /d
+```
