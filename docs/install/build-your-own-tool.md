@@ -50,7 +50,8 @@ Add it? [y/N]
   exactly what is copied and loaded.
 - "It calls <module>." names each installed module your tool calls.
   add-module lists the modules your tool calls; it does not list which of
-  your keys those modules use.
+  your keys those modules use. A module your tool calls acts with its own
+  key, so your tool can use that key through it.
 - "It calls <address>" is a service your module declares a key for.
 - If the module asks for file paths, network hosts or environment
   variables, a line says so; under the enforced sandbox it gets none of
