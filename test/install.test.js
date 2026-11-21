@@ -363,7 +363,10 @@ async function npmRelease(r, {lie = null, shim = false} = {}) {
   }
   const allow = Object.assign({}, r.allow, {pins, self, shim: shimSection, release: {version: r.pins['@countinghouse/ch-local'].version, security: null},
     runtime: Object.assign({}, r.allow.runtime, {lockfile})});
-  return {reg, allow, fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}};
+  // the release's data as release-pins.json parses it, for the production
+  // builders (lib/npm-upgrade.js releaseAllow) to make the allow from
+  const data = {release: {security: null}, self, shim: shimSection, runtime: allow.runtime, packs: r.allow.packs, modules: r.allow.modules, pins};
+  return {reg, allow, data, fromNpm: {registry: reg.url, trust: provenance.trustMaterial(root.trustedRoot, root.npmKeys)}};
 }
 
 test('no --from: every package from the registry, checked by its pin and its provenance, then installed as from a directory', async () => {
@@ -939,4 +942,34 @@ test('a pack the record gains while install reads its tarballs: refused, nothing
     fs.readFileSync = read;
   }
   assert.notStrictEqual(one, both);
+});
+
+// The reviewer's targeted high (11-21): ALLOWLIST and releaseAllow carried
+// no shim, so `allow.shim` was null outside tests (the shim test injects
+// it) and every install or upgrade from npm set the shim aside: the shared
+// runtime never ran on an installed home. The production builders, never an
+// allow made by hand.
+test('the production allows carry the release\'s shim: ALLOWLIST from release-pins.json, and releaseAllow', () => {
+  const {ALLOWLIST} = require('../lib/allowlist');
+  const shipped = require('../lib/release-pins').parseReleasePins(require('../lib/release-pins.json')).pins;
+  assert.ok(ALLOWLIST.shim != null, 'ALLOWLIST.shim');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(ALLOWLIST.shim)), JSON.parse(JSON.stringify(shipped.shim)));
+  const {releaseAllow} = require('../lib/npm-upgrade');
+  assert.deepStrictEqual(releaseAllow(shipped, '9.9.9').shim, shipped.shim);
+});
+
+test('an npm install whose allow comes from releaseAllow places the pinned, provenance-checked shim', async () => {
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true});
+  try {
+    const allow = require('../lib/npm-upgrade').releaseAllow(n.data, r.pins['@countinghouse/ch-local'].version);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, allow, n.fromNpm), 0, io.err);
+    const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+    assert.strictEqual(fs.readFileSync(path.join(h, 'shim', exe), 'utf8'), 'the shim');
+    assert.deepStrictEqual(record(h).shim, {package: `@countinghouse/ch-shim-${process.platform}-${process.arch}`, version: '0.5.0'});
+    assert.ok(!/set aside/.test(io.out), io.out);
+  } finally {
+    await n.reg.close();
+  }
 });
