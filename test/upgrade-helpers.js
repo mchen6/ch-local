@@ -192,18 +192,26 @@ function ownFiles(home) {
   return out;
 }
 
-// A test's tree removed, read-only folders in it too (an own module's copy
-// is made read-only): each folder made writable by its owner first.
-function removeTree(dir) {
+// A test's tree removed, with the read-only folders under `readOnly` (an
+// own module's copies, <home>/own) made writable by their owner first --
+// only those, never following a link. A failure here is said, never thrown
+// over the test's own.
+function removeTree(dir, readOnly = []) {
   const open = (p) => {
     let st;
     try { st = fs.lstatSync(p); } catch (e) { return; }
     if (!st.isDirectory()) return;
     try { fs.chmodSync(p, st.mode | 0o700); } catch (e) { /* as it is */ }
-    for (const n of fs.readdirSync(p)) open(path.join(p, n));
+    let names = [];
+    try { names = fs.readdirSync(p); } catch (e) { /* as it is */ }
+    for (const n of names) open(path.join(p, n));
   };
-  open(dir);
-  fs.rmSync(dir, {recursive: true, force: true});
+  try {
+    for (const r of readOnly) open(r);
+    fs.rmSync(dir, {recursive: true, force: true});
+  } catch (err) {
+    process.stderr.write(`(the upgrade-path test's work tree ${dir} could not be removed: ${err.message})\n`);
+  }
 }
 
 // The home's data as a tree's own readers read it: what must survive.
@@ -313,7 +321,10 @@ async function startAndCall(home, work, env = process.env, {alsoCall = null} = {
     let listed = null;
     for (const until = Date.now() + 60000; Date.now() < until;) {
       listed = await mcp.request('tools/list', {});
-      if ((listed.result.tools || []).some((x) => x.name === 'smoke_echo')) break;
+      // (every tool this start should answer with listed: the pack's, and the
+      // own module's when one is called -- they load as separate units)
+      const names = (listed.result.tools || []).map((x) => x.name);
+      if (names.includes('smoke_echo') && (alsoCall == null || names.includes(alsoCall))) break;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     const tools = (listed.result.tools || []).map((t) => t.name).sort();

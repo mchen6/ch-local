@@ -38,7 +38,9 @@ const h = require('./upgrade-helpers');
 // with its own add-module: <home>/own.json and <home>/own must survive the
 // upgrade and the rollback byte for byte, and the module load from its copy,
 // with its hash, each time.
-const FROM = ['self', '63d7faf6a162b23a1813c2af3b12659f81e031ec'];
+// (own: whether that tree has own modules, said here so an entry that
+// should add one can never pass without it)
+const FROM = [{commit: 'self', own: true}, {commit: '63d7faf6a162b23a1813c2af3b12659f81e031ec', own: false}];
 const RUNTIME = process.env.CH_SMOKE_RUNTIME_TGZ;
 const OUTPUT = {shout: 'HELLO', defaultRepo: 'octo/smoke'};
 // (the runtime's tools follow the runtime tarball, CH_SMOKE_RUNTIME_TGZ,
@@ -46,7 +48,7 @@ const OUTPUT = {shout: 'HELLO', defaultRepo: 'octo/smoke'};
 // countinghouse #499's, the three for building your own module)
 const TOOLS = ['countinghouse_load_module', 'countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report', 'countinghouse_validate_module', 'countinghouse_validate_plan', 'smoke_echo'];
 
-for (const commit of FROM) {
+for (const {commit, own} of FROM) {
   test(`a home built by ${commit.slice(0, 8)}, upgraded to this tree: every data file kept, read and started; rolled back, as it was`,
     {timeout: 1800000, skip: RUNTIME == null && 'CH_SMOKE_RUNTIME_TGZ is not set (a countinghouse tarball, as for the smoke test)'}, async () => {
       const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-upgrade-path-'));
@@ -62,7 +64,7 @@ for (const commit of FROM) {
         await h.installWith(old, h.realIo(env), relOld);
         await h.userDataWith(old, h.realIo(env), home);
         // (and the user's own module, by that tree's own add-module, when it has them)
-        const own = h.hasOwnModules(old);
+        assert.strictEqual(h.hasOwnModules(old), own, `${short}: own modules ${own ? '' : 'not '}expected in that tree (lib/own-command.js)`);
         const tree = own ? await h.ownWith(old, h.realIo(env), home, work) : null;
         const tools = own ? [...TOOLS, h.OWN.tool].sort() : TOOLS;
         const started = (s, when) => {
@@ -76,7 +78,11 @@ for (const commit of FROM) {
         const first = await h.startAndCall(home, work, process.env, startOpts);
         started(first, 'the older release starts, with its setting');
         const before = {summary: h.summaryWith(old, env), files: h.dataFiles(home), own: h.ownFiles(home)};
-        assert.strictEqual(Object.keys(before.own).length > 0, own, own ? 'an own module is added' : 'no own module');
+        // (the record and the copy both: its folder, <home>/own/<name>/<hash>/, and its files)
+        const copy = path.join('own', h.OWN.name, String(tree));
+        const copied = Object.keys(before.own).filter((k) => k.startsWith(`${copy}${path.sep}`));
+        assert.deepStrictEqual([Object.keys(before.own).includes('own.json'), Object.keys(before.own).includes(`${copy}/`), copied.length > 2], [own, own, own],
+          own ? 'an own module is added: its record and its copy' : 'no own module');
         assert.ok(Object.keys(before.files).includes(path.join('credentials', 'credentials.json')), 'a credential is stored');
 
         // the upgrade: this tree's install over it
@@ -109,7 +115,7 @@ for (const commit of FROM) {
         started(back, 'the older release starts again');
       } finally {
         // (an own module's copy is read-only: made writable to be removed)
-        h.removeTree(work);
+        h.removeTree(work, [path.join(work, 'home', 'own')]);
       }
     });
 }
