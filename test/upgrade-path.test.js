@@ -35,7 +35,10 @@ const h = require('./upgrade-helpers');
 const FROM = ['63d7faf6a162b23a1813c2af3b12659f81e031ec'];
 const RUNTIME = process.env.CH_SMOKE_RUNTIME_TGZ;
 const OUTPUT = {shout: 'HELLO', defaultRepo: 'octo/smoke'};
-const TOOLS = ['countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report', 'smoke_echo'];
+// (the runtime's tools follow the runtime tarball, CH_SMOKE_RUNTIME_TGZ,
+// shared by the older release and this tree, not the FROM commit: with
+// countinghouse #499's, the three for building your own module)
+const TOOLS = ['countinghouse_load_module', 'countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report', 'countinghouse_validate_module', 'countinghouse_validate_plan', 'smoke_echo'];
 
 for (const commit of FROM) {
   test(`a home built by ${commit.slice(0, 8)}, upgraded to this tree: every data file kept, read and started; rolled back, as it was`,

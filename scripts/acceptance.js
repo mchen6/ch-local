@@ -11,8 +11,10 @@
 //      the runtime's own COUNTINGHOUSE_ACCEPTANCE=1, so the declared origin,
 //      the allowance and the variable stay the real ones;
 //   4. speaks MCP: tools/list is exactly ci_failure_triage,
-//      countinghouse_overview (countinghouse #490), countinghouse_settings
-//      and countinghouse_usage_report; one
+//      countinghouse_load_module, countinghouse_overview (countinghouse
+//      #490), countinghouse_settings, countinghouse_usage_report,
+//      countinghouse_validate_module and countinghouse_validate_plan (the
+//      three for building your own module: countinghouse #499); one
 //      ci_failure_triage call answers with a receipt marked "(acceptance
 //      stand-in)", its standIn naming github; the
 //      usage report counts those calls in its standIn section, none as real;
@@ -352,10 +354,13 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       await new Promise((r) => setTimeout(r, 250));
     }
     mark('listed');
-    // exactly these, sorted: the pack's one tool and the runtime's three
-    // built-ins (the overview in every mode, countinghouse #490; the settings
-    // tool in the single-identity profile); anything else fails
-    check('tools/list is exactly ci_failure_triage, countinghouse_overview, countinghouse_settings and countinghouse_usage_report', JSON.stringify(tools) === JSON.stringify(['ci_failure_triage', 'countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report']), JSON.stringify(tools));
+    // exactly these, sorted: the pack's one tool and the runtime's six
+    // built-ins (the overview in every mode, countinghouse #490; the usage
+    // report; and, in the single-identity profile with --settingsFile, the
+    // settings tool and the three for building your own module, countinghouse
+    // #499); anything else fails
+    const TOOLS = ['ci_failure_triage', 'countinghouse_load_module', 'countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report', 'countinghouse_validate_module', 'countinghouse_validate_plan'];
+    check(`tools/list is exactly ${TOOLS.join(', ')}`, JSON.stringify(tools) === JSON.stringify(TOOLS), JSON.stringify(tools));
 
     const called = await mcp.request('tools/call', {name: 'ci_failure_triage', arguments: {repo: RECORDED_REPO}});
     mark('firstResult');

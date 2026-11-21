@@ -10,7 +10,10 @@ require('./tmp-dirs');
 // origin is on GitHub). It then speaks MCP over stdio: initialize, tools/list
 // (exactly, sorted: countinghouse_overview (countinghouse #490),
 // countinghouse_settings (listed under --settingsFile since countinghouse
-// #183), countinghouse_usage_report and the tool), and one tools/call,
+// #183), countinghouse_usage_report, the three for building your own module
+// (countinghouse_load_module, countinghouse_validate_module and
+// countinghouse_validate_plan, in the same profile since countinghouse #499)
+// and the tool), and one tools/call,
 // which answers through the step, with its own setting defaultRepo and a
 // receipt of zero server calls.
 //
@@ -72,7 +75,8 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
         if ((listed.result.tools || []).some((x) => x.name === 'smoke_echo')) break;
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
-      assert.deepStrictEqual(listed.result.tools.map((t) => t.name).sort(), ['countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report', 'smoke_echo'], `the overview, the settings tool, the usage report and the pack's tool; no part, balance or authoring tool\n--- stderr ---\n${stderr.slice(-6000)}`);
+      assert.deepStrictEqual(listed.result.tools.map((t) => t.name).sort(), ['countinghouse_load_module', 'countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report', 'countinghouse_validate_module', 'countinghouse_validate_plan', 'smoke_echo'],
+        `the overview, the settings tool, the usage report, the three tools for building your own module (countinghouse #499: load_module only says to run add-module) and the pack's tool; no part or balance tool\n--- stderr ---\n${stderr.slice(-6000)}`);
 
       // Called the moment it is listed, as an agent does: the runtime waits for the
       // scenario's composition verdict (countinghouse composition/14), so no retry.
