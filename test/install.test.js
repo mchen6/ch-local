@@ -986,15 +986,23 @@ test('a fresh install makes its home 0700 whatever the umask, and the daemon acc
   }
 });
 
-test('an existing group-writable home: install says so with the chmod line, and changes nothing', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+test('an existing group-writable home: refused with the chmod line, nothing installed and nothing changed', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
   const r = release(); const h = home();
   fs.chmodSync(h, 0o775);
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
-  assert.strictEqual(await run(r, io), 0, io.err);
+  assert.strictEqual(await run(r, io), 1);
   assert.strictEqual(fs.statSync(h).mode & 0o777, 0o775, 'not changed');
-  const said = io.out + io.err;
-  assert.match(said, /group- or world-writable \(mode 0775\)/);
-  assert.ok(said.includes(`chmod 700 '${fs.realpathSync.native(h)}'`) || said.includes(`chmod 700 "${fs.realpathSync.native(h)}"`) || said.includes(`chmod 700 ${fs.realpathSync.native(h)}`), said);
+  assert.deepStrictEqual(fs.readdirSync(h), [], 'nothing installed');
+  assert.ok(io.err.includes(`this home it is group- or world-writable (mode 0775), so another user could change what runs from it; run \`chmod 700 "${fs.realpathSync.native(h)}"\`, then install again`), io.err);
+  assert.match(io.err, /nothing was installed/);
+  // a path the command line can't quote safely: refused the same, with no line to paste
+  const odd = path.join(home(), 'my$home');
+  fs.mkdirSync(odd, {mode: 0o700});
+  fs.chmodSync(odd, 0o777);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: odd}, exec: npm()});
+  assert.strictEqual(await run(r, io2), 1);
+  assert.match(io2.err, /world-writable \(mode 0777\), so another user could change what runs from it\n/);
+  assert.doesNotMatch(io2.err, /chmod/);
 });
 
 test('ensureHome: a missing home and its parents made 0700 under umask 0002; one that exists left as it is; a first setting makes it the same way', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
@@ -1006,13 +1014,23 @@ test('ensureHome: a missing home and its parents made 0700 under umask 0002; one
     const h = path.join(base, 'a', 'home');
     assert.strictEqual(ensureHome(h), true);
     assert.strictEqual(fs.statSync(h).mode & 0o777, 0o700);
-    assert.strictEqual(fs.statSync(path.dirname(h)).mode & 0o777, 0o700, 'its parent too');
+    assert.strictEqual(fs.statSync(path.dirname(h)).mode & 0o777, 0o775, 'its parent as mkdir -p makes it: only the home is private');
     fs.chmodSync(h, 0o750);
     assert.strictEqual(ensureHome(h), false);
     assert.strictEqual(fs.statSync(h).mode & 0o777, 0o750, 'an existing home is not changed');
     const s = path.join(base, 'settings-home');
     withSettingsLock(layout({COUNTINGHOUSE_HOME: s}), () => 0);
     assert.strictEqual(fs.statSync(s).mode & 0o777, 0o700, 'settings\' first lock');
+    // a umask that takes the owner's own bits: the mode is set whole after mkdir
+    process.umask(0o200);
+    const w = path.join(base, 'w-home');
+    assert.strictEqual(ensureHome(w), true);
+    assert.strictEqual(fs.statSync(w).mode & 0o777, 0o700);
+    // a file written before install into a missing home (writeAtomic) makes it private too
+    process.umask(0o002);
+    const early = path.join(base, 'early-home');
+    require('../lib/atomic').writeAtomic(path.join(early, 'x.json'), '{}');
+    assert.strictEqual(fs.statSync(early).mode & 0o777, 0o700);
   } finally {
     process.umask(was);
   }
