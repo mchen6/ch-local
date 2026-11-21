@@ -51,7 +51,19 @@ const ECDSA_SHA256 = seq(oid('1.2.840.10045.4.3.2'));
 const name = (cn) => seq(set(seq(oid('2.5.4.10'), utf8('countinghouse-test'))), set(seq(oid('2.5.4.3'), utf8(cn))));
 const ext = (id, value, critical = false) => seq(oid(id), ...(critical ? [bool(true)] : []), octets(value));
 const spki = (key) => key.export({type: 'spki', format: 'der'});
-const ski = (key) => crypto.createHash('sha1').update(spki(key)).digest();
+// A key identifier (SubjectKeyIdentifier, and the AuthorityKeyIdentifier that
+// names it): the key's SHA-1 with its first byte set to 0x00. @sigstore/core
+// parses an OCTET STRING's content as nested DER whenever it can, and
+// re-encodes it canonically before checking a signature. A raw SHA-1 that
+// happens to parse with a non-minimal length (e.g. `xx 81 11 ...`) re-encodes
+// differently: the CA's self-signature then fails under @sigstore/core (Node's
+// crypto still verifies it), and every bundle under that root is
+// PROVENANCE_UNKNOWN_ROOT, about 1 random root in 150,000 (ch-local#113's run
+// 44872985445, upgrade.test's plugin step). @sigstore/core refuses tag 0x00,
+// so an identifier that starts with it is never taken apart. (RFC 5280 lets
+// the identifier be any value that identifies the key.)
+const keyIdFromDigest = (digest) => Buffer.concat([Buffer.from([0x00]), digest.subarray(1)]);
+const ski = (key) => keyIdFromDigest(crypto.createHash('sha1').update(spki(key)).digest());
 
 function certificate({serial, issuer, subject, notBefore, notAfter, publicKey, extensions, signer}) {
   const tbs = seq(ctx(0, int(2)), int(serial), ECDSA_SHA256, issuer, seq(time(notBefore), time(notAfter)), subject, spki(publicKey), ctx(3, seq(...extensions)));
@@ -163,6 +175,10 @@ function testRoot({start = new Date(Date.now() - 365 * 864e5), end = new Date(Da
     one.writeUInt16BE(sct.length, 0);
     const list = Buffer.concat([Buffer.alloc(2), one]);
     list.writeUInt16BE(one.length, 0);
+    // (the list, an OCTET STRING's content in the leaf, escapes
+    // @sigstore/core's re-parse only while its first byte, the length's high
+    // byte, is 0x00, which that parser refuses as a tag: see keyIdFromDigest)
+    if (list[0] !== 0x00) throw new Error('sigstore-fixture: an SCT list of 256 bytes or more would be parsed and re-encoded by @sigstore/core');
     const full = certificate(Object.assign({}, common, {extensions: [...base, ext('1.3.6.1.4.1.11129.2.4.2', octets(list))]}));
     return {key, der: full.der};
   };
@@ -208,4 +224,4 @@ function testRoot({start = new Date(Date.now() - 365 * 864e5), end = new Date(Da
   };
 }
 
-module.exports = {testRoot, FULCIO, purl};
+module.exports = {testRoot, FULCIO, purl, keyIdFromDigest};
