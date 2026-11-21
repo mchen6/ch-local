@@ -55,3 +55,19 @@ test('Windows: a system folder that can\'t be named is said, never thrown', asyn
     if (saved === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = saved;
   }
 });
+
+// item 32: the per-session runtime's gh lookup is by the client's PATH, with
+// a project's node_modules/.bin first in it: a gh planted there is never the
+// one run
+test('gh is looked up on a PATH without a project\'s node_modules/.bin', {skip: process.platform === 'win32' && 'POSIX'}, async () => {
+  const home = tmp('ch-ghtoken-');
+  const project = path.join(tmp('ch-ghproj-'), 'node_modules', '.bin');
+  fs.mkdirSync(project, {recursive: true});
+  fs.writeFileSync(path.join(project, 'gh'), '#!/bin/sh\necho planted\n', {mode: 0o755});
+  const seen = [];
+  const exec = async (cmd, args, opts) => { seen.push(opts.env.PATH); return {status: 0, stdout: `${TOKEN}\n`}; };
+  await ghToken({env: {PATH: `${project}:/usr/bin:/bin`}, platform: process.platform, exec}, home);
+  assert.strictEqual(seen.length, 1);
+  assert.ok(!seen[0].split(':').includes(project), seen[0]);
+  assert.ok(seen[0].split(':').includes('/usr/bin'));
+});

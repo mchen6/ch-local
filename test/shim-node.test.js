@@ -477,3 +477,36 @@ test('runtimeEnv: the locale and extras by any case on win32; never a proxy vari
   const posix = shimConfig.runtimeEnv({PATH: '/bin', HTTPS_PROXY: 'http://proxy.example:3128', no_proxy: 'localhost', ALL_PROXY: 'x', NODE_USE_ENV_PROXY: '1'}, 'linux');
   assert.deepStrictEqual(Object.keys(posix), ['PATH']);
 });
+
+// item 32 (Matt, back in release 1): the PATH ch-local gives the shared
+// runtime (shim.json's, the daemon's and every runtime's environment) leaves
+// out what a project or another user could put a `gh` in: node_modules/.bin,
+// node-gyp-bin, relative and empty entries, and any folder group- or
+// world-writable without the sticky bit
+test('the runtime\'s PATH leaves out a project\'s tools, relative and empty entries, and folders others can write in', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-path-')));
+  const project = path.join(root, 'project', 'node_modules', '.bin');
+  fs.mkdirSync(project, {recursive: true});
+  const gyp = path.join(root, 'npm', 'node-gyp-bin');
+  fs.mkdirSync(gyp, {recursive: true});
+  const open = path.join(root, 'open');
+  fs.mkdirSync(open);
+  fs.chmodSync(open, 0o777);
+  const sticky = path.join(root, 'sticky');
+  fs.mkdirSync(sticky);
+  fs.chmodSync(sticky, 0o1777);
+  const good = path.join(root, 'bin');
+  fs.mkdirSync(good, {mode: 0o755});
+  fs.chmodSync(good, 0o755);
+  try {
+    const PATH = [project, gyp, 'relative/bin', '', open, sticky, good, '/usr/bin'].join(':');
+    const env = shimConfig.allowedEnv({PATH, HOME: '/home/dev'}, process.platform);
+    assert.strictEqual(env.PATH, [sticky, good, '/usr/bin'].join(':'));
+    const body = shimConfig.shimJsonFor({node: process.execPath, home: '/home/dev/.countinghouse', env: {PATH}, platform: process.platform});
+    assert.strictEqual(body.env.PATH, env.PATH, 'shim.json the same');
+    assert.deepStrictEqual(shimConfig.pathLeftOut(PATH, process.platform), [project, gyp, 'relative/bin', open]);
+  } finally {
+    fs.chmodSync(open, 0o700);
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
