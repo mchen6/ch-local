@@ -52,7 +52,7 @@ test('the triage skill: every reason the tool is missing, and the launcher\'s co
   const skill = fs.readFileSync(path.join(PLUGIN, 'skills', 'ci-failure-triage', 'SKILL.md'), 'utf8');
   assert.ok(!/the launcher is not installed/.test(skill));
   assert.match(skill, /a module without its credential does not load/);
-  assert.ok(!/(?<![/\\.])\bch-local (?:credentials|install|add-module|status)\b/.test(skill.replace(/ch-local\.js/g, '')), 'no bare ch-local command');
+  assert.ok(!/\bch-local [a-z]/.test(skill.replace(/ch-local\.js/g, '').replace(/@countinghouse\/ch-local/g, '')), 'no bare ch-local command');
   assert.ok(skill.includes('`node "<home>/bin/ch-local.js" credentials add ch-access-github`'));
 });
 
