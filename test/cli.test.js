@@ -184,3 +184,11 @@ test('add-module run with no terminal (pipes both ways) is refused, naming the c
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// the medium on the install hints, 6: one rule, one answer
+test('install --unreleased-pins with no --pack says why, not the whole usage', () => {
+  const r = run(['install', '--unreleased-pins', 'f'], {});
+  assert.strictEqual(r.status, 2);
+  assert.match(r.stderr, /--unreleased-pins reinstalls only with the pack it is for: pass --pack <name> with it/);
+  assert.doesNotMatch(r.stderr, /usage:/);
+});

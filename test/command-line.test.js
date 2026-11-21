@@ -144,11 +144,19 @@ test('terminalText: every control or format character is ?; a cut keeps whole co
 test('every ch-local command a hint prints parses as the command line takes it', () => {
   const {parseCommand} = require('../bin/ch-local.js');
   const CALL = /chLocal\(\s*[^,()]+,\s*(['`])((?:\\.|(?!\1)[^\\])*)\1/g;
-  const files = [...fs.readdirSync(LIB).filter((n) => n.endsWith('.js') && n !== 'command-line.js').map((n) => path.join(LIB, n)), BIN];
+  // (every .js under lib/, its subdirectories too, and the CLI)
+  const walk = (d) => fs.readdirSync(d, {withFileTypes: true}).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith('.js') && e.name !== 'command-line.js' ? [path.join(d, e.name)] : []);
+  const files = [...walk(LIB), BIN];
   const seen = [];
+  const unread = [];
   const bad = [];
   for (const file of files) {
     const text = fs.readFileSync(file, 'utf8');
+    // a call the pattern can't read (a first argument with ( or ,, a
+    // command that is not a literal) is a failure too, the medium's 8
+    const calls = (text.match(/\bchLocal\(/g) || []).length - (text.match(/function chLocal\(/g) || []).length;
+    const read = [...text.matchAll(CALL)].length;
+    if (read !== calls) unread.push(`${path.relative(LIB, file)}: ${calls - read} chLocal call(s) not read`);
     for (const m of text.matchAll(CALL)) {
       // (a template's ${...} and a <placeholder> each stand for one word)
       const line = m[2].replace(/\$\{[^}]*\}/g, 'x').replace(/<[^>]*>/g, 'x');
@@ -159,9 +167,10 @@ test('every ch-local command a hint prints parses as the command line takes it',
   }
   assert.ok(seen.length >= 40, `the scan found ${seen.length} hints: it reads them`);
   assert.ok(seen.includes('install'), 'the bare install hint is among them');
+  assert.deepStrictEqual(unread, [], 'every chLocal call is read');
   assert.deepStrictEqual(bad, [], `hints that do not parse:\n${bad.join('\n')}`);
   // and the parser refuses what it should (the pin is not vacuous)
-  for (const argv of [['install', 'extra'], ['install', '--unreleased-pins', 'f'], ['nope'], ['status', 'x'], ['credentials', 'add']]) {
+  for (const argv of [['install', 'extra'], ['nope'], ['status', 'x'], ['credentials', 'add']]) {
     assert.strictEqual(parseCommand(argv), null, argv.join(' '));
   }
 });

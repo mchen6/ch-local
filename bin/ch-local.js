@@ -74,9 +74,8 @@ function parseCommand(argv) {
     case 'install': {
       const a = parse(rest, {values: ['--pack', '--from', '--unreleased-pins']});
       if (a == null || a.positional.length > 0) return null;
-      // (no --pack: reinstall what the record lists; --unreleased-pins only
-      // with the pack it is for)
-      if (a.values['--pack'] === undefined && a.values['--unreleased-pins'] !== undefined) return null;
+      // (no --pack: reinstall what the record lists; install says why
+      // --unreleased-pins needs one, the medium on the install hints, 6)
       return {command, pack: a.values['--pack'], from: a.values['--from'], unreleasedPins: a.values['--unreleased-pins']};
     }
     case 'add-pack': {
@@ -184,10 +183,12 @@ async function main(argv, io) {
     if (command === 'snippet') return snippetCommand(p.client, io);
     if (command === 'install') {
       const code = await require('../lib/install').install({pack: p.pack, from: p.from, unreleasedPins: p.unreleasedPins}, io);
-      // asked once whether to turn automatic upgrades on (off with no terminal)
-      if (code === 0) await require('../lib/upgrade').offerAuto(io);
-      // the last line: what to do next (A-firstrun d1)
-      if (code === 0) io.stdout.write(`${require('../lib/next-steps').READY_LINE}\n`);
+      // asked once whether to turn automatic upgrades on (off with no
+      // terminal), and the last line, what to do next (A-firstrun d1): a
+      // first install's, never a reinstall's, which asks nothing (the
+      // medium on the install hints, 10)
+      if (code === 0 && p.pack !== undefined) await require('../lib/upgrade').offerAuto(io);
+      if (code === 0 && p.pack !== undefined) io.stdout.write(`${require('../lib/next-steps').READY_LINE}\n`);
       return code;
     }
     if (command === 'add-pack') {
