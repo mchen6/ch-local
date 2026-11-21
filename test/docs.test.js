@@ -106,5 +106,5 @@ test('the Claude Code page\'s updates: the read-only check, the user installs, C
     'an upgrade runs new code with your keys, so an agent never runs it for you',
     'claude plugin marketplace update ch-packs claude plugin update ch-packs@ch-packs', 'then restart Claude Code',
     'The plugin comes from this repository\'s marketplace entry (`.claude-plugin/marketplace.json`), not from the npm release whose provenance `upgrade` checks.',
-    'the code that runs with your keys comes only through the checked upgrade']) assert.ok(section.includes(s), s);
+    'It carries the skills, the MCP entry and a small launcher script (bin/launch.js) that starts the installed countinghouse. That script runs as you, so the plugin\'s source matters as much as the release\'s; countinghouse itself and your packs come only through the checked upgrade.']) assert.ok(section.includes(s), s);
 });
