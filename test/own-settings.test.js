@@ -42,7 +42,8 @@ module.exports = {
 const SVC = 'urn:countinghouse-test:serviceID:toolService';
 const MINE = {units: {type: 'enum', values: ['metric', 'imperial'], default: 'metric', title: 'Units'},
   shareStats: {type: 'boolean', default: false, confirm: true, title: 'Share stats'}};
-async function installed() {
+// ceiling: the runtime ceiling reader's answer (as settings-modules stubs it)
+async function installed({ceiling = null} = {}) {
   const base = fs.realpathSync.native(tmp('ch-ownset-'));
   const home = path.join(base, 'home');
   const r = release();
@@ -51,6 +52,18 @@ async function installed() {
   fs.mkdirSync(path.join(lib, 'fs-broker'), {recursive: true});
   fs.writeFileSync(path.join(lib, 'module-settings.js'), READER);
   fs.writeFileSync(path.join(lib, 'fs-broker', 'virtual-drive.js'), '');
+  if (ceiling != null) {
+    require('../lib/ceiling').resetForTests();
+    fs.writeFileSync(path.join(lib, 'settings-ceiling.js'), `module.exports = {readCeiling: () => (${JSON.stringify(ceiling)}),
+  moduleSettingRule: (c, pkg, setting) => {
+    const m = (c != null && c.state === 'trusted' && c.ceiling != null) ? c.ceiling.moduleSettings : null;
+    if (m == null) return null;
+    const own = (m.byModule[pkg] != null) ? m.byModule[pkg][setting] : undefined;
+    if (own != null && Object.prototype.hasOwnProperty.call(own, 'fixed')) return own;
+    if (m.conversation === false) return {conversation: false};
+    return own != null ? own : null;
+  }};\n`);
+  }
   require('../lib/module-values').resetForTests();
   const where = layout({COUNTINGHOUSE_HOME: home});
   let n = 0;
@@ -158,12 +171,16 @@ test('a declared title or description is shown with nothing that moves the curso
   assert.match(r.io.out, /\(Units\?\[2K; default a/);
 });
 
-test('an own module\'s exact name beside a pack\'s same short name is ambiguous, never taken silently (4)', async () => {
+// the reviewer on #116: an exact installed full name wins over a short-name
+// match (add-module refuses such a name now; a home from before may hold one)
+test('an installed module\'s exact full name wins over another\'s short name; the pack by its own full name', async () => {
   const h = await installed();
   h.own(MINE, 'ch-step-redact');
-  const r = await cli(h.home, ['settings', 'modules', 'ch-step-redact']);
-  assert.strictEqual(r.code, 2);
-  assert.match(r.io.err, /more than one installed module is named ch-step-redact: .*@countinghouse\/ch-step-redact.*; give the full name/);
+  const own = await cli(h.home, ['settings', 'set', 'ch-step-redact.units', 'imperial']);
+  assert.strictEqual(own.code, 0, own.io.err);
+  assert.strictEqual(fileValues(h.home)['module.ch-step-redact.units'], 'imperial');
+  const pack = await cli(h.home, ['settings', 'modules', '@countinghouse/ch-step-redact']);
+  assert.strictEqual(pack.code, 0, pack.io.err);
 });
 
 test('an own.json that cannot be read is said, not taken for no own module (5)', async () => {
@@ -175,4 +192,44 @@ test('an own.json that cannot be read is said, not taken for no own module (5)',
   assert.match(set.io.err, /your own modules could not be read \(.*own\.json/);
   const list = await cli(h.home, ['settings', 'modules']);
   assert.match(list.io.out + list.io.err, /your own modules could not be read/);
+});
+
+// the reviewer on #116, 1: a removed own module's stored name that an
+// installed module's short name also takes is ambiguous -- never the pack's
+// settings reset by the advice; module.<name> is the exact name
+test('reset of a removed own module\'s name a pack\'s short name also takes: ambiguous; module.<name> resets only the own one\'s', async () => {
+  const h = await installed();
+  h.own(MINE, 'ch-step-redact');
+  assert.strictEqual((await cli(h.home, ['settings', 'set', 'ch-step-redact.units', 'imperial'])).code, 0);
+  require('../lib/settings').writeModuleValues(h.where, {'module.@countinghouse/ch-step-redact.mode': 'tight'}, {by: 'cli'});
+  writeOwnRecord(h.where, {v: 1, modules: {}});
+  const amb = await cli(h.home, ['settings', 'reset', 'ch-step-redact']);
+  assert.strictEqual(amb.code, 2);
+  assert.match(amb.io.err, /ch-step-redact names more than one module: ch-step-redact \(no longer installed; its settings stored\) and @countinghouse\/ch-step-redact; give module\.<full name>/);
+  assert.strictEqual(fileValues(h.home)['module.@countinghouse/ch-step-redact.mode'], 'tight', 'the pack\'s setting untouched');
+  const exact = await cli(h.home, ['settings', 'reset', 'module.ch-step-redact']);
+  assert.strictEqual(exact.code, 0, exact.io.err);
+  assert.strictEqual(fileValues(h.home)['module.ch-step-redact.units'], undefined);
+  assert.strictEqual(fileValues(h.home)['module.@countinghouse/ch-step-redact.mode'], 'tight');
+});
+
+// the reviewer on #116: the operator's ceiling binds an own module's
+// settings as a pack's -- fixed, confirm, untrusted
+test('the ceiling on an own module: a fixed value refuses, a confirm asks, an untrusted ceiling changes nothing', async () => {
+  const fixed = await installed({ceiling: {state: 'trusted', file: '/etc/c.json', ceiling: {forbid: [], moduleSettings: {conversation: true, byModule: {'my-tool': {units: {fixed: 'metric'}}}}}}});
+  fixed.own();
+  const f = await cli(fixed.home, ['settings', 'set', 'my-tool.units', 'imperial']);
+  assert.strictEqual(f.code, 2);
+  assert.match(f.io.err, /units for my-tool is fixed by this machine's operator ceiling/);
+  const conf = await installed({ceiling: {state: 'trusted', file: '/etc/c.json', ceiling: {forbid: [], moduleSettings: {conversation: true, byModule: {'my-tool': {units: {confirm: true}}}}}}});
+  conf.own();
+  const c = await cli(conf.home, ['settings', 'set', 'my-tool.units', 'imperial'], {interactive: false});
+  assert.strictEqual(c.code, 2);
+  assert.match(c.io.err, /units for my-tool is confirmed at a terminal/);
+  const unt = await installed({ceiling: {state: 'untrusted', file: '/etc/c.json', problem: 'not this user\'s'}});
+  unt.own();
+  const u = await cli(unt.home, ['settings', 'set', 'my-tool.units', 'imperial']);
+  assert.strictEqual(u.code, 2);
+  assert.match(u.io.err, /cannot be trusted/);
+  assert.strictEqual(fileValues(unt.home)['module.my-tool.units'], undefined);
 });

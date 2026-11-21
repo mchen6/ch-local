@@ -359,3 +359,14 @@ test('a repair that cannot replace the old copy fails with a line after the yes'
     assert.ok(fs.existsSync(ot.markerOf(where, 'my-tool', tree)), 'the old copy stays marked');
   } finally { fs.chmodSync(file, 0o444); }
 });
+
+// the reviewer on #116 (a): an own name equal to an installed module's
+// short name is refused (one name, one module, in every command)
+test('an own name that is an installed module\'s short name is refused', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'), {name: 'ch-step-redact', friendlyName: 'my-redact'});
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /ch-step-redact is the short name of @countinghouse\/ch-step-redact here: give your module another name in its package\.json\./);
+  assert.deepStrictEqual(io.asked, []);
+});
