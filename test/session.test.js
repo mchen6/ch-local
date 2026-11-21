@@ -54,7 +54,8 @@ const NO_PROBE = !POSIX || (process.env.CI == null && spawnSync('cc', ['--versio
 
 // a home of this user's (0700) holding a valid record, with or without a
 // shim recorded, and the shim placed as install places it (or not)
-function home({recorded = true, placed = true, body = null} = {}) {
+const sha512 = (b) => require('node:crypto').createHash('sha512').update(b).digest('hex');
+function home({recorded = true, placed = true, body = null, version = '0.5.0'} = {}) {
   const h = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-session-')));
   roots.push(h);
   fs.chmodSync(h, 0o700);
@@ -64,8 +65,12 @@ function home({recorded = true, placed = true, body = null} = {}) {
   if (placed) {
     fs.mkdirSync(path.join(h, 'shim'), {mode: 0o700});
     fs.chmodSync(path.join(h, 'shim'), 0o700);
-    fs.writeFileSync(path.join(h, 'shim', EXE), body != null ? body : nativeProbe(), {mode: 0o755});
+    const bin = body != null ? Buffer.from(body) : nativeProbe();
+    fs.writeFileSync(path.join(h, 'shim', EXE), bin, {mode: 0o755});
     fs.chmodSync(path.join(h, 'shim', EXE), 0o755);
+    // (which version it is, by its content, as install writes it)
+    fs.writeFileSync(path.join(h, 'shim', 'versions.json'), JSON.stringify({[sha512(bin)]: version}) + '\n', {mode: 0o600});
+    fs.chmodSync(path.join(h, 'shim', 'versions.json'), 0o600);
   }
   return h;
 }
@@ -265,6 +270,8 @@ test('a home the daemon would refuse (0775 under umask 0002): the session\'s own
   fs.chmodSync(path.join(h, 'shim'), 0o700);
   fs.copyFileSync(path.join(good, 'shim', EXE), path.join(h, 'shim', EXE));
   fs.chmodSync(path.join(h, 'shim', EXE), 0o755);
+  fs.copyFileSync(path.join(good, 'shim', 'versions.json'), path.join(h, 'shim', 'versions.json'));
+  fs.chmodSync(path.join(h, 'shim', 'versions.json'), 0o600);
   assert.strictEqual(require('../lib/home').homeOwnershipProblem(h) != null, true, 'the daemon\'s check refuses it');
   const c = choose(h);
   assert.strictEqual(c.shim, null);
@@ -275,4 +282,58 @@ test('a home the daemon would refuse (0775 under umask 0002): the session\'s own
   assert.match(r.err, /the shared runtime can't use .*chmod 700/);
   assert.match(r.err, /no pack is installed/, 'the own runtime ran (this home has no pack)');
   assert.notStrictEqual(r.code, 2, 'not refused as a usage error');
+});
+
+// the reviewer's high on #120, round 2
+test('a home another user owns starts nothing, on either path (exit 2): never the shim, never the own runtime', {skip: !POSIX}, async() => {
+  const session = require('../lib/session');
+  const start = require('../lib/start');
+  const real = start.start;
+  let started = false;
+  start.start = async() => { started = true; return 0; };
+  try {
+    const h = home();
+    const other = () => fs.statSync(h).uid + 1;
+    const io = {env: {COUNTINGHOUSE_HOME: h}, homedir: () => '/nowhere', platform: process.platform, geteuid: other,
+      execve: () => assert.fail('no exec'), shimSpawn: () => assert.fail('no spawn')};
+    // (--home's path, and the plugin's, the home rule)
+    assert.strictEqual(await session.session({home: h}, io), 2);
+    assert.strictEqual(await session.session({home: null}, io), 2);
+    assert.strictEqual(started, false, 'no runtime of its own either');
+    assert.match(session.ownerProblem(h, process.platform, {geteuid: other}), /it is owned by uid \d+, not this user/);
+    assert.strictEqual(session.ownerProblem(h), null, 'this user\'s own');
+    // (Windows: by the owner's SID)
+    const sid = (owner) => ({fileAcl: () => ({owner, user: 'S-1-5-21-9', otherAces: false, rules: []})});
+    assert.strictEqual(session.ownerProblem(h, 'win32', {acl: sid('S-1-5-21-9')}), null);
+    assert.strictEqual(session.ownerProblem(h, 'win32', {acl: sid('S-1-5-32-544')}), null, 'Administrators');
+    assert.match(session.ownerProblem(h, 'win32', {acl: sid('S-1-5-21-7')}), /owned by S-1-5-21-7, not this user/);
+  } finally {
+    start.start = real;
+  }
+});
+
+test('the shim in place must be the version the record names (versions.json, by sha512): a rollback between its record and its alignShim runs no other release\'s shim', {skip: NO_PROBE}, () => {
+  // (the restored record names 0.4.0; the shim in place is still 0.5.0's)
+  const h = home({version: '0.5.0'});
+  const rec = JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'));
+  rec.shim.version = '0.4.0';
+  fs.writeFileSync(path.join(h, 'modules.json'), JSON.stringify(rec));
+  const c = choose(h);
+  assert.strictEqual(c.shim, null);
+  assert.match(c.note, /the shared runtime's shim in place is not the one the installed release records \(0\.4\.0\); this session runs its own runtime/);
+  // no versions.json (or one that is not this user's own): none is known
+  const bare = home();
+  fs.rmSync(path.join(bare, 'shim', 'versions.json'));
+  assert.strictEqual(choose(bare).shim, null);
+  const loose = home();
+  fs.chmodSync(path.join(loose, 'shim', 'versions.json'), 0o644);
+  assert.strictEqual(choose(loose).shim, null);
+});
+
+test('a shim that can\'t be run from where it is (a noexec mount: EACCES at access X_OK) is never exec\'d: the own runtime, said', {skip: NO_PROBE}, () => {
+  const h = home();
+  const c = sessionChoice({where: layout({COUNTINGHOUSE_HOME: h}, os.homedir), access: () => { throw Object.assign(new Error('noexec'), {code: 'EACCES'}); }});
+  assert.strictEqual(c.shim, null);
+  assert.match(c.note, /the shared runtime's shim can't be run from .*shim \(EACCES; a folder mounted noexec\?\); this session runs its own runtime/);
+  assert.strictEqual(choose(h).shim, path.join(h, 'shim', EXE), 'and with access, the shim');
 });
