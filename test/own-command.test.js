@@ -279,3 +279,28 @@ test('settings an own module declares are said not to be adjustable in this rele
   await addModule({dir: writeModule(path.join(base, 'work', 'other'), {name: 'my-other', friendlyName: 'my-other'})}, plainOne, {where});
   assert.ok(!/Settings an own module/.test(plainOne.out));
 });
+
+test('nothing installed (no record): add-module says to install first; nothing copied (#113 high, 3)', async () => {
+  const {base, home, where} = setup();
+  fs.rmSync(where.modulesRecord);
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /nothing is installed yet: run `.*install --pack <name>` first; your own modules run with what it installs\./);
+  assert.deepStrictEqual(io.asked, []);
+  assert.strictEqual(readOwnRecord(where), null);
+});
+
+test('calls listed twice or more than 256: refused before the yes, nothing copied (#113 high, 4)', async () => {
+  const {base, home, where} = setup();
+  const twice = writeModule(path.join(base, 'work', 'twice'), {calls: ['ch-access-github/s.ch_access_github', 'ch-access-github/s.ch_access_github']});
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir: twice}, io, {where}), 2);
+  assert.match(io.err, /my-tool lists the call ch-access-github\/s\.ch_access_github twice: list each call once in its package\.json\./);
+  const many = writeModule(path.join(base, 'work', 'many'), {calls: Array.from({length: 257}, (_, i) => `ch-x${i}/s.go`)});
+  const io2 = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir: many}, io2, {where}), 2);
+  assert.match(io2.err, /my-tool lists more than 256 calls: an own module lists at most 256\./);
+  assert.deepStrictEqual([io.asked, io2.asked], [[], []]);
+  assert.strictEqual(readOwnRecord(where), null);
+});

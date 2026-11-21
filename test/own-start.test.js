@@ -132,3 +132,14 @@ test('a home with own modules and no pack starts, loading them; with neither, st
   assert.deepStrictEqual(after(f.spawned[0].args, '--loadModule'), [ownTree.copyDir(where, 'my-tool', tree)]);
   assert.ok(f.err.includes(`ch-local: own modules: my-tool ${tree.slice(0, 12)}\n`), f.err);
 });
+
+// the reviewer's high on #113, 3: a home with own.json and no modules.json
+test('own.json and no record: start says to install, never crashes', async () => {
+  const {home, where, addOwn} = ownHome({packs: false});
+  addOwn('my-tool');
+  fs.rmSync(where.modulesRecord);
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: []}, f), 1);
+  assert.match(f.err, /no pack is installed|nothing is installed/);
+  assert.strictEqual(f.spawned.length, 0);
+});
