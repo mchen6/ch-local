@@ -33,6 +33,9 @@ async function installed() {
   const io = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io(), r.allow), 0);
   const where = layout({COUNTINGHOUSE_HOME: home});
+  // the installed runtime can enforce here, Windows included (countinghouse#195)
+  fs.mkdirSync(path.join(where.app, 'node_modules', 'countinghouse', 'lib', 'fs-broker'), {recursive: true});
+  fs.writeFileSync(path.join(where.app, 'node_modules', 'countinghouse', 'lib', 'fs-broker', 'virtual-drive.js'), '');
   // an own module, placed and recorded as add-module does it
   const own = (name, friendlyName) => {
     const c = ownTree.checkFolder(writeModule(path.join(base, 'work', name), {name, friendlyName}), home);

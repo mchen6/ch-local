@@ -22,6 +22,7 @@ function writeModule(dir, {name = 'my-tool', friendlyName = 'my-tool', calls = [
   fs.writeFileSync(path.join(dir, 'handlers', 'toolService', 'run.js'), `module.exports = async () => ({output: {ok: true}});\n${extra}`);
   return fs.realpathSync.native(dir);
 }
+const enforceFile = (where) => path.join(where.app, 'node_modules', 'countinghouse', 'lib', 'fs-broker', 'virtual-drive.js');
 function setup() {
   const base = fs.realpathSync.native(tmp('ch-owncmd-'));
   const home = path.join(base, 'home');
@@ -29,6 +30,10 @@ function setup() {
   fs.chmodSync(home, 0o700);
   installedHome(home, ['ci-failure-triage']);
   const where = layout({COUNTINGHOUSE_HOME: home});
+  // the installed runtime can enforce here, Windows included (its
+  // fs-broker virtual drive: countinghouse#195; lib/sandbox-support.js)
+  fs.mkdirSync(path.join(where.app, 'node_modules', 'countinghouse', 'lib', 'fs-broker'), {recursive: true});
+  fs.writeFileSync(enforceFile(where), '');
   return {base, home, where};
 }
 const ioWith = (home, answers, interactive = true) => Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}, answers}), {interactive, stdoutTTY: interactive});
@@ -141,6 +146,8 @@ test('the sandbox set to audit, or one the runtime can\'t enforce here: refused 
   assert.match(io.err, /Own modules run only with the sandbox enforced: run `.*settings set moduleSandbox enforce` first\./);
   assert.deepStrictEqual(io.asked, []);
   fs.rmSync(where.settings);
+  // (an installed runtime without the virtual drive: no enforce on Windows)
+  fs.rmSync(enforceFile(where));
   const win = Object.assign(ioWith(home, ['y']), {platform: 'win32'});
   assert.strictEqual(await addModule({dir}, win, {where}), 2);
   assert.match(win.err, /Own modules run only with the sandbox enforced, and the installed runtime can't enforce it on this computer\./);
