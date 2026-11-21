@@ -568,3 +568,34 @@ test('an automatic upgrade says when the shim from before could not be set aside
     await w.close();
   }
 });
+
+// F9 (the feature audit): an own module never holds an automatic upgrade
+// back as unknown; its record and copy are kept byte for byte.
+test('an automatic upgrade with an own module installs; own.json and its copy byte for byte', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  const h = home();
+  const ownTree = require('../lib/own-tree');
+  const where = layout({COUNTINGHOUSE_HOME: h});
+  const src = path.join(fs.realpathSync.native(tmp('ch-ownsrc-')), 'my-tool');
+  fs.mkdirSync(path.join(src, 'handlers', 'toolService'), {recursive: true});
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name: 'my-tool', version: '1.0.0', countinghouse: {role: 'scenario', calls: []}}));
+  fs.writeFileSync(path.join(src, 'api.json'), JSON.stringify({device: {friendlyName: 'my-tool', serviceList: {'urn:countinghouse-test:serviceID:toolService': {actionList: [{name: 'run'}]}}}}));
+  fs.writeFileSync(path.join(src, 'handlers', 'toolService', 'run.js'), 'module.exports = async () => ({output: {}});\n');
+  const c = ownTree.checkFolder(src, h);
+  const tree = ownTree.treeHash(c.real, c.entries);
+  ownTree.placeCopy(where, 'my-tool', c.real, c.entries, tree);
+  require('../lib/own-record').writeOwnRecord(where, {v: 1, modules: {'my-tool': {tree, version: '1.0.0', friendlyName: 'my-tool', addedAt: new Date(0).toISOString(), from: c.real, calls: []}}});
+  const before = fs.readFileSync(where.ownRecord, 'utf8');
+  const copy = ownTree.copyDir(where, 'my-tool', tree);
+  const files = fs.readdirSync(copy, {recursive: true}).sort();
+  try {
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const done = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(done.outcome, 'installed', done.line);
+    assert.strictEqual(fs.readFileSync(where.ownRecord, 'utf8'), before);
+    assert.deepStrictEqual(fs.readdirSync(copy, {recursive: true}).sort(), files);
+  } finally {
+    await w.close();
+  }
+});

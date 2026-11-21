@@ -861,3 +861,55 @@ test('a release\'s notes: null, or 1 to 8 plain strings of at most 200 character
     assert.strictEqual(r.later, false, 'a known key: not a later format');
   }
 });
+
+// F9 (the feature audit): own modules survive an upgrade -- known, never an
+// unknown that holds it back, their record and copies byte for byte, and
+// still loaded after it (availability over the upgraded home).
+const ownTree = require('../lib/own-tree');
+const {writeOwnRecord} = require('../lib/own-record');
+function placeOwn(home, name) {
+  const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: home});
+  const src = path.join(fs.realpathSync.native(tmp('ch-ownsrc-')), name);
+  fs.mkdirSync(path.join(src, 'handlers', 'toolService'), {recursive: true});
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse: {role: 'scenario', calls: []}}));
+  fs.writeFileSync(path.join(src, 'api.json'), JSON.stringify({device: {friendlyName: name, serviceList: {'urn:countinghouse-test:serviceID:toolService': {actionList: [{name: 'run'}]}}}}));
+  fs.writeFileSync(path.join(src, 'handlers', 'toolService', 'run.js'), 'module.exports = async () => ({output: {}});\n');
+  const c = ownTree.checkFolder(src, home);
+  assert.strictEqual(c.problems, undefined, JSON.stringify(c.problems));
+  const tree = ownTree.treeHash(c.real, c.entries);
+  ownTree.placeCopy(where, name, c.real, c.entries, tree);
+  writeOwnRecord(where, {v: 1, modules: {[name]: {tree, version: '1.0.0', friendlyName: name, addedAt: new Date(0).toISOString(), from: c.real, calls: []}}});
+  return {where, tree};
+}
+const snapshot = (dir) => {
+  const out = {};
+  const walk = (d, rel) => { for (const e of fs.readdirSync(d, {withFileTypes: true})) { const r = path.join(rel, e.name); if (e.isDirectory()) walk(path.join(d, e.name), r); else out[r] = fs.readFileSync(path.join(d, e.name), 'utf8'); } };
+  walk(dir, '');
+  return out;
+};
+test('an upgrade with an own module: installed, not held back; own.json and its copy byte for byte; it still loads after', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
+  const o = placeOwn(s.home, 'my-tool');
+  const ownBefore = fs.readFileSync(o.where.ownRecord, 'utf8');
+  const copyBefore = snapshot(path.join(s.home, 'own'));
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0/);
+    assert.doesNotMatch(io.out + io.err, /my-tool/, 'an own module is nothing an upgrade asks or says');
+    assert.strictEqual(fs.readFileSync(o.where.ownRecord, 'utf8'), ownBefore);
+    assert.deepStrictEqual(snapshot(path.join(s.home, 'own')), copyBefore);
+    const {availability} = require('../lib/availability');
+    const seams = {ceiling: () => null, off: () => null, credential: () => null};
+    const av = availability(o.where, recordOf(s.home), {release: w.pinsDoc.pins, seams, own: {record: require('../lib/own-record').readOwnRecord(o.where), sandboxOk: true}});
+    assert.ok(av.units.some((u) => u.name === 'my-tool' && u.own === true), JSON.stringify([...av.unavailable]));
+  } finally {
+    await w.close();
+    // (an own copy is read-only: made writable to be removed)
+    const open = (d) => { fs.chmodSync(d, 0o700); for (const e of fs.readdirSync(d, {withFileTypes: true})) { const f = path.join(d, e.name); if (e.isDirectory()) open(f); else fs.chmodSync(f, 0o600); } };
+    try { open(path.join(s.home, 'own')); } catch (e) { /* none */ }
+    s.done();
+  }
+});
