@@ -33,11 +33,37 @@ node ~/.countinghouse/bin/ch-local.js add-module "<the module's folder>"
 ```
 
 (`~/.countinghouse` is the home: `$COUNTINGHOUSE_HOME` when it is set.) It
-checks the folder without running any of its code, copies it into the home,
-shows you what the module can reach, and asks you to confirm. Only a yes
-there adds it; Claude Code never runs this command for you and never answers
-its question. `countinghouse_load_module` tells the agent the same: in this
-setup it never loads a module itself.
+checks the folder without running any of its code, then shows what it is
+about to add and asks you. For a module that calls a pack's module and a
+service of its own, it looks like this:
+
+```text
+Add your own module csv-summary 1.0.0 (code fa0fb7b899ae, 3 files)?
+It runs inside the same countinghouse runtime as your packs.
+It can connect to the internet and send what it is given.
+It calls ch-access-github.
+It calls https://sheets.example.invalid; add its key with `node "…/bin/ch-local.js" credentials add csv-summary`.
+Add it? [y/N]
+```
+
+- `code` is the short hash of the module's files: what you confirm is
+  exactly what is copied and loaded.
+- "It calls <module>." names each installed module your tool calls.
+  add-module lists the modules your tool calls; it does not list which of
+  your keys those modules use.
+- "It calls <address>" is a service your module declares a key for.
+- If the module asks for file paths, network hosts or environment
+  variables, a line says so; under the enforced sandbox it gets none of
+  them.
+- If a key or data is already kept under the module's name (from an earlier
+  add), a line says the module will use them.
+
+Only a yes there adds it: "Added csv-summary (own, fa0fb7b899ae): your
+clients see it now." Claude Code never runs this command for you and never
+answers its question. `countinghouse_load_module` tells the agent the same:
+in this setup it never loads a module itself. Running it again on unchanged
+files changes nothing ("csv-summary fa0fb7b899ae is already added: nothing
+changed.").
 
 What a module needs to be added:
 
@@ -67,12 +93,22 @@ It is sent only to the address your module declares.
 
 ## Seeing and removing it
 
-`ch-local status` lists each module you added as `own`, with the short hash
-of what you confirmed, and says why one is not loaded.
+`ch-local status` lists each module you added under "own modules", with the
+short hash of what you confirmed, and either its tools or why a start would
+not load it:
+
+```text
+own modules:
+  csv-summary (own, unpinned, fa0fb7b899ae)   on; tools: summarise_csv
+```
+
+or, for example, `not loaded: calls ch-access-github, which needs a
+credential: run …`, or `not loaded: its files changed since you added it:
+run … add-module … again`.
 
 ```bash
 node ~/.countinghouse/bin/ch-local.js remove-module <module name>
 ```
 
-removes it. Its data and its key are kept, and the command says how to
-remove them too.
+removes it ("Removed csv-summary."). Its data and its key are kept, and the
+command says where the data is and how to remove the key.
