@@ -19,7 +19,9 @@ const SVC = 'urn:countinghouse-test:serviceID:toolService';
 function setup() {
   const base = fs.realpathSync.native(tmp('ch-ownstatus-'));
   const home = path.join(base, 'home');
-  fs.mkdirSync(home, {recursive: true});
+  // (private, as install makes a home: one with the umask's mode is refused)
+  fs.mkdirSync(home, {recursive: true, mode: 0o700});
+  fs.chmodSync(home, 0o700);
   installedHome(home, ['ci-failure-triage']);
   const where = layout({COUNTINGHOUSE_HOME: home});
   const dir = path.join(base, 'work', 'mine');
