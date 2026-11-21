@@ -394,6 +394,14 @@ test('placeShim "current": a link in place is refused; an unreadable versions.js
     fs.copyFileSync(copy, target);
     fs.chmodSync(path.join(home, 'shim', 'versions.json'), 0o666);
     assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_UNREADABLE');
+    // a ch-shim there that can't be read is said so, with its errno -- not
+    // "changed", which a rerun would never put right (the medium on #120)
+    fs.chmodSync(path.join(home, 'shim', 'versions.json'), 0o600);
+    if (process.getuid() !== 0) {
+      fs.chmodSync(target, 0o311);
+      assert.throws(() => placeShim(home, {status: 'current', name, version: placed.version}, {platform: w.platform}), (e) => e.code === 'SHIM_UNREADABLE' && /EACCES/.test(e.message));
+      fs.chmodSync(target, 0o755);
+    }
   } finally {
     await w.reg.close();
   }
@@ -455,6 +463,8 @@ test('a short write never places a cut binary: every byte is written, and synced
     assert.strictEqual(r.status, 'installed');
     assert.strictEqual(fs.readFileSync(r.path, 'utf8'), body, 'the whole binary, never the first 1000 bytes');
     assert.ok(seen.indexOf('fsync') !== -1 && seen.indexOf('fsync') < seen.indexOf('rename'), `synced before the rename: ${seen.join(',')}`);
+    // and the folder, after it, before install writes the record (POSIX)
+    if (process.platform !== 'win32') assert.ok(seen.lastIndexOf('fsync') > seen.indexOf('rename'), `the folder synced after the rename: ${seen.join(',')}`);
   } finally {
     Object.assign(fs, real);
     await w.reg.close();

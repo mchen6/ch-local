@@ -205,10 +205,38 @@ test('runShim without execve: the child\'s exit code; a shim that cannot start i
     });
     return child;
   };
+  const before = Object.fromEntries(['SIGTERM', 'SIGINT', 'SIGHUP'].map((sig) => [sig, process.listenerCount(sig)]));
   assert.strictEqual(await runShim('C:\\h\\shim\\ch-shim.exe', 'C:\\h', {platform: 'win32', spawn: fakeSpawn('exit'), execve: () => assert.fail('no execve on Windows')}), 7);
   assert.deepStrictEqual(calls[0], {cmd: 'C:\\h\\shim\\ch-shim.exe', args: ['--home', 'C:\\h'], stdio: 'inherit'});
   assert.strictEqual(await runShim('/h/shim/ch-shim', '/h', {platform: 'linux', spawn: fakeSpawn('exit'), execve: null}), 7, 'a Node with no execve spawns');
   assert.strictEqual(await runShim('C:\\h\\shim\\ch-shim.exe', 'C:\\h', {platform: 'win32', spawn: fakeSpawn('enoent')}), null);
+  // (no signal forwarder outlives a shim that never started, nor one that ended)
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) assert.strictEqual(process.listenerCount(sig), before[sig], sig);
   // an execve that fails (ENOEXEC, EACCES): the session's own runtime
   assert.strictEqual(await runShim('/h/shim/ch-shim', '/h', {platform: 'linux', execve: () => { throw Object.assign(new Error('nope'), {code: 'EACCES'}); }, spawn: () => assert.fail('no spawn after a failed execve')}), null);
+});
+
+test('the session\'s own runtime takes the entry\'s home as the client\'s environment would name it, not as the shim\'s hand-over (no confinement of its own)', async() => {
+  const session = require('../lib/session');
+  const start = require('../lib/start');
+  const real = start.start;
+  let got = null;
+  start.start = async(opts, io) => { got = {opts, home: io.env.COUNTINGHOUSE_HOME, stderr: io.stderr}; return 0; };
+  try {
+    const h = home({recorded: false, placed: false});
+    const io = {env: {PATH: '/usr/bin'}, homedir: () => '/nowhere', platform: process.platform, get stderr() { return 'lazy'; }};
+    assert.strictEqual(await session.session({home: h}, io), 0);
+    assert.deepStrictEqual(got.opts, {passThrough: [], home: null, ownRuntime: null}, 'start\'s --home is the shim\'s hand-over alone');
+    assert.strictEqual(got.home, h);
+    assert.strictEqual(got.stderr, 'lazy', 'io\'s getters carried');
+    assert.strictEqual(io.env.COUNTINGHOUSE_HOME, undefined, 'the caller\'s env untouched');
+  } finally {
+    start.start = real;
+  }
+});
+
+test('session takes --home once: a second is refused, never the last one taken', async() => {
+  const r = await runIt(process.execPath, [path.join(ROOT, 'bin', 'ch-local.js'), 'session', '--home', os.tmpdir(), '--home', os.tmpdir()], envWith({}));
+  assert.strictEqual(r.code, 2, r.err);
+  assert.match(r.err, /usage: ch-local/);
 });

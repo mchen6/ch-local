@@ -525,3 +525,26 @@ test('an automatic upgrade whose shim is busy says so in its line, with the way 
     await w.close();
   }
 });
+
+test('an automatic upgrade says when the shim from before could not be set aside, in its fixed words (the medium on #120)', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  const si = require('../lib/shim-install');
+  const realPrepare = si.prepareShim;
+  const realAside = si.setAside;
+  // (a release with no shim for this platform: the one before is set aside)
+  si.prepareShim = async () => ({status: 'unpinned'});
+  si.setAside = () => { throw Object.assign(new Error('EACCES: /x/shim'), {code: 'EACCES'}); };
+  try {
+    const h = home();
+    await run(h, w, {now});
+    const done = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(done.outcome, 'installed', done.line);
+    assert.match(done.line, /the shared runtime's shim from before could not be set aside: run .*install to put it right/);
+    assert.ok(!/EACCES|\/x\/shim/.test(done.line), 'no raw install line');
+  } finally {
+    si.prepareShim = realPrepare;
+    si.setAside = realAside;
+    await w.close();
+  }
+});

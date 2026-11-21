@@ -172,7 +172,8 @@ async function main(argv, io) {
       // COUNTINGHOUSE_HOME can't pick another home; the plugin's has none,
       // and takes the home rule, as its launch.js found this launcher by)
       const a = parse(rest, {values: ['--home']});
-      if (a == null || a.positional.length > 0 || (rest.includes('--home') && a.values['--home'] === undefined)) return usage();
+      // (once at most: a second --home is refused, never the last one taken)
+      if (a == null || a.positional.length > 0 || rest.filter((x) => x === '--home').length > 1) return usage();
       let home = null;
       if (a.values['--home'] !== undefined) {
         const v = a.values['--home'];
