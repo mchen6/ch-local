@@ -145,14 +145,21 @@ test('A3: the shim only when shim.json\'s node and chLocal are there; else the o
   fs.rmSync(path.join(cl, 'bin', 'ch-local.js'));
   assert.deepStrictEqual([choose(cl).shim, note('ch-local', 'chLocal: ENOENT').test(choose(cl).note)], [null, true], choose(cl).note);
   const missing = home({shimJson: false});
-  assert.deepStrictEqual([choose(missing).shim, note('Node or ch-local', 'shim\\.json: missing').test(choose(missing).note)], [null, true], choose(missing).note);
+  assert.strictEqual(choose(missing).shim, null);
+  assert.match(choose(missing).note, /^ch-local: the shared runtime's settings \(shim\.json\) can't be used \(missing\); this session runs its own runtime\. Run `[^`]+ install` to put it right\.\n$/);
   const loose = home();
   fs.chmodSync(path.join(loose, 'shim.json'), 0o644);
   assert.strictEqual(choose(loose).shim, null, 'not this user\'s own file');
-  assert.match(choose(loose).note, /\(shim\.json: NOT_PRIVATE\)/);
+  assert.match(choose(loose).note, /\(shim\.json\) can't be used \(NOT_PRIVATE\)/);
   const invalid = home();
   fs.writeFileSync(path.join(invalid, 'shim.json'), JSON.stringify({node: 'relative/node'}), {mode: 0o600});
-  assert.match(choose(invalid).note, /\(shim\.json: invalid\)/);
+  assert.match(choose(invalid).note, /\(shim\.json\) can't be used \(invalid\)/);
+  // (a directory where node was: access passes it, the check doesn't)
+  const dir = home();
+  fs.mkdirSync(path.join(dir, 'a-node-dir'));
+  writeShimJsonFor(dir, {node: path.join(dir, 'a-node-dir')});
+  assert.strictEqual(choose(dir).shim, null);
+  assert.match(choose(dir).note, /name a Node that can't be used \(node: not a file\)/);
 });
 
 test('formatProblem: ELF for this architecture on Linux, Mach-O (thin or fat) on macOS; anything else refused', () => {
