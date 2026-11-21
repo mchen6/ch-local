@@ -176,8 +176,8 @@ test('the plugin\'s path (launch.js session, the home rule) and the entry client
   const launch = path.join(ROOT, 'clients', 'claude-code', 'bin', 'launch.js');
   const stub = (h) => {
     // the home's launcher, as an install leaves it: this checkout's
-    fs.mkdirSync(path.join(h, 'bin'), {recursive: true});
-    fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`);
+    fs.mkdirSync(path.join(h, 'bin'), {recursive: true, mode: 0o700});
+    fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`, {mode: 0o600});
   };
   for (const [label, h] of [['shim recorded and in place', home()], ['shim set aside', home({recorded: false})]]) {
     stub(h);
@@ -198,8 +198,8 @@ test('the plugin\'s path (launch.js session, the home rule) and the entry client
 test('POSIX: the plugin\'s path (launch.js session) ends as one process, the shim, with its stdio blocking', {skip: NO_PROBE}, async() => {
   const launch = path.join(ROOT, 'clients', 'claude-code', 'bin', 'launch.js');
   const h = home();
-  fs.mkdirSync(path.join(h, 'bin'), {recursive: true});
-  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`);
+  fs.mkdirSync(path.join(h, 'bin'), {recursive: true, mode: 0o700});
+  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`, {mode: 0o600});
   const r = await runIt(process.execPath, [launch, 'session'], envWith({COUNTINGHOUSE_HOME: h}));
   assert.strictEqual(r.code, 0, r.err);
   assert.match(r.out, new RegExp(`^SHIM pid=${r.pid} args=--home `, 'm'), `the same pid: launch.js became the session, which became the shim: ${r.out}`);
@@ -263,10 +263,11 @@ test('session takes --home once: a second is refused, never the last one taken',
 
 // the reviewer, on #120's high round: a home made under a umask of 0002 is
 // 0775, which the shared runtime's daemon refuses (lib/home.js
-// homeOwnershipProblem); the shim would then wait on a daemon that never
-// starts, and every session die. The daemon's own check comes first here:
-// the session's own runtime, and the chmod that puts it right.
-test('a home the daemon would refuse (0775 under umask 0002): the session\'s own runtime, never the shim, the chmod said', {skip: NO_PROBE}, async() => {
+// homeOwnershipProblem). The reviewer's pre-work high (A-home-check, 2): such
+// a home lets another user change what runs from it -- the runtime that is
+// given every stored key -- so it is refused, exit 2, with the chmod that puts
+// it right; never a runtime of the session's own from it.
+test('a home another user could change (0775 under umask 0002): refused, exit 2, nothing started, the chmod said', {skip: NO_PROBE}, async() => {
   const saved = process.umask(0o002);
   let h;
   try {
@@ -290,13 +291,14 @@ test('a home the daemon would refuse (0775 under umask 0002): the session\'s own
   assert.strictEqual(require('../lib/home').homeOwnershipProblem(h) != null, true, 'the daemon\'s check refuses it');
   const c = choose(h);
   assert.strictEqual(c.shim, null);
-  assert.match(c.note, new RegExp(`the shared runtime can't use ${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: it is group- or world-writable \\(mode 0775\\); this session runs its own runtime\\. To share one, run \`chmod 700 "`));
-  // and the entry itself never ends at its --home: the session's own runtime runs
+  assert.match(c.refuse, new RegExp(`${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: it is group- or world-writable \\(mode 0775\\), so another user could change what runs from it; run \`chmod 700 "${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\``));
+  // and the entry itself: refused, exit 2, nothing started (no shim, no
+  // runtime of the session's own)
   const r = await runIt(process.execPath, [path.join(ROOT, 'bin', 'ch-local.js'), 'session', '--home', h], envWith({}));
+  assert.strictEqual(r.code, 2, r.err);
   assert.ok(!/^SHIM /m.test(r.out), r.out);
-  assert.match(r.err, /the shared runtime can't use .*chmod 700/);
-  assert.match(r.err, /no pack is installed/, 'the own runtime ran (this home has no pack)');
-  assert.notStrictEqual(r.code, 2, 'not refused as a usage error');
+  assert.match(r.err, /so another user could change what runs from it; run `chmod 700 "[^"]+"`, then start again; nothing was started/);
+  assert.doesNotMatch(r.err, /no pack is installed/, 'no runtime ran');
 });
 
 // the reviewer's high on #120, round 2

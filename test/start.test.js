@@ -64,6 +64,12 @@ function repo(origin) {
 function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/octo/widgets.git', exit = 0, cwd, platform = process.platform} = {}) {
   const f = fakeIo({env: {...env, COUNTINGHOUSE_HOME: home}, homedir: '/nowhere'});
   f.platform = platform;
+  // (Windows simulated on another OS: the home's DACL as a private one, since
+  // there is no PowerShell here to read it; on Windows the real one is read)
+  if (platform === 'win32' && process.platform !== 'win32') {
+    const ME = 'S-1-5-21-1-2-3-1001';
+    f.winAcl = {fileAcl: () => ({user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]})};
+  }
   f.pid = 4242;
   f.hostname = 'box-1';
   f.cwd = cwd !== undefined ? cwd : repo(origin);
@@ -1217,4 +1223,20 @@ test('a record of another release: the install line names the ch-local that said
   assert.strictEqual(await start({passThrough: []}, inside), 0, inside.err);
   assert.match(inside.err, /this home's record is not this ch-local's release; run `(?:node "[^"]+" |ch-local )install --pack ci-failure-triage` to bring the home to /);
   assert.ok(!inside.err.includes(self), 'the home\'s own launcher, not this one');
+});
+
+// the reviewer's pre-work high (A-home-check, 3): start, with no --home as
+// with one, runs nothing from a home another user could change: its app is
+// loaded and every stored key given to it
+test('start runs nothing from a home another user could change: exit 2, with the fix', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const home = installedHome();
+  fs.chmodSync(home, 0o777);
+  try {
+    const f = io(home);
+    assert.strictEqual(await start({passThrough: []}, f), 2, f.err);
+    assert.strictEqual(f.spawned.length, 0, 'no runtime spawned');
+    assert.match(f.err, /is group- or world-writable \(mode 0777\), so another user could change what runs from it; run `chmod 700 "[^"]+"`, then start again; nothing was started/);
+  } finally {
+    fs.chmodSync(home, 0o700);
+  }
 });

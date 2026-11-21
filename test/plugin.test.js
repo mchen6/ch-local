@@ -122,8 +122,8 @@ test('launch.js without an installed launcher exits non-zero with one line namin
 test('launch.js hands its arguments, stdio and exit code to the installed launcher', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-'));
   try {
-    fs.mkdirSync(path.join(home, 'bin'));
-    fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), "process.stdin.once('data', (d) => { process.stdout.write(JSON.stringify(process.argv.slice(2)) + ' ' + d); process.exit(7); });\n");
+    fs.mkdirSync(path.join(home, 'bin'), {mode: 0o700});
+    fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), "process.stdin.once('data', (d) => { process.stdout.write(JSON.stringify(process.argv.slice(2)) + ' ' + d); process.exit(7); });\n", {mode: 0o600});
     const r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', input: 'ping', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 7, r.stderr);
     assert.strictEqual(r.stdout, '["start","--stdio"] ping');
@@ -156,7 +156,7 @@ test('launch.js refuses a relative COUNTINGHOUSE_HOME in one line', () => {
 test('a launcher that fails at once makes launch.js fail, with something said', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-'));
   try {
-    fs.mkdirSync(path.join(home, 'bin', 'ch-local.js'), {recursive: true}); // a directory: node cannot run it
+    fs.mkdirSync(path.join(home, 'bin', 'ch-local.js'), {recursive: true, mode: 0o700}); // a directory: node cannot run it
     const r = spawnSync(process.execPath, [LAUNCH, 'start'], {encoding: 'utf8', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.notStrictEqual(r.status, 0);
     assert.ok(r.stderr.length > 0, 'something is said');
@@ -169,8 +169,8 @@ test('launch.js passes a stop on to the launcher, so no server is left running',
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-'));
   const flag = path.join(home, 'stopped');
   try {
-    fs.mkdirSync(path.join(home, 'bin'));
-    fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), `process.on('SIGTERM', () => { require('fs').writeFileSync(${JSON.stringify(flag)}, 'yes'); process.exit(0); }); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);\n`);
+    fs.mkdirSync(path.join(home, 'bin'), {mode: 0o700});
+    fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), `process.on('SIGTERM', () => { require('fs').writeFileSync(${JSON.stringify(flag)}, 'yes'); process.exit(0); }); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);\n`, {mode: 0o600});
     const {spawn} = require('node:child_process');
     const child = spawn(process.execPath, [LAUNCH, 'start'], {env: {...process.env, COUNTINGHOUSE_HOME: home}, stdio: ['pipe', 'pipe', 'inherit']});
     await new Promise((resolve) => child.stdout.once('data', resolve));
@@ -186,8 +186,8 @@ test('launch.js passes a stop on to the launcher, so no server is left running',
 test('a launcher stopped by a signal stops launch.js by the same signal, not exit 1', {skip: process.platform === 'win32' ? 'no POSIX signals on Windows' : false}, async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-'));
   try {
-    fs.mkdirSync(path.join(home, 'bin'));
-    fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);\n");
+    fs.mkdirSync(path.join(home, 'bin'), {mode: 0o700});
+    fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);\n", {mode: 0o600});
     const {spawn} = require('node:child_process');
     const child = spawn(process.execPath, [LAUNCH, 'start'], {env: {...process.env, COUNTINGHOUSE_HOME: home}, stdio: ['pipe', 'pipe', 'inherit']});
     await new Promise((resolve) => child.stdout.once('data', resolve));
@@ -259,4 +259,45 @@ test('launch.js canExec: POSIX with execve and a runnable Node only', () => {
   assert.strictEqual(canExec('win32', fn, process.execPath), false, 'Windows spawns');
   assert.strictEqual(canExec('linux', undefined, process.execPath), false, 'a Node with no execve spawns');
   assert.strictEqual(canExec('linux', fn, path.join(__dirname, 'no-such-node')), false, 'a Node that is not there spawns');
+});
+
+// The reviewer's pre-work high (A-home-check, 1): launch.js runs nothing from
+// a home another user could change -- the home, its bin/ and the launcher
+// itself checked first (POSIX: this user's, not group- or world-writable;
+// Windows: a private DACL, by the plugin's own copy of lib/win-acl.js) --
+// exit 2, naming the fix
+const homeWithLauncher = () => {
+  const h = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-')));
+  fs.mkdirSync(path.join(h, 'bin'), {mode: 0o700});
+  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), "process.stdout.write('RAN\\n');\n", {mode: 0o600});
+  return h;
+};
+const launchIn = (h) => spawnSync(process.execPath, [LAUNCH, 'session'], {env: {...process.env, COUNTINGHOUSE_HOME: h}, encoding: 'utf8', timeout: 30000});
+test('launch.js runs nothing from a home, bin/ or launcher another user could change (POSIX), exit 2 with the fix', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const ok = homeWithLauncher();
+  fs.chmodSync(ok, 0o700); fs.chmodSync(path.join(ok, 'bin'), 0o700);
+  assert.match(launchIn(ok).stdout, /RAN/, 'a private home runs');
+  for (const [what, open] of [['the home', (h) => fs.chmodSync(h, 0o777)], ['bin/', (h) => fs.chmodSync(path.join(h, 'bin'), 0o775)], ['the launcher', (h) => fs.chmodSync(path.join(h, 'bin', 'ch-local.js'), 0o666)]]) {
+    const h = homeWithLauncher();
+    fs.chmodSync(h, 0o700); fs.chmodSync(path.join(h, 'bin'), 0o700);
+    open(h);
+    const r = launchIn(h);
+    assert.strictEqual(r.status, 2, `${what}: ${r.stderr}`);
+    assert.doesNotMatch(r.stdout, /RAN/, `${what}: nothing ran`);
+    assert.match(r.stderr, /is group- or world-writable \(mode 0[0-7]{3}\), so another user could change what runs from it; run `chmod go-w "[^"]+"`/, what);
+  }
+});
+
+test('launch.js\'s home check on Windows (its ACL check, with ACLs given): a private home passes, one another user could change is refused', () => {
+  const {homeProblem} = require(LAUNCH);
+  const ME = 'S-1-5-21-1-2-3-1001';
+  const PRIVATE = {user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
+  const h = homeWithLauncher();
+  assert.strictEqual(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcl: () => PRIVATE}), null);
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcl: () => OPEN})), /is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change: icacls /);
+});
+
+test('the plugin carries lib/win-acl.js unchanged (launch.js checks a Windows home with it, never with the home\'s own code)', () => {
+  assert.strictEqual(fs.readFileSync(path.join(PLUGIN, 'bin', 'win-acl.js'), 'utf8'), fs.readFileSync(path.join(ROOT, 'lib', 'win-acl.js'), 'utf8'));
 });

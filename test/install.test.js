@@ -1372,3 +1372,20 @@ test('install with no --pack from the home\'s own launcher, whose release the re
   assert.strictEqual(await install({from: r.from}, io2, {...r.allow, release: {version: '0.3.0', security: null}}), 2);
   assert.match(io2.err, new RegExp(`this home's record names release 0\\.2\\.0, but its launcher is ch-local 0\\.3\\.0: an install or upgrade did not finish; run \`${cmd(h, 'install --pack ci-failure-triage')}\` to finish it; nothing was installed`));
 });
+
+// the reviewer's pre-work high (A-home-check, 4): on Windows too, a home
+// install makes is private (a protected DACL: makePrivateDirs), and an
+// existing one another user could change is refused (with ACLs given)
+test('Windows: install makes a new home private, and refuses an existing one another user could change (ACLs given)', () => {
+  const {ensureHome} = require('../lib/home');
+  const {unsafeHomeLine} = require('../lib/install');
+  const made = [];
+  const h = path.join(home(), 'new-home');
+  assert.strictEqual(ensureHome(h, 'win32', {makePrivateDirs: (dirs) => { made.push(...dirs); return []; }}), true);
+  assert.deepStrictEqual(made, [h], 'made private as it is made');
+  const ME = 'S-1-5-21-1-2-3-1001';
+  const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
+  const PRIVATE = {user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  assert.strictEqual(unsafeHomeLine(h, 'win32', {fileAcl: () => PRIVATE}), null);
+  assert.match(String(unsafeHomeLine(h, 'win32', {fileAcl: () => OPEN})), /^this home is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change: icacls /);
+});

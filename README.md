@@ -21,6 +21,12 @@ ownership and mode checks; otherwise (no shim for this platform, or one set
 aside because a session still used the old one) the session runs its own
 runtime, as `start --stdio`. The entry never names the shim, so it stays
 right whichever way that goes.
+A home another user could change runs nothing. That is a home that isn't
+yours, or is group- or world-writable on Linux and macOS, or has a DACL that
+isn't private on Windows. `session`, `start` and the Claude Code plugin's
+launcher each refuse it with exit 2 and name the fix (the `chmod` or `icacls`
+line). What runs from a home is given every stored key, so its code must be
+yours alone.
 
 No entry sets or forwards a credential: a module's credential is stored
 with `ch-local credentials add <module>`, bound to the one address the
