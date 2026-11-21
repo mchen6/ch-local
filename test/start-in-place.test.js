@@ -48,7 +48,7 @@ const until = async (cond, ms = 10000) => {
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null,
-  env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null} = {}) {
+  env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null, heldRetryMs = null} = {}) {
   const home = reuse != null ? reuse : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
@@ -61,6 +61,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   // test makes this process stale by giving it another (lib/packs.js
   // recordRelease)
   f.selfVersion = '0.2.0';
+  if (heldRetryMs != null) f.heldRetryMs = heldRetryMs;
   // release: the running release's allowlist, for a withdrawn pack's tests (else the shipped one)
   // (by default fakeIo's: the packs the home holds are listed)
   if (running_release != null) f.release = running_release;
@@ -1446,6 +1447,97 @@ test('a held-back list whose read failed is sent again, and taken', async () => 
   }
 });
 
+// the reviewer's round 2 on #106, 1 and 2: a retry sends only the reread
+// (never a whole apply, which would send a refused load again and say it
+// again), and a reread that keeps failing is given up after 5 tries, said
+// once, until what is held back changes
+test('a failing held-back reread is retried alone, 5 times at most, then given up until the list changes', async () => {
+  const s = await running({heldRetryMs: 20, answer: (m) => (m.type === 'reread' && m.what === 'held-back' ? {ok: false, code: 'CONTROL_FAILED'} : m.type === 'load' ? {ok: false, code: 'MODULE_INVALID'} : {ok: true})});
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    const rereads = () => s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length;
+    // (any apply sends the pending load again, as every change does, and a
+    // file watcher may fire twice for one change -- Windows did, a third
+    // load in CI. A retry that ran an apply, as round 1's did, would send
+    // one per retry: four. So the loads after the first reread are fewer
+    // than the retries.)
+    await until(() => rereads() >= 1);
+    const loads = s.requests.filter((m) => m.type === 'load').length;
+    const lines = s.history().filter((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null).length;
+    await until(() => s.f.err.includes('the runtime did not take the held-back list after 5 tries (CONTROL_FAILED)'));
+    // (given up: a later apply finds the text given up and sends no reread,
+    // so the count is final whenever it is read)
+    assert.strictEqual(rereads(), 5, 'five tries');
+    const retries = rereads() - 1;
+    assert.ok(s.requests.filter((m) => m.type === 'load').length - loads < retries, 'the refused load is not sent again by each retry');
+    assert.ok(s.history().filter((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null).length - lines < retries, 'nor recorded again by each');
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes('did not take the held-back list')).length, 1, 'said once');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on round 2, 1: a reread that reached the runtime and failed
+// leaves its list empty, so after a give-up the list it once took is sent
+// again when what is held back returns to it
+test('after a held-back list is given up, a return to the list the runtime once took is sent again', async () => {
+  let failing = false;
+  const s = await running({heldRetryMs: 20, answer: (m) => (m.type === 'reread' && m.what === 'held-back' && failing ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  try {
+    await until(() => s.args() != null);
+    const rereads = () => s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length;
+    failing = true;
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    await until(() => s.f.err.includes('the runtime did not take the held-back list after 5 tries (CONTROL_FAILED)'));
+    assert.strictEqual(rereads(), 5);
+    failing = false;
+    bindAccess(s.home);
+    await until(() => rereads() === 6);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, [], 'the list it took at start, sent again');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on round 2, 4: a pack whose load the runtime refused, then not
+// sent a load at all (here: another release's record), is named again
+test('a refused pack not sent a load in a later apply is named restart again', async () => {
+  const s = await running({answer: (m) => (m.type === 'load' ? {ok: false, code: 'MODULE_INVALID'} : {ok: true})});
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    stale(s);
+    const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
+    await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other'));
+    assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other' && e.reason === 'restart'));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// round 2, 3: a load that never reached the runtime (CONTROL_BUSY) left it
+// unloaded: named restart
+test('a pack whose load never reached the runtime is named restart', async () => {
+  const s = await running({answer: (m) => (m.type === 'load' ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true})});
+  try {
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other'));
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, [{name: '@countinghouse/ch-pack-other', reason: 'restart'}]);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // the medium on #106's round 1, 5: a load the runtime refused is not named
 // restart (whether a restart loads it is not known)
 test('a pack whose load the runtime refused is not named restart in the held-back file', async () => {
@@ -1474,7 +1566,9 @@ test('a held-back list the runtime refuses for good is not sent again until it c
     await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
     await new Promise((r) => setTimeout(r, 1500));
     assert.strictEqual(s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length, 1, 'not retried');
-    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes('the overview may not say which modules are held back')).length, 1, 'said once');
+    // (final at its first try: one line, the give-up's: the medium on round 2, 10)
+    assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes('the runtime did not take the held-back list after 1 try (CONTROL_UNKNOWN)')).length, 1, 'said once');
+    assert.ok(!s.f.err.includes('the overview may not say which modules are held back'), 'not said as passing');
   } finally {
     s.end();
     await s.done;
