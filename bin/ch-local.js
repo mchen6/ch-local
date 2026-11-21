@@ -11,6 +11,7 @@
 //   ch-local add-pack <name> --from <dir>         another pack beside the installed ones
 //   ch-local remove-pack <name>                   a pack, and the parts no other pack calls
 //   ch-local add-module <dir>                     your own module, asked in your own terminal
+//   ch-local remove-module <name>                 one of your own modules; its data and key kept
 //   ch-local status                               the installed packs, their tools and missing credentials
 //   ch-local rollback [--yes]                     back to the release the last install replaced
 //
@@ -25,6 +26,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local add-pack <name> --from <directory of tarballs>
        ch-local remove-pack <name>
        ch-local add-module <directory of your own module>
+       ch-local remove-module <name>
        ch-local status
        ch-local rollback [--yes]
        ch-local add <cursor|vscode|codex>
@@ -114,6 +116,10 @@ async function main(argv, io) {
     if (command === 'add-module') {
       if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
       return await require('../lib/own-command').addModule({dir: rest[0]}, io);
+    }
+    if (command === 'remove-module') {
+      if (rest.length !== 1 || rest[0].startsWith('--')) return usage();
+      return await require('../lib/own-command').removeModule({name: rest[0]}, io);
     }
     if (command === 'rollback') {
       const a = parse(rest, {flags: ['--yes']});

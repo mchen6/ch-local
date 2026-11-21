@@ -112,6 +112,11 @@ test('add-module over a pipe is refused, naming the command; without a folder, u
     const u = run(['add-module'], {COUNTINGHOUSE_HOME: home});
     assert.strictEqual(u.status, 2);
     assert.match(u.stderr, /ch-local add-module <directory of your own module>/);
+    // remove-module: an own module it doesn't know is refused; no name, usage
+    const rm = run(['remove-module', 'nothing-here'], {COUNTINGHOUSE_HOME: home});
+    assert.strictEqual(rm.status, 2, rm.stdout + rm.stderr);
+    assert.match(rm.stderr, /nothing-here is not one of your own modules/);
+    assert.strictEqual(run(['remove-module'], {COUNTINGHOUSE_HOME: home}).status, 2);
   } finally {
     fs.rmSync(base, {recursive: true, force: true});
   }
