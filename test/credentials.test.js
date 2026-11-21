@@ -104,7 +104,7 @@ test('remove: a key stored under COUNTINGHOUSE_GITHUB_TOKEN, read as GITHUB_TOKE
 
 // (its y/N is read hidden, as the key is: a key pasted there is never
 // echoed -- the reviewer's targeted high, 11-21)
-const GH_Q = /^Use your gh login's token for ch-access-github\? \[y\/N\] $/;
+const GH_Q = /^Use your gh login's token for ch-access-github\? \[y\/N\] \(input hidden\): $/;
 test('the gh offer: only at a terminal, with a gh login, for exactly https://api.githubcopilot.com; yes stores no value, no asks for one', POSIX, async () => {
   const h = home();
   const yes = io(h, {typed: ['y'], gh: made()});
@@ -604,5 +604,18 @@ test('standard input over the limit is refused as too long, nothing stored', asy
   f.readStdin = async () => { throw Object.assign(new Error('standard input held more than 4098 bytes'), {code: 'TOO_LONG'}); };
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, f), 2);
   assert.match(f.err, /one line of at most 4096 bytes/);
+  assert.strictEqual(bound(h), null);
+});
+
+// the medium on B-shim-allow: a read error at the y/N (a paste too long,
+// say) ends there -- the next hidden read would take the paste's buffered
+// tail as the key
+test('a y/N the terminal could not read (too long) stores nothing and asks no key', POSIX, async () => {
+  const h = home();
+  const f = io(h, {typed: made(), gh: made()});
+  f.readHidden = async (prompt) => { f.prompts = [...(f.prompts || []), prompt]; throw Object.assign(new Error('more than 4096 characters'), {code: 'TOO_LONG'}); };
+  assert.notStrictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0);
+  assert.strictEqual(f.prompts.length, 1, 'no key prompt after it');
+  assert.match(f.err, /the answer could not be read \(TOO_LONG\); nothing was stored/);
   assert.strictEqual(bound(h), null);
 });
