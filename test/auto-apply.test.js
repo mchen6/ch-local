@@ -513,7 +513,9 @@ test('an automatic upgrade on a group-writable home: not installed, said with in
     fs.chmodSync(h, 0o775);
     const r = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(r.outcome, 'failed', r.line);
-    assert.strictEqual(r.line, `ch-local ${TO} was not installed: this home is group- or world-writable (mode 0775), so another user could change what runs from it; run \`chmod 700 "${fs.realpathSync.native(h)}"\`, then install again`);
+    // (checked before the ceiling, whose reader is the home's code: so
+    // before the new version is known; the reviewer's high on #126, H1)
+    assert.strictEqual(r.line, `automatic upgrades are paused: this home is group- or world-writable (mode 0775), so another user could change what runs from it; it may already have been changed: move it aside (\`mv "${fs.realpathSync.native(h)}" "${fs.realpathSync.native(h)}.suspect"\`) and install again`);
     assert.strictEqual(fs.statSync(h).mode & 0o777, 0o775, 'not changed');
   } finally {
     await w.close();

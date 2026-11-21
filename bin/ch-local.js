@@ -66,6 +66,7 @@ function parse(argv, {flags = [], values = []}) {
 // this returns, and the hints' pin (test/command-line.test.js) parses every
 // printed command with it. Checks that read the disk (an absolute --home, a
 // directory) stay with the command.
+const ON_HOME = new Set(['add-pack', 'remove-pack', 'add-module', 'remove-module', 'rollback', 'status', 'add', 'credentials', 'uninstall', 'settings', 'upgrade']);
 function parseCommand(argv) {
   const [command, ...rest] = argv;
   const one = () => rest.length === 1 && !rest[0].startsWith('--');
@@ -180,6 +181,28 @@ async function main(argv, io) {
   if (p == null) return usage();
   const {command} = p;
   try {
+    // every command that acts on a home refuses one another user could
+    // change, here, before any of it runs (the reviewer's Fable high on
+    // #126, F5). install, session, start, daemon and conditions make their
+    // own check, with their own words; snippet acts on none.
+    // (the background check, upgrade --apply-auto, says its own paused line:
+    // the medium on #126's round 2)
+    if (ON_HOME.has(command) && !(command === 'upgrade' && p.applyAuto)) {
+      const {layout, openHomeLine} = require('../lib/home');
+      const open = openHomeLine(layout(io.env, io.homedir).home);
+      if (open != null) {
+        io.stderr.write(`ch-local: ${open}; nothing was changed\n`);
+        // (uninstall: the client entries it would remove are named from
+        // ch-local's own list of the files `add` writes, never from the home's
+        // record of them: the reviewer on #126's round 2, (6))
+        if (command === 'uninstall') {
+          const {FILES} = require('../lib/clients');
+          const files = Object.values(FILES).map((f) => f(io.homedir(), io.env));
+          io.stderr.write(`ch-local: the client entries \`add\` writes are not removed from a home that can't be trusted: remove the "countinghouse" server from each of these by hand, if it is there: ${files.join(', ')}; or move the home aside, install again, and uninstall then. (add writes no file for Claude Code or Claude Desktop: the Claude Code plugin is removed with Claude Code's own /plugin)\n`);
+        }
+        return 2;
+      }
+    }
     if (command === 'snippet') return snippetCommand(p.client, io);
     if (command === 'install') {
       const code = await require('../lib/install').install({pack: p.pack, from: p.from, unreleasedPins: p.unreleasedPins}, io);

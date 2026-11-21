@@ -176,8 +176,8 @@ test('the plugin\'s path (launch.js session, the home rule) and the entry client
   const launch = path.join(ROOT, 'clients', 'claude-code', 'bin', 'launch.js');
   const stub = (h) => {
     // the home's launcher, as an install leaves it: this checkout's
-    fs.mkdirSync(path.join(h, 'bin'), {recursive: true});
-    fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`);
+    fs.mkdirSync(path.join(h, 'bin'), {recursive: true, mode: 0o700});
+    fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`, {mode: 0o600});
   };
   for (const [label, h] of [['shim recorded and in place', home()], ['shim set aside', home({recorded: false})]]) {
     stub(h);
@@ -198,8 +198,8 @@ test('the plugin\'s path (launch.js session, the home rule) and the entry client
 test('POSIX: the plugin\'s path (launch.js session) ends as one process, the shim, with its stdio blocking', {skip: NO_PROBE}, async() => {
   const launch = path.join(ROOT, 'clients', 'claude-code', 'bin', 'launch.js');
   const h = home();
-  fs.mkdirSync(path.join(h, 'bin'), {recursive: true});
-  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`);
+  fs.mkdirSync(path.join(h, 'bin'), {recursive: true, mode: 0o700});
+  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), `require(${JSON.stringify(path.join(ROOT, 'bin', 'ch-local.js'))}).run();\n`, {mode: 0o600});
   const r = await runIt(process.execPath, [launch, 'session'], envWith({COUNTINGHOUSE_HOME: h}));
   assert.strictEqual(r.code, 0, r.err);
   assert.match(r.out, new RegExp(`^SHIM pid=${r.pid} args=--home `, 'm'), `the same pid: launch.js became the session, which became the shim: ${r.out}`);
@@ -263,10 +263,11 @@ test('session takes --home once: a second is refused, never the last one taken',
 
 // the reviewer, on #120's high round: a home made under a umask of 0002 is
 // 0775, which the shared runtime's daemon refuses (lib/home.js
-// homeOwnershipProblem); the shim would then wait on a daemon that never
-// starts, and every session die. The daemon's own check comes first here:
-// the session's own runtime, and the chmod that puts it right.
-test('a home the daemon would refuse (0775 under umask 0002): the session\'s own runtime, never the shim, the chmod said', {skip: NO_PROBE}, async() => {
+// homeOwnershipProblem). The reviewer's pre-work high (A-home-check, 2): such
+// a home lets another user change what runs from it -- the runtime that is
+// given every stored key -- so it is refused, exit 2, with the chmod that puts
+// it right; never a runtime of the session's own from it.
+test('a home another user could change (0775 under umask 0002): refused, exit 2, nothing started, the chmod said', {skip: NO_PROBE}, async() => {
   const saved = process.umask(0o002);
   let h;
   try {
@@ -290,13 +291,14 @@ test('a home the daemon would refuse (0775 under umask 0002): the session\'s own
   assert.strictEqual(require('../lib/home').homeOwnershipProblem(h) != null, true, 'the daemon\'s check refuses it');
   const c = choose(h);
   assert.strictEqual(c.shim, null);
-  assert.match(c.note, new RegExp(`the shared runtime can't use ${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: it is group- or world-writable \\(mode 0775\\); this session runs its own runtime\\. To share one, run \`chmod 700 "`));
-  // and the entry itself never ends at its --home: the session's own runtime runs
+  assert.match(c.refuse, new RegExp(`${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: it is group- or world-writable \\(mode 0775\\), so another user could change what runs from it; it may already have been changed: move it aside \\(\`mv "${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" "${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.suspect"\`\\) and install again$`));
+  // and the entry itself: refused, exit 2, nothing started (no shim, no
+  // runtime of the session's own)
   const r = await runIt(process.execPath, [path.join(ROOT, 'bin', 'ch-local.js'), 'session', '--home', h], envWith({}));
+  assert.strictEqual(r.code, 2, r.err);
   assert.ok(!/^SHIM /m.test(r.out), r.out);
-  assert.match(r.err, /the shared runtime can't use .*chmod 700/);
-  assert.match(r.err, /no pack is installed/, 'the own runtime ran (this home has no pack)');
-  assert.notStrictEqual(r.code, 2, 'not refused as a usage error');
+  assert.match(r.err, /so another user could change what runs from it; it may already have been changed: move it aside \(`mv "[^"]+" "[^"]+\.suspect"`\) and install again; nothing was started/);
+  assert.doesNotMatch(r.err, /no pack is installed/, 'no runtime ran');
 });
 
 // the reviewer's high on #120, round 2
@@ -351,4 +353,58 @@ test('a shim that can\'t be run from where it is (a noexec mount: EACCES at acce
   assert.strictEqual(c.shim, null);
   assert.match(c.note, /the shared runtime's shim can't be run from .*shim \(EACCES; a folder mounted noexec\?\); this session runs its own runtime/);
   assert.strictEqual(choose(h).shim, path.join(h, 'shim', EXE), 'and with access, the shim');
+});
+
+// the reviewer on #126 (a): the folders above a home are checked too, by
+// countinghouse #520's rule for its sqlite store, along the path as given and
+// its real path: each this user's or root's, writable by no other unless
+// sticky, nor by a group other than this user's own primary group (a
+// user-private group, as a umask of 0002 leaves them). Otherwise another user
+// could move the home away and put one of theirs in its place.
+test('a home under a folder another user could write in is refused; a sticky one, or your own group\'s, is not', {skip: !POSIX && 'POSIX modes'}, async() => {
+  const {homeOpenProblem} = require('../lib/home');
+  const under = (mode) => {
+    const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-above-')));
+    roots.push(parent);
+    const h = path.join(parent, 'home');
+    fs.mkdirSync(h, {mode: 0o700});
+    fs.chmodSync(h, 0o700);
+    fs.chmodSync(parent, mode);
+    return {parent, h};
+  };
+  const open = under(0o777);
+  const p = homeOpenProblem(open.h);
+  assert.ok(p != null, 'refused');
+  assert.match(p.why, new RegExp(`it is under ${open.parent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, and group or others can write in it \\(mode 777\\); another user could move the home away and put theirs in its place`));
+  assert.strictEqual(p.fix, `run \`chmod go-w "${open.parent}"\``);
+  assert.strictEqual(homeOpenProblem(under(0o1777).h), null, 'sticky, as /tmp');
+  assert.strictEqual(homeOpenProblem(under(0o775).h), null, 'writable by this user\'s own primary group (umask 0002)');
+  // (a folder whose path can't be quoted safely: no fix to paste, the medium on the round, 4)
+  const odd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-above-$x-')));
+  roots.push(odd);
+  fs.mkdirSync(path.join(odd, 'home'), {mode: 0o700});
+  fs.chmodSync(odd, 0o777);
+  const q = homeOpenProblem(path.join(odd, 'home'));
+  assert.ok(q != null && q.fix === null, JSON.stringify(q));
+  fs.chmodSync(odd, 0o700);
+  // and the session refuses it, exit 2, nothing started
+  const r = await runIt(process.execPath, [path.join(ROOT, 'bin', 'ch-local.js'), 'session', '--home', open.h], envWith({}));
+  assert.strictEqual(r.code, 2, r.err);
+  assert.match(r.err, /group or others can write in it \(mode 777\); another user could move the home away/);
+  assert.match(r.err, /nothing was started/);
+});
+
+// the reviewer's high on #126, L9: on Windows a session reads its home's ACL
+// once, for both of its checks (each read is a PowerShell run)
+test('Windows: session reads its home\'s ACL once for its owner and its DACL checks (ACLs given)', {skip: process.platform !== 'win32' && 'the home is judged by this machine\'s own platform'}, async() => {
+  // (no shim: the C probe is built on POSIX only, and this is a home check)
+  const h = home({placed: false});
+  const ME = 'S-1-5-21-1-2-3-1001';
+  const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
+  let reads = 0;
+  const said = [];
+  const io = {env: {}, homedir: os.homedir, platform: 'win32', winAcl: {fileAcl: () => { reads++; return OPEN; }}, stderr: {write: (s) => said.push(s)}, stdout: {write: () => true}};
+  const {session} = require('../lib/session');
+  assert.strictEqual(await session({home: h}, io), 2);
+  assert.strictEqual(reads, 1, said.join(''));
 });

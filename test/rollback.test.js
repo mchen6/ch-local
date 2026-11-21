@@ -480,3 +480,21 @@ test('L4: two packs moved as one release, and rolled back: each pack\'s versions
   assert.deepStrictEqual(at(record(home)), {'ci-failure-triage': ['0.2.0', null], other: ['0.2.0', '0.3.0']});
 });
 
+
+// the reviewer's Fable high on #126, F5: a journal names the folder it set
+// aside as previous.<8 hex>, nothing else, so a journal written by another
+// can't send the rollback's renames elsewhere
+test('an interrupted rollback\'s journal that names any other folder is refused, nothing moved', async () => {
+  const s = await upgraded();
+  await killedAfterSwap(s.home);
+  const file = path.join(s.home, 'rollback.journal');
+  const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+  j.aside = '../elsewhere';
+  fs.writeFileSync(file, JSON.stringify(j));
+  const listing = (dir) => fs.readdirSync(dir, {recursive: true}).sort();
+  const before = listing(s.home);
+  const io = rio(s.home);
+  assert.notStrictEqual(await rollback({}, io), 0);
+  assert.match(io.err, /names no folder a rollback sets aside/);
+  assert.deepStrictEqual(listing(s.home), before, 'nothing moved');
+});

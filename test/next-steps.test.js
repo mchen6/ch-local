@@ -7,7 +7,9 @@ require('./tmp-dirs');
 // not this command). The library calls are stubbed: this is the CLI's order.
 const test = require('node:test');
 const assert = require('node:assert');
-const {fakeIo} = require('./fake-io');
+const {fakeIo: rawIo, tmp} = require('./fake-io');
+// (each with a home folder of its own: a command acting on a home checks it first)
+const fakeIo = (o = {}) => rawIo({homedir: tmp('ch-next-'), ...o});
 
 const READY = 'Ready: in Claude Code, ask what countinghouse can do for you.';
 const stub = (rel, exports) => { const p = require.resolve(rel); require.cache[p] = {id: p, filename: p, loaded: true, exports}; };

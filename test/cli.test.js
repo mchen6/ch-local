@@ -114,7 +114,9 @@ test('add-module over a pipe is refused, naming the command; without a folder, u
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-own-')));
   try {
     const home = path.join(base, 'home');
-    fs.mkdirSync(home);
+    // (private, as install makes a home)
+    fs.mkdirSync(home, {mode: 0o700});
+    fs.chmodSync(home, 0o700);
     const r = spawnSync(process.execPath, [BIN, 'add-module', path.join(base, 'mine')], {encoding: 'utf8', input: 'y\n', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 2, r.stdout + r.stderr);
     assert.match(r.stderr, /add-module asks you, in your own terminal: run `.*add-module ".+mine"` there\./);
@@ -191,4 +193,66 @@ test('install --unreleased-pins with no --pack says why, not the whole usage', (
   assert.strictEqual(r.status, 2);
   assert.match(r.stderr, /--unreleased-pins reinstalls only with the pack it is for: pass --pack <name> with it/);
   assert.doesNotMatch(r.stderr, /usage:/);
+});
+
+// the reviewer's Fable high on #126, F5: every command that acts on a home
+// (but snippet, and those with their own check: install, session, start,
+// daemon, conditions) refuses one another user could change, at one place
+test('a command acting on a home another user could change refuses it, exit 2, nothing changed', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-open-'));
+  fs.chmodSync(home, 0o777);
+  try {
+    for (const args of [['status'], ['rollback', '--yes'], ['settings', 'set', 'requestTimeout', '30000'], ['credentials', 'list'], ['uninstall'], ['upgrade', '--check'], ['remove-pack', 'x']]) {
+      const r = run(args, {COUNTINGHOUSE_HOME: home});
+      assert.strictEqual(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
+      assert.match(r.stderr, /so another user could change what runs from it/, args.join(' '));
+      assert.match(r.stderr, /nothing was changed/, args.join(' '));
+    }
+    assert.deepStrictEqual(fs.readdirSync(home), [], 'nothing written into it');
+  } finally {
+    fs.chmodSync(home, 0o700);
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the medium on #126's round 2: the background check (upgrade --apply-auto)
+// says its own paused line on an open home, exit 0, never the gate's exit 2,
+// which its parent would take for a failed check and retry
+test('upgrade --apply-auto on a home another user could change: paused, said, exit 0', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-open-auto-'));
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {autoUpgrade: true}}));
+  fs.chmodSync(home, 0o777);
+  try {
+    const r = run(['upgrade', '--apply-auto'], {COUNTINGHOUSE_HOME: home});
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^automatic upgrades are paused: this home is group- or world-writable/m);
+  } finally {
+    fs.chmodSync(home, 0o700);
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the reviewer on #126's round 2, (6): uninstall stays refused on an open
+// home (installed-clients.json, which names the files it would edit, lives
+// in it), but says which client entries to remove by hand, from ch-local's
+// own list of the files `add` writes, never read from the home
+test('uninstall on a home another user could change names the client entries to remove by hand', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const user = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-user-'));
+  const home = path.join(user, '.countinghouse');
+  fs.mkdirSync(home, {mode: 0o700});
+  fs.chmodSync(home, 0o777);
+  try {
+    const r = run(['uninstall'], {COUNTINGHOUSE_HOME: home, HOME: user, CODEX_HOME: ''});
+    assert.strictEqual(r.status, 2, r.stderr);
+    for (const f of [path.join(user, '.cursor', 'mcp.json'), path.join(user, '.copilot', 'mcp-config.json'), path.join(user, '.codex', 'config.toml')]) assert.ok(r.stderr.includes(f), `${f}: ${r.stderr}`);
+    assert.match(r.stderr, /remove the "countinghouse" server from each of these by hand, if it is there/);
+    assert.match(r.stderr, /or move the home aside, install again, and uninstall then/);
+    // (every file add writes is listed: it writes none for Claude Code or
+    // Claude Desktop, whose plugin Claude Code itself removes)
+    assert.deepStrictEqual(Object.keys(require('../lib/clients').FILES).sort(), ['codex', 'cursor', 'vscode']);
+    assert.match(r.stderr, /the Claude Code plugin is removed with Claude Code's own \/plugin/);
+  } finally {
+    fs.chmodSync(home, 0o700);
+    fs.rmSync(user, {recursive: true, force: true});
+  }
 });

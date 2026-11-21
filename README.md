@@ -21,6 +21,30 @@ ownership and mode checks; otherwise (no shim for this platform, or one set
 aside because a session still used the old one) the session runs its own
 runtime, as `start --stdio`. The entry never names the shim, so it stays
 right whichever way that goes.
+A home must be yours alone, because what runs from it is given every stored
+key. On Linux and macOS it must be yours and private (`0700`, as install makes
+it); on Windows its DACL must be private. `install` refuses any other home
+(exit 1), and `session`, `start` and the Claude Code plugin's launcher refuse
+it with exit 2. Each names the fix. For a home only too open to read (`0755`)
+that is the `chmod 700` line, and on Windows the `icacls` lines. On Linux and
+macOS, a home that others could write in may already have been changed, so the
+fix is to move it aside and install again, never a `chmod` that would trust
+what is in it. The plugin's launcher, and a ch-local run
+from outside the home (npx, a checkout), check the home before running any of
+its code. An entry that runs the home's own launcher (`node <home>/bin/ch-local.js
+session …`, as the other clients' snippets do) runs the home's code first, and
+that code makes the same check, so it protects a home only while the home is
+still yours. Keep it private from the start, as install makes it.
+The folders above the home are checked too, along its path and
+its real path. On Linux and macOS each must be yours or root's, and writable
+by no one else, except a sticky one such as `/tmp` or your own primary
+group's. Otherwise another user could move the home away and put theirs in
+its place. Your primary group is accepted because most Linux systems give each
+user a private group of their own, and a umask of `0002` leaves the folders in
+a home group-writable with no one else in that group. If your primary group
+is shared with other users, keep the home under folders that group can't
+write in. On Windows the folders above the home are not checked: keep it under
+your own profile.
 
 No entry sets or forwards a credential: a module's credential is stored
 with `ch-local credentials add <module>`, bound to the one address the

@@ -120,7 +120,9 @@ test('snippet, add and uninstall run with the network stubbed to throw', async (
   globalThis.fetch = () => { throw new Error('network call'); };
   try {
     const home = path.join(user, '.countinghouse');
-    fs.mkdirSync(path.join(home, 'bin'), {recursive: true});
+    // (private, as install makes a home)
+    fs.mkdirSync(path.join(home, 'bin'), {recursive: true, mode: 0o700});
+    fs.chmodSync(home, 0o700);
     fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), '');
     const run = async (argv, answers) => { const io = fakeIo({env: {}, homedir: user, answers}); const code = await main(argv, io); return {code, io}; };
     for (const [argv, answers] of [[['snippet', 'cursor']], [['add', 'cursor']], [['uninstall'], ['yes']]]) {
