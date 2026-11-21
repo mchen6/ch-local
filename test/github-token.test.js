@@ -37,3 +37,17 @@ test('a home another user could change gets no gh token, and gh is not run', {sk
     fs.chmodSync(home, 0o700);
   }
 });
+
+// the medium on #126's round 2: a Windows folder that can't be found is a
+// reason, never a throw (start, status and credentials add await this)
+test('Windows: a system folder that can\'t be named is said, never thrown', async () => {
+  const saved = process.env.SystemRoot;
+  process.env.SystemRoot = '\\\\server\\share';
+  try {
+    const r = await ghToken({env: {}, platform: 'win32', exec: async () => assert.fail('gh not run')}, tmp('ch-ghtoken-'));
+    assert.strictEqual(r.token, undefined);
+    assert.match(String(r.why), /could not be found/);
+  } finally {
+    if (saved === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = saved;
+  }
+});

@@ -185,7 +185,9 @@ async function main(argv, io) {
     // change, here, before any of it runs (the reviewer's Fable high on
     // #126, F5). install, session, start, daemon and conditions make their
     // own check, with their own words; snippet acts on none.
-    if (ON_HOME.has(command)) {
+    // (the background check, upgrade --apply-auto, says its own paused line:
+    // the medium on #126's round 2)
+    if (ON_HOME.has(command) && !(command === 'upgrade' && p.applyAuto)) {
       const {layout, openHomeLine} = require('../lib/home');
       const open = openHomeLine(layout(io.env, io.homedir).home);
       if (open != null) { io.stderr.write(`ch-local: ${open}; nothing was changed\n`); return 2; }

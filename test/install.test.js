@@ -1529,3 +1529,13 @@ test('only lib/ceiling.js says "the operator\'s ceiling file": an open home is s
   const found = fs.readdirSync(lib).filter((f) => f.endsWith('.js') && f !== 'ceiling.js' && /the operator's ceiling file \$\{/.test(fs.readFileSync(path.join(lib, f), 'utf8')));
   assert.deepStrictEqual(found, []);
 });
+
+test('a home path that is a file is "not a directory", with no fix that fits a folder (the medium on round 2, 8)', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const {homeOpenProblem} = require('../lib/home');
+  const f = path.join(home(), 'file-home');
+  fs.writeFileSync(f, 'x');
+  for (const mode of [0o666, 0o644]) {
+    fs.chmodSync(f, mode);
+    assert.deepStrictEqual(homeOpenProblem(f), {why: 'it is not a directory', fix: null}, mode.toString(8));
+  }
+});

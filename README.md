@@ -26,9 +26,10 @@ key. On Linux and macOS it must be yours and private (`0700`, as install makes
 it); on Windows its DACL must be private. `install` refuses any other home
 (exit 1), and `session`, `start` and the Claude Code plugin's launcher refuse
 it with exit 2. Each names the fix. For a home only too open to read (`0755`)
-that is the `chmod 700` line, and on Windows the `icacls` lines. A home that
-others could write in may already have been changed, so the fix is to move it
-aside and install again, never a `chmod` that would trust what is in it. The plugin's launcher, and a ch-local run
+that is the `chmod 700` line, and on Windows the `icacls` lines. On Linux and
+macOS, a home that others could write in may already have been changed, so the
+fix is to move it aside and install again, never a `chmod` that would trust
+what is in it. The plugin's launcher, and a ch-local run
 from outside the home (npx, a checkout), check the home before running any of
 its code. An entry that runs the home's own launcher (`node <home>/bin/ch-local.js
 session …`, as the other clients' snippets do) runs the home's code first, and

@@ -214,3 +214,20 @@ test('a command acting on a home another user could change refuses it, exit 2, n
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// the medium on #126's round 2: the background check (upgrade --apply-auto)
+// says its own paused line on an open home, exit 0, never the gate's exit 2,
+// which its parent would take for a failed check and retry
+test('upgrade --apply-auto on a home another user could change: paused, said, exit 0', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-open-auto-'));
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {autoUpgrade: true}}));
+  fs.chmodSync(home, 0o777);
+  try {
+    const r = run(['upgrade', '--apply-auto'], {COUNTINGHOUSE_HOME: home});
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^automatic upgrades are paused: this home is group- or world-writable/m);
+  } finally {
+    fs.chmodSync(home, 0o700);
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
