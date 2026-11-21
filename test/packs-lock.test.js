@@ -216,18 +216,31 @@ test('a holder here with no usable pid is waited for at most the cap, then named
 test('a new holder resets start\'s watch: another host\'s lock replaced by a third\'s is waited for afresh', async () => {
   const h = home();
   holderAt(h, {pid: 1, host: 'elsewhere', at: 'a'});
+  // (B keeps A's mtime, so only the new holder can restart the watch, not a
+  // moved mtime; and the waiter's steps are under 300, so it sees A after
+  // its first cap check would matter: the medium on this test, 1 and 2)
+  // (one whole second for both: a Date carries no sub-millisecond part)
+  const T = new Date(Math.floor(Date.now() / 1000) * 1000);
+  fs.utimesSync(file(h), T, T);
   let t = 0;
+  const seen = [];
   const sleep = async (ms) => {
+    assert.ok(ms < 300, `the wait's step is ${ms}`);
     const before = t;
     t += ms;
-    if (before < 300 && t >= 300) holderAt(h, {pid: 2, host: 'third', at: 'b'});
+    if (before < 300 && t >= 300) {
+      holderAt(h, {pid: 2, host: 'third', at: 'b'});
+      fs.utimesSync(file(h), T, T);
+    }
     if (before < 600 && t >= 600) fs.rmSync(file(h), {force: true});
+    seen.push(t);
   };
   const waiting = Object.assign(fakeIo({}), {lockWaitMs: 400, lockNow: () => t, lockSleep: sleep});
   let ran = false;
   assert.strictEqual(await lock.withLock({home: h}, waiting, async() => { ran = true; return 0; }, {wait: true}), 0, waiting.err);
   assert.strictEqual(ran, true);
   assert.ok(t >= 600, `the wait outlasted one cap (${t})`);
+  assert.ok(seen.includes(400), 'it looked at B past A\'s cap');
   // and one holder kept past the cap is given up on, on the same clock
   const h2 = home();
   holderAt(h2, {pid: 1, host: 'elsewhere', at: 'a'});
@@ -235,6 +248,7 @@ test('a new holder resets start\'s watch: another host\'s lock replaced by a thi
   const given = Object.assign(fakeIo({}), {lockWaitMs: 400, lockNow: () => t2, lockSleep: async (ms) => { t2 += ms; }});
   assert.strictEqual(await lock.withLock({home: h2}, given, async() => 0, {wait: true}), 1);
   assert.match(given.err, /pid 1 on elsewhere/);
+  assert.strictEqual(t2, 400, 'given up at the cap, on this clock');
 });
 
 test('a holder here with no start time recorded (an older ch-local): judged as before, its heartbeat\'s age clears it', async () => {
