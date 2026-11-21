@@ -22,6 +22,11 @@ const {installedPacks} = require('../lib/packs');
 const {main} = require('../bin/ch-local');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm, pkgDir, record} = require('./install-helpers');
+const {chLocal} = require('../lib/command-line');
+const {layout} = require('../lib/home');
+// a command as the home names it once an install wrote its launcher
+// (lib/command-line.js), as a regular expression's source
+const cmd = (h, args) => chLocal(layout({COUNTINGHOUSE_HOME: h}), args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const REDACT = '@countinghouse/ch-step-redact';
 const versionOf = (home, name) => JSON.parse(fs.readFileSync(path.join(pkgDir(home, name), 'package.json'), 'utf8')).version;
@@ -189,7 +194,7 @@ test('a rollback interrupted after the swap is finished by the next rollback; me
   assert.ok(fs.existsSync(path.join(s.home, 'rollback.journal')));
   const st = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
   assert.strictEqual(await status({}, st), 1);
-  assert.match(st.err, /a rollback was interrupted; run `ch-local rollback` to finish it/);
+  assert.match(st.err, new RegExp(`a rollback was interrupted; run \`${cmd(s.home, 'rollback')}\` to finish it`));
   const fin = rio(s.home);
   assert.strictEqual(await rollback({}, fin), 0, fin.err);
   assert.match(fin.out, /finished the interrupted rollback to 0\.2\.0/);
@@ -286,7 +291,7 @@ test('an install while a rollback is interrupted refuses and moves nothing', asy
   const appBefore = listing(path.join(s.home, 'app'));
   const storeBefore = listing(path.join(s.home, 'module-store'));
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: s.r2.from}, io, s.r2.allow), 1);
-  assert.match(io.err, /a rollback was interrupted; run `ch-local rollback` to finish it/);
+  assert.match(io.err, new RegExp(`a rollback was interrupted; run \`${cmd(s.home, 'rollback')}\` to finish it`));
   assert.ok(fs.existsSync(path.join(s.home, 'rollback.journal')), 'the journal is kept');
   // the modules are in the store: nothing of either release moved
   assert.deepStrictEqual(listing(path.join(s.home, 'app')), appBefore, 'the swapped app is untouched');
@@ -356,7 +361,7 @@ test('a pack removed on the newer release that the older one has comes back, and
   assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}})), 0);
   const io = rio(s.home);
   assert.strictEqual(await rollback({}, io), 0, io.err);
-  assert.match(io.out, /the pack "ci-failure-triage" comes back with ch-local 0\.2\.0; `ch-local remove-pack ci-failure-triage` removes it again/);
+  assert.match(io.out, new RegExp(`the pack "ci-failure-triage" comes back with ch-local 0\\.2\\.0; \`${cmd(s.home, 'remove-pack ci-failure-triage')}\` removes it again`));
 });
 
 test('a security confirmation answered other than yes says that only yes confirms', async () => {

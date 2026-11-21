@@ -14,6 +14,11 @@ const {install} = require('../lib/install');
 const {addPack, removePack} = require('../lib/packs-command');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm, record, devModules} = require('./install-helpers');
+const {chLocal} = require('../lib/command-line');
+const {layout} = require('../lib/home');
+// a command as the home names it once an install wrote its launcher
+// (lib/command-line.js), as a regular expression's source
+const cmd = (home, args) => chLocal(layout({COUNTINGHOUSE_HOME: home}), args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const REDACT = '@countinghouse/ch-step-redact';
 const CI = '@countinghouse/ch-pack-ci-failure-triage';
@@ -110,7 +115,7 @@ test('Question A: installed older across a breaking change that installed module
     assert.strictEqual(code, 0, io.err);
     assert.strictEqual(record(h.home).modules[REDACT].version, '0.2.0');
     assert.match(io.out, /^updated ch-step-redact 0\.1\.0 -> 0\.2\.0$/m);
-    assert.match(io.out, /^ch-pack-ci-failure-triage 0\.1\.0 was written for 0\.1\.x and still loads; if it stops working, `ch-local remove-pack other` puts ch-step-redact back to 0\.1\.0, unless a pack added later relies on the newer version$/m);
+    assert.match(io.out, new RegExp(`^ch-pack-ci-failure-triage 0\\.1\\.0 was written for 0\\.1\\.x and still loads; if it stops working, \`${cmd(h.home, 'remove-pack other')}\` puts ch-step-redact back to 0\\.1\\.0, unless a pack added later relies on the newer version$`, 'm'));
     assert.strictEqual(history(h.home).find((l) => l.module === REDACT).answer, 'yes');
   });
 });
@@ -177,7 +182,7 @@ test('install --pack under development pins meets the same table', async (t) => 
     const {code, io} = await h.inst(release({versions: {[REDACT]: '0.2.0'}}), {interactive: true, answers: ['y']});
     assert.strictEqual(code, 0, io.err);
     assert.strictEqual(record(h.home).modules[REDACT].version, '0.2.0');
-    assert.match(io.out, /^ch-pack-ci-failure-triage 0\.1\.0 was written for 0\.1\.x and still loads; if it stops working, `ch-local remove-pack other` puts ch-step-redact back to 0\.1\.0, unless a pack added later relies on the newer version$/m);
+    assert.match(io.out, new RegExp(`^ch-pack-ci-failure-triage 0\\.1\\.0 was written for 0\\.1\\.x and still loads; if it stops working, \`${cmd(h.home, 'remove-pack other')}\` puts ch-step-redact back to 0\\.1\\.0, unless a pack added later relies on the newer version$`, 'm'));
   });
   await t.test('Question B, yes: the pack installed, the module stays at the installed version', async () => {
     const h = await devHome(release({versions: {[REDACT]: '0.2.0'}}));
@@ -399,6 +404,6 @@ test('remove-pack: a removed module whose credential is stored says it is kept',
   require('../lib/credential-store').bind(h.home, '@countinghouse/ch-access-github', 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-2'}, {held: require('./store-helpers').FIXTURE_HELD});
   const io = fakeIo({env: h.env});
   assert.strictEqual(await removePack({pack: 'ci-failure-triage'}, io), 0, io.err);
-  assert.match(io.out, /the credential stored for ch-access-github is kept: `ch-local credentials remove ch-access-github` removes it/);
+  assert.match(io.out, new RegExp(`the credential stored for ch-access-github is kept: \`${cmd(h.home, 'credentials remove ch-access-github')}\` removes it`));
   assert.ok(!io.out.includes('test-stored-value-2'));
 });

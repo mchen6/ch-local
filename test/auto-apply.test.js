@@ -15,6 +15,11 @@ const {autoApply, rootExpired} = require('../lib/auto-apply');
 const {npmWorld, asInstalled} = require('./npm-world');
 const {release, npm} = require('./install-helpers');
 const {fakeIo, tmp} = require('./fake-io');
+const {chLocal} = require('../lib/command-line');
+const {layout} = require('../lib/home');
+// a command as the home names it once an install wrote its launcher
+// (lib/command-line.js), as a regular expression's source
+const cmd = (h, args) => chLocal(layout({COUNTINGHOUSE_HOME: h}), args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const H = 3600e3;
 const TO = '0.1.1';
@@ -68,7 +73,7 @@ test('the wait: from the later of the publish log time and first seen; 71 h is t
     assert.strictEqual((await run(h, w, {now: now + 71 * H})).outcome, 'waiting');
     const done = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(done.outcome, 'installed', done.line);
-    assert.match(done.line, /upgraded ch-local 0\.1\.0 -> 0\.1\.1; ch-local rollback undoes it/);
+    assert.match(done.line, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.1\\.1; ${cmd(h, 'rollback')} undoes it`));
     // the install's own lines (paths, credentials) stay out of what the child prints
     assert.strictEqual(done.io.out, '');
     assert.strictEqual(done.io.err, '');
@@ -313,10 +318,10 @@ test('the re-check of #48: with shim.json missing or invalid, an automatic insta
       const before = fs.existsSync(path.join(h, 'shim.json')) ? fs.readFileSync(path.join(h, 'shim.json'), 'utf8') : null;
       const r = await run(h, w, {now, env: {PATH: '/a/client/config/path', HOME: '/a/client/home'}});
       assert.strictEqual(r.outcome, 'installed', r.line);
-      assert.match(r.line, /run ch-local install to repair the relay's settings/, state);
+      assert.match(r.line, new RegExp(`run ${cmd(h, 'install')} to repair the relay's settings`), state);
       const after = fs.existsSync(path.join(h, 'shim.json')) ? fs.readFileSync(path.join(h, 'shim.json'), 'utf8') : null;
       assert.strictEqual(after, before, `${state}: never written`);
-      assert.ok(historyOf(h).some((e) => e.change === 'shim.json' && /run ch-local install to repair/.test(e.notice)), state);
+      assert.ok(historyOf(h).some((e) => e.change === 'shim.json' && new RegExp(`run ${cmd(h, 'install')} to repair`).test(e.notice)), state);
     } finally {
       await w.close();
     }
@@ -439,7 +444,7 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
     assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
     const r = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(r.outcome, 'installed', r.line);
-    assert.match(r.line, /upgraded ch-local 0\.1\.0 -> 0\.1\.1; ch-local rollback undoes it; pack ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it/);
+    assert.match(r.line, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.1\\.1; ${cmd(h, 'rollback')} undoes it; pack ci-failure-triage was withdrawn in this release and was not started; \`${cmd(h, 'remove-pack ci-failure-triage')}\` removes it`));
     // it stays installed; the record's withdrawn list names its modules
     // (#413 section 9.7)
     const after = JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'));

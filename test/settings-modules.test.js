@@ -184,7 +184,9 @@ test('with no runtime reader installed, a module setting is refused, saying how 
   const home = await installed({reader: false});
   const r = await cli(home, ['settings', 'set', 'ch-pack-ci-failure-triage.units', 'imperial']);
   assert.strictEqual(r.code, 2);
-  assert.match(r.io.err, /the installed countinghouse cannot check a module's setting: run `ch-local upgrade`/);
+  // (the home's launcher, which the install wrote: lib/command-line.js)
+  const upgrade = require('../lib/command-line').chLocal(require('../lib/home').layout({COUNTINGHOUSE_HOME: home}), 'upgrade');
+  assert.ok(r.io.err.includes(`the installed countinghouse cannot check a module's setting: run \`${upgrade}\``), r.io.err);
 });
 
 // L3 (#413 section 4.3): the outside-edits check learns module.* and

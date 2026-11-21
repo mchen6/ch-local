@@ -12,6 +12,12 @@ const {install} = require('../lib/install');
 const {status} = require('../lib/packs-command');
 const {fakeIo, tmp} = require('./fake-io');
 const {release, npm, record} = require('./install-helpers');
+const {chLocal} = require('../lib/command-line');
+const {layout} = require('../lib/home');
+// a command as the home names it once an install wrote its launcher
+// (lib/command-line.js); cmd: the same, as a regular expression's source
+const said = (home, args) => chLocal(layout({COUNTINGHOUSE_HOME: home}), args);
+const cmd = (home, args) => said(home, args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 async function installed(r = release(), env = {}) {
   const home = tmp('ch-home-');
@@ -47,8 +53,8 @@ test('the modules first, then the packs: a header, each module with what it is, 
 test('a module that would not load says why, as a start says it; its callers say what they call', async () => {
   const s = await installed();
   const {out} = await statusOf(s.io({GITHUB_TOKEN: 'secret'}));
-  assert.match(lineOf(out, 'ch-access-github'), /^part; not available: needs a credential \(GITHUB_TOKEN, sent to https:\/\/api\.githubcopilot\.com\): run `ch-local credentials add ch-access-github`$/);
-  assert.match(lineOf(out, 'ch-pack-ci-failure-triage'), /^not loaded: calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`$/);
+  assert.match(lineOf(out, 'ch-access-github'), new RegExp(`^part; not available: needs a credential \\(GITHUB_TOKEN, sent to https://api\\.githubcopilot\\.com\\): run \`${cmd(s.home, 'credentials add ch-access-github')}\`$`));
+  assert.match(lineOf(out, 'ch-pack-ci-failure-triage'), new RegExp(`^not loaded: calls ch-access-github, which needs a credential: run \`${cmd(s.home, 'credentials add ch-access-github')}\`$`));
   assert.ok(!out.includes('secret'));
 });
 
@@ -57,7 +63,7 @@ test('a module turned off says how to turn it on', async () => {
   stored(s.home);
   require('../lib/settings').setSetting({...require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}, '/nonexistent')}, 'enabled.@countinghouse/ch-pack-ci-failure-triage', 'off', {by: 'cli'});
   const {out} = await statusOf(s.io());
-  assert.strictEqual(lineOf(out, 'ch-pack-ci-failure-triage'), 'not loaded: turned off (`ch-local settings set enabled.@countinghouse/ch-pack-ci-failure-triage on`)');
+  assert.strictEqual(lineOf(out, 'ch-pack-ci-failure-triage'), `not loaded: turned off (\`${said(s.home, 'settings set enabled.@countinghouse/ch-pack-ci-failure-triage on')}\`)`);
 });
 
 test('a running client\'s word: a module it stopped, with its code; a client on another ch-local, once; a dead start is not read', async () => {

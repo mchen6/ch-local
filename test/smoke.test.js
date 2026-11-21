@@ -144,6 +144,14 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       assert.deepStrictEqual(result._meta['countinghouse/receipt'], {calls: 0, linesIn: 0, bytesIn: 0, linesOut: 1, bytesOut: Buffer.byteLength(text), servers: []});
       assert.strictEqual(result.content[1].text, `no server was called; 1 line (${Buffer.byteLength(text)} B) reached the model.`);
 
+      // The home's launcher acts on its own home from a terminal with no
+      // COUNTINGHOUSE_HOME (the reviewer on ch-local#110, 2): a printed
+      // `node "<home>/bin/ch-local.js" status` names this home's pack.
+      const plain = {...process.env, HOME: work, USERPROFILE: work};
+      delete plain.COUNTINGHOUSE_HOME;
+      const status = spawnSync(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'status'], {env: plain, encoding: 'utf8', timeout: 60000});
+      assert.match(`${status.stdout}${status.stderr}`, /smoke/, `status from a plain terminal:\n${status.stdout}\n${status.stderr}`);
+
       // The client closes its end; the runtime exits and start cleans up.
       child.stdin.end();
       const code = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve('timeout'), 30000))]);
