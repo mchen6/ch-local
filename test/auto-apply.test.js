@@ -517,7 +517,8 @@ test('an automatic upgrade whose shim is busy says so in its line, with the way 
     await run(h, w, {now});
     const done = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(done.outcome, 'installed', done.line);
-    assert.match(done.line, /the shared runtime's shim could not be replaced: a session still uses the old one\. Close that session \(or the client running it\), then run `.*install` to place the new one/);
+    assert.match(done.line, /the shared runtime's shim could not be replaced: a session still uses the old one; close it, then run .*install to place the new one/);
+    assert.ok(!/EBUSY|ch-shim\.previous/.test(done.line), 'no raw install line: paths and codes stay out');
   } finally {
     si.prepareShim = realPrepare;
     si.placeShim = realPlace;
