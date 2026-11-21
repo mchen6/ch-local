@@ -690,7 +690,7 @@ test('upgrade --check: what upgrade shows, then the install line for the user\'s
   }
 });
 
-test('upgrade --check: up to date, said and written as none available; a check that can\'t be made keeps the last result, exit 1', async () => {
+test('upgrade --check: up to date, said and written as none available; a check that can\'t be made leaves no result standing, exit 1', async () => {
   const s = setup({'@countinghouse/ch-local': '0.2.0'});
   const w = await npmWorld(release());
   try {
@@ -704,14 +704,13 @@ test('upgrade --check: up to date, said and written as none available; a check t
   // (a release whose provenance fails, over the home now at 0.1.0)
   const rec = recordOf(s.home);
   rec.runtime.versions['@countinghouse/ch-local'] = '0.1.0';
-  const kept = fs.readFileSync(path.join(s.home, 'upgrade-available.json'), 'utf8');
   require('./store-helpers').writeHome(s.home, {'ci-failure-triage': {'@countinghouse/ch-pack-ci-failure-triage': '0.1.0'}}, {runtime: rec.runtime.versions});
   const bad = await npmWorld(release(), {lie: '@countinghouse/ch-local'});
   try {
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, fetch: realFetch});
     assert.strictEqual(await upgrade({check: true}, io, bad.fromNpm), 1);
     assert.match(io.err, /PROVENANCE_IDENTITY/);
-    assert.strictEqual(fs.readFileSync(path.join(s.home, 'upgrade-available.json'), 'utf8'), kept, 'the last good result kept');
+    assert.ok(!fs.existsSync(path.join(s.home, 'upgrade-available.json')), 'no earlier answer left standing (the medium on the easy upgrades, 3)');
     assert.deepStrictEqual(historyOf(s.home).filter((e) => e.kind === 'upgrade'), [], 'nothing recorded by a check');
   } finally {
     await bad.close();
@@ -724,8 +723,9 @@ test('upgrade --check: up to date, said and written as none available; a check t
 // manifest here: the test home has no installed app); never when the same
 test('the plugin step: said when the release\'s plugin version moved (check and install), not when it is the same', async () => {
   const own = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'clients', 'claude-code', '.claude-plugin', 'plugin.json'), 'utf8')).version;
-  const STEP = /The countinghouse plugin in Claude Code (moves|moved) with it \(([\d.]+) -> ([\d.]+)\): (after the upgrade, )?run `claude plugin marketplace update ch-packs`, then `claude plugin update ch-packs@ch-packs`, then restart Claude Code\./;
-  for (const [plugin, said] of [['9.9.9', true], [own, false]]) {
+  const STEP = /If you use the countinghouse plugin in Claude Code, it (moves|moved) with this release \(([\d.]+) -> ([\d.]+)\): (after the upgrade, )?run `claude plugin marketplace update ch-packs`, then `claude plugin update ch-packs@ch-packs`, then restart Claude Code\./;
+  // (newer only: an older one in the release is never a "move": the medium, 5)
+  for (const [plugin, said] of [['9.9.9', true], [own, false], ['0.0.1', false]]) {
     const s = setup({'@countinghouse/ch-local': '0.1.0'});
     const w = await npmWorld(release(), {plugin});
     try {
@@ -758,9 +758,24 @@ test('the plugin step: said when the release\'s plugin version moved (check and 
       const n = STEP.exec(yes.out);
       assert.strictEqual(n != null, said, `${plugin} installed: ${yes.out}`);
       if (said) assert.strictEqual(n[1], 'moved');
+      // (an install leaves no check result for the release before it: the
+      // medium on the easy upgrades, 3)
+      assert.ok(!fs.existsSync(path.join(s.home, 'upgrade-available.json')), 'forgotten by the install');
     } finally {
       await w.close();
       s.done();
     }
+  }
+});
+
+// the medium on the easy upgrades, 1: --check is never taken with another
+// mode (--apply-auto would install)
+test('upgrade --check with --apply-auto or --auto: refused as usage, nothing run', async () => {
+  const {main} = require('../bin/ch-local');
+  for (const argv of [['upgrade', '--check', '--apply-auto'], ['upgrade', '--apply-auto', '--check'], ['upgrade', '--check', '--auto', 'on']]) {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: tmp('ch-home-')}});
+    assert.strictEqual(await main(argv, io), 2, JSON.stringify(argv));
+    assert.match(io.err, /usage: ch-local/);
+    assert.deepStrictEqual([io.fetches, io.execs], [[], []]);
   }
 });

@@ -206,6 +206,9 @@ async function main(argv, io) {
     if (command === 'upgrade') {
       const a = parse(rest, {values: ['--auto'], flags: ['--apply-auto', '--check']});
       if (a == null || a.positional.length > 0) return usage();
+      // (--check is read-only: never with another mode; the medium on the
+      // easy upgrades, 1)
+      if (a.flags['--check'] && (a.values['--auto'] !== undefined || a.flags['--apply-auto'])) return usage();
       // start's background check runs this, in a child with the allowlisted
       // environment (lib/auto-upgrade.js); it re-checks everything itself
       if (a.flags['--apply-auto']) {
@@ -214,7 +217,6 @@ async function main(argv, io) {
         if (r.line != null) io.stdout.write(`${r.line}\n`);
         return 0;
       }
-      if (a.flags['--check'] && (a.values['--auto'] !== undefined || a.flags['--apply-auto'])) return usage();
       return await require('../lib/upgrade').upgrade({auto: a.values['--auto'], check: a.flags['--check'] === true}, io);
     }
   } catch (err) {
