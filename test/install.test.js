@@ -1188,3 +1188,28 @@ test('ensureHome: a missing home and its parents made 0700 under umask 0002; one
     process.umask(was);
   }
 });
+
+// the reviewer on #122's merge with #120: a home another user could write
+// into is refused before anything is fetched or placed, the shim included
+test('a group-writable home is refused before any fetch or shim step', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const r = release(); const h = home();
+  fs.chmodSync(h, 0o775);
+  const nr = require('../lib/npm-release');
+  const si = require('../lib/shim-install');
+  const real = {fetchRelease: nr.fetchRelease, prepareShim: si.prepareShim, placeShim: si.placeShim, setAside: si.setAside};
+  const called = [];
+  nr.fetchRelease = async () => { called.push('fetchRelease'); throw new Error('not here'); };
+  si.prepareShim = async () => { called.push('prepareShim'); return null; };
+  si.placeShim = () => { called.push('placeShim'); };
+  si.setAside = () => { called.push('setAside'); return false; };
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, r.allow), 1);
+    assert.deepStrictEqual(called, []);
+    assert.match(io.err, /this home is group- or world-writable \(mode 0775\), so another user could change what runs from it; run `chmod 700 "/);
+    assert.deepStrictEqual(fs.readdirSync(h), []);
+  } finally {
+    Object.assign(nr, {fetchRelease: real.fetchRelease});
+    Object.assign(si, {prepareShim: real.prepareShim, placeShim: real.placeShim, setAside: real.setAside});
+  }
+});
