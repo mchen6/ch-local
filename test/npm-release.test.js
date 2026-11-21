@@ -221,7 +221,8 @@ test('no lib/ code names `trust` or `registry` but the three that take them; ins
   // upgrade: likewise, its signature and its two pass-ons
   const upgrade = fs.readFileSync(path.join(lib, 'upgrade.js'), 'utf8');
   assert.deepStrictEqual(upgrade.split('\n').filter((l) => /fromNpm/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim()), [
-    'async function upgrade({auto}, io, fromNpm = {}) {',
+    // (its own --check rides on this same signature: A-own-skill's easy upgrades)
+    'async function upgrade({auto, check = false}, io, fromNpm = {}) {',
     'found = await findUpgrade({data, now, installed: from, packs, io, allowMajor: true, ...fromNpm});',
     'const code = await require(\'./install\').install({...target, judged: judgedDigest(record)}, io, allow, fromNpm);'
   ]);

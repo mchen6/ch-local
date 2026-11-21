@@ -119,6 +119,28 @@ The checks are grouped. Within a group, the order doesn't matter.
       provenance.
     - Evidence: the two commands' output, saved with the checklist.
 
+20. **The Claude Code plugin's marketplace entry is pinned to this
+    release's tag.**
+    - Why: `claude plugin marketplace update` reads `.claude-plugin/
+      marketplace.json` from this repository's default branch, and a
+      relative-path source (`./clients/claude-code`) gives whatever that
+      branch holds, not the release's checked files.
+    - How: set the `ch-packs` entry's source to a pinned one (Claude Code's
+      marketplace reference, "Plugin sources": `git-subdir` with `url`,
+      `path`, and `ref` set to a tag or `sha` to a full commit), e.g.
+      `{"source": "git-subdir", "url": "mchen6/ch-local", "path":
+      "clients/claude-code", "ref": "v<version>", "sha": "<the tag's
+      commit>"}`, on the default branch, after the tag exists. The tag is
+      protected by the ruleset (item 12).
+    - Check: the docs do not say whether `git-subdir` may point into the
+      marketplace's own repository. Before the first release, add the
+      marketplace on a test machine, install the plugin and confirm the
+      files are the tag's (the installed directory's commit). If it isn't
+      supported, say so in docs/install/claude-code.md's Updates and keep
+      the relative path.
+    - Evidence: the marketplace.json commit, and the test install's
+      `claude plugin list --json` entry.
+
 ## Reviews, Windows and the notes
 
 16. **The pre-release trust-boundary review is done, and its findings are
