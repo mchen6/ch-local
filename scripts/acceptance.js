@@ -319,20 +319,19 @@ async function addOwn({home, node, launcher, dir, env, platform = process.platfo
   }
 }
 
-// A directory removed whole, its read-only parts too: the copies of the
-// user's own modules are kept read-only in the home (ch-local#113), so a
-// plain rm fails on them. Each entry made writable first, never through a
-// link (a link is removed, not followed).
-function removeTree(dir) {
-  const walk = (p) => {
-    let st;
-    try { st = fs.lstatSync(p); } catch (e) { return; }
-    if (st.isSymbolicLink()) return;
-    try { fs.chmodSync(p, (st.mode & 0o777) | (st.isDirectory() ? 0o700 : 0o600)); } catch (e) { /* removed below, or said by rm */ }
-    if (st.isDirectory()) for (const e of fs.readdirSync(p)) walk(path.join(p, e));
-  };
-  walk(dir);
-  fs.rmSync(dir, {recursive: true, force: true});
+// The work directory removed, the home's read-only copies of own modules
+// too (ch-local#113): <home>/own made writable first by ch-local's own
+// unlockTree (by lstat, never through a link), as uninstall does, then the
+// tree removed. Never throws (it runs in a finally, where a throw would hide
+// the run's own failure) -> null, or what could not be removed.
+function removeTree(dir, home = path.join(dir, 'home')) {
+  try { require('../lib/own-tree').unlockTree(path.join(home, 'own')); } catch (e) { /* the removal says it */ }
+  try {
+    fs.rmSync(dir, {recursive: true, force: true});
+    return null;
+  } catch (e) {
+    return `${dir} was not removed (${e.code || e.message})`;
+  }
 }
 
 async function main(argv, io = {stdout: process.stdout, stderr: process.stderr}) {
@@ -386,7 +385,8 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       fs.writeFileSync(reportFile, reportText(report, [token, ownToken], [stderr, offStderr, ...ownLogs]));
       say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'})`);
     } finally {
-      removeTree(work);
+      const left = removeTree(work, home);
+      if (left != null) io.stderr.write(`acceptance: ${left}\n`);
     }
   })());
   const untrap = trapSignals(() => finish('interrupted by a signal'));
@@ -524,6 +524,14 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       seenOwn.length > 0 && seenOwn.every((r) => r.who === 'own') && seenPack.length > 0 && seenPack.every((r) => r.who === 'pack') &&
       seenOwn.length + seenPack.length === standIn.state.seen.length && standIn.state.refused === 0 && standIn.state.unexpected.length === 0,
       JSON.stringify({calls: standIn.state.calls, by: standIn.state.by, seen: standIn.state.seen, unexpected: standIn.state.unexpected}));
+
+    // the own module's server calls, like the pack's: the stand-in's, none
+    // as a real server call
+    const usage2 = await mcp.request('tools/call', {name: 'countinghouse_usage_report', arguments: {}});
+    const report2 = usage2.result && usage2.result.structuredContent ? usage2.result.structuredContent : null;
+    check('the usage report counts the own module\'s calls as the stand-in\'s too, and none as a real server call',
+      report2 != null && report1 != null && report2.totals.serverCalls === 0 && report2.standIn != null && report2.standIn.serverCalls > report1.standIn.serverCalls,
+      JSON.stringify(report2 != null ? {totals: report2.totals, standIn: report2.standIn} : null));
 
     child.stdin.end();
     const code2 = await Promise.race([exited, new Promise((r) => setTimeout(() => r('timeout'), 30000))]);

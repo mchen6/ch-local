@@ -130,7 +130,10 @@ test('add-module over a pipe is refused, naming the command; without a folder, u
 // lives outside it.
 test('only bin/ch-local.js builds an io that claims a terminal, and only from the real ones', () => {
   const ROOT = path.join(__dirname, '..');
-  const files = [BIN, ...fs.readdirSync(path.join(ROOT, 'lib'), {recursive: true}).filter((f) => String(f).endsWith('.js')).map((f) => path.join(ROOT, 'lib', String(f)))];
+  // (every shipped directory: package.json's files, bin/, lib/ and clients/)
+  const shipped = (d) => fs.readdirSync(path.join(ROOT, d), {recursive: true}).filter((f) => String(f).endsWith('.js')).map((f) => path.join(ROOT, d, String(f)));
+  const files = [...shipped('bin'), ...shipped('lib'), ...shipped('clients')];
+  assert.deepStrictEqual(require('../package.json').files, ['bin/', 'lib/', 'clients/'], 'the pin covers what is shipped');
   const claims = [];
   for (const file of files) {
     for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
@@ -141,6 +144,9 @@ test('only bin/ch-local.js builds an io that claims a terminal, and only from th
       for (const m of line.matchAll(/(?:^|[{,])\s*(interactive|stdoutTTY|stdinIsTTY|terminal)\s*:\s*([^,}\n]+)/g)) {
         if (m[2].trim() !== 'false') claims.push(`${path.relative(ROOT, file).split(path.sep).join('/')}: ${m[1]}: ${m[2].trim()}`);
       }
+      // (an assignment, or a shorthand key, claims one too)
+      for (const m of line.matchAll(/\.(interactive|stdoutTTY|stdinIsTTY|terminal)\s*=(?!=)\s*([^;\n]+)/g)) claims.push(`${path.relative(ROOT, file).split(path.sep).join('/')}: ${m[1]} = ${m[2].trim()}`);
+      for (const m of line.matchAll(/[{,]\s*(interactive|stdoutTTY|stdinIsTTY)\s*[,}]/g)) claims.push(`${path.relative(ROOT, file).split(path.sep).join('/')}: ${m[1]} (shorthand)`);
     }
   }
   assert.deepStrictEqual(claims.sort(), [

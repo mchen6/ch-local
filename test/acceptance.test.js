@@ -139,29 +139,34 @@ test('addOwn on Windows stands the yes in with the installed add-module, answere
     assert.strictEqual(require('../lib/own-tree').copyIntact(where, own.name, rec.tree), true);
     assert.deepStrictEqual([rec.version, rec.friendlyName, rec.from, rec.calls], ['1.0.0', own.name, own.dir, []]);
   } finally {
-    acceptance.removeTree(base);
+    acceptance.removeTree(base, path.join(base, 'home'));
   }
 });
 
-test('removeTree removes a tree whose parts are read-only, and never follows a link out of it', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+test('removeTree removes a work directory whose home holds read-only copies, never follows a link out of it, and never throws', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
   const base = fs.realpathSync.native(tmp('ch-acc-rm-'));
   const outside = path.join(base, 'outside');
-  fs.mkdirSync(outside);
-  fs.writeFileSync(path.join(outside, 'kept'), 'x');
-  fs.chmodSync(outside, 0o555);
-  const tree = path.join(base, 'tree');
-  fs.mkdirSync(path.join(tree, 'own', 'a'), {recursive: true});
-  fs.writeFileSync(path.join(tree, 'own', 'a', 'f.js'), 'x');
-  fs.symlinkSync(outside, path.join(tree, 'own', 'link'));
-  fs.chmodSync(path.join(tree, 'own', 'a', 'f.js'), 0o444);
-  fs.chmodSync(path.join(tree, 'own', 'a'), 0o555);
-  fs.chmodSync(path.join(tree, 'own'), 0o555);
-  acceptance.removeTree(tree);
-  assert.ok(!fs.existsSync(tree));
-  assert.strictEqual(fs.statSync(outside).mode & 0o777, 0o555, 'the link\'s target untouched');
-  assert.ok(fs.existsSync(path.join(outside, 'kept')));
-  fs.chmodSync(outside, 0o755);
-  fs.rmSync(base, {recursive: true, force: true});
+  try {
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'kept'), 'x');
+    fs.chmodSync(outside, 0o555);
+    const work = path.join(base, 'work');
+    const own = path.join(work, 'home', 'own');
+    fs.mkdirSync(path.join(own, 'a'), {recursive: true});
+    fs.writeFileSync(path.join(own, 'a', 'f.js'), 'x');
+    fs.symlinkSync(outside, path.join(own, 'link'));
+    fs.chmodSync(path.join(own, 'a', 'f.js'), 0o444);
+    fs.chmodSync(path.join(own, 'a'), 0o555);
+    fs.chmodSync(own, 0o555);
+    assert.strictEqual(acceptance.removeTree(work), null);
+    assert.ok(!fs.existsSync(work));
+    assert.strictEqual(fs.statSync(outside).mode & 0o777, 0o555, 'the link\'s target untouched');
+    assert.ok(fs.existsSync(path.join(outside, 'kept')));
+    assert.strictEqual(acceptance.removeTree(path.join(base, 'gone')), null, 'nothing there: nothing to do');
+  } finally {
+    try { fs.chmodSync(outside, 0o755); } catch (e) { /* not made */ }
+    fs.rmSync(base, {recursive: true, force: true});
+  }
 });
 
 test('filesContaining finds a needle in any file below a directory, and nothing in an absent one', () => {
