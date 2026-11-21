@@ -144,3 +144,14 @@ test('own.json and no record: start says to install, never crashes', async () =>
   assert.match(f.err, /no pack is installed|nothing is installed/);
   assert.strictEqual(f.spawned.length, 0);
 });
+
+// C's upgrade test, the reviewer: <home>/own is private, as the home is
+test('start makes <home>/own private (0700), whatever the umask', {skip: process.platform === 'win32' && 'the home\'s ACL applies'}, async () => {
+  // (a home with no own module yet: start makes the folder)
+  const {home, where} = ownHome();
+  assert.strictEqual(fs.existsSync(where.own), false);
+  const f = io(home);
+  const old = process.umask(0o002);
+  try { assert.strictEqual(await start({passThrough: []}, f), 0, f.err); } finally { process.umask(old); }
+  assert.strictEqual(fs.statSync(where.own).mode & 0o777, 0o700);
+});

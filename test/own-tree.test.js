@@ -263,3 +263,12 @@ for (const platform of ['win32', 'posix']) {
   });
 }
 
+test('placeCopy makes each folder it creates under <home>/own private (0700)', {skip: process.platform === 'win32' && 'the home\'s ACL applies'}, () => {
+  const {base, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'priv'), {name: '@me/my-tool', friendlyName: 'my-tool'});
+  const r = tree.checkFolder(dir, where.home);
+  const h = tree.treeHash(dir, r.entries);
+  const old = process.umask(0o002);
+  try { tree.placeCopy(where, '@me/my-tool', r.real, r.entries, h); } finally { process.umask(old); }
+  for (const d of [where.own, path.join(where.own, '@me'), path.join(where.own, '@me', 'my-tool')]) assert.strictEqual(fs.statSync(d).mode & 0o777, 0o700, d);
+});
