@@ -455,7 +455,7 @@ test('a record of another release under the home\'s own ch-local is judged by th
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(f.spawned[0].args.filter((a) => a === '--loadModule').length, 0, f.err);
   assert.match(f.err, /this release pins no version of it; run `ch-local install` again/);
-  assert.match(f.err, /this home's record is not this ch-local's release; run `ch-local install` to bring the home to /);
+  assert.match(f.err, /this home's record is not this ch-local's release; run `ch-local install --pack ci-failure-triage` to bring the home to /);
 });
 
 test('every start of an unreleased install says so in one stderr line', async () => {

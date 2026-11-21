@@ -1332,3 +1332,43 @@ test('install with no --pack never moves the home to another release: another ch
   assert.match(io2.err, new RegExp(`this home's ch-local is 0\\.2\\.0, and this one is 0\\.1\\.0: a reinstall stays on the home's own release; run \`${cmd(h, 'install')}\` \\(the home's own launcher\\), or \`${cmd(h, 'upgrade')}\` or \`${cmd(h, 'rollback')}\` to move it; nothing was installed`));
   assert.strictEqual(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'), before, 'nothing changed');
 });
+
+// the reviewer's high on #124
+test('install with no --pack: a record it can\'t read (permissions) names the file and its fix, never a command that can\'t fix it (high, 1)', {skip: (process.platform === 'win32' || process.getuid() === 0) && 'POSIX modes, not root'}, async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const file = path.join(h, 'modules.json');
+  fs.chmodSync(file, 0o000);
+  try {
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await install({from: r.from}, io2, ours(r)), 1);
+    assert.ok(io2.err.includes(`${file} is not readable (EACCES); make it readable by you again: check its owner and mode (\`ls -l "${file}"\`); nothing was installed`), io2.err);
+    assert.doesNotMatch(io2.err, /install --pack|sets this record aside/);
+    // the record's own advice says the same, wherever it is read
+    assert.throws(() => require('../lib/module-record').readModulesRecord(layout({COUNTINGHOUSE_HOME: h})), (e) => e.code === 'RECORD_IO' && e.message.includes(`check its owner and mode (\`ls -l "${file}"\`)`));
+  } finally {
+    fs.chmodSync(file, 0o600);
+  }
+});
+
+test('install with no --pack: an interrupted rollback says rollback, before the record is read (high, 2)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  fs.writeFileSync(layout({COUNTINGHOUSE_HOME: h}).journal, '{}');
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({from: r.from}, io2, ours(r)), 1);
+  assert.match(io2.err, new RegExp(`a rollback was interrupted; run \`${cmd(h, 'rollback')}\` to finish it; nothing was installed`));
+  assert.doesNotMatch(io2.err, /sets this record aside/);
+});
+
+test('install with no --pack from the home\'s own launcher, whose release the record does not name yet: it names the install that finishes it, never itself (high, 3)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  // (the home's app is ch-local 0.3.0, its record still 0.2.0: an install that did not finish)
+  const io2 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {selfVersion: '0.3.0'});
+  assert.strictEqual(await install({from: r.from}, io2, {...r.allow, release: {version: '0.3.0', security: null}}), 2);
+  assert.match(io2.err, new RegExp(`this home's record names release 0\\.2\\.0, but its launcher is ch-local 0\\.3\\.0: an install or upgrade did not finish; run \`${cmd(h, 'install --pack ci-failure-triage')}\` to finish it; nothing was installed`));
+});

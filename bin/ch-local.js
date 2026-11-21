@@ -185,8 +185,10 @@ async function main(argv, io) {
       const code = await require('../lib/install').install({pack: p.pack, from: p.from, unreleasedPins: p.unreleasedPins}, io);
       // asked once whether to turn automatic upgrades on (off with no
       // terminal), and the last line, what to do next (A-firstrun d1): a
-      // first install's, never a reinstall's, which asks nothing (the
-      // medium on the install hints, 10)
+      // first install's, never a reinstall's (the medium on the install
+      // hints, 10). A reinstall at a terminal still asks for a credential
+      // a module is missing, as every install does; with none, it names
+      // the command instead.
       if (code === 0 && p.pack !== undefined) await require('../lib/upgrade').offerAuto(io);
       if (code === 0 && p.pack !== undefined) io.stdout.write(`${require('../lib/next-steps').READY_LINE}\n`);
       return code;
