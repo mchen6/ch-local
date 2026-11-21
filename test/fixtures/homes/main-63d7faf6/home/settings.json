@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "values": {
+    "module.@countinghouse/ch-pack-smoke.defaultRepo": "octo/smoke"
+  }
+}

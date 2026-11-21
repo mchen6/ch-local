@@ -20,87 +20,29 @@ require('./tmp-dirs');
 // dependencies reaches the npm registry, as a user's install does.
 const test = require('node:test');
 const assert = require('node:assert');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
-const {install, tarballName} = require('../lib/install');
-const {packInto, runtimeLockfile} = require('../lib/release');
 
 const ROOT = path.join(__dirname, '..');
-const FIXTURES = path.join(__dirname, 'fixtures', 'smoke');
 const RUNTIME = process.env.CH_SMOKE_RUNTIME_TGZ;
-const SCENARIO = '@countinghouse/ch-pack-smoke';
-const STEP = '@countinghouse/ch-step-smoke';
-const integrityOf = (file) => 'sha512-' + crypto.createHash('sha512').update(fs.readFileSync(file)).digest('base64');
-const realIo = (env) => {
-  const io = {
-    out: '', err: '', env, node: process.execPath, version: process.version, platform: process.platform, homedir: os.homedir,
-    alive: require('../lib/run-liveness').processAlive, hostname: os.hostname(),
-    stdout: {write: (s) => { io.out += s; }}, stderr: {write: (s) => { io.err += s; }},
-    exec: async (cmd, args, {cwd}) => spawnSync(cmd, args, {cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024}),
-    fetch: async () => { throw new Error('no network from the launcher in this test'); }
-  };
-  return io;
-};
-
-// One MCP session over the child's stdio: newline-delimited JSON-RPC.
-function session(child) {
-  let buf = '';
-  const waiting = new Map();
-  child.stdout.on('data', (d) => {
-    buf += d;
-    for (let i; (i = buf.indexOf('\n')) !== -1;) {
-      const line = buf.slice(0, i).trim();
-      buf = buf.slice(i + 1);
-      if (line === '') continue;
-      let msg;
-      try { msg = JSON.parse(line); } catch (err) { continue; }
-      if (msg.id != null && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
-    }
-  });
-  let id = 0;
-  return {
-    request: (method, params, ms = 60000) => new Promise((resolve, reject) => {
-      const n = ++id;
-      const timer = setTimeout(() => reject(new Error(`no answer to ${method} in ${ms} ms`)), ms);
-      waiting.set(n, (msg) => { clearTimeout(timer); resolve(msg); });
-      child.stdin.write(JSON.stringify({jsonrpc: '2.0', id: n, method, params}) + '\n');
-    }),
-    notify: (method, params) => child.stdin.write(JSON.stringify({jsonrpc: '2.0', method, params}) + '\n')
-  };
-}
+// (the I/O and the MCP session over stdio, shared with the upgrade path's test)
+const {realIo, session, releaseFor, installWith} = require('./upgrade-helpers');
 
 test('the smoke test: a no-remote pack installed with --unreleased-pins, started through ch-local, answers over MCP with a receipt',
   {timeout: 900000, skip: RUNTIME == null && 'CH_SMOKE_RUNTIME_TGZ is not set (CI\'s smoke job sets it to a countinghouse tarball)'}, async () => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-smoke-'));
-    const from = path.join(work, 'release');
     const home = path.join(work, 'home');
-    fs.mkdirSync(from);
     const io = realIo({...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'});
     let child = null;
     try {
-      // The release directory: this launcher, the runtime, and the fixture pack.
-      const pins = {};
-      for (const dir of [ROOT, path.join(FIXTURES, 'ch-pack-smoke'), path.join(FIXTURES, 'ch-step-smoke')]) {
-        const {name, version, integrity} = await packInto(io, dir, from);
-        pins[name] = {version, integrity};
-      }
-      const m = /^countinghouse-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.tgz$/.exec(path.basename(RUNTIME));
-      assert.ok(m != null, `CH_SMOKE_RUNTIME_TGZ must be npm pack's countinghouse-<version>.tgz, not ${path.basename(RUNTIME)}`);
-      fs.copyFileSync(RUNTIME, path.join(from, tarballName('countinghouse', m[1])));
-      pins.countinghouse = {version: m[1], integrity: integrityOf(RUNTIME)};
-
-      // What a release does: the runtime's lockfile, from the manifest install writes.
-      const runtime = {packages: ['@countinghouse/ch-local', 'countinghouse'], lockfile: null};
-      const pinsFile = path.join(work, 'pins.json');
-      // (version 2: the pack and its modules, described from their tarballs)
-      const allow = {runtime, packs: {smoke: {modules: [SCENARIO, STEP]}}, modules: {}, pins: {}};
-      const modules = require('../scripts/describe-release').describePinned(allow, pins, from);
-      fs.writeFileSync(pinsFile, JSON.stringify({pins, runtimeLockfile: await runtimeLockfile(io, from, runtime, pins, path.join(work, 'lock')), modules}));
-
-      assert.strictEqual(await install({pack: 'smoke', from, unreleasedPins: pinsFile}, io, allow), 0, io.err);
+      // The release directory -- this launcher, the runtime, the fixture
+      // pack, and the runtime's lockfile, as a release builds them -- and
+      // the install (test/upgrade-helpers.js, shared with the upgrade path's
+      // test).
+      const rel = await releaseFor(ROOT, io, work, RUNTIME);
+      await installWith(ROOT, io, rel);
 
       // The scenario's own setting, set as a user does at a terminal (#413
       // rev 3: its defaultRepo is no device config any more), then a

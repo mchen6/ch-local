@@ -1,0 +1,37 @@
+{
+  "v": 2,
+  "runtime": {
+    "versions": {
+      "@countinghouse/ch-local": "0.1.0-from.63d7faf6",
+      "countinghouse": "7.1.2"
+    }
+  },
+  "release": {
+    "version": "0.1.0-from.63d7faf6",
+    "security": null
+  },
+  "unreleased": true,
+  "packs": {
+    "smoke": {
+      "from": {
+        "unreleased": "1f4edf9cbc6262e5"
+      },
+      "modules": {
+        "@countinghouse/ch-pack-smoke": "0.0.1",
+        "@countinghouse/ch-step-smoke": "0.0.1"
+      }
+    }
+  },
+  "withdrawn": [],
+  "modules": {
+    "@countinghouse/ch-pack-smoke": {
+      "version": "0.0.1",
+      "role": "scenario"
+    },
+    "@countinghouse/ch-step-smoke": {
+      "version": "0.0.1",
+      "role": "part"
+    }
+  },
+  "at": "2026-11-21T02:49:19.718Z"
+}

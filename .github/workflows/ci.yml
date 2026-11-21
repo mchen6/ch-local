@@ -73,3 +73,11 @@ jobs:
           test -f "$CH_SMOKE_RUNTIME_TGZ" || { echo "CH_SMOKE_RUNTIME_TGZ is not a file: '$CH_SMOKE_RUNTIME_TGZ'"; exit 1; }
           node --test --test-reporter=spec test/smoke.test.js 2>&1 | tee smoke.log
           grep -q '^ℹ pass 1$' smoke.log || { echo 'the smoke test did not pass (skipped or failed)'; exit 1; }
+      - name: Upgrade path test
+        shell: bash
+        run: |
+          # Never green by skipping: the test skips without the tarball.
+          test -f "$CH_SMOKE_RUNTIME_TGZ" || { echo "CH_SMOKE_RUNTIME_TGZ is not a file: '$CH_SMOKE_RUNTIME_TGZ'"; exit 1; }
+          node --test --test-reporter=spec test/upgrade-path.test.js 2>&1 | tee upgrade-path.log
+          # (one test per older release it upgrades from: every one passed, none skipped)
+          grep -qE '^ℹ pass [1-9][0-9]*$' upgrade-path.log && grep -q '^ℹ fail 0$' upgrade-path.log && grep -q '^ℹ skipped 0$' upgrade-path.log || { echo 'the upgrade path test did not pass (skipped or failed)'; exit 1; }
