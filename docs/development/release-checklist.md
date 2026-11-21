@@ -209,6 +209,10 @@ The checks are grouped. Within a group, the order doesn't matter.
         the environment;
       - the Sigstore verifier is the last of its major version.
     - Evidence: the release notes, and the specs' residual sections.
+    - Also: set `release.security` in lib/release-pins.json from the
+      security fixes since the previous published release, in one line
+      (rollback shows it before going back), or null for the first release,
+      which has no published release before it to roll back to.
 
 ## After the tag
 

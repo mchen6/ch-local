@@ -1,9 +1,7 @@
 {
   "v": 2,
   "release": {
-    "security": {
-      "fixes": "loosening a guarding setting is confirmed at a terminal and bound by the operator's ceiling (countinghouse part 3)"
-    }
+    "security": null
   },
   "self": {
     "repository": "mchen6/ch-local",
