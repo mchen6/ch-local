@@ -1,9 +1,13 @@
 # Codex CLI
 
+`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"`.
+
 ## Add
 
 `ch-local snippet codex` prints the entry for this machine. Append it to
-`~/.codex/config.toml`:
+`~/.codex/config.toml` (Codex's default config file and its `[mcp_servers.<name>]`
+table, checked by hand against Codex's MCP docs, November 2026; `ch-local add
+codex` writes it there, or under `$CODEX_HOME` when that is set):
 
     [mcp_servers.countinghouse]
     command = "/usr/local/bin/node"
@@ -55,7 +59,8 @@ reads one line from standard input.
 ## Node
 
 The entry names the absolute path of your Node. An nvm or system Node upgrade
-changes that path: run `ch-local snippet codex` again and replace the entry.
+changes that path: run `ch-local add codex` again (or `ch-local snippet codex`,
+and replace the entry). Run `ch-local install` once too, so the shared runtime starts with the new Node; until then each session runs its own runtime, and says so.
 
 ## Remove
 

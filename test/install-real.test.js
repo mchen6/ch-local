@@ -2,7 +2,7 @@
 require('./tmp-dirs');
 // One install with the real npm: this repository packed into a tarball, pinned,
 // installed into a temporary home, and run through <home>/bin/ch-local.js the
-// way a client runs it. ch-local has no dependencies, so npm needs no network.
+// way a client runs it. ch-local's only dependencies are bundled in its tarball, so npm needs no network.
 const test = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');

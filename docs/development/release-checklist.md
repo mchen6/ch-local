@@ -164,6 +164,35 @@ The checks are grouped. Within a group, the order doesn't matter.
       release-pins test passes on the tag's commit.
     - Evidence: the step's output, saved with the checklist.
 
+22. **The release's change notes are written into its pins.**
+    - Why: `upgrade` and `upgrade --check` show `release.notes` before they
+      ask, cleaned, as the release's own words.
+    - How: write the notes file (plain text, one change per line, at most 8
+      lines of at most 200 characters; blank lines are left out) and pass it
+      to the step: `node scripts/describe-release.js <tarballs> --notes
+      <file>`. Notes may be omitted: `--notes none` writes `null`, and a
+      release with no `notes` key at all is read as none. Without `--notes`,
+      the step keeps what the file already holds.
+    - Check: `release.notes` in lib/release-pins.json is the file's lines,
+      and the release-pins test passes.
+    - Evidence: the notes file, saved with the checklist.
+
+23. **The guide links point at the release's tag.**
+    - Why: `countinghouse_overview` and the setup skill send the user to
+      countinghouse's module guide; on `blob/master` it can describe what
+      this release doesn't have.
+    - How: at gating, change each link from `blob/master` to
+      `blob/<the release tag>`: countinghouse `lib/overview.js` (`GUIDE`)
+      and the setup skill's section 7
+      (`clients/claude-code/skills/countinghouse-setup/SKILL.md`: the
+      module-development.md and composite-tools.md links). The tests pin
+      them, so change them in the same commit: countinghouse
+      `test/mcp-contract/42-overview.js` (`GUIDE`) and ch-local
+      `test/plugin.test.js` (the setup skill's checked sentences).
+    - Check: no `blob/master` link is left in either file, and both tests
+      pass.
+    - Evidence: the two commits.
+
 ## Reviews, Windows and the notes
 
 16. **The pre-release trust-boundary review is done, and its findings are

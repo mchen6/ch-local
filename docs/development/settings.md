@@ -180,12 +180,13 @@ change that loosens is not applied: the settings in effect are kept.
 
 ## Never silent
 
-What `start` says about the settings and the ceiling (an outside edit, a
-value clamped, a loosening refused or kept back, a pack the ceiling keeps
-from loading), and each loosening a running start applies, goes three ways: on stderr, in the
-history, and to the client as a notice over the control channel, which the
-runtime puts on the next result of any tool and sends as an MCP
-`notifications/message`. Notices found before the runtime is up are sent once
+What `start` says about the settings and the ceiling goes on stderr and to
+the client as a notice over the control channel, which the runtime puts on
+the next result of any tool and sends as an MCP `notifications/message`. An
+outside edit, and each change a running start applies, is also written to
+the history. A value clamped, a loosening refused or kept back, and a module
+the ceiling keeps from loading are said on stderr and to the client only,
+not written to the history. Notices found before the runtime is up are sent once
 it says it is ready; one the runtime does not take is said on stderr. The notices reach the user through the model; stderr and the
 history are the record it cannot edit.
 

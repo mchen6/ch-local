@@ -1,6 +1,7 @@
 //! ch-shim: one MCP client session's shim to countinghouse's shared runtime
-//! (contract 2). The client config ch-local writes runs it as
-//! `<shim> --home <absolute home> [pass-through runtime flags…]`.
+//! (contract 2). A client's entry runs `<node> <home>/bin/ch-local.js
+//! session --home <home>`, and `session` runs it as `<shim> --home
+//! <absolute home>`; pass-through runtime flags after that are still read.
 
 // unsafe is denied in the binary too; its one call (the startup sweep) is
 // allowed where it is made, with its SAFETY note.

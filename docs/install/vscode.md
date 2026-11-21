@@ -1,5 +1,7 @@
 # VS Code (Copilot)
 
+`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"`.
+
 ## Add
 
 `ch-local snippet vscode` prints the entry for this machine, in the portable
@@ -15,8 +17,13 @@ format of `~/.copilot/mcp-config.json`. Merge it under `mcpServers`:
       }
     }
 
-`.vscode/mcp.json` is deprecated for February 2027, so it is not the target
-here.
+VS Code's Copilot reads `~/.copilot/mcp-config.json` (`$COPILOT_HOME/mcp-config.json`
+when that is set), with its servers under `mcpServers`, as the Copilot CLI
+does. The editor-managed files, `.vscode/mcp.json` and the profile's
+`mcp.json`, with their servers under `servers`, belong to VS Code's Local
+harness, which is deprecated for removal in February 2027, so they are not the
+target here. (Checked by hand against VS Code's MCP configuration reference
+and GitHub's Copilot CLI docs, November 2026.)
 
 ## Credentials
 
@@ -58,7 +65,8 @@ reads one line from standard input.
 ## Node
 
 The entry names the absolute path of your Node. An nvm or system Node upgrade
-changes that path: run `ch-local snippet vscode` again and replace the entry.
+changes that path: run `ch-local add vscode` again (or `ch-local snippet vscode`,
+and replace the entry). Run `ch-local install` once too, so the shared runtime starts with the new Node; until then each session runs its own runtime, and says so.
 
 ## Remove
 

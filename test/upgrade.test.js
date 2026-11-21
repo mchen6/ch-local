@@ -397,7 +397,7 @@ test('a home whose one pack the record lists as withdrawn still upgrades; a rele
 
 // The deep review of #77 (HIGH): a later full upgrade keeps a held pack (one
 // a rollback's restored release lacked), its entry and its module versions
-// in the store (Matt's "nothing deleted").
+// in the store (the maintainer's "nothing deleted").
 test('a full upgrade keeps a held pack: its entry and its module versions', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const {storeModule, editHome} = require('./store-helpers');

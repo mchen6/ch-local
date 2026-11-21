@@ -1,5 +1,7 @@
 # Claude Desktop
 
+`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"`.
+
 ## Add
 
 Not yet. `ch-local snippet claude-desktop` says why: Desktop does not see
