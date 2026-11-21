@@ -1244,7 +1244,7 @@ test('start runs nothing from a home another user could change: exit 2, with the
     const f = io(home);
     assert.strictEqual(await start({passThrough: []}, f), 2, f.err);
     assert.strictEqual(f.spawned.length, 0, 'no runtime spawned');
-    assert.match(f.err, /is group- or world-writable \(mode 0777\), so another user could change what runs from it; run `chmod 700 "[^"]+"`, then start again; nothing was started/);
+    assert.match(f.err, /is group- or world-writable \(mode 0777\), so another user could change what runs from it; it may already have been changed: move it aside \(`mv "[^"]+" "[^"]+\.suspect"`\) and install again; nothing was started/);
   } finally {
     fs.chmodSync(home, 0o700);
   }

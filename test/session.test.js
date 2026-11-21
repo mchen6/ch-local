@@ -291,13 +291,13 @@ test('a home another user could change (0775 under umask 0002): refused, exit 2,
   assert.strictEqual(require('../lib/home').homeOwnershipProblem(h) != null, true, 'the daemon\'s check refuses it');
   const c = choose(h);
   assert.strictEqual(c.shim, null);
-  assert.match(c.refuse, new RegExp(`${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: it is group- or world-writable \\(mode 0775\\), so another user could change what runs from it; run \`chmod 700 "${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\``));
+  assert.match(c.refuse, new RegExp(`${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: it is group- or world-writable \\(mode 0775\\), so another user could change what runs from it; it may already have been changed: move it aside \\(\`mv "${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" "${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.suspect"\`\\) and install again$`));
   // and the entry itself: refused, exit 2, nothing started (no shim, no
   // runtime of the session's own)
   const r = await runIt(process.execPath, [path.join(ROOT, 'bin', 'ch-local.js'), 'session', '--home', h], envWith({}));
   assert.strictEqual(r.code, 2, r.err);
   assert.ok(!/^SHIM /m.test(r.out), r.out);
-  assert.match(r.err, /so another user could change what runs from it; run `chmod 700 "[^"]+"`, then start again; nothing was started/);
+  assert.match(r.err, /so another user could change what runs from it; it may already have been changed: move it aside \(`mv "[^"]+" "[^"]+\.suspect"`\) and install again; nothing was started/);
   assert.doesNotMatch(r.err, /no pack is installed/, 'no runtime ran');
 });
 
@@ -397,7 +397,8 @@ test('a home under a folder another user could write in is refused; a sticky one
 // the reviewer's high on #126, L9: on Windows a session reads its home's ACL
 // once, for both of its checks (each read is a PowerShell run)
 test('Windows: session reads its home\'s ACL once for its owner and its DACL checks (ACLs given)', {skip: process.platform !== 'win32' && 'the home is judged by this machine\'s own platform'}, async() => {
-  const h = home();
+  // (no shim: the C probe is built on POSIX only, and this is a home check)
+  const h = home({placed: false});
   const ME = 'S-1-5-21-1-2-3-1001';
   const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
   let reads = 0;

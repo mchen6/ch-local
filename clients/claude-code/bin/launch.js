@@ -65,9 +65,9 @@ const shown = (p, platform = process.platform) => (plain(p, platform) ? `"${p}"`
 // of 0002 leaves a home's folders). Otherwise another user could move the
 // home away and put one of theirs in its place. Windows: the ancestors' DACLs
 // are not checked. -> {why, fix} | null
-function aboveProblem(home) {
-  const QUOTE = shown;
+function aboveProblemWith(home, QUOTE) {
   const given = path.resolve(home);
+  // (a home not made yet: the path as given, its folders that are there)
   let real = null;
   try { real = fs.realpathSync.native(given); } catch (e) { if (e.code !== 'ENOENT') return {why: `it could not be read (${e.code || e.message})`, fix: null}; }
   const uid = typeof process.geteuid === 'function' ? process.geteuid() : null;
@@ -93,6 +93,9 @@ function aboveProblem(home) {
   }
   return null;
 }
+function aboveProblem(home) {
+  return aboveProblemWith(home, shown);
+}
 
 // home, launcher: as found by the home rule -> {problem} (the line, with the
 // fix) | {launcher} (the launcher's real path, the one checked and the one to
@@ -117,7 +120,13 @@ function homeProblem(home, launcher, {platform = process.platform, fileAcls = nu
     if (platform === 'win32') continue;
     const euid = typeof process.geteuid === 'function' ? process.geteuid() : null;
     if (euid != null && st.uid !== euid) return {problem: `${real} is owned by uid ${st.uid}, not you, ${OPEN}; use a home only you own`};
-    if ((st.mode & 0o022) !== 0) return {problem: `${real} is group- or world-writable (mode ${(st.mode & 0o777).toString(8).padStart(4, '0')}), ${OPEN}; run \`chmod ${directory ? '700' : '600'} ${shown(real)}\``};
+    // (writable by others: it may already have been changed, so never
+    // trusted after a chmod: moved aside and installed again, F2)
+    if ((st.mode & 0o022) !== 0) {
+      const homeReal = reals[0];
+      const move = shown(homeReal) !== '"<its folder>"' && shown(`${homeReal}.suspect`) !== '"<its folder>"' ? ` (\`mv ${shown(homeReal)} ${shown(`${homeReal}.suspect`)}\`)` : '';
+      return {problem: `${real} is group- or world-writable (mode ${(st.mode & 0o777).toString(8).padStart(4, '0')}), ${OPEN}; the home may already have been changed: move it aside${move} and install again`};
+    }
     // (the home itself private, as install makes it: its app and module
     // store run with the keys, M2)
     if (i === 0 && (st.mode & 0o077) !== 0) return {problem: `${real} is open to group or others (mode ${(st.mode & 0o777).toString(8).padStart(4, '0')}), and its folders may be too, ${OPEN}; run \`chmod 700 ${shown(real)}\``};
@@ -139,7 +148,7 @@ function homeProblem(home, launcher, {platform = process.platform, fileAcls = nu
       // remove it and install again, L8)
       const a = acls[i];
       if (a != null && typeof a.owner === 'string' && ![a.user, winAcl.SYSTEM, winAcl.ADMINISTRATORS].includes(a.owner)) return {problem: `${why}, ${OPEN}; remove it and install again`};
-      const hint = plain(reals[i], 'win32') ? winAcl.fixHint(reals[i], acls[i]) : null;
+      const hint = plain(reals[i], 'win32') ? winAcl.fixHint(reals[i], acls[i], {directory}) : null;
       return {problem: `${why}, ${OPEN}; make it a ${directory ? 'folder' : 'file'} only you can change${hint != null ? `: ${hint.split('\n').map((l) => l.trim()).join(', then ')}` : ''}`};
     }
   }

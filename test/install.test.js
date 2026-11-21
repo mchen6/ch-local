@@ -1213,7 +1213,7 @@ test('an existing group-writable home: refused with the chmod line, nothing inst
   assert.strictEqual(await run(r, io), 1);
   assert.strictEqual(fs.statSync(h).mode & 0o777, 0o775, 'not changed');
   assert.deepStrictEqual(fs.readdirSync(h), [], 'nothing installed');
-  assert.ok(io.err.includes(`this home is group- or world-writable (mode 0775), so another user could change what runs from it; run \`chmod 700 "${fs.realpathSync.native(h)}"\`, then install again`), io.err);
+  assert.ok(io.err.includes(`this home is group- or world-writable (mode 0775), so another user could change what runs from it; it may already have been changed: move it aside (\`mv "${fs.realpathSync.native(h)}" "${fs.realpathSync.native(h)}.suspect"\`) and install again`), io.err);
   assert.match(io.err, /nothing was installed/);
   // a path the command line can't quote safely: refused the same, with no line to paste
   const odd = path.join(home(), 'my$home');
@@ -1221,8 +1221,11 @@ test('an existing group-writable home: refused with the chmod line, nothing inst
   fs.chmodSync(odd, 0o777);
   const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: odd}, exec: npm()});
   assert.strictEqual(await run(r, io2), 1);
-  assert.match(io2.err, /world-writable \(mode 0777\), so another user could change what runs from it\n/);
-  assert.doesNotMatch(io2.err, /chmod/);
+  // (a writable home may already have been changed: moved aside, never
+  // trusted after a chmod: the reviewer's Fable high on #126, F2; with no
+  // path to paste, said in words)
+  assert.match(io2.err, /world-writable \(mode 0777\), so another user could change what runs from it; it may already have been changed: move it aside and install again\n/);
+  assert.doesNotMatch(io2.err, /chmod|mv /);
 });
 
 test('ensureHome: a missing home and its parents made 0700 under umask 0002; one that exists left as it is; a first setting makes it the same way', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
@@ -1273,7 +1276,7 @@ test('a group-writable home is refused before any fetch or shim step', {skip: pr
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, r.allow), 1);
     assert.deepStrictEqual(called, []);
-    assert.match(io.err, /this home is group- or world-writable \(mode 0775\), so another user could change what runs from it; run `chmod 700 "/);
+    assert.match(io.err, /this home is group- or world-writable \(mode 0775\), so another user could change what runs from it; it may already have been changed: move it aside \(`mv "/);
     assert.deepStrictEqual(fs.readdirSync(h), []);
   } finally {
     Object.assign(nr, {fetchRelease: real.fetchRelease});
@@ -1488,4 +1491,41 @@ test('a first install under a folder another user could write in is refused, and
     fs.chmodSync(parent, 0o700);
     fs.rmSync(parent, {recursive: true, force: true});
   }
+});
+
+// the reviewer's Fable high on #126
+test('Windows: a new home that is not empty once its DACL is set is refused (F4)', () => {
+  const {ensureHome} = require('../lib/home');
+  const ME = 'S-1-5-21-1-2-3-1001';
+  const PRIVATE = {user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  const h = path.join(home(), 'planted');
+  assert.throws(() => ensureHome(h, 'win32', {makePrivateDirs: ([d]) => { fs.writeFileSync(path.join(d, 'planted.js'), 'x'); return [PRIVATE]; }}), /is not empty/);
+});
+
+test('install replaces a launcher that is a link, never writing through it (F8)', {skip: process.platform === 'win32' && 'links need privileges on Windows'}, async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const launcher = layout({COUNTINGHOUSE_HOME: h}).launcher;
+  const elsewhere = path.join(home(), 'target.js');
+  fs.writeFileSync(elsewhere, 'untouched');
+  fs.rmSync(launcher);
+  fs.symlinkSync(elsewhere, launcher);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io2), 0, io2.err);
+  assert.ok(!fs.lstatSync(launcher).isSymbolicLink(), 'a file now');
+  assert.strictEqual(fs.readFileSync(elsewhere, 'utf8'), 'untouched');
+});
+
+test('fixHint on a folder grants inheritable full control, so its own files stay reachable (F13)', () => {
+  const {fixHint} = require('../lib/win-acl');
+  const acl = {user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', rules: [{sid: 'S-1-1-0'}]};
+  assert.match(fixHint('C:\\h', acl, {directory: true}), /\*S-1-5-21-1-2-3-1001:\(OI\)\(CI\)F \*S-1-5-18:\(OI\)\(CI\)F/);
+  assert.match(fixHint('C:\\h\\f', acl), /\*S-1-5-21-1-2-3-1001:F \*S-1-5-18:F/);
+});
+
+test('only lib/ceiling.js says "the operator\'s ceiling file": an open home is said as the home\'s (F7)', () => {
+  const lib = path.join(__dirname, '..', 'lib');
+  const found = fs.readdirSync(lib).filter((f) => f.endsWith('.js') && f !== 'ceiling.js' && /the operator's ceiling file \$\{/.test(fs.readFileSync(path.join(lib, f), 'utf8')));
+  assert.deepStrictEqual(found, []);
 });

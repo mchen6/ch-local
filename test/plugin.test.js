@@ -284,7 +284,7 @@ test('launch.js runs nothing from a home, bin/ or launcher another user could ch
     const r = launchIn(h);
     assert.strictEqual(r.status, 2, `${what}: ${r.stderr}`);
     assert.doesNotMatch(r.stdout, /RAN/, `${what}: nothing ran`);
-    assert.match(r.stderr, /is group- or world-writable \(mode 0[0-7]{3}\), so another user could change what runs from it; run `chmod (700|600) "[^"]+"`; nothing was started/, what);
+    assert.match(r.stderr, /is group- or world-writable \(mode 0[0-7]{3}\), so another user could change what runs from it; the home may already have been changed: move it aside \(`mv "[^"]+" "[^"]+\.suspect"`\) and install again; nothing was started/, what);
   }
 });
 
@@ -377,4 +377,16 @@ test('launch.js prints a path only by lib\'s exact rule (L8): the same UNSAFE ch
   const p = homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, THEIRS]}).problem;
   assert.match(String(p), /is owned by S-1-5-21-1-2-3-1002.*; remove it and install again/);
   assert.doesNotMatch(String(p), /setowner/);
+});
+
+// the reviewer's Fable high on #126, F12: the rule for the folders above a
+// home is one function, word for word the same in both copies
+test('launch.js and lib/home.js carry the same aboveProblemWith, word for word', () => {
+  const fn = (file) => {
+    const s = fs.readFileSync(file, 'utf8');
+    const at = s.indexOf('function aboveProblemWith(');
+    assert.ok(at >= 0, file);
+    return s.slice(at, s.indexOf('\n}\n', at) + 2);
+  };
+  assert.strictEqual(fn(LAUNCH), fn(path.join(ROOT, 'lib', 'home.js')));
 });

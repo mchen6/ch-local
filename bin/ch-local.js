@@ -66,6 +66,7 @@ function parse(argv, {flags = [], values = []}) {
 // this returns, and the hints' pin (test/command-line.test.js) parses every
 // printed command with it. Checks that read the disk (an absolute --home, a
 // directory) stay with the command.
+const ON_HOME = new Set(['add-pack', 'remove-pack', 'add-module', 'remove-module', 'rollback', 'status', 'add', 'credentials', 'uninstall', 'settings', 'upgrade']);
 function parseCommand(argv) {
   const [command, ...rest] = argv;
   const one = () => rest.length === 1 && !rest[0].startsWith('--');
@@ -180,6 +181,15 @@ async function main(argv, io) {
   if (p == null) return usage();
   const {command} = p;
   try {
+    // every command that acts on a home refuses one another user could
+    // change, here, before any of it runs (the reviewer's Fable high on
+    // #126, F5). install, session, start, daemon and conditions make their
+    // own check, with their own words; snippet acts on none.
+    if (ON_HOME.has(command)) {
+      const {layout, openHomeLine} = require('../lib/home');
+      const open = openHomeLine(layout(io.env, io.homedir).home);
+      if (open != null) { io.stderr.write(`ch-local: ${open}; nothing was changed\n`); return 2; }
+    }
     if (command === 'snippet') return snippetCommand(p.client, io);
     if (command === 'install') {
       const code = await require('../lib/install').install({pack: p.pack, from: p.from, unreleasedPins: p.unreleasedPins}, io);

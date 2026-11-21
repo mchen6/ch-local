@@ -114,7 +114,9 @@ test('add-module over a pipe is refused, naming the command; without a folder, u
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-own-')));
   try {
     const home = path.join(base, 'home');
-    fs.mkdirSync(home);
+    // (private, as install makes a home)
+    fs.mkdirSync(home, {mode: 0o700});
+    fs.chmodSync(home, 0o700);
     const r = spawnSync(process.execPath, [BIN, 'add-module', path.join(base, 'mine')], {encoding: 'utf8', input: 'y\n', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 2, r.stdout + r.stderr);
     assert.match(r.stderr, /add-module asks you, in your own terminal: run `.*add-module ".+mine"` there\./);
@@ -191,4 +193,24 @@ test('install --unreleased-pins with no --pack says why, not the whole usage', (
   assert.strictEqual(r.status, 2);
   assert.match(r.stderr, /--unreleased-pins reinstalls only with the pack it is for: pass --pack <name> with it/);
   assert.doesNotMatch(r.stderr, /usage:/);
+});
+
+// the reviewer's Fable high on #126, F5: every command that acts on a home
+// (but snippet, and those with their own check: install, session, start,
+// daemon, conditions) refuses one another user could change, at one place
+test('a command acting on a home another user could change refuses it, exit 2, nothing changed', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-open-'));
+  fs.chmodSync(home, 0o777);
+  try {
+    for (const args of [['status'], ['rollback', '--yes'], ['settings', 'set', 'requestTimeout', '30000'], ['credentials', 'list'], ['uninstall'], ['upgrade', '--check'], ['remove-pack', 'x']]) {
+      const r = run(args, {COUNTINGHOUSE_HOME: home});
+      assert.strictEqual(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
+      assert.match(r.stderr, /so another user could change what runs from it/, args.join(' '));
+      assert.match(r.stderr, /nothing was changed/, args.join(' '));
+    }
+    assert.deepStrictEqual(fs.readdirSync(home), [], 'nothing written into it');
+  } finally {
+    fs.chmodSync(home, 0o700);
+    fs.rmSync(home, {recursive: true, force: true});
+  }
 });
