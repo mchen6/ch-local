@@ -1,8 +1,6 @@
 'use strict';
 require('./tmp-dirs');
-// (the home named before an npx hint, COUNTINGHOUSE_HOME="<home>" npx ..., left out
-// of a comparison of the rest: lib/command-line.js pins it, test/command-line.test.js)
-const unhomed = (s) => String(s).replace(/COUNTINGHOUSE_HOME="[^"]+" /g, '');
+const {unhomed} = require('./unhomed');
 
 // lib/module-credentials.js (#413 sections 6.4, 6.7 and 10; L5a): each
 // module's credential state and its sentence, the slots a start gives its

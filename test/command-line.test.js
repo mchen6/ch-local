@@ -241,3 +241,15 @@ test('the npx form names a home that is not the default (POSIX)', {skip: process
   assert.strictEqual(chLocal(layout({COUNTINGHOUSE_HOME: h}), 'status'), `COUNTINGHOUSE_HOME="${h}" npx @countinghouse/ch-local status`);
   assert.strictEqual(chLocal(layout({}, require('node:os').homedir), 'status'), 'npx @countinghouse/ch-local status', 'the default home: no variable');
 });
+
+// the medium on the follow-up to #129, 3: a home a shell wouldn't read
+// plainly is named by the placeholder, never left out (which would act on
+// ~/.countinghouse) -- by chLocal, npxLatest and chLocalSelf's npx form alike
+test('a home a shell would not read plainly is named by the placeholder, never left out (POSIX)', {skip: process.platform === 'win32' && 'POSIX form'}, () => {
+  const {npxLatest, homePrefix} = require('../lib/command-line');
+  const odd = {home: '/home/a$b/ch'};
+  assert.strictEqual(chLocal(odd, 'install', 'linux'), 'COUNTINGHOUSE_HOME="<its folder>" npx @countinghouse/ch-local install');
+  assert.strictEqual(npxLatest(odd, 'upgrade', 'linux'), 'COUNTINGHOUSE_HOME="<its folder>" npx @countinghouse/ch-local@latest upgrade');
+  assert.strictEqual(homePrefix({home: '/home/dev/ch'}, 'linux'), 'COUNTINGHOUSE_HOME="/home/dev/ch" ');
+  assert.strictEqual(homePrefix({home: '/home/dev/ch'}, 'win32'), '', 'Windows: not yet (A-chlocal-func)');
+});

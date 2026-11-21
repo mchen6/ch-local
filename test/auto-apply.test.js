@@ -1,8 +1,6 @@
 'use strict';
 require('./tmp-dirs');
-// (the home named before an npx hint, COUNTINGHOUSE_HOME="<home>" npx ..., left out
-// of a comparison of the rest: lib/command-line.js pins it, test/command-line.test.js)
-const unhomed = (s) => String(s).replace(/COUNTINGHOUSE_HOME="[^"]+" /g, '');
+const {unhomed} = require('./unhomed');
 
 // lib/auto-apply.js, `npx @countinghouse\/ch-local upgrade --apply-auto` (docs/development/
 // auto-upgrade.md, "The child that applies it", "The 72-hour wait",
@@ -258,7 +256,8 @@ test('L4: a home whose record cannot be read is not upgraded automatically, and 
     fs.writeFileSync(path.join(h, 'modules.json'), '{"not": "a record"}');
     const r = await run(h, w);
     assert.strictEqual(r.outcome, 'record-unreadable');
-    // (no path named; recorded in history: the Reviewer's high on L4, 7)
+    // (the record's path not named -- the command names the home, as the
+    // launcher form always did; recorded in history: the Reviewer's high on L4, 7)
     assert.strictEqual(unhomed(r.line), 'automatic upgrades are paused: this home\'s record can\'t be read: run `npx @countinghouse\/ch-local status`');
     assert.deepStrictEqual(w.reg.requests, []);
     const last = fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).pop();

@@ -1,8 +1,6 @@
 'use strict';
 require('./tmp-dirs');
-// (the home named before an npx hint, COUNTINGHOUSE_HOME="<home>" npx ..., left out
-// of a comparison of the rest: lib/command-line.js pins it, test/command-line.test.js)
-const unhomed = (s) => String(s).replace(/COUNTINGHOUSE_HOME="[^"]+" /g, '');
+const {unhomed} = require('./unhomed');
 
 // What loads, by module (#413 section 5.2; L2a): lib/availability.js.
 const test = require('node:test');

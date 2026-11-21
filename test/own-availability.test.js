@@ -1,8 +1,6 @@
 'use strict';
 require('./tmp-dirs');
-// (the home named before an npx hint, COUNTINGHOUSE_HOME="<home>" npx ..., left out
-// of a comparison of the rest: lib/command-line.js pins it, test/command-line.test.js)
-const unhomed = (s) => String(s).replace(/COUNTINGHOUSE_HOME="[^"]+" /g, '');
+const {unhomed} = require('./unhomed');
 
 // B-own-add: the user's own modules in what loads (lib/availability.js with
 // `own`; the own-modules design §2.2). An own module is top-level, after
