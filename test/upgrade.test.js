@@ -801,3 +801,24 @@ test('an upgrade installs with an allow that carries the release\'s shim', async
     s.done();
   }
 });
+
+// the medium on the upgrade fix (A1): a release whose pins are in a later
+// format this ch-local can't read names the way out, a fresh install by npx
+// of the latest, on THIS home (COUNTINGHOUSE_HOME named when it is not the
+// default); a broken pins file is refused plainly
+test('upgrade against a release in a later pins format names the npx install of the latest, on this home', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release(), {edit: (d) => { d.v = 3; }});
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: [], fetch: realFetch});
+    assert.notStrictEqual(await upgrade({check: true}, io, w.fromNpm), 0);
+    const want = process.platform === 'win32'
+      ? `\`npx @countinghouse/ch-local@latest install --pack ci-failure-triage\` (with COUNTINGHOUSE_HOME set to "${s.home}")`
+      : `\`COUNTINGHOUSE_HOME="${s.home}" npx @countinghouse/ch-local@latest install --pack ci-failure-triage\``;
+    assert.ok(io.err.includes(`a later ch-local reads that release's pins: install it with ${want}`), io.err);
+    assert.doesNotMatch(io.err, /@countinghouse\/ch-local@0\.2\.0: @countinghouse\/ch-local@0\.2\.0/, 'its name once');
+  } finally {
+    await w.close();
+    s.done();
+  }
+});

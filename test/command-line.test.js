@@ -191,7 +191,7 @@ test('the pin\'s reading of a template: nested braces, a } in a literal, an empt
 test('every ch-local command a hint prints parses as the command line takes it', () => {
   const {parseCommand} = require('../bin/ch-local.js');
   // (chLocalSelf's commands too: the running ch-local's own)
-  const CALL = /chLocal(?:Self)?\(\s*[^,()]+,\s*(['`])((?:\\.|(?!\1)[^\\])*)\1/g;
+  const CALL = /(?:chLocal(?:Self)?|npxLatest)\(\s*[^,()]+,\s*(['`])((?:\\.|(?!\1)[^\\])*)\1/g;
   // (every .js under lib/, its subdirectories too, and the CLI)
   const walk = (d) => fs.readdirSync(d, {withFileTypes: true}).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith('.js') && e.name !== 'command-line.js' ? [path.join(d, e.name)] : []);
   const files = [...walk(LIB), BIN];
@@ -202,7 +202,7 @@ test('every ch-local command a hint prints parses as the command line takes it',
     const text = fs.readFileSync(file, 'utf8');
     // a call the pattern can't read (a first argument with ( or ,, a
     // command that is not a literal) is a failure too, the medium's 8
-    const calls = (text.match(/\bchLocal(?:Self)?\(/g) || []).length - (text.match(/function chLocal(?:Self)?\(/g) || []).length;
+    const calls = (text.match(/\b(?:chLocal(?:Self)?|npxLatest)\(/g) || []).length - (text.match(/function (?:chLocal(?:Self)?|npxLatest)\(/g) || []).length;
     const read = [...text.matchAll(CALL)].length;
     if (read !== calls) unread.push(`${path.relative(LIB, file)}: ${calls - read} chLocal call(s) not read`);
     for (const m of text.matchAll(CALL)) {
