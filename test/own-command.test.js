@@ -134,7 +134,7 @@ test('a key or data already kept for the name is said before the yes', async () 
   const dir = writeModule(path.join(base, 'work', 'mine'));
   const io = ioWith(home, ['n']);
   await addModule({dir}, io, {where});
-  assert.ok(io.out.includes(`and the data kept in ${path.join(where.moduleData, 'my-tool')}`), io.out);
+  assert.ok(io.out.includes(`It will use the data kept in ${path.join(where.moduleData, 'my-tool')}. Remove it first if this is a different module: delete ${path.join(where.moduleData, 'my-tool')}.`), io.out);
 });
 
 test('the sandbox set to audit, or one the runtime can\'t enforce here: refused before anything is asked', async () => {
@@ -161,7 +161,7 @@ test('a key already stored for the name is said before the yes, with where it go
   const dir = writeModule(path.join(base, 'work', 'mine'));
   const io = ioWith(home, ['n']);
   await addModule({dir}, io, {where});
-  assert.ok(io.out.includes('It will use the key already stored for my-tool (sent only to https://api.mine.example). Remove them first if this is a different module: `'), io.out);
+  assert.ok(io.out.includes('It will use the key already stored for my-tool (sent only to https://api.mine.example). Remove it first if this is a different module: `'), io.out);
 });
 
 test('the permissions it declares are said, and that the enforced sandbox grants none; a control character in them is shown as ?', async () => {
@@ -358,4 +358,15 @@ test('a repair that cannot replace the old copy fails with a line after the yes'
     assert.match(io.err, /your module's copy could not be replaced \(EACCES\): nothing was added/);
     assert.ok(fs.existsSync(ot.markerOf(where, 'my-tool', tree)), 'the old copy stays marked');
   } finally { fs.chmodSync(file, 0o444); }
+});
+
+// the reviewer on #116 (a): an own name equal to an installed module's
+// short name is refused (one name, one module, in every command)
+test('an own name that is an installed module\'s short name is refused', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'), {name: 'ch-step-redact', friendlyName: 'my-redact'});
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /ch-step-redact is the short name of @countinghouse\/ch-step-redact here: give your module another name in its package\.json\./);
+  assert.deepStrictEqual(io.asked, []);
 });

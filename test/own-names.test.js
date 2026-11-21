@@ -79,3 +79,13 @@ test('add-module refuses a name the runtime\'s packages or the release\'s pins h
   assert.match(f.err, /countinghouse is a name this release holds: give your module another name in its package\.json\./);
   assert.deepStrictEqual(f.asked, []);
 });
+
+// the reviewer on #116 (a): a pack module whose short name is an own
+// module's name is refused too
+test('add-pack refuses a pack module whose short name is an own module\'s name', async () => {
+  const s = await installed();
+  s.own('ch-step-other', 'my-other-device');
+  const f = s.io();
+  assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, f, s.r.allow), 1);
+  assert.match(f.err, /@countinghouse\/ch-step-other's short name is the name of your own module ch-step-other: remove it first/);
+});
