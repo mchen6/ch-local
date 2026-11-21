@@ -55,7 +55,7 @@ function parseArgs(argv) {
     else if (a === '--home') out.home = next();
     // build a prepared local release into this (absolute, new or empty)
     // directory and install nothing: what the install doc's pre-release
-    // command runs from (A-firstrun d2: Matt's acceptance run)
+    // command runs from (A-firstrun d2: the maintainer's acceptance run)
     else if (a === '--release-dir') {
       out.releaseDir = next();
       if (!path.isAbsolute(out.releaseDir)) throw new Error(`--release-dir must be an absolute path\n${USAGE}`);
@@ -180,7 +180,9 @@ async function shimInto(npmIo, release, work, pins, say, {build = cargoBuild, pl
   if (cargo == null) throw new Error('shim/Cargo.toml names no [package] version');
   const bin = build(path.join(ROOT, 'shim'), exe(t));
   const version = `${cargo}-dev.${require('node:crypto').createHash('sha512').update(fs.readFileSync(bin)).digest('hex').slice(0, 12)}`;
-  const dir = writeTarget(path.join(work, 'shim-package', `ch-shim-${t.key}`), t, version, bin);
+  // (a host-target build, not publish's static musl one: its description
+  // says so -- the reviewer's high, F7)
+  const dir = writeTarget(path.join(work, 'shim-package', `ch-shim-${t.key}`), t, version, bin, 'this machine\'s host target, by dogfood --release-dir');
   const {packInto} = require('../lib/release');
   const {name, integrity} = await packInto(npmIo, dir, release);
   pins[name] = {version, integrity};
@@ -204,6 +206,17 @@ function builtExecutable(stdout, exeName) {
     if (m != null && m.reason === 'compiler-artifact' && typeof m.executable === 'string' && path.basename(m.executable) === exeName) found = m.executable;
   }
   return found;
+}
+
+// shimInto for buildRelease: -> {packed} or {problem} (a build that fails
+// is the folder's problem, said, never a throw: the medium on A-shim-from, 5)
+async function releaseShim(npmIo, release, work, pins, say, shim) {
+  let packed;
+  try { packed = await shimInto(npmIo, release, work, pins, say, shim); } catch (err) {
+    return {problem: `--release-dir builds this machine's shim from shim/ with cargo (Rust, rustup.rs), and could not: ${err.message}`};
+  }
+  if (packed != null) say(`ch-shim: this checkout's shim/ -> ${packed}`);
+  return {packed};
 }
 
 async function buildRelease(plan, work, say, {shim = null} = {}) {
@@ -241,11 +254,8 @@ async function buildRelease(plan, work, say, {shim = null} = {}) {
   // (a build that fails is the folder's problem, said, never a throw: the
   // walk needs the shim -- the medium on A-shim-from, 5)
   if (shim != null) {
-    let packed;
-    try { packed = await shimInto(npmIo, release, work, pins, say, shim); } catch (err) {
-      return {problem: `--release-dir builds this machine's shim from shim/ with cargo (Rust, rustup.rs), and could not: ${err.message}`};
-    }
-    if (packed != null) say(`ch-shim: this checkout's shim/ -> ${packed}`);
+    const s = await releaseShim(npmIo, release, work, pins, say, shim);
+    if (s.problem != null) return s;
   }
   const missing = [...ALLOWLIST.runtime.packages, ...ALLOWLIST.packs[PACK].modules].filter((n) => pins[n] == null);
   if (missing.length > 0) return {problem: `the build has no ${missing.join(', ')}`};
@@ -438,4 +448,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, builtExecutable, resolveRefs, run, PACK};
+module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, releaseShim, builtExecutable, resolveRefs, run, PACK};

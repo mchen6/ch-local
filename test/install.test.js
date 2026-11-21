@@ -439,10 +439,11 @@ const HOST_KEY = `${process.platform}-${process.arch}`;
 const SHIM_PACKAGES = Object.fromEntries(['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'].map((t) => [t, `@countinghouse/ch-shim-${t}`]));
 // a shim package's tarball put in the folder -> {name, version, pin} (lie: a
 // pin naming other bytes)
-function folderShim(r, {key = HOST_KEY, body = hostProgram(), version = '0.5.0', lie = false} = {}) {
+// files: the package's files in place of bin/<exe>; raw: the tarball's bytes
+function folderShim(r, {key = HOST_KEY, body = hostProgram(), version = '0.5.0', lie = false, files = null, raw = null} = {}) {
   const name = SHIM_PACKAGES[key] || `@countinghouse/ch-shim-${key}`;
   const exe = key.startsWith('win32') ? 'ch-shim.exe' : 'ch-shim';
-  const bytes = require('./tgz').packageTgz({name, version}, {[`bin/${exe}`]: body});
+  const bytes = raw != null ? raw : require('./tgz').packageTgz({name, version}, files != null ? files : {[`bin/${exe}`]: body});
   fs.writeFileSync(path.join(r.from, require('../lib/install').tarballName(name, version)), bytes);
   const integrity = `sha512-${require('node:crypto').createHash('sha512').update(lie ? Buffer.from('other') : bytes).digest('base64')}`;
   return {name, version, pin: {version, integrity}};
@@ -461,6 +462,10 @@ test('--from with this platform\'s shim in the folder: placed by its pinned sha5
   // (end to end: the recorded version is versions.json's, so session execs it)
   const {sessionChoice} = require('../lib/session');
   assert.strictEqual(sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
+  // (status names it: the reviewer's high, F2)
+  const st = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
+  await require('../lib/packs-command').status({}, st);
+  assert.match(st.out, /^the shared runtime's shim: 0\.5\.0$/m);
   // (again: the same shim, checked again, moves nothing)
   const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io2, withShim(r.allow, s)), 0, io2.err);
@@ -494,18 +499,20 @@ test('--from with a release\'s whole set of shims: this machine\'s is placed, th
 
 test('--unreleased-pins with a shim in the folder (dogfood --release-dir): placed and recorded, the home still unreleased', async () => {
   const r = release(); const h = home();
-  const s = folderShim(r);
+  // (a dev build's version, as dogfood gives it: never a released one -- the
+  // reviewer's high, F1)
+  const s = folderShim(r, {version: '0.5.0-dev.0123456789ab'});
   const allow = {...r.allow, pins: {}, shim: {packages: SHIM_PACKAGES}, runtime: {...r.allow.runtime, lockfile: null}};
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
   const f = pinsFile(r, {pins: {...r.pins, [s.name]: s.pin}, runtimeLockfile: r.lockfile});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
-  assert.deepStrictEqual(record(h).shim, {package: s.name, version: '0.5.0'});
+  assert.deepStrictEqual(record(h).shim, {package: s.name, version: '0.5.0-dev.0123456789ab'});
   assert.strictEqual(record(h).unreleased, true);
   assert.match(io.err, /this is an unreleased install \(development only\)/);
   assert.strictEqual(require('../lib/session').sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
 });
 
-test('--from refuses a folder\'s shim as it refuses a pack: other bytes than the pin\'s, another platform\'s, or not a program this machine runs', async () => {
+test('--from refuses a folder\'s shim as it refuses a pack: other bytes than the pin\'s, not a program this machine runs, no binary, a refused tarball, missing, a version the record can\'t hold', async () => {
   const refused = async (shims, re) => {
     const r = release(); const h = home();
     const made = shims(r);
@@ -517,11 +524,68 @@ test('--from refuses a folder\'s shim as it refuses a pack: other bytes than the
     assert.ok(!fs.existsSync(path.join(h, 'shim', EXE_HERE)), 'nothing placed');
   };
   await refused((r) => [folderShim(r, {lie: true})], new RegExp(`${SHIM_PACKAGES[HOST_KEY] || `@countinghouse/ch-shim-${HOST_KEY}`}@0\\.5\\.0: the tarball's integrity is not the pinned one`));
-  const other = HOST_KEY === 'linux-arm64' ? 'linux-x64' : 'linux-arm64';
-  await refused((r) => [folderShim(r, {key: other})], new RegExp(`@countinghouse/ch-shim-${other}@0\\.5\\.0 is the shim for ${other}, not for this machine \\(${HOST_KEY}\\), and the folder holds none for this one`));
   if (process.platform !== 'win32') {
     await refused((r) => [folderShim(r, {body: '#!/bin/sh\necho hi\n'})], new RegExp(`@0\\.5\\.0's bin/ch-shim is not a program this machine runs \\(${HOST_KEY}: not an? (ELF|Mach-O) program`));
   }
+  // (an ELF of another architecture under this machine's name: F's tests)
+  if (process.platform === 'linux') {
+    const other = hostProgram();
+    other.writeUInt16LE(process.arch === 'arm64' ? 0x3e : 0xb7, 18);
+    await refused((r) => [folderShim(r, {body: other})], new RegExp(`is not a program this machine runs \\(${HOST_KEY}: not an ELF program for ${process.arch}\\)`));
+  }
+  // (no binary, and a tarball the strict reader refuses: a link)
+  await refused((r) => [folderShim(r, {files: {'README.md': 'no binary'}})], new RegExp(`@0\\.5\\.0 holds no bin/${EXE_HERE.replace('.', '\\.')}`));
+  const {member, tgz} = require('./tgz');
+  await refused((r) => [folderShim(r, {raw: tgz(member('package/package.json', {data: '{}'}), member(`package/bin/${EXE_HERE}`, {type: '2', linkname: '/bin/sh'}))})], /@0\.5\.0's tarball was refused \(/);
+  // (pinned for this machine but not in the folder, as a pack's tarball:
+  // F4, F5)
+  await refused((r) => { const s = folderShim(r); fs.rmSync(path.join(r.from, require('../lib/install').tarballName(s.name, '0.5.0'))); return [s]; }, new RegExp(`${SHIM_PACKAGES[HOST_KEY] || ''}@0\\.5\\.0: no .*ch-shim-${HOST_KEY}-0\\.5\\.0\\.tgz in `));
+  // (a version a home's record can't hold: refused before the app is
+  // swapped, F3)
+  await refused((r) => [folderShim(r, {version: `0.5.0-${'a'.repeat(65)}`})], /: not a version a home's record can hold/);
+});
+
+// (the reviewer's high, the medium's 7: a folder's shim refused before the
+// table's questions, over a home that has packs to ask about)
+test('--from over an unreleased home: a refused shim is refused before the table asks anything', async (t) => {
+  const r = release(); const h = home();
+  const good = folderShim(r, {version: '0.5.0-dev.0123456789ab'});
+  const allow = {...r.allow, pins: {}, shim: {packages: SHIM_PACKAGES}, runtime: {...r.allow.runtime, lockfile: null}};
+  const env = {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'};
+  const f = pinsFile(r, {pins: {...r.pins, [good.name]: good.pin}, runtimeLockfile: r.lockfile});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, fakeIo({env, exec: npm()}), allow), 0);
+  const asked = [];
+  const table = require('../lib/pack-table');
+  const real = table.askAll;
+  t.mock.method(table, 'askAll', async (...a) => { asked.push(a[2]); return real(...a); });
+  // (the control: with its shim as pinned, the table is asked)
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, fakeIo({env, exec: npm()}), allow), 0);
+  assert.strictEqual(asked.length, 1, 'an unreleased home: the table runs');
+  // (the shim's bytes not the pin's: refused, and nothing asked)
+  const lie = folderShim(r, {version: '0.5.0-dev.0123456789ab', lie: true});
+  const f2 = pinsFile(r, {pins: {...r.pins, [lie.name]: lie.pin}, runtimeLockfile: r.lockfile});
+  const io = fakeIo({env, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f2}, io, allow), 1);
+  assert.match(io.err, /the tarball's integrity is not the pinned one/);
+  assert.strictEqual(asked.length, 1, 'nothing asked');
+});
+
+test('--from on a machine whose shim isn\'t named or pinned: said as from npm, whatever other platforms\' shims the folder holds (F4)', async () => {
+  const other = HOST_KEY === 'linux-arm64' ? 'linux-x64' : 'linux-arm64';
+  // (unpinned: the packages name this machine's, the pins only another's)
+  const r = release(); const h = home();
+  const theirs = folderShim(r, {key: other});
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, theirs)), 0, io.err);
+  assert.strictEqual(record(h).shim, undefined);
+  assert.match(io.out, /no shared-runtime shim is pinned for this platform in this release: each session runs its own runtime/);
+  // (unsupported: no package for this machine at all)
+  const r2 = release(); const h2 = home();
+  const theirs2 = folderShim(r2, {key: other});
+  const packages = Object.fromEntries(Object.entries(SHIM_PACKAGES).filter(([k]) => k !== HOST_KEY));
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, io2, {...withShim(r2.allow, theirs2), shim: {packages}}), 0, io2.err);
+  assert.match(io2.out, /there is no shared-runtime shim for this platform: each session runs its own runtime/);
 });
 
 test('a shim from before is set aside by an install that brings none: from --from, or from npm with none pinned', async () => {

@@ -78,7 +78,13 @@ const choose = (h) => sessionChoice({where: layout({COUNTINGHOUSE_HOME: h}, os.h
 
 test('the shim only when the record names it and the file in place passes the checks; else the session\'s own runtime', {skip: NO_PROBE}, () => {
   const ok = home();
-  assert.deepStrictEqual(choose(ok), {shim: path.join(ok, 'shim', EXE), note: null});
+  // (an unreleased home, as these are: said even with the shim, F2)
+  assert.deepStrictEqual(choose(ok), {shim: path.join(ok, 'shim', EXE), note: `ch-local: ${require('../lib/pins').UNRELEASED_LINE}\n`});
+  // (a released one: nothing said)
+  const released = home();
+  const rec = JSON.parse(fs.readFileSync(path.join(released, 'modules.json'), 'utf8'));
+  fs.writeFileSync(path.join(released, 'modules.json'), JSON.stringify({...rec, unreleased: false, release: {version: '0.9.0', security: null}}, null, 2) + '\n');
+  assert.deepStrictEqual(choose(released), {shim: path.join(released, 'shim', EXE), note: null});
   // set aside (SHIM_BUSY; a rollback to a release with none): the record names none
   assert.deepStrictEqual(choose(home({recorded: false})), {shim: null, note: null});
   // no record at all, or one that can't be read: start reports it
@@ -186,7 +192,9 @@ test('the plugin\'s path (launch.js session, the home rule) and the entry client
     const plugin = await runIt(process.execPath, [launch, 'session'], envWith({COUNTINGHOUSE_HOME: h}));
     const said = (r) => `${r.code} ${/^SHIM /m.test(r.out) ? 'shim' : 'own'} ${r.err.trim()}`;
     assert.strictEqual(said(plugin), said(added), label);
-    assert.match(said(added), label === 'shim set aside' ? /^1 own ch-local: no pack is installed/ : /^0 shim $/, label);
+    // (these homes are unreleased: the shim's session says so before the
+    // exec -- the reviewer's high on A-shim-from, F2)
+    assert.match(said(added), label === 'shim set aside' ? /^1 own ch-local: no pack is installed/ : /^0 shim ch-local: this is an unreleased install \(development only\); upgrade is refused until a clean install from a release$/, label);
     if (label !== 'shim set aside') assert.match(plugin.out, new RegExp(`args=--home ${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
   }
 });

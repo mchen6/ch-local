@@ -74,7 +74,10 @@ if it does, stop and tell the user.
 From a ch-local checkout, `node scripts/dogfood.js --release-dir <dir>` builds
 one into a new or empty directory, self-contained: its own launcher
 (`<dir>/ch-local`), the tarballs (`<dir>/release`) and their pins
-(`<dir>/pins.json`). Nothing is installed.
+(`<dir>/pins.json`). Nothing is installed. It needs cargo (Rust): the
+folder carries a shared-runtime shim built for the machine that built it,
+so install from it on that machine (a folder for another one runs each
+session's own runtime).
 
 When the user names such a folder, use only that folder. First, before any
 command uses the path, check its characters (on Windows, change each

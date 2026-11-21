@@ -37,13 +37,15 @@ function common(version) {
 
 // One target's package at dir: bin/<exe> from the binary at `from` (0755)
 // and its package.json -- the shape publish makes, and dogfood --release-dir
-// makes for this machine's target (A-shim-from). -> dir
-function writeTarget(dir, t, version, from) {
+// makes for this machine's target (A-shim-from). builtFrom: what the binary
+// was built from, as its description says it (publish: the target's Rust
+// triple). -> dir
+function writeTarget(dir, t, version, from, builtFrom = t.rust) {
   fs.mkdirSync(path.join(dir, 'bin'), {recursive: true});
   fs.copyFileSync(from, path.join(dir, 'bin', exe(t)));
   fs.chmodSync(path.join(dir, 'bin', exe(t)), 0o755);
   const pkg = Object.assign({name: `@countinghouse/ch-shim-${t.key}`,
-    description: `ch-shim for ${t.key} (built from ${t.rust}); installed by @countinghouse/ch-shim`},
+    description: `ch-shim for ${t.key} (built from ${builtFrom}); installed by @countinghouse/ch-shim`},
   common(version), {os: [t.os], cpu: [t.cpu], files: ['bin/']});
   fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
   return dir;
