@@ -92,7 +92,8 @@ test('the pin catches each form: a quoted command, a template\'s ${...}, a liter
 test('chLocal: the home\'s launcher by its real path, else the npx form', () => {
   const h = tmp('ch-cmdline-');
   const where = layout({COUNTINGHOUSE_HOME: h});
-  assert.strictEqual(chLocal(where, 'install'), 'npx @countinghouse/ch-local install', 'no launcher yet');
+  // (POSIX names the home before it; Windows not yet: A-chlocal-func)
+  assert.strictEqual(chLocal(where, 'install'), `${process.platform === 'win32' ? '' : `COUNTINGHOUSE_HOME="${h}" `}npx @countinghouse/ch-local install`, 'no launcher yet (a home that is not the default, named on POSIX)');
   fs.mkdirSync(path.join(h, 'bin'));
   fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), '');
   assert.strictEqual(chLocal(where, 'credentials add x'), `node "${fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js'))}" credentials add x`);
@@ -229,6 +230,27 @@ test('every ch-local command a hint prints parses as the command line takes it',
 // runs as printed
 test('chLocal with no launcher yet names the npx form', () => {
   const h = tmp('ch-cmdline-npx-');
-  assert.strictEqual(chLocal(layout({COUNTINGHOUSE_HOME: h}), 'install --pack <name>'), 'npx @countinghouse/ch-local install --pack <name>');
+  assert.strictEqual(chLocal(layout({COUNTINGHOUSE_HOME: h}), 'install --pack <name>'), `${process.platform === 'win32' ? '' : `COUNTINGHOUSE_HOME="${h}" `}npx @countinghouse/ch-local install --pack <name>`);
   assert.strictEqual(chLocal(null, 'status'), 'npx @countinghouse/ch-local status');
+});
+
+// the reviewer on #129, (5): the npx form for a home that isn't the default
+// names it (POSIX: before the command), or the printed command acts on
+// ~/.countinghouse when it's pasted into a new terminal
+test('the npx form names a home that is not the default (POSIX)', {skip: process.platform === 'win32' && 'POSIX form'}, () => {
+  const h = tmp('ch-cmdline-npx-home-');
+  assert.strictEqual(chLocal(layout({COUNTINGHOUSE_HOME: h}), 'status'), `COUNTINGHOUSE_HOME="${h}" npx @countinghouse/ch-local status`);
+  assert.strictEqual(chLocal(layout({}, require('node:os').homedir), 'status'), 'npx @countinghouse/ch-local status', 'the default home: no variable');
+});
+
+// the medium on the follow-up to #129, 3: a home a shell wouldn't read
+// plainly is named by the placeholder, never left out (which would act on
+// ~/.countinghouse) -- by chLocal, npxLatest and chLocalSelf's npx form alike
+test('a home a shell would not read plainly is named by the placeholder, never left out (POSIX)', {skip: process.platform === 'win32' && 'POSIX form'}, () => {
+  const {npxLatest, homePrefix} = require('../lib/command-line');
+  const odd = {home: '/home/a$b/ch'};
+  assert.strictEqual(chLocal(odd, 'install', 'linux'), 'COUNTINGHOUSE_HOME="<its folder>" npx @countinghouse/ch-local install');
+  assert.strictEqual(npxLatest(odd, 'upgrade', 'linux'), 'COUNTINGHOUSE_HOME="<its folder>" npx @countinghouse/ch-local@latest upgrade');
+  assert.strictEqual(homePrefix({home: '/home/dev/ch'}, 'linux'), 'COUNTINGHOUSE_HOME="/home/dev/ch" ');
+  assert.strictEqual(homePrefix({home: '/home/dev/ch'}, 'win32'), '', 'Windows: not yet (A-chlocal-func)');
 });

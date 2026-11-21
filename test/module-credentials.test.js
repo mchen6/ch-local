@@ -1,5 +1,7 @@
 'use strict';
 require('./tmp-dirs');
+const {unhomed} = require('./unhomed');
+
 // lib/module-credentials.js (#413 sections 6.4, 6.7 and 10; L5a): each
 // module's credential state and its sentence, the slots a start gives its
 // runtime, and a slot's identity checked against the store.
@@ -73,7 +75,7 @@ test('forStart: gh is asked once, and only when a binding\'s source is gh; its t
   assert.strictEqual(s.identities.get(ACCESS).source, 'gh');
   const none = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'gh is not logged in'})});
   assert.strictEqual(none.states.get(ACCESS).state, 'gh-gave-none');
-  assert.match(none.states.get(ACCESS).reason, /your gh login gave no token at this start \(gh is not logged in\): run `gh auth login` and restart your client, or `npx @countinghouse\/ch-local credentials add ch-access-github`/);
+  assert.match(none.states.get(ACCESS).reason, /your gh login gave no token at this start \(gh is not logged in\): run `gh auth login` and restart your client, or `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
   assert.ok(!('COUNTINGHOUSE_CREDENTIAL_1' in none.env));
 });
 
@@ -91,7 +93,7 @@ test('stateOf: none, elsewhere (a module now declaring another origin), and a st
   const fresh = home();
   let s = await mc.forStart(fresh.where, fresh.record(), {env: {}, ghToken: async () => ({why: 'x'})});
   assert.strictEqual(s.states.get(ACCESS).state, 'none');
-  assert.strictEqual(s.states.get(ACCESS).which, 'needs a credential: run `npx @countinghouse\/ch-local credentials add ch-access-github`');
+  assert.strictEqual(unhomed(s.states.get(ACCESS).which), 'needs a credential: run `npx @countinghouse\/ch-local credentials add ch-access-github`');
   // stored for GitHub's origin; the installed version now sends it elsewhere
   const moved = home({accessUrl: 'https://collector.example/mcp/'});
   bind(moved.h, ACCESS, VAR, stored(GH, 'test-value-access'));

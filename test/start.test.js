@@ -1,5 +1,7 @@
 'use strict';
 require('./tmp-dirs');
+const {unhomed} = require('./unhomed');
+
 // ch-local start --stdio (plan Task 11; reviewer, 2026-11-12): the
 // single-identity profile of LM1 with every installed pack whose credential is
 // present, the one per-user store, the sandbox never off, the remote
@@ -200,7 +202,7 @@ test('a pack with a module missing from the module store is not loaded, and said
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   const loaded = f.spawned[0].args.filter((a, i, all) => all[i - 1] === '--loadModule');
   assert.deepStrictEqual(loaded.map((d) => path.basename(path.dirname(d))), ['ch-pack-other']);
-  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which is missing from the module store; run `npx @countinghouse\/ch-local install` again/);
+  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which is missing from the module store; run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local install` again/);
 });
 
 // a planted slot name in the client's environment is never read as a key,
@@ -252,7 +254,7 @@ test('a module whose declared origin is not the one its key was stored for gets 
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(f.spawned[0].remoteCredentials, {version: 2, modules: {}});
   assert.ok(!('COUNTINGHOUSE_CREDENTIAL_1' in f.spawned[0].env));
-  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which sends its credential somewhere new: run `npx @countinghouse\/ch-local credentials add ch-access-github` again/);
+  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which sends its credential somewhere new: run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github` again/);
 });
 
 
@@ -322,7 +324,7 @@ test('start names the credential and never prints a value; with none stored it l
   assert.strictEqual(await start({passThrough: []}, none), 0, none.err);
   assert.strictEqual(none.spawned.length, 1);
   assert.ok(!none.spawned[0].args.includes('--loadModule'), 'the runtime starts with no module');
-  assert.match(none.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `npx @countinghouse\/ch-local credentials add ch-access-github`/);
+  assert.match(none.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
 });
 
 // A-firstrun d1 (countinghouse #490): what start held back reaches the
@@ -396,7 +398,7 @@ test('start loads every installed module whose credential is stored, one --loadM
   const one = io(installedHome({other: true}));
   await start({passThrough: []}, one);
   assert.strictEqual(one.spawned[0].args.filter((a) => a === '--loadModule').length, 1);
-  assert.match(one.err, /not loading ch-pack-other: it needs a credential \(OTHER_TOKEN, sent to https:\/\/api\.other\.example\): run `npx @countinghouse\/ch-local credentials add ch-pack-other`/);
+  assert.match(one.err, /not loading ch-pack-other: it needs a credential \(OTHER_TOKEN, sent to https:\/\/api\.other\.example\): run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-pack-other`/);
 });
 
 // By module (#413 section 5.2; L2a): a top-level module two packs record is
@@ -460,7 +462,7 @@ test('a record of another release under the home\'s own ch-local is judged by th
   f.release = {...ALLOWLIST, packs: {'ci-failure-triage': {packages: [SCENARIO, '@countinghouse/ch-access-github'], credentials: ['GITHUB_TOKEN']}}, pins: {}};
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(f.spawned[0].args.filter((a) => a === '--loadModule').length, 0, f.err);
-  assert.match(f.err, /this release pins no version of it; run `npx @countinghouse\/ch-local install` again/);
+  assert.match(f.err, /this release pins no version of it; run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local install` again/);
   // (this process is not the home's own ch-local: its own launcher, the home
   // named: on POSIX as the variable before the command, on Windows in words
   // beside it)
@@ -595,7 +597,7 @@ test('a gh binding with gh not installed: its module is not loaded, and the mess
   const f = withExec(io(home, {env: {}}), ghAnswers({status: null, stdout: '', stderr: 'spawn gh ENOENT'}));
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.ok(!f.spawned[0].args.includes('--loadModule'), 'the runtime starts with no module');
-  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which has no token from your gh login: run `gh auth login`, or `npx @countinghouse\/ch-local credentials add ch-access-github`/);
+  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which has no token from your gh login: run `gh auth login`, or `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
 });
 
 test('a gh binding with gh not logged in: gh\'s own output is never repeated', async () => {
@@ -617,7 +619,7 @@ test('a settings file that is not valid stops start, saying why and how to fix i
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh', maxOutputBytes: 1}}));
   const f = io(home);
   assert.notStrictEqual(await start({passThrough: []}, f), 0);
-  assert.match(f.err, /maxOutputBytes = 1, which is not allowed: not starting; fix it \(`npx @countinghouse\/ch-local settings reset` replaces every setting with its default, asking first if that loosens one\)/);
+  assert.match(f.err, /maxOutputBytes = 1, which is not allowed: not starting; fix it \(`(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local settings reset` replaces every setting with its default, asking first if that loosens one\)/);
   assert.deepStrictEqual(f.spawned, []);
 });
 
@@ -717,12 +719,12 @@ test('on Windows with a runtime older than countinghouse#195: audit, said; an ex
   const f = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
-  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; audit watches what a pack reads and never lets it change files outside its own area; `npx @countinghouse\/ch-local upgrade` installs one that can/);
+  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; audit watches what a pack reads and never lets it change files outside its own area; `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade` installs one that can/);
   for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
     const g = io(home, {platform: 'win32'});
     assert.notStrictEqual(await start({passThrough}, g), 0);
     assert.strictEqual(g.spawned.length, 0, 'nothing started');
-    assert.match(g.err, /--moduleSandbox enforce needs a countinghouse that runs it on Windows .*issues\/195\), and the installed one is older: run `npx @countinghouse\/ch-local upgrade`, or use --moduleSandbox audit until then\./);
+    assert.match(g.err, /--moduleSandbox enforce needs a countinghouse that runs it on Windows .*issues\/195\), and the installed one is older: run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade`, or use --moduleSandbox audit until then\./);
   }
   const off = io(home, {platform: 'win32'});
   assert.notStrictEqual(await start({passThrough: ['--moduleSandbox', 'off']}, off), 0);
@@ -1107,7 +1109,7 @@ test('start in session mode with no pack loadable: the shared runtime starts wit
   for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /no pack is loaded/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   assert.strictEqual(sent[0].type, 'restore', 'the restore is still the first request');
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => /^not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `npx @countinghouse\/ch-local credentials add ch-access-github`/.test(t)), told.join(' | '));
+  assert.ok(told.some((t) => /^not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/.test(t)), told.join(' | '));
   assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   end(0);
   await done;
@@ -1129,7 +1131,7 @@ test('start in session mode says how to add a missing credential, never to set a
   deliver({type: 'ready'});
   for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /not loading ch-pack-other/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => t === 'not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run `npx @countinghouse\/ch-local credentials add ch-pack-other`'), told.join(' | '));
+  assert.ok(told.some((t) => unhomed(t) === 'not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run `npx @countinghouse\/ch-local credentials add ch-pack-other`'), told.join(' | '));
   assert.ok(!told.some((t) => /environment/.test(t)), told.join(' | '));
   end(0);
   await done;
@@ -1191,7 +1193,7 @@ test('start says where a key goes only for a module it loads this start', async 
 test('a COUNTINGHOUSE_GITHUB_TOKEN in the client\'s environment is said to be no longer read, once, and never used', async () => {
   const f = io(installedHome({bound: null}), {env: {COUNTINGHOUSE_GITHUB_TOKEN: 'from-the-client'}});
   await start({passThrough: []}, f);
-  assert.strictEqual(f.err.split('COUNTINGHOUSE_GITHUB_TOKEN in this client\'s environment is no longer read: run `npx @countinghouse\/ch-local credentials add ch-access-github`').length - 1, 1, f.err);
+  assert.strictEqual(unhomed(f.err).split('COUNTINGHOUSE_GITHUB_TOKEN in this client\'s environment is no longer read: run `npx @countinghouse\/ch-local credentials add ch-access-github`').length - 1, 1, f.err);
   assert.ok(!Object.values(f.spawned[0].env).includes('from-the-client'));
   assert.ok(!f.err.includes('from-the-client'));
 });
@@ -1230,7 +1232,7 @@ test('a record of another release: the install line names the ch-local that said
   const inside = Object.assign(io(home), {selfVersion: '0.5.0'});
   inside.release = release;
   assert.strictEqual(await start({passThrough: []}, inside), 0, inside.err);
-  assert.match(inside.err, /this home's record is not this ch-local's release; run `(?:node "[^"]+" |npx @countinghouse\/ch-local )install --pack ci-failure-triage` to bring the home to /);
+  assert.match(inside.err, /this home's record is not this ch-local's release; run `(?:node "[^"]+" |(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local )install --pack ci-failure-triage` to bring the home to /);
   assert.ok(!inside.err.includes(self), 'the home\'s own launcher, not this one');
 });
 

@@ -213,7 +213,7 @@ test('add needs an install, and sends Claude Code and Desktop elsewhere', async 
     fs.rmSync(path.join(s.home, 'bin', 'ch-local.js'));
     const a = io(s);
     assert.strictEqual(await add('cursor', a), 1);
-    assert.match(a.err, /not installed yet: run npx @countinghouse\/ch-local install --pack ci-failure-triage first/);
+    assert.match(a.err, /not installed yet: run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local install --pack ci-failure-triage first/);
     const c = io(s);
     assert.strictEqual(await add('claude-code', c), 2);
     assert.match(c.err, /claude plugin marketplace add mchen6\/ch-local/);

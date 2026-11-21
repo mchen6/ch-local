@@ -392,7 +392,7 @@ test('no --from: a release lower than the installed ch-local is refused, nothing
     fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: {'@countinghouse/ch-local': '0.9.0', countinghouse: '8.0.0'}}, packs: {}}));
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 1);
-    assert.match(io.err, /0\.2\.0 is lower than the installed 0\.9\.0: npx @countinghouse\/ch-local rollback is the way back/);
+    assert.match(io.err, /0\.2\.0 is lower than the installed 0\.9\.0: (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local rollback is the way back/);
     assert.deepStrictEqual(io.fetches, []);
   } finally {
     await n.reg.close();
@@ -1126,7 +1126,7 @@ test('install with no --pack: nothing installed is refused with the --pack line'
   const r = release(); const h = home();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await install({from: r.from}, io, r.allow), 2);
-  assert.match(io.err, /nothing is installed here, so there is nothing to reinstall: run `npx @countinghouse\/ch-local install --pack <name>`/);
+  assert.match(io.err, /nothing is installed here, so there is nothing to reinstall: run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local install --pack <name>`/);
   assert.deepStrictEqual(fs.readdirSync(h), [], 'nothing written');
 });
 
