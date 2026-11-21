@@ -58,6 +58,17 @@ Answer only from what this release has: a composite scenario is a module whose t
 
 With the user's yes, run `node "<home>/bin/ch-local.js" upgrade --check`. It only checks; it installs nothing. Tell the user what it says: the newer version, what it adds or changes, and anything it calls a major change. Never run `upgrade` yourself: an upgrade runs new code with the user's keys, so the user installs it in their own terminal, with the line the check gives. If the check says the countinghouse plugin moves with it, give the user the Claude Code steps it names, for after the upgrade.
 
+## 9. Build a tool of your own
+
+Before starting, say this: the tool is a module you write together, which the user adds to countinghouse with their own yes, in their own terminal. It runs inside the same countinghouse runtime as their packs. The sandbox limits what module code can do, but it is not a security boundary: code written to escape it could reach their other packs' keys. It can send what it is given to any internet address. Add only code you both trust, and add it again after every change.
+
+1. Agree on the need with the user: what the tool does and what it may return. Then follow the `countinghouse-module` skill: show the split into services and actions, and wait for the user's yes before writing any file.
+2. Write the module in a folder the user chooses, outside the countinghouse home (never under `<home>`). Make it a scenario: `"countinghouse": {"role": "scenario"}` in its package.json, or its tools are never listed. It has no npm dependencies and no `node_modules`: copy any code it needs into its folder.
+3. Check it with `countinghouse_validate_module` on that folder. It checks without running the code.
+4. Ask the user to run, in their own terminal, `node "<home>/bin/ch-local.js" add-module "<folder>"`. It shows them what the module can reach and asks them to confirm. Never run `add-module` yourself, and never answer its question. `countinghouse_load_module` gives the same line: it never loads a module here.
+5. If the module calls a service that needs a key, the user adds it in their own terminal with `node "<home>/bin/ch-local.js" credentials add <name>`, as for a pack.
+6. Once it is added, call its tool. After any change to its code, the user runs `add-module` again, and confirms again.
+
 ## Never say
 
 That countinghouse is faster, saves tokens or money, works with any npm library, or works through a proxy; that the sandbox is a security boundary; that modules cannot reach the network; that a module learns nothing about other files; anything about tenancy, billing or metering. Show a tool's receipt line as it prints it.
