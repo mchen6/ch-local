@@ -23,7 +23,9 @@ const GITHUB = {name: 'github', transport: 'streamable-http', url: `${GH_ORIGIN}
   credential: {env: 'COUNTINGHOUSE_GITHUB_TOKEN', fallbackEnv: 'GITHUB_TOKEN', header: 'Authorization', scheme: 'Bearer'}};
 const SVC = 'urn:countinghouse-test:serviceID:toolService';
 
-function ownHome() {
+// packs: false -- a home whose every pack was removed (remove-pack leaves
+// its record, the runtime's versions, and no pack)
+function ownHome({packs = true} = {}) {
   const base = fs.realpathSync.native(tmp('ch-ownstart-'));
   const home = path.join(base, 'home');
   fs.mkdirSync(home, {mode: 0o700});
@@ -32,7 +34,7 @@ function ownHome() {
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({name: 'countinghouse', version: '1.0.0'}));
   storeModule(home, SCENARIO, '1.0.0', {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns']}});
   storeModule(home, ACCESS, '1.0.0', {countinghouse: {role: 'part', remotes: [GITHUB]}});
-  writeHome(home, {'ci-failure-triage': {[SCENARIO]: '1.0.0', [ACCESS]: '1.0.0'}}, {credentials: {'ci-failure-triage': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}});
+  writeHome(home, packs ? {'ci-failure-triage': {[SCENARIO]: '1.0.0', [ACCESS]: '1.0.0'}} : {}, packs ? {credentials: {'ci-failure-triage': ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}} : {});
   credentialStore.bind(home, ACCESS, 'COUNTINGHOUSE_GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: 'test-stored-value-1'}, {held: require('./store-helpers').FIXTURE_HELD});
   const where = layout({COUNTINGHOUSE_HOME: home});
   const modules = {};
@@ -117,4 +119,16 @@ test('an own.json that cannot be read: no own module loads, said; the packs load
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(after(f.spawned[0].args, '--loadModule').length, 1);
   assert.match(f.err, /your own modules are not loaded this start: .*own\.json/);
+});
+
+test('a home with own modules and no pack starts, loading them; with neither, start says to install', {skip: !enforceHere && 'enforce on Windows: countinghouse#195'}, async () => {
+  const {home, where, addOwn} = ownHome({packs: false});
+  const empty = io(home);
+  assert.strictEqual(await start({passThrough: []}, empty), 1);
+  assert.match(empty.err, /no pack is installed/);
+  const tree = addOwn('my-tool');
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  assert.deepStrictEqual(after(f.spawned[0].args, '--loadModule'), [ownTree.copyDir(where, 'my-tool', tree)]);
+  assert.ok(f.err.includes(`ch-local: own modules: my-tool ${tree.slice(0, 12)}\n`), f.err);
 });
