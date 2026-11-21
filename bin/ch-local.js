@@ -183,9 +183,10 @@ async function main(argv, io) {
         let st = null;
         try { st = fs.statSync(v); } catch (err) { st = null; }
         if (st == null || !st.isDirectory()) { io.stderr.write(`ch-local session: --home ${v} is not a directory\n`); return 2; }
+        // (whose it is, and how open, is the session's choice to judge: a
+        // home the shared runtime's daemon would refuse runs the session's
+        // own runtime, said -- never a session that ends here)
         home = fs.realpathSync(v);
-        const owned = require('../lib/home').homeOwnershipProblem(home);
-        if (owned != null) { io.stderr.write(`ch-local session: --home ${v}: ${owned}\n`); return 2; }
       }
       return await require('../lib/session').session({home}, io);
     }

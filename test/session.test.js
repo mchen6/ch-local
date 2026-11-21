@@ -240,3 +240,39 @@ test('session takes --home once: a second is refused, never the last one taken',
   assert.strictEqual(r.code, 2, r.err);
   assert.match(r.err, /usage: ch-local/);
 });
+
+// the reviewer, on #120's high round: a home made under a umask of 0002 is
+// 0775, which the shared runtime's daemon refuses (lib/home.js
+// homeOwnershipProblem); the shim would then wait on a daemon that never
+// starts, and every session die. The daemon's own check comes first here:
+// the session's own runtime, and the chmod that puts it right.
+test('a home the daemon would refuse (0775 under umask 0002): the session\'s own runtime, never the shim, the chmod said', {skip: NO_PROBE}, async() => {
+  const saved = process.umask(0o002);
+  let h;
+  try {
+    const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-session-open-')));
+    roots.push(parent);
+    h = path.join(parent, 'home');
+    fs.mkdirSync(h);
+  } finally {
+    process.umask(saved);
+  }
+  assert.strictEqual(fs.statSync(h).mode & 0o777, 0o775, 'made as an install under umask 0002 makes it');
+  // a record naming the shim, and the shim in place, as a good home's
+  const good = home();
+  fs.copyFileSync(path.join(good, 'modules.json'), path.join(h, 'modules.json'));
+  fs.mkdirSync(path.join(h, 'shim'), {mode: 0o700});
+  fs.chmodSync(path.join(h, 'shim'), 0o700);
+  fs.copyFileSync(path.join(good, 'shim', EXE), path.join(h, 'shim', EXE));
+  fs.chmodSync(path.join(h, 'shim', EXE), 0o755);
+  assert.strictEqual(require('../lib/home').homeOwnershipProblem(h) != null, true, 'the daemon\'s check refuses it');
+  const c = choose(h);
+  assert.strictEqual(c.shim, null);
+  assert.match(c.note, new RegExp(`the shared runtime can't use ${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: it is group- or world-writable \\(mode 0775\\); this session runs its own runtime\\. To share one, run \`chmod 700 "`));
+  // and the entry itself never ends at its --home: the session's own runtime runs
+  const r = await runIt(process.execPath, [path.join(ROOT, 'bin', 'ch-local.js'), 'session', '--home', h], envWith({}));
+  assert.ok(!/^SHIM /m.test(r.out), r.out);
+  assert.match(r.err, /the shared runtime can't use .*chmod 700/);
+  assert.match(r.err, /no pack is installed/, 'the own runtime ran (this home has no pack)');
+  assert.notStrictEqual(r.code, 2, 'not refused as a usage error');
+});
