@@ -284,7 +284,7 @@ test('launch.js runs nothing from a home, bin/ or launcher another user could ch
     const r = launchIn(h);
     assert.strictEqual(r.status, 2, `${what}: ${r.stderr}`);
     assert.doesNotMatch(r.stdout, /RAN/, `${what}: nothing ran`);
-    assert.match(r.stderr, /is group- or world-writable \(mode 0[0-7]{3}\), so another user could change what runs from it; run `chmod go-w "[^"]+"`/, what);
+    assert.match(r.stderr, /is group- or world-writable \(mode 0[0-7]{3}\), so another user could change what runs from it; run `chmod (700|600) "[^"]+"`; nothing was started/, what);
   }
 });
 
@@ -294,8 +294,15 @@ test('launch.js\'s home check on Windows (its ACL check, with ACLs given): a pri
   const PRIVATE = {user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
   const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
   const h = homeWithLauncher();
-  assert.strictEqual(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcl: () => PRIVATE}), null);
-  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcl: () => OPEN})), /is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change: icacls /);
+  // (the three read in one run: one call, three ACLs)
+  let calls = 0;
+  const ok = homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => { calls++; return ps.map(() => PRIVATE); }});
+  assert.strictEqual(ok.problem, undefined);
+  assert.strictEqual(ok.launcher, fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js')), 'the path checked is the one to run');
+  assert.strictEqual(calls, 1, 'one PowerShell run for the three');
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => OPEN)}).problem), /is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change: icacls /);
+  // the launcher's own ACL: "a file", never "a folder"
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, OPEN]}).problem), /make it a file only you can change/);
 });
 
 test('the plugin carries lib/win-acl.js unchanged (launch.js checks a Windows home with it, never with the home\'s own code)', () => {

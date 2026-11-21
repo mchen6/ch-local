@@ -1381,11 +1381,22 @@ test('Windows: install makes a new home private, and refuses an existing one ano
   const {unsafeHomeLine} = require('../lib/install');
   const made = [];
   const h = path.join(home(), 'new-home');
-  assert.strictEqual(ensureHome(h, 'win32', {makePrivateDirs: (dirs) => { made.push(...dirs); return []; }}), true);
-  assert.deepStrictEqual(made, [h], 'made private as it is made');
+  assert.strictEqual(ensureHome(h, 'win32', {makePrivateDirs: (dirs, read) => { made.push([dirs, read]); return []; }}), true);
+  // (read is never empty: makePrivateDirs refuses an empty list)
+  assert.deepStrictEqual(made, [[[h], [h]]], 'made private as it is made, its ACL read back');
   const ME = 'S-1-5-21-1-2-3-1001';
   const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
   const PRIVATE = {user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
   assert.strictEqual(unsafeHomeLine(h, 'win32', {fileAcl: () => PRIVATE}), null);
   assert.match(String(unsafeHomeLine(h, 'win32', {fileAcl: () => OPEN})), /^this home is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change: icacls /);
+});
+
+// ... and on Windows itself, the real DACL (the medium on A-home-check, 1:
+// a stub hid makePrivateDirs refusing an empty list)
+test('Windows: a home install makes is private by its real DACL', {skip: process.platform !== 'win32' && 'Windows only'}, () => {
+  const {ensureHome} = require('../lib/home');
+  const winAcl = require('../lib/win-acl');
+  const h = path.join(home(), 'made-home');
+  assert.strictEqual(ensureHome(h), true);
+  assert.strictEqual(winAcl.privateProblem('it', winAcl.fileAcl(h), {directory: true}), null);
 });

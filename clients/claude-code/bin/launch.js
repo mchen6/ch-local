@@ -49,28 +49,41 @@ const fail = (line, code = 1) => { process.stderr.write(`ch-packs: ${line}\n`); 
 // with a private DACL, by the plugin's own copy of lib/win-acl.js (a test
 // checks the two agree). fileAcl: a test's.
 const OPEN = 'so another user could change what runs from it';
-function homeProblem(home, launcher, {platform = process.platform, fileAcl = null} = {}) {
+// a path for a command to copy: quoted when plain, else the placeholder (no
+// control, bidi or shell characters reach the terminal or the paste)
+const shown = (p) => (/^[A-Za-z0-9_\/.~@%+=,: \\-]+$/.test(p) ? `"${p}"` : '"<its folder>"');
+// home, launcher: as found by the home rule -> {problem} (the line, with the
+// fix) | {launcher} (the launcher's real path, the one checked and the one to
+// run: the medium on A-home-check, 3). fileAcls: a test's.
+function homeProblem(home, launcher, {platform = process.platform, fileAcls = null} = {}) {
   const items = [[home, true], [path.dirname(launcher), true], [launcher, false]];
+  const reals = [];
   for (const [p, directory] of items) {
     let real;
-    try { real = fs.realpathSync.native(p); } catch (err) { return `${p} could not be read (${err.code || err.message})`; }
-    if (platform === 'win32') {
-      const winAcl = require('./win-acl');
-      let acl;
-      try { acl = (fileAcl || winAcl.fileAcl)(real); } catch (err) { return `${real}'s access list could not be read (${err.code || err.message}), ${OPEN}`; }
-      const why = winAcl.privateProblem(real, acl, {directory});
-      if (why == null) continue;
-      const hint = winAcl.fixHint(real, acl);
-      return `${why}, ${OPEN}; make it a folder only you can change${hint != null ? `: ${hint.split('\n').map((l) => l.trim()).join(', then ')}` : ''}`;
-    }
+    try { real = fs.realpathSync.native(p); } catch (err) { return {problem: `${p} could not be read (${err.code || err.message})`}; }
     let st;
-    try { st = fs.statSync(real); } catch (err) { return `${real} could not be read (${err.code || err.message})`; }
-    if (directory ? !st.isDirectory() : !st.isFile()) return `${real} is not a ${directory ? 'folder' : 'file'}, ${OPEN}`;
+    try { st = fs.statSync(real); } catch (err) { return {problem: `${real} could not be read (${err.code || err.message})`}; }
+    if (directory ? !st.isDirectory() : !st.isFile()) return {problem: `${real} is not a ${directory ? 'folder' : 'file'}, ${OPEN}`};
+    reals.push(real);
+    if (platform === 'win32') continue;
     const euid = typeof process.geteuid === 'function' ? process.geteuid() : null;
-    if (euid != null && st.uid !== euid) return `${real} is owned by uid ${st.uid}, not you, ${OPEN}; use a home only you own`;
-    if ((st.mode & 0o022) !== 0) return `${real} is group- or world-writable (mode ${(st.mode & 0o777).toString(8).padStart(4, '0')}), ${OPEN}; run \`chmod go-w "${real}"\``;
+    if (euid != null && st.uid !== euid) return {problem: `${real} is owned by uid ${st.uid}, not you, ${OPEN}; use a home only you own`};
+    if ((st.mode & 0o022) !== 0) return {problem: `${real} is group- or world-writable (mode ${(st.mode & 0o777).toString(8).padStart(4, '0')}), ${OPEN}; run \`chmod ${directory ? '700' : '600'} ${shown(real)}\``};
   }
-  return null;
+  if (platform === 'win32') {
+    // (the three in one PowerShell run, which costs 1 to 10 s: the medium, 2)
+    const winAcl = require('./win-acl');
+    let acls;
+    try { acls = (fileAcls || winAcl.fileAcls)(reals); } catch (err) { return {problem: `the access lists of ${reals[0]} could not be read (${err.code || err.message}), ${OPEN}`}; }
+    for (let i = 0; i < items.length; i++) {
+      const directory = items[i][1];
+      const why = winAcl.privateProblem(reals[i], acls[i], {directory});
+      if (why == null) continue;
+      const hint = /^[A-Za-z0-9_\/.~@%+=,: \\-]+$/.test(reals[i]) ? winAcl.fixHint(reals[i], acls[i]) : null;
+      return {problem: `${why}, ${OPEN}; make it a ${directory ? 'folder' : 'file'} only you can change${hint != null ? `: ${hint.split('\n').map((l) => l.trim()).join(', then ')}` : ''}`};
+    }
+  }
+  return {launcher: reals[2]};
 }
 
 function main() {
@@ -79,16 +92,18 @@ function main() {
   if (launcher == null) fail(`COUNTINGHOUSE_HOME must be an absolute path, not "${process.env.COUNTINGHOUSE_HOME}"`);
   if (!fs.existsSync(launcher)) fail(`the launcher is not installed at ${launcher}; install it with: npx @countinghouse/ch-local install --pack ci-failure-triage`);
   // (nothing runs from a home another user could change: exit 2)
-  const open = homeProblem(path.dirname(path.dirname(launcher)), launcher);
-  if (open != null) fail(`${open}; nothing was started`, 2);
+  const checked = homeProblem(path.dirname(path.dirname(launcher)), launcher);
+  if (checked.problem != null) fail(`${checked.problem}; nothing was started`, 2);
+  // (the path checked is the one run)
+  const run = checked.launcher;
   // (a failed execve ends Node 22 and 24 outright, so only a call that can't
   // fail is made: POSIX, this Node's own executable, runnable from where it
   // is. And nothing touches stdin, stdout or stderr before it, so the pipes
   // reach the launcher, and the shim after it, as the client gave them.)
   if (canExec(process.platform, process.execve, process.execPath)) {
-    process.execve(process.execPath, [process.execPath, launcher, ...process.argv.slice(2)], process.env);
+    process.execve(process.execPath, [process.execPath, run, ...process.argv.slice(2)], process.env);
   }
-  const child = spawn(process.execPath, [launcher, ...process.argv.slice(2)], {stdio: 'inherit'});
+  const child = spawn(process.execPath, [run, ...process.argv.slice(2)], {stdio: 'inherit'});
   child.on('error', (err) => fail(`could not start ${launcher} (${err.code || err.message})`));
   const forward = (signal) => {
     if (child.exitCode != null || child.signalCode != null) return;
