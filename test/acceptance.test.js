@@ -124,6 +124,11 @@ test('addOwn on Windows stands the yes in with the installed add-module, answere
     fs.mkdirSync(home, {recursive: true, mode: 0o700});
     fs.chmodSync(home, 0o700);
     require('./install-helpers').installedHome(home, ['ci-failure-triage']);
+    // (its installed runtime can enforce on Windows, as a release-1 one does:
+    // the fs-broker virtual drive, countinghouse#195; B's 5d3a7e0)
+    const drive = path.join(home, 'app', 'node_modules', 'countinghouse', 'lib', 'fs-broker');
+    fs.mkdirSync(drive, {recursive: true});
+    fs.writeFileSync(path.join(drive, 'virtual-drive.js'), '');
     const installed = path.join(home, 'app', 'node_modules', '@countinghouse');
     fs.mkdirSync(installed, {recursive: true});
     fs.rmSync(path.join(installed, 'ch-local'), {recursive: true, force: true});
