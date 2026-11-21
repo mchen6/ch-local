@@ -215,3 +215,19 @@ test('chmodNoFollow never changes a link\'s target', {skip: process.platform ===
   assert.throws(() => tree.chmodNoFollow(link, 0o644), (e) => e.code === 'ELOOP' || e.code === 'EMLINK');
   assert.strictEqual(fs.statSync(target).mode & 0o222, 0);
 });
+
+// the reviewer's re-probe of #113: a repair whose unlock fails leaves the
+// old copy marked (unlocked first, the marker removed after)
+test('a repair whose unlock fails keeps the old copy\'s marker', {skip: process.platform === 'win32' || (process.getuid && process.getuid() === 0)}, () => {
+  const {base, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'unl'));
+  const r = tree.checkFolder(dir, where.home);
+  const h = tree.treeHash(dir, r.entries);
+  const copy = tree.placeCopy(where, 'my-tool', r.real, r.entries, h);
+  const file = path.join(copy, 'api.json');
+  fs.chmodSync(file, 0o000);
+  try {
+    assert.throws(() => tree.placeCopy(where, 'my-tool', r.real, r.entries, h), (e) => e.code === 'EACCES');
+    assert.ok(fs.existsSync(tree.markerOf(where, 'my-tool', h)), 'the marker stays');
+  } finally { fs.chmodSync(file, 0o444); }
+});

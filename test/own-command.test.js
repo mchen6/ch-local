@@ -356,3 +356,21 @@ test('names compared by their Windows key against every holder: a re-add beside 
   assert.strictEqual(await addModule({dir}, rel, {where}), 2);
   assert.match(rel.err, /my-tool is a name this release holds/);
 });
+
+// the reviewer's re-probe of #113: a copy that can't be replaced after the
+// yes is a fail line, never a crash; nothing recorded, the old copy marked
+test('a repair that cannot replace the old copy fails with a line after the yes', {skip: process.platform === 'win32' || (process.getuid && process.getuid() === 0)}, async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  assert.strictEqual(await addModule({dir}, ioWith(home, ['y']), {where}), 0);
+  const tree = readOwnRecord(where).modules['my-tool'].tree;
+  const ot = require('../lib/own-tree');
+  const file = path.join(ot.copyDir(where, 'my-tool', tree), 'api.json');
+  fs.chmodSync(file, 0o000);
+  try {
+    const io = ioWith(home, ['y']);
+    assert.strictEqual(await addModule({dir}, io, {where}), 1);
+    assert.match(io.err, /your module's copy could not be replaced \(EACCES\): nothing was added/);
+    assert.ok(fs.existsSync(ot.markerOf(where, 'my-tool', tree)), 'the old copy stays marked');
+  } finally { fs.chmodSync(file, 0o444); }
+});
