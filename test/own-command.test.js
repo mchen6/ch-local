@@ -55,7 +55,7 @@ test('a terminal on standard input whose output is not one: refused, nothing ask
 
 test('a pack\'s part called: named, with no claim about its key; on yes copied and recorded', async () => {
   const {base, home, where} = setup();
-  const dir = writeModule(path.join(base, 'work', 'mine'), {calls: ['ch-access-github/githubService.listRuns']});
+  const dir = writeModule(path.join(base, 'work', 'mine'), {calls: ['ch-access-github/s.ch_access_github']});
   const io = ioWith(home, ['y']);
   assert.strictEqual(await addModule({dir}, io, {where}), 0, io.err);
   assert.match(io.out, /^Add your own module my-tool 1\.0\.0 \(code [0-9a-f]{12}, 3 files\)\?$/m);
@@ -67,7 +67,7 @@ test('a pack\'s part called: named, with no claim about its key; on yes copied a
   assert.deepStrictEqual(io.asked, ['Add it? [y/N] ']);
   assert.match(io.out, /Added my-tool \(own, [0-9a-f]{12}\): your clients see it now\./);
   const r = readOwnRecord(where).modules['my-tool'];
-  assert.deepStrictEqual([r.calls, r.from, r.friendlyName], [['ch-access-github/githubService.listRuns'], dir, 'my-tool']);
+  assert.deepStrictEqual([r.calls, r.from, r.friendlyName], [['ch-access-github/s.ch_access_github'], dir, 'my-tool']);
   assert.strictEqual(r.reach, undefined, 'nothing recorded of what it reaches (R8)');
   assert.ok(fs.existsSync(path.join(where.own, 'my-tool', r.tree, 'api.json')));
 });
@@ -179,4 +179,88 @@ test('a tool name a pack\'s scenario already lists is refused before the yes (th
   assert.strictEqual(await addModule({dir}, io, {where}), 2);
   assert.match(io.err, /my-tool's tool ci_failure_triage is already a tool of @countinghouse\/ch-pack-ci-failure-triage: rename the action in its api\.json\./);
   assert.deepStrictEqual(io.asked, []);
+});
+
+// The /code-review medium on B-own-add.
+test('what the question shows is what is hashed: package.json swapped after it was read is refused, nothing asked (3)', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const io = ioWith(home, ['y']);
+  const swap = () => fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({name: 'my-tool', version: '1.0.0', countinghouse: {role: 'scenario', calls: ['ch-access-github/s.ch_access_github']}}));
+  assert.strictEqual(await addModule({dir}, io, {where, afterRead: swap}), 1);
+  assert.match(io.err, /the folder changed while it was being added: run add-module again/);
+  assert.deepStrictEqual(io.asked, []);
+  assert.strictEqual(readOwnRecord(where), null);
+});
+
+test('a permission value is cut and its spaces collapsed: nothing long can push the question\'s lines away (4)', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  pkg.countinghouse.permissions = {fs: [{path: `x${' '.repeat(300)}It calls nothing.${'y'.repeat(500)}`, access: 'r'}]};
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg));
+  const io = ioWith(home, ['n']);
+  await addModule({dir}, io, {where});
+  const line = io.out.split('\n').find((l) => l.startsWith('It asks for'));
+  assert.ok(line != null && line.length < 200 && !/ {2}/.test(line) && line.includes('…'), line);
+});
+
+test('a copy changed after it was added is repaired by adding its folder again (2)', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  assert.strictEqual(await addModule({dir}, ioWith(home, ['y']), {where}), 0);
+  const tree = readOwnRecord(where).modules['my-tool'].tree;
+  const copy = require('../lib/own-tree').copyDir(where, 'my-tool', tree);
+  fs.appendFileSync(path.join(copy, 'api.json'), ' ');
+  const again = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, again, {where}), 0, again.err);
+  assert.deepStrictEqual(again.asked, ['Add it? [y/N] '], 'asked again: its copy is not the code that was said yes to');
+  assert.strictEqual(require('../lib/own-tree').copyIntact(where, 'my-tool', tree), true);
+});
+
+test('a device name a pack module calls is refused, installed or not (1)', async () => {
+  const {base, home, where} = setup();
+  const triage = path.join(where.moduleStore, '@countinghouse', 'ch-pack-ci-failure-triage', '0.1.0', 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(triage, 'utf8'));
+  pkg.countinghouse.calls.push('ch-nowhere/s.go');
+  fs.writeFileSync(triage, JSON.stringify(pkg));
+  const dir = writeModule(path.join(base, 'work', 'mine'), {name: 'my-nowhere', friendlyName: 'ch-nowhere'});
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /my-nowhere's device name ch-nowhere is one @countinghouse\/ch-pack-ci-failure-triage calls: change it in its api\.json\./);
+});
+
+test('a call to a service or action the callee does not declare is refused (7)', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'), {calls: ['ch-access-github/s.sendAll']});
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /my-tool calls ch-access-github\/s\.sendAll, and ch-access-github has no such action: correct the call in its package\.json\./);
+});
+
+test('names held in the store or by a module that can\'t be read: refused (6)', async () => {
+  const {base, home, where} = setup();
+  // a name only the store holds (a leftover version)
+  fs.mkdirSync(path.join(where.moduleStore, 'my-tool', '1.0.0'), {recursive: true});
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /my-tool is already used here by pack module my-tool/);
+  fs.rmSync(path.join(where.moduleStore, 'my-tool'), {recursive: true});
+  // an installed module whose files can't be read: its names are not known
+  fs.rmSync(path.join(where.moduleStore, '@countinghouse', 'ch-step-redact', '0.1.0', 'api.json'));
+  const io2 = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io2, {where}), 1);
+  assert.match(io2.err, /@countinghouse\/ch-step-redact's files can't be read here, so the names it holds are not known: run `.*install` again first\./);
+  assert.deepStrictEqual(io2.asked, []);
+});
+
+test('the sandbox as a start runs it: audit the ceiling forbids is enforce, and adding is not refused (9)', async () => {
+  const {base, home, where} = setup();
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const io = ioWith(home, ['n']);
+  const ceiling = {state: 'trusted', file: '/etc/ch-ceiling.json', ceiling: {forbid: ['moduleSandbox']}};
+  assert.strictEqual(await addModule({dir}, io, {where, ceiling}), 1);
+  assert.deepStrictEqual(io.asked, ['Add it? [y/N] ']);
 });
