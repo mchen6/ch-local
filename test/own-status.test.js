@@ -45,6 +45,7 @@ test('an own module a start would hold back: why, in a start\'s words (changed; 
   const {home, where, dir} = setup();
   assert.strictEqual(await addModule({dir}, io(home), {where}), 0);
   const tree = readOwnRecord(where).modules['my-tool'].tree;
+  fs.chmodSync(path.join(copyDir(where, 'my-tool', tree), 'api.json'), 0o644);   // (read-only: a change takes a chmod first)
   fs.appendFileSync(path.join(copyDir(where, 'my-tool', tree), 'api.json'), ' ');
   assert.match(await statusOf(home), new RegExp(`^  my-tool \\(own, unpinned, ${tree.slice(0, 12)}\\) +not loaded: its files changed since you added it: run \`.*add-module "${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\` again$`, 'm'));
   fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));

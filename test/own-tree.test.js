@@ -138,6 +138,36 @@ test('the copy: placed under its hash with its marker; refused when the folder n
   assert.throws(() => tree.placeCopy(where, 'my-other', r2.real, r2.entries, h2), (e) => e.code === 'OWN_TREE_CHANGED');
   assert.strictEqual(fs.existsSync(path.join(where.own, 'my-other', h2)), false, 'nothing placed');
   // a copy changed after it was placed is not intact
+  // (read-only: changing it takes a chmod first, as a client's permission
+  // prompt sees)
+  fs.chmodSync(path.join(copy, 'api.json'), 0o644);
   fs.appendFileSync(path.join(copy, 'api.json'), ' ');
   assert.strictEqual(tree.copyIntact(where, 'my-tool', h), false);
+});
+
+// the reviewer's high on #113, 2 (design §2.1 step 4): the copy is read-only
+// -- its files, and on POSIX its folders -- so a change to it takes an
+// explicit chmod first; ch-local's own deletes make it writable first
+test('the copy is read-only; unlockTree makes it removable again, following no link', () => {
+  const {base, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'ro'));
+  const r = tree.checkFolder(dir, where.home);
+  const h = tree.treeHash(dir, r.entries);
+  const copy = tree.placeCopy(where, 'my-tool', r.real, r.entries, h);
+  const file = path.join(copy, 'handlers', 'toolService', 'run.js');
+  assert.strictEqual(fs.statSync(file).mode & 0o222, 0, 'a file is read-only');
+  if (process.platform !== 'win32') {
+    assert.strictEqual(fs.statSync(path.join(copy, 'handlers')).mode & 0o222, 0, 'a folder is read-only');
+    assert.throws(() => fs.writeFileSync(path.join(copy, 'new.js'), 'x'), (e) => e.code === 'EACCES');
+  }
+  assert.throws(() => fs.appendFileSync(file, 'x'), (e) => e.code === 'EACCES' || e.code === 'EPERM');
+  assert.strictEqual(tree.copyIntact(where, 'my-tool', h), true, 'read-only, still whole');
+  // unlockTree: writable again, never through a link
+  const outside = path.join(base, 'outside.txt');
+  fs.writeFileSync(outside, 'x');
+  fs.chmodSync(outside, 0o444);
+  tree.unlockTree(copy);
+  fs.rmSync(copy, {recursive: true});
+  assert.strictEqual(fs.existsSync(copy), false);
+  assert.strictEqual(fs.statSync(outside).mode & 0o222, 0, 'nothing outside touched');
 });

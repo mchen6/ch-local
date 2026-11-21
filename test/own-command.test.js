@@ -218,6 +218,7 @@ test('a copy changed after it was added is repaired by adding its folder again (
   assert.strictEqual(await addModule({dir}, ioWith(home, ['y']), {where}), 0);
   const tree = readOwnRecord(where).modules['my-tool'].tree;
   const copy = require('../lib/own-tree').copyDir(where, 'my-tool', tree);
+  fs.chmodSync(path.join(copy, 'api.json'), 0o644);   // (read-only: a change takes a chmod first)
   fs.appendFileSync(path.join(copy, 'api.json'), ' ');
   const again = ioWith(home, ['y']);
   assert.strictEqual(await addModule({dir}, again, {where}), 0, again.err);

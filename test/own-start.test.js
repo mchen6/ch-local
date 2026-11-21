@@ -103,6 +103,7 @@ test('a copy changed since the yes: held back (changed); a pack module\'s device
   const {home, where, addOwn} = ownHome();
   const tree = addOwn('my-changed');
   addOwn('my-gh', {friendlyName: 'ch-access-github'});
+  fs.chmodSync(path.join(ownTree.copyDir(where, 'my-changed', tree), 'api.json'), 0o644);   // (read-only: a change takes a chmod first)
   fs.appendFileSync(path.join(ownTree.copyDir(where, 'my-changed', tree), 'api.json'), ' ');
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);

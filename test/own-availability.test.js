@@ -64,6 +64,7 @@ test('an intact own module that calls a pack\'s part: a unit after the packs, fr
 test('a copy changed since the yes: held back (changed), the line naming add-module on its folder', () => {
   const h = home();
   const tree = h.addOwn('my-tool');
+  fs.chmodSync(path.join(ownTree.copyDir(h.where, 'my-tool', tree), 'api.json'), 0o644);   // (read-only: a change takes a chmod first)
   fs.appendFileSync(path.join(ownTree.copyDir(h.where, 'my-tool', tree), 'api.json'), ' ');
   const u = run(h).unavailable.get('my-tool');
   assert.deepStrictEqual([u.kind, u.via], ['changed', null]);
