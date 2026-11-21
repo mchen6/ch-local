@@ -88,15 +88,15 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
     'Their terminal fills in the key from a file, so it never appears in this conversation; Claude Code keeps it in its own settings on this machine, and the server listens only on 127.0.0.1.',
     // (a stable key, rotated on demand: Matt 11-20; never read: the A-ownuse medium, 10)
     'The first time, and after `dev-server --new-key`, it prints two commands, `claude mcp remove` and `claude mcp add`; ask them to run both, in a second terminal, then to restart Claude Code.',
-    'On a machine other people log into, tell them to start it with `--new-key` each time: while the server is stopped, another account could listen on its port and catch the key Claude Code sends.',
-    '2. Never read anything under `<home>/dev-auth`, and never run `claude mcp get countinghouse-dev` or print Claude Code\'s settings: that would bring the key into this conversation.',
+    'On a machine other people log into, tell them to start it with `--new-key` each time: while the server is stopped, another account could listen on its port and catch the key Claude Code sends, at the start of every session in every project, and the key lets whoever holds it run code as the user.',
+    '2. Never run the `claude mcp add` line yourself, never read anything under `<home>/dev-auth`, and never run `claude mcp get countinghouse-dev` or print Claude Code\'s settings: each would bring the key into this conversation. Tell the user not to paste that command\'s output here.',
     'Keep the tool\'s module in `<home>/dev/modules/<name>`. After the server restarts, load it again before calling it.',
     'follow the `countinghouse-module` skill: the need, what the tool may return, the split shown to the user and approved before any file is written, then validate, load and call.',
     'Offer section 8 to build one with the user.'
   ]) assert.ok(skill.includes(sentence), sentence);
   // (no credential handed through the conversation: no export of one, no value)
   assert.ok(!/\bexport [A-Z_]+=|GITHUB_TOKEN=|ghp_|github_pat_/.test(skill));
-  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '46e1fec5423cfc3e049ac918b4e6eb6127c7d363921732aeaae268504ceb4469', 'the checked text, byte for byte');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), 'e51c5db06a75781c23d5db4ee6a331cadcdb0bb05cf1cbe521ed3f256bcea6d1', 'the checked text, byte for byte');
 });
 
 // A-ownuse: the countinghouse-module skill the setup skill hands over to, a

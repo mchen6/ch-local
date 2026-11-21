@@ -31,6 +31,13 @@ const {packInto, runtimeLockfile} = require('../lib/release');
 const ROOT = path.join(__dirname, '..');
 const FIXTURES = path.join(__dirname, 'fixtures', 'smoke');
 const RUNTIME = process.env.CH_SMOKE_RUNTIME_TGZ;
+// (a free port on 127.0.0.1; whether one answers; a bounded wait on a
+// condition, sync or async)
+const freePort = () => new Promise((resolve) => { const srv = require('node:net').createServer(); srv.listen(0, '127.0.0.1', () => { const {port} = srv.address(); srv.close(() => resolve(port)); }); });
+const canConnect = (port) => new Promise((resolve) => { const c = require('node:net').connect({port, host: '127.0.0.1'}); c.once('connect', () => { c.destroy(); resolve(true); }); c.once('error', () => resolve(false)); });
+async function waitFor(cond, ms) {
+  for (const until = Date.now() + ms; Date.now() < until; await new Promise((r) => setTimeout(r, 250))) if (await cond()) return;
+}
 const SCENARIO = '@countinghouse/ch-pack-smoke';
 const STEP = '@countinghouse/ch-step-smoke';
 const integrityOf = (file) => 'sha512-' + crypto.createHash('sha512').update(fs.readFileSync(file)).digest('base64');
@@ -80,6 +87,7 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
     fs.mkdirSync(from);
     const io = realIo({...process.env, COUNTINGHOUSE_HOME: home, CH_LOCAL_DEV: '1'});
     let child = null;
+    let dev = null;
     try {
       // The release directory: this launcher, the runtime, and the fixture pack.
       const pins = {};
@@ -152,7 +160,40 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       assert.deepStrictEqual(fs.existsSync(path.join(home, 'run')) ? fs.readdirSync(path.join(home, 'run')) : [], [], 'the run directory is removed');
       assert.strictEqual(stderr.split('\n').filter((l) => /unreleased install/.test(l)).length, 1, 'start says once that the install is unreleased');
       assert.match(stderr, /loading ch-pack-smoke/);
+
+      // A-ownuse: ch-local dev-server starts the home's own runtime for real
+      // (the reviewer's high on ch-local#108, 1: it once ran a sh script
+      // with node and never listened), serves the authoring tools behind its
+      // key, and its runtime ends with it, even when dev-server is SIGKILLed
+      // (6).
+      const devPort = await freePort();
+      let devOut = '';
+      let devErr = '';
+      dev = spawn(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'dev-server', '--port', String(devPort)], {env: {...process.env, COUNTINGHOUSE_HOME: home}, stdio: ['ignore', 'pipe', 'pipe']});
+      dev.stdout.on('data', (d) => { devOut += d; });
+      dev.stderr.on('data', (d) => { devErr += d; });
+      let devExit = null;
+      dev.on('exit', (code) => { devExit = code; });
+      await waitFor(() => /countinghouse development server: /.test(devOut) || devExit != null, 180000);
+      assert.match(devOut, /Its key is new: add it to Claude Code/, `${devOut}\n--- stderr ---\n${devErr.slice(-4000)}`);
+      const key = fs.readFileSync(path.join(home, 'dev-auth', 'admin-key'), 'utf8').trim();
+      assert.match(key, /^[0-9a-f]{64}$/);
+      assert.ok(!(devOut + devErr).includes(key), 'the key is never printed');
+      const list = (k) => fetch(`http://127.0.0.1:${devPort}/mcp`, {method: 'POST',
+        headers: {'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...(k != null ? {'X-CH-Key': k} : {})},
+        body: JSON.stringify({jsonrpc: '2.0', id: 1, method: 'tools/list', params: {}})}).then((r) => r.json());
+      const tools = ((await list(key)).result || {tools: []}).tools.map((t) => t.name);
+      for (const t of ['countinghouse_validate_module', 'countinghouse_load_module', 'countinghouse_call_tool']) assert.ok(tools.includes(t), `${t} in ${JSON.stringify(tools)}`);
+      const keyless = ((await list(null)).result || {tools: []}).tools.map((t) => t.name);
+      assert.ok(!keyless.includes('countinghouse_load_module'), 'no authoring tools without the key');
+      // the runtime's data stays under the home (round 1, 3)
+      assert.ok(fs.existsSync(path.join(home, 'dev', 'module_data')));
+      dev.kill('SIGKILL');
+      await waitFor(async () => !(await canConnect(devPort)), 60000);
+      assert.strictEqual(await canConnect(devPort), false, 'the runtime ends with a SIGKILLed dev-server');
+      dev = null;
     } finally {
+      if (dev != null) dev.kill('SIGKILL');
       if (child != null) child.kill('SIGKILL');
       fs.rmSync(work, {recursive: true, force: true});
     }

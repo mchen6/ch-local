@@ -17,23 +17,26 @@ const POSIX = {skip: process.platform === 'win32' && 'POSIX modes'};
 function home({runtime = true} = {}) {
   const h = tmp('ch-dev-');
   if (runtime) {
-    const bin = path.join(h, 'app', 'node_modules', 'countinghouse', 'bin');
-    fs.mkdirSync(bin, {recursive: true});
-    fs.writeFileSync(path.join(bin, 'countinghouse'), '');
+    const app = path.join(h, 'app', 'node_modules', 'countinghouse');
+    fs.mkdirSync(app, {recursive: true});
+    fs.writeFileSync(path.join(app, 'framework.js'), '');
   }
   return h;
 }
-function io(h, {free = true, env = {}} = {}) {
+function io(h, {free = true, env = {}, up = 'up'} = {}) {
   const f = fakeIo({env: {...env, COUNTINGHOUSE_HOME: h}});
   f.spawned = [];
   f.portFree = async () => free;
+  // (the runtime up, or not: the real one is started in the smoke test)
+  f.untilUp = async () => up;
   f.trapSignals = (fn) => { f.signal = fn; return () => {}; };
   f.killed = [];
   // (what dev-auth/ holds while the runtime runs: the key ends with it)
   const authFile = (n) => { try { return fs.readFileSync(path.join(h, 'dev-auth', n), 'utf8'); } catch (e) { return null; } };
-  f.spawn = (cmd, args, {env: childEnv} = {}) => {
-    f.spawned.push({cmd, args, env: childEnv, key: authFile('admin-key'), auth: authFile('auth.json')});
-    return {kill: (sig) => f.killed.push(sig), exited: f.exited || Promise.resolve(0)};
+  f.spawn = (cmd, args, {env: childEnv, control} = {}) => {
+    // (a new key is admin-key.new until the runtime is up)
+    f.spawned.push({cmd, args, env: childEnv, control, key: authFile('admin-key.new') || authFile('admin-key'), keptAt: authFile('admin-key'), auth: authFile('auth.json')});
+    return {pid: 4321, kill: (sig) => f.killed.push(sig), exited: f.exited || Promise.resolve(0)};
   };
   return f;
 }
@@ -55,11 +58,17 @@ test('the home\'s runtime on 127.0.0.1, its port, the local store, the authoring
   const h = home();
   const f = io(h, {env: {GITHUB_TOKEN: 'from-the-shell', PATH: '/usr/bin'}});
   assert.strictEqual(await devServer({port: 7600}, f), 0, f.err);
-  const [{cmd, args, env}] = f.spawned;
+  const [{cmd, args, env, control}] = f.spawned;
   assert.strictEqual(cmd, f.node);
-  assert.strictEqual(args[0], path.join(h, 'app', 'node_modules', 'countinghouse', 'bin', 'countinghouse'));
-  assert.deepStrictEqual(args.slice(1), ['--bindAddr', '127.0.0.1', '--port', '7600', '--store', 'local', '--storePath', path.join(h, 'dev', 'store'),
-    '--authProvider', 'file', '--authConfigPath', path.join(h, 'dev-auth', 'auth.json'), '--authoringTools', '--workerThread'], 'no --modulePath: it loads nothing without --moduleRegistry');
+  // the home's framework.js, as start.js runs it, through the entry that ends
+  // it with dev-server (an IPC channel: control); every path under <home>/dev
+  // (the reviewer's high on ch-local#108, 1, 3 and 6)
+  assert.deepStrictEqual(args.slice(0, 2), [path.join(__dirname, '..', 'lib', 'dev-runtime.js'), path.join(h, 'app', 'node_modules', 'countinghouse', 'framework.js')]);
+  assert.deepStrictEqual(args.slice(2), ['--bindAddr', '127.0.0.1', '--port', '7600', '--store', 'local', '--storePath', path.join(h, 'dev', 'store'),
+    '--modulePath', path.join(h, 'dev', 'modules'), '--moduleDataPath', path.join(h, 'dev', 'module_data'),
+    '--authProvider', 'file', '--authConfigPath', path.join(h, 'dev-auth', 'auth.json'), '--authoringTools', '--workerThread']);
+  assert.strictEqual(control, true);
+  assert.strictEqual(f.spawned[0].keptAt, null, 'a new key is kept only once the runtime is up');
   assert.strictEqual(env.GITHUB_TOKEN, undefined, 'the packs\' short environment: no client credential');
   assert.strictEqual(env.PATH, '/usr/bin');
   const {key} = f.spawned[0];
@@ -128,8 +137,8 @@ test('a kept key open to others, a link, or not a key: refused, naming --new-key
 test('a home a shell would read in the printed line is refused; a dev-auth that is a link, or open to others, is refused; nothing started', POSIX, async () => {
   for (const odd of ['a"b', 'a$b', 'a`b', 'a\\b', 'a\u201cb']) {
     const h = path.join(tmp('ch-dev-odd-'), odd);
-    fs.mkdirSync(path.join(h, 'app', 'node_modules', 'countinghouse', 'bin'), {recursive: true});
-    fs.writeFileSync(path.join(h, 'app', 'node_modules', 'countinghouse', 'bin', 'countinghouse'), '');
+    fs.mkdirSync(path.join(h, 'app', 'node_modules', 'countinghouse'), {recursive: true});
+    fs.writeFileSync(path.join(h, 'app', 'node_modules', 'countinghouse', 'framework.js'), '');
     const g = io(h);
     assert.strictEqual(await devServer({}, g), 2, JSON.stringify(odd));
     assert.match(g.err, /holds a character a shell would read .*: set COUNTINGHOUSE_HOME to a plain path/);
@@ -161,12 +170,11 @@ test('quotable: PowerShell refuses a single or typographic quote; POSIX the runt
 
 // the A-ownuse medium, 6: Ctrl-C at a terminal already reached the runtime;
 // any other signal is passed on, once
-test('signals: SIGINT at a terminal is not sent again; another is passed on once', async () => {
+test('signals: every one passed on to the runtime, each time', async () => {
   const h = home();
   let end;
   const f = io(h);
   f.exited = new Promise((r) => { end = r; });
-  f.stdinIsTTY = true;
   const done = devServer({}, f);
   await new Promise((r) => setImmediate(r));
   f.signal('SIGINT');
@@ -174,7 +182,8 @@ test('signals: SIGINT at a terminal is not sent again; another is passed on once
   f.signal('SIGTERM');
   end(0);
   assert.strictEqual(await done, 0);
-  assert.deepStrictEqual(f.killed, ['SIGTERM']);
+  // every signal passed on, each time (round 1, 6)
+  assert.deepStrictEqual(f.killed, ['SIGINT', 'SIGTERM', 'SIGTERM']);
 });
 
 test('the key and its auth config are private: dev-auth/ 0700, its files 0600', POSIX, async () => {
@@ -189,8 +198,8 @@ test('the lines said: the URL; with a new key the two Claude Code lines (PowerSh
   assert.deepStrictEqual(linesFor({...at, fresh: true}), [
     'countinghouse development server: http://127.0.0.1:7531/mcp (stop it with Ctrl-C)',
     'Its key is new: add it to Claude Code, in another terminal:',
-    '  claude mcp remove --scope user countinghouse-dev',
-    '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(cat "/h/dev-auth/admin-key")"',
+    '  claude mcp remove --scope user countinghouse-dev >/dev/null',
+    '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(cat "/h/dev-auth/admin-key")" >/dev/null',
     'Keep your tools\' modules in /h/dev/modules, and load them again after each start. They run here only: not inside your installed packs, not upgraded with them, and not published or shared.'
   ]);
   assert.deepStrictEqual(linesFor({...at, fresh: false}), [
@@ -200,5 +209,41 @@ test('the lines said: the URL; with a new key the two Claude Code lines (PowerSh
   ]);
   const win = linesFor({port: 7531, keyFile: 'C:\\h\\dev-auth\\admin-key', modules: 'C:\\h\\dev\\modules', platform: 'win32', fresh: true});
   assert.match(win[1], /in another terminal \(PowerShell\):$/);
-  assert.strictEqual(win[3], '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(Get-Content \'C:\\h\\dev-auth\\admin-key\')"');
+  // (-LiteralPath: [ ] are no wildcards; the add's own output, which repeats
+  // the key, sent nowhere: round 1, 2 and 5)
+  assert.strictEqual(win[3], '  claude mcp add --scope user --transport http countinghouse-dev http://127.0.0.1:7531/mcp --header "X-CH-Key: $(Get-Content -LiteralPath \'C:\\h\\dev-auth\\admin-key\')" | Out-Null');
+});
+
+// round 1, 1: nothing is kept or said as working until the runtime is up
+test('a runtime that ends before it listens: the new key is not kept, nothing is printed; a kept key is not said to work', async () => {
+  const h = home();
+  const failed = io(h, {up: 'exited'});
+  assert.strictEqual(await devServer({}, failed), 1);
+  assert.match(failed.err, /the development server ended before it listened/);
+  assert.strictEqual(failed.out, '', 'no lines');
+  assert.deepStrictEqual(fs.readdirSync(path.join(h, 'dev-auth')).sort(), ['auth.json'], 'no key kept, no port');
+  assert.strictEqual(await devServer({}, io(h)), 0);
+  const kept = io(h, {up: 'timeout'});
+  assert.strictEqual(await devServer({}, kept), 1);
+  assert.match(kept.err, /did not start listening on port 7531/);
+  assert.ok(!kept.out.includes('still works'));
+  assert.deepStrictEqual(kept.killed, ['SIGTERM'], 'a runtime that never listened is stopped');
+});
+
+// round 1, 6: a port held by an earlier dev-server's runtime is said so
+test('a port held by an earlier dev-server\'s runtime, still alive: named by its pid', async () => {
+  const h = home();
+  let end;
+  const first = io(h);
+  first.exited = new Promise((r) => { end = r; });
+  const running = devServer({}, first);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.strictEqual(fs.readFileSync(path.join(h, 'dev-auth', 'pid'), 'utf8'), '4321\n');
+  const second = io(h, {free: false});
+  second.alive = (pid) => pid === 4321;
+  assert.strictEqual(await devServer({}, second), 2);
+  assert.match(second.err, /port 7531 on 127\.0\.0\.1 is held by an earlier dev-server's runtime \(pid 4321\): stop it, then start again/);
+  end(0);
+  await running;
+  assert.ok(!fs.existsSync(path.join(h, 'dev-auth', 'pid')), 'removed when it ends');
 });
