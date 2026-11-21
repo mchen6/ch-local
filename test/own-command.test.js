@@ -168,3 +168,15 @@ test('the permissions it declares are said, and that the enforced sandbox grants
   assert.ok(io.out.includes('It asks for the path /etc/hosts (read), the network host api.example.com, the environment variables MY_SETTING, X?[2K; under the enforced sandbox it gets none of them.\n'), io.out);
   assert.ok(!io.out.includes('\u001b'), 'no escape reaches the terminal');
 });
+
+test('a tool name a pack\'s scenario already lists is refused before the yes (the runtime would not load it)', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const api = JSON.parse(fs.readFileSync(path.join(dir, 'api.json'), 'utf8'));
+  api.device.serviceList[SVC].actionList = [{name: 'ci_failure_triage'}];
+  fs.writeFileSync(path.join(dir, 'api.json'), JSON.stringify(api));
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /my-tool's tool ci_failure_triage is already a tool of @countinghouse\/ch-pack-ci-failure-triage: rename the action in its api\.json\./);
+  assert.deepStrictEqual(io.asked, []);
+});
