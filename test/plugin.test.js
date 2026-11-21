@@ -27,11 +27,15 @@ test('the marketplace lists ch-packs from a relative source that exists', () => 
   assert.strictEqual(json(path.join(PLUGIN, '.claude-plugin', 'plugin.json')).name, 'ch-packs');
 });
 
-test('the plugin\'s .mcp.json runs launch.js with node and sets no environment', () => {
+// the plugin's entry runs `session`, as every entry clients add does: the
+// shared runtime through the installed shim when it can be used, else the
+// session's own (B's #120; the reviewer, 2026-11-21). launch.js passes the
+// arguments through; test/session.test.js checks both make the same choice.
+test('the plugin\'s .mcp.json runs launch.js session with node and sets no environment', () => {
   const entry = json(path.join(PLUGIN, '.mcp.json')).mcpServers['countinghouse'];
   assert.deepStrictEqual(entry, {
     command: 'node',
-    args: ['${CLAUDE_PLUGIN_ROOT}/bin/launch.js', 'start', '--stdio']
+    args: ['${CLAUDE_PLUGIN_ROOT}/bin/launch.js', 'session']
   });
 });
 
@@ -242,4 +246,17 @@ test('the countinghouse-module skill: countinghouse\'s own at the recorded commi
   for (const m of skill.matchAll(/github\.com\/mchen6\/countinghouse\/blob\/([0-9a-f]{40})\//g)) assert.strictEqual(m[1], MODULE_SKILL.source, 'every doc reference at that commit');
   assert.ok(!/`docs\/[a-z0-9-]+\.md`/.test(skill), 'no reference left relative to a repository the plugin is not');
   assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), MODULE_SKILL.sha256, 'the copy as recorded');
+});
+
+// the Reviewer on #123: launch.js execs only where the call can't fail (a
+// failed execve ends Node 22 and 24); else it spawns, as before
+test('launch.js canExec: POSIX with execve and a runnable Node only', () => {
+  const {canExec} = require(path.join(PLUGIN, 'bin', 'launch.js'));
+  const fn = () => {};
+  // (the platform is the argument's: on a Windows runner X_OK reads as
+  // existence, so this Node passes there too)
+  assert.strictEqual(canExec('linux', fn, process.execPath), true);
+  assert.strictEqual(canExec('win32', fn, process.execPath), false, 'Windows spawns');
+  assert.strictEqual(canExec('linux', undefined, process.execPath), false, 'a Node with no execve spawns');
+  assert.strictEqual(canExec('linux', fn, path.join(__dirname, 'no-such-node')), false, 'a Node that is not there spawns');
 });
