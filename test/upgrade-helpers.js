@@ -165,7 +165,10 @@ function writeOwnModule(dir) {
 const hasOwnModules = (code) => fs.existsSync(path.join(code, 'lib', 'own-command.js'));
 async function ownWith(code, io, home, work) {
   run(process.execPath, [path.join(home, 'bin', 'ch-local.js'), 'settings', 'set', 'moduleSandbox', 'enforce'], {env: io.env, timeout: 60000});
-  const dir = path.join(work, 'own-src');
+  // (by its real path: add-module refuses a folder reached through a link,
+  // and the temporary directory can be one -- /var on macOS is /private/var.
+  // Only this folder: the work tree and the home stay where tmp-dirs made them)
+  const dir = path.join(fs.realpathSync.native(work), 'own-src');
   writeOwnModule(dir);
   const asked = [];
   const tty = Object.assign(io, {interactive: true, stdoutTTY: true, ask: async (q) => { asked.push(q); return 'y'; }});
@@ -239,7 +242,11 @@ function summaryWith(code, env) {
     return v;
   };
   // (a reader's error names the file by its path: the home's own, as <home>)
-  const homeless = (v) => (typeof v === 'string' ? v.split(home).join('<home>') : v);
+  // (in either spelling: as given, or its real path -- /private/var on macOS,
+  // the long name for an 8.3 one on Windows)
+  let realHome = home;
+  try { realHome = fs.realpathSync.native(home); } catch (e) { /* as given */ }
+  const homeless = (v) => (typeof v === 'string' ? v.split(realHome).join('<home>').split(home).join('<home>') : v);
   return plain({
     // (each pack's modules at their versions; the record's runtime versions
     // name the installed ch-local itself, which an upgrade changes by design)

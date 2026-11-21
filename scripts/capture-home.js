@@ -64,7 +64,11 @@ const KEEP = ['modules.json', 'settings.json', 'installed-clients.json', 'upgrad
     fs.writeFileSync(path.join(dest, 'from.json'), JSON.stringify({commit: full, version: rel.version}, null, 2) + '\n');
     // (nothing of this machine's in a fixture: a path under the temporary
     // home, the user's home or the node binary refuses the capture)
-    const raw = [work, os.homedir(), process.execPath].filter((x) => typeof x === 'string' && x.length >= 4);
+    // (each in either spelling: as given and by its real path -- /private/var
+    // on macOS, the long name for an 8.3 one on Windows -- since a reader can
+    // record either)
+    const realOf = (x) => { try { return fs.realpathSync.native(x); } catch (e) { return x; } };
+    const raw = [...new Set([work, os.homedir(), process.execPath].flatMap((x) => [x, realOf(x)]))].filter((x) => typeof x === 'string' && x.length >= 4);
     const leaks = [...raw, ...raw.map((x) => JSON.stringify(x).slice(1, -1))];
     const walk = (dir) => fs.readdirSync(dir, {withFileTypes: true}).forEach((e) => {
       const p = path.join(dir, e.name);

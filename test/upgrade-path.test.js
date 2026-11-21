@@ -51,9 +51,7 @@ const TOOLS = ['countinghouse_load_module', 'countinghouse_overview', 'countingh
 for (const {commit, own} of FROM) {
   test(`a home built by ${commit.slice(0, 8)}, upgraded to this tree: every data file kept, read and started; rolled back, as it was`,
     {timeout: 1800000, skip: RUNTIME == null && 'CH_SMOKE_RUNTIME_TGZ is not set (a countinghouse tarball, as for the smoke test)'}, async () => {
-      // (by its real path: add-module refuses a folder reached through a link,
-      // and the temporary directory can be one -- /var on macOS is /private/var)
-      const work = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'ch-upgrade-path-'));
+      const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-upgrade-path-'));
       try {
         const short = commit === 'self' ? 'self' : commit.slice(0, 8);
         const old = commit === 'self' ? h.workingTree(path.join(work, 'old'), '0.1.0-from.self') : h.treeAt(commit, path.join(work, 'old'), `0.1.0-from.${short}`);
