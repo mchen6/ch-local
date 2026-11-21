@@ -144,14 +144,24 @@ The checks are grouped. Within a group, the order doesn't matter.
 21. **The release pins no part below its floor.**
     - Why: a home's parts are only as new as its release's pins. A floor
       (`floors` in lib/release-pins.json) names the version that carries a
-      fix every release must hold. Today's floors:
-      - ch-step-redact 0.2.4 and ch-step-log-clean 0.2.3: secrets and key
-        blocks masked before a result reaches the model;
-      - ch-access-github 0.2.2: the GitHub remote asks for read-only tools;
-      - ch-step-report 0.4.4: the fix for a URL's userinfo (a password and
-        address) reaching the report;
-      - ch-pack-ci-failure-triage 0.7.1: the fix for step names reaching
-        its output and its cache.
+      fix every release must hold, and with it every fix before it. Today's
+      floors, each with the fixes it carries:
+      - ch-step-redact 0.2.4: secrets and key blocks masked before a result
+        reaches the model, with secret names inside escaped JSON (#11) and a
+        password after an address and a colon (#12);
+      - ch-step-log-clean 0.2.3: the same masking, with an omitted bare key
+        body keeping redact's state and step names whole (#7);
+      - ch-access-github 0.2.2: the GitHub remote asks for read-only tools
+        (0.2.1), and 0.2.2 is the version pack 1 0.7.1 is built against
+        (a refusal names its cause; a large log comes back as its tail);
+      - ch-step-report 0.4.4: the summary quotes no step name and an
+        e-mail address costs its field (#7), an @ before a password or after
+        a redacted address is an address's (#8), and the final pass's (#9);
+      - ch-pack-ci-failure-triage 0.7.1: step names go through redact before
+        any part, the result or the cache (#18), with
+        ch-access-github 0.2.2.
+      The parts fixed on 11-21 for function only (error-patterns, dedupe,
+      owner-hint) have no floor.
     - How: the machine check holds it. lib/release-pins.js refuses a pin
       below its floor (a pre-release, or anything not a version, counts as
       below), `node scripts/describe-release.js <tarballs>` refuses a

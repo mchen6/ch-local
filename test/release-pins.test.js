@@ -254,9 +254,9 @@ test('floors: optional; each a strict version of a module some pack lists; a pin
     [(x) => { x.floors = []; }, /floors must be an object/],
     [(x) => { x.floors['@countinghouse/ch-step-nope'] = '1.0.0'; }, /floor for @countinghouse\/ch-step-nope names no module/],
     [(x) => { x.floors['@countinghouse/ch-step-redact'] = '0.2'; }, /floor for @countinghouse\/ch-step-redact is no strict/],
-    [(x) => { x.pins['@countinghouse/ch-step-redact'] = pin('0.2.3'); }, /ch-step-redact 0\.2\.3 is below its floor 0\.2\.4/],
+    [(x) => { x.pins['@countinghouse/ch-step-redact'] = Object.assign(pin('0.2.3'), {repository: 'mchen6/ch-step-redact'}); }, /ch-step-redact 0\.2\.3 is below its floor 0\.2\.4/],
     // (a pack's own module has a floor too: pack 1's step-name fix)
-    [(x) => { x.pins['@countinghouse/ch-pack-ci-failure-triage'] = pin('0.7.0'); }, /ch-pack-ci-failure-triage 0\.7\.0 is below its floor 0\.7\.1/]
+    [(x) => { x.pins['@countinghouse/ch-pack-ci-failure-triage'] = Object.assign(pin('0.7.0'), {repository: 'mchen6/ch-pack-ci-failure-triage'}); }, /ch-pack-ci-failure-triage 0\.7\.0 is below its floor 0\.7\.1/]
   ]) {
     const x = shipped();
     mutate(x);
