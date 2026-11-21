@@ -144,6 +144,13 @@ test('the new release\'s pins: refused if invalid; its own identity changing is 
     const reg = await registryWith('0.4.0', {pins});
     try {
       assert.strictEqual(await codeOf(find(reg)), code, JSON.stringify(pins).slice(0, 40));
+      // (a release in a format this ch-local can't read is no dead end: the
+      // way out, a fresh install of the latest by npx: the final pass's
+      // ch-local part, A1)
+      if (typeof pins !== 'string') {
+        const msg = await find(reg).then(() => '', (e) => e.message);
+        assert.match(msg, /this ch-local can't read that release's pins: install it with `npx @countinghouse\/ch-local@latest install --pack ci-failure-triage`/);
+      }
     } finally {
       await reg.close();
     }
@@ -171,4 +178,22 @@ test('what it adds that needs a yes: a key sent to a new origin, a module that n
   } finally {
     await reg.close();
   }
+});
+
+// the final pass's ch-local part, A1: ch-local's real tarball, as `npm pack`
+// makes it, bundles its @sigstore libraries under node_modules/; the
+// upgrade's read of it takes them (a strict read, a pack's, refuses them)
+test('an upgrade reads ch-local\'s own tarball as npm pack makes it, bundled libraries included', {timeout: 300000}, () => {
+  const {spawnSync} = require('node:child_process');
+  const {readOwnTarball} = require('../lib/npm-upgrade');
+  const {readMembers} = require('../lib/tar');
+  const dir = require('./fake-io').tmp('ch-pack-self-');
+  const npmCli = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const r = spawnSync(npmCli, ['pack', '--silent', '--pack-destination', dir], {cwd: path.join(__dirname, '..'), encoding: 'utf8', timeout: 240000, shell: process.platform === 'win32'});
+  assert.strictEqual(r.status, 0, r.stderr);
+  const tgz = fs.readdirSync(dir).find((f) => f.endsWith('.tgz'));
+  const bytes = fs.readFileSync(path.join(dir, tgz));
+  const read = readOwnTarball(bytes);
+  assert.ok(Buffer.isBuffer(read['lib/release-pins.json']), 'its pins read');
+  assert.throws(() => readMembers(bytes, ['lib/release-pins.json']), /node_modules/, 'the premise: it bundles, and a strict read refuses that');
 });
