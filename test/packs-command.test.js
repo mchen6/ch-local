@@ -10,6 +10,11 @@ const {install} = require('../lib/install');
 const {addPack, removePack, status} = require('../lib/packs-command');
 const {fakeIo, tmp} = require('./fake-io');
 const {devModules, release, npm, pkgDir, record} = require('./install-helpers');
+const {chLocal} = require('../lib/command-line');
+const {layout} = require('../lib/home');
+// a command as the home names it once an install wrote its launcher
+// (lib/command-line.js), as a regular expression's source
+const cmd = (h, args) => chLocal(layout({COUNTINGHOUSE_HOME: h}), args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 async function installed(r = release(), env = {}) {
   const home = tmp('ch-home-');
@@ -131,7 +136,7 @@ test('status lists each module with its tools or why it would not load, and its 
   assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.io(), s.r.allow), 0);
   const io = s.io({GITHUB_TOKEN: 'secret'});
   assert.strictEqual(await status({}, io), 0, io.err);
-  assert.match(io.out, /^  ch-pack-ci-failure-triage 0\.1\.0 +not loaded: calls ch-access-github, which needs a credential: run `ch-local credentials add ch-access-github`$/m);
+  assert.match(io.out, new RegExp(`^  ch-pack-ci-failure-triage 0\\.1\\.0 +not loaded: calls ch-access-github, which needs a credential: run \`${cmd(s.home, 'credentials add ch-access-github')}\`$`, 'm'));
   assert.match(io.out, /^  ch-pack-other 0\.3\.0 +on; tools: ch_pack_other$/m);
   assert.match(io.out, /^packs:\n  ci-failure-triage +\d+ modules\n  other +\d+ modules$/m);
   require('../lib/credential-store').bind(s.home, '@countinghouse/ch-access-github', 'GITHUB_TOKEN', {origin: 'https://api.githubcopilot.com', source: 'stored', value: 'test-stored-value-1'}, {held: require('./store-helpers').FIXTURE_HELD});
@@ -192,7 +197,7 @@ test('a part at another version names a way forward that exists: a clean install
   const newer = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
   const io = s.io();
   assert.strictEqual(await addPack({pack: 'other', from: newer.from}, io, newer.allow), 1);
-  assert.match(io.err, /install the newer release with `ch-local install --pack ci-failure-triage --from <its directory>`, then add-pack other/);
+  assert.match(io.err, new RegExp(`install the newer release with \`${cmd(s.home, 'install --pack ci-failure-triage --from <its directory>')}\`, then add-pack other`));
 });
 
 test('a home made by an earlier development launcher (installed.json only) is told to reinstall', async () => {
@@ -329,7 +334,7 @@ test('a pack the record lists as withdrawn: status says so; remove-pack removes 
   withdrawHeld(s.home, 'ci-failure-triage');
   const st = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
   assert.strictEqual(await status({}, st), 0, st.err);
-  assert.match(st.out, /ci-failure-triage: withdrawn in this release, so it is not started; `ch-local remove-pack ci-failure-triage` removes it/);
+  assert.match(st.out, new RegExp(`ci-failure-triage: withdrawn in this release, so it is not started; \`${cmd(s.home, 'remove-pack ci-failure-triage')}\` removes it`));
   assert.doesNotMatch(st.out, /no pack is installed/);
   const scenario = path.join(s.home, 'module-store', '@countinghouse', 'ch-pack-ci-failure-triage', '0.1.0');
   assert.ok(fs.existsSync(scenario), 'its files are there while it is recorded');
@@ -378,7 +383,7 @@ test('status of a held pack this release lists says add-pack brings it back', as
   require('./store-helpers').editHome(s.home, (r) => ({...r, held: {other: {from: {release: '0.9.0'}, modules: {'@countinghouse/ch-pack-other': '0.3.0'}}}}));
   const io = s.io();
   assert.strictEqual(await status({}, io), 0, io.err);
-  assert.match(io.out, /other: in this release again, not started until added: `ch-local add-pack other` adds it back/);
+  assert.match(io.out, new RegExp(`other: in this release again, not started until added: \`${cmd(s.home, 'add-pack other')}\` adds it back`));
   assert.doesNotMatch(io.out, /this release does not have it/);
 });
 

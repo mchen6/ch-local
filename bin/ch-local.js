@@ -67,7 +67,8 @@ function snippetCommand(client, io) {
     io.stderr.write(note);
   } else {
     io.stderr.write(`ch-local: the entry runs the Node at ${io.node}.\n`);
-    io.stderr.write(`ch-local: an nvm or system Node upgrade changes this path; run \`ch-local snippet ${client}\` again to reprint the entry.\n`);
+    const where = require('../lib/home').layout(io.env, io.homedir);
+    io.stderr.write(`ch-local: an nvm or system Node upgrade changes this path; run \`${require('../lib/command-line').chLocal(where, `snippet ${client}`, io.platform)}\` again to reprint the entry.\n`);
   }
   return 0;
 }

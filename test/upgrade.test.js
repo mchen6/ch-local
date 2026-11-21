@@ -30,6 +30,9 @@ const registry = (latest) => async (url) => {
 // registry and the test root reach it only as its test-only argument.
 const {npmWorld, asInstalled} = require('./npm-world');
 const {release, npm} = require('./install-helpers');
+// a command as the home names it once an install wrote its launcher
+// (lib/command-line.js), as a regular expression's source
+const cmd = (h, args) => require('../lib/command-line').chLocal(require('../lib/home').layout({COUNTINGHOUSE_HOME: h}), args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const recordOf = (home) => JSON.parse(fs.readFileSync(path.join(home, 'modules.json'), 'utf8'));
 const historyOf = (home) => { try { return fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (e) { return []; } };
 const realFetch = (url, opts) => globalThis.fetch(url, opts);
@@ -125,7 +128,7 @@ test('a yes installs the new release from npm through install, recorded in histo
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.strictEqual(recordOf(s.home).runtime.versions['@countinghouse/ch-local'], '0.2.0');
-    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0; ch-local rollback undoes it/);
+    assert.match(io.out, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.2\\.0; ${cmd(s.home, 'rollback')} undoes it`));
     const h = historyOf(s.home).filter((e) => e.kind === 'upgrade');
     assert.deepStrictEqual(h.map((e) => [e.how, e.outcome, e.from, e.to]), [['cli', 'installed', '0.1.0', '0.2.0']]);
     assert.ok(io.fetches.every((u) => u.startsWith(w.reg.url)), 'the fake registry only');
@@ -317,8 +320,8 @@ test('a release that withdraws the home\'s one pack upgrades: the runtime instal
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     // said before the question, and after the install
     assert.match(io.out, /it withdraws:\n  ci-failure-triage \(it stays installed and is not started after the upgrade; `ch-local remove-pack ci-failure-triage` removes it\)/);
-    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0; ch-local rollback undoes it/);
-    assert.match(io.out, /pack ci-failure-triage was withdrawn in this release and was not started; `ch-local remove-pack ci-failure-triage` removes it/);
+    assert.match(io.out, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.2\\.0; ${cmd(s.home, 'rollback')} undoes it`));
+    assert.match(io.out, new RegExp(`pack ci-failure-triage was withdrawn in this release and was not started; \`${cmd(s.home, 'remove-pack ci-failure-triage')}\` removes it`));
     assert.doesNotMatch(io.out, /was dropped/);
     const after = recordOf(s.home);
     assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.2.0', 'the runtime upgraded');
@@ -459,7 +462,7 @@ test('L4: a home with two packs upgrades as one release: every pack to its pins,
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     assert.match(io.out, /its modules move:\n  ch-step-other 0\.1\.0 -> 0\.2\.0 \(other\)\n  ch-step-redact 0\.2\.0 -> 0\.1\.0, back to an earlier version \(ci-failure-triage, other\)\n/);
     assert.strictEqual(io.asked.length, 1, 'one question, the upgrade\'s own');
-    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0; ch-local rollback undoes it/);
+    assert.match(io.out, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.2\\.0; ${cmd(s.home, 'rollback')} undoes it`));
     const rec = recordOf(s.home);
     assert.strictEqual(rec.packs['ci-failure-triage'].modules['@countinghouse/ch-step-redact'], '0.1.0');
     assert.deepStrictEqual(rec.packs.other.modules, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});

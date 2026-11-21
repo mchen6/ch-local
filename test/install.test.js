@@ -13,6 +13,11 @@ const {install} = require('../lib/install');
 const {ALLOWLIST} = require('../lib/allowlist');
 const {fakeIo, tmp} = require('./fake-io');
 const {devModules, release, npm, pkgDir, record, RUNTIME} = require('./install-helpers');
+const {chLocal} = require('../lib/command-line');
+const {layout} = require('../lib/home');
+// a command as the home names it once an install wrote its launcher
+// (lib/command-line.js), as a regular expression's source
+const cmd = (h, args) => chLocal(layout({COUNTINGHOUSE_HOME: h}), args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const TRIAGE = ['@countinghouse/ch-pack-ci-failure-triage', '@countinghouse/ch-access-github', '@countinghouse/ch-step-redact'];
 const run = (r, io, args = {}) => install({pack: 'ci-failure-triage', from: r.from, ...args}, io, r.allow);
@@ -258,7 +263,7 @@ test('a pack the release no longer lists stays recorded, its own modules withdra
   const rec = record(h);
   assert.deepStrictEqual(Object.keys(rec.packs).sort(), ['ci-failure-triage', 'other']);
   assert.deepStrictEqual(rec.withdrawn, ['@countinghouse/ch-pack-other', '@countinghouse/ch-step-other'], 'ch-step-redact is still shipped by ci-failure-triage');
-  assert.match(io2.out, /other: withdrawn in this release, so it is not started; `ch-local remove-pack other` removes it/);
+  assert.match(io2.out, new RegExp(`other: withdrawn in this release, so it is not started; \`${cmd(h, 'remove-pack other')}\` removes it`));
   assert.ok(fs.existsSync(pkgDir(h, '@countinghouse/ch-pack-other')), 'nothing of it is removed');
 });
 
@@ -282,7 +287,7 @@ test('migration: packs.json, its trees and held packs become modules.json and th
   assert.deepStrictEqual(rec.packs.other.modules, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});
   // held after a rollback: not carried over, named (the Reviewer's one rule)
   assert.strictEqual(rec.held, undefined);
-  assert.match(io.out, /not carried over: old; add it again with `ch-local add-pack old` once a release lists it/);
+  assert.match(io.out, new RegExp(`not carried over: old; add it again with \`${cmd(h, 'add-pack old')}\` once a release lists it`));
   assert.strictEqual(fs.existsSync(path.join(h, 'packs.json')), false);
   // the earlier ch-local's packs/ kept whole beside the home, never collected
   assert.strictEqual(fs.existsSync(path.join(h, 'packs')), false);
@@ -664,7 +669,7 @@ test('a record that cannot be read is set aside and named; the install goes on, 
   const aside = fs.readdirSync(h).filter((n) => n.startsWith('modules.json.unreadable-'));
   assert.strictEqual(aside.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(h, aside[0]), 'utf8'), '{"v": 2', 'kept as it was');
-  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`ch-local add-pack\``));
+  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`${cmd(h, 'add-pack')}\``));
   assert.deepStrictEqual(Object.keys(record(h).packs), ['other']);
   assert.ok(fs.existsSync(path.join(h, 'previous', 'keep')), 'the rollback target kept');
 });
@@ -753,7 +758,7 @@ test('a migration carries over only the packs these pins list: a held one and an
   assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
   assert.strictEqual(record(h).held, undefined);
   // this release lists it: add-pack brings it back
-  assert.match(io.out, /not carried over: other; add it again with `ch-local add-pack other`\n/);
+  assert.match(io.out, new RegExp(`not carried over: other; add it again with \`${cmd(h, 'add-pack other')}\`\n`));
 });
 
 // the medium review of #83's fixes
@@ -854,7 +859,7 @@ test('under development pins a pack the pins do not pin is not carried over, wit
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
   assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
   assert.match(io.out, /not carried over: other; these pins do not pin all of its modules/);
-  assert.match(io.out, /not carried over: kept; add it again with `ch-local add-pack kept` once a release lists it/);
+  assert.match(io.out, new RegExp(`not carried over: kept; add it again with \`${cmd(h, 'add-pack kept')}\` once a release lists it`));
   assert.strictEqual((io.out.match(/not carried over: /g) || []).length, 2, 'each once');
 });
 
