@@ -121,14 +121,8 @@ function removeTree(dir) {
   try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); return; } catch (err) {
     if (err.code !== 'EACCES' && err.code !== 'EPERM' && err.code !== 'ENOTEMPTY') throw err;
   }
-  const unlock = (at) => {
-    let st;
-    try { st = fs.lstatSync(at); } catch (e) { return; }
-    if (st.isSymbolicLink()) return;
-    try { fs.chmodSync(at, (st.mode & 0o777) | (st.isDirectory() ? 0o700 : 0o200)); } catch (e) { return; }
-    if (st.isDirectory()) { let names = []; try { names = fs.readdirSync(at); } catch (e) { names = []; } for (const n of names) unlock(path.join(at, n)); }
-  };
-  unlock(dir);
+  // (ch-local's own rule: lib/own-tree.js unlockTree)
+  require('../lib/own-tree').unlockTree(dir);
   fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
 }
 const bornOf = (st) => (probeBorn() && st.birthtimeNs != null && st.birthtimeNs > 0n ? String(st.birthtimeNs) : null);

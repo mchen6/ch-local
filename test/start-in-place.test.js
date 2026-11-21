@@ -1909,3 +1909,16 @@ test('an own module whose own callee\'s code changed is unloaded around the call
   s.end();
   await s.done;
 });
+
+// the medium on #113's round 1: a callee that moves between own and a pack
+// is a code change on either side
+test('ownCodeChanged: a callee whose version is a tree on either side, and differs', () => {
+  const {ownCodeChanged} = require('../lib/in-place');
+  const t1 = 'a'.repeat(64);
+  const t2 = 'b'.repeat(64);
+  assert.strictEqual(ownCodeChanged({x: t1}, {x: t2}), 'x');
+  assert.strictEqual(ownCodeChanged({x: t1}, {x: '1.2.0'}), 'x');
+  assert.strictEqual(ownCodeChanged({x: '1.2.0'}, {x: t1}), 'x');
+  assert.strictEqual(ownCodeChanged({x: '1.2.0'}, {x: '1.3.0'}), null);
+  assert.strictEqual(ownCodeChanged({x: t1}, {x: t1}), null);
+});

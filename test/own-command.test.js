@@ -330,3 +330,29 @@ test('module text in a refusal is shown with nothing that moves the cursor (#113
   assert.ok(!io.err.includes('\u001b'), JSON.stringify(io.err));
   assert.match(io.err, /my-tool calls ch-\?\[2Knowhere\/s\.go, and nothing installed here answers it/);
 });
+
+// the medium on #113's round 1
+test('more than 256 calls is refused before any duplicate is looked for', async () => {
+  const {base, home, where} = setup();
+  const calls = Array.from({length: 300}, () => 'ch-x/s.go');
+  const dir = writeModule(path.join(base, 'work', 'many'), {calls});
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /lists more than 256 calls/);
+});
+
+test('names compared by their Windows key against every holder: a re-add beside a store "my-tool.", a release\'s "my-tool."', async () => {
+  const {base, home, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  assert.strictEqual(await addModule({dir}, ioWith(home, ['y']), {where}), 0);
+  fs.appendFileSync(path.join(dir, 'handlers', 'toolService', 'run.js'), '// edited\n');
+  fs.mkdirSync(path.join(where.moduleStore, 'my-tool.', '1.0.0'), {recursive: true});
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /my-tool is already used here by pack module my-tool\./);
+  fs.rmSync(path.join(where.moduleStore, 'my-tool.'), {recursive: true});
+  const rel = ioWith(home, ['y']);
+  rel.release = {runtime: {packages: []}, packs: {}, pins: {'my-tool.': {version: '1.0.0'}}};
+  assert.strictEqual(await addModule({dir}, rel, {where}), 2);
+  assert.match(rel.err, /my-tool is a name this release holds/);
+});

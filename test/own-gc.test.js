@@ -113,3 +113,18 @@ test('remove-module: the entry dropped, its copies gone, its data and key kept a
   assert.strictEqual(await removeModule({name: 'nothing-here'}, io3, {where}), 2);
   assert.match(io3.err, /nothing-here is not one of your own modules: `.*status` lists them\./);
 });
+
+// the medium on #113's round 1: unlocked first, the marker removed after
+test('collectOwn: a copy that can\'t be made writable keeps its marker (collected later, never leaked)', () => {
+  const {where, place} = setup();
+  const a = place('my-tool');
+  const ot = require('../lib/own-tree');
+  const real = ot.unlockTree;
+  ot.unlockTree = () => { throw Object.assign(new Error('nope'), {code: 'EPERM'}); };
+  try {
+    const r = collectOwn(where, opts);
+    assert.ok(r.kept.some((k) => /could not remove/.test(k.why)), JSON.stringify(r.kept));
+  } finally { ot.unlockTree = real; }
+  assert.ok(fs.existsSync(ownTree.markerOf(where, 'my-tool', a.tree)), 'the marker stays');
+  assert.ok(!fs.existsSync(ownTree.copyDir(where, 'my-tool', a.tree)) || collectOwn(where, opts).removed.length === 1, 'the next collection takes it');
+});

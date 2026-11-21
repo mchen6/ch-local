@@ -126,3 +126,12 @@ test('terminalText shows every unsafe character as ?, the invisible fillers and 
   assert.strictEqual(terminalText('aㅤb͏c️d\u{e0041}e᠎fᅟg'), 'a?b?c?d?e?f?g');
   assert.strictEqual(folderArg('/home/u/myㅤtool', 'linux'), '"<its folder>"');
 });
+
+// the medium on #113's round 1: every format character, and a cut that
+// never splits a surrogate pair
+test('terminalText: every control or format character is ?; a cut keeps whole code points', () => {
+  const {terminalText} = require('../lib/command-line');
+  assert.strictEqual(terminalText('a⁫b\u{1d173}c؀d۝e'), 'a?b?c?d?e');
+  const cut = terminalText(`${'x'.repeat(79)}\u{1F600}yy`, 80);
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cut), JSON.stringify(cut));
+});

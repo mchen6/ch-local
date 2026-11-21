@@ -175,3 +175,43 @@ test('the copy is read-only; unlockTree makes it removable again, following no l
   assert.strictEqual(fs.existsSync(copy), false);
   assert.strictEqual(fs.statSync(outside).mode & 0o222, 0, 'nothing outside touched');
 });
+
+// the medium on #113's round 1
+test('a folder that cannot be read is named with ?, never its raw name', {skip: process.platform === 'win32' || (process.getuid && process.getuid() === 0)}, () => {
+  const {base, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'unreadable'));
+  const odd = path.join(dir, 'x\u001b[2Jy');
+  fs.mkdirSync(odd);
+  fs.chmodSync(odd, 0o000);
+  try {
+    const r = tree.checkFolder(dir, where.home);
+    assert.ok(r.problems.some((p) => p.includes('x?[2Jy cannot be read')) && !JSON.stringify(r.problems).includes('\u001b'), JSON.stringify(r.problems));
+  } finally { fs.chmodSync(odd, 0o755); }
+});
+
+test('a repair that fails leaves the old copy marked and read-only', () => {
+  const {base, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'rep'));
+  const r = tree.checkFolder(dir, where.home);
+  const h = tree.treeHash(dir, r.entries);
+  const copy = tree.placeCopy(where, 'my-tool', r.real, r.entries, h);
+  fs.chmodSync(path.join(copy, 'api.json'), 0o644);
+  fs.appendFileSync(path.join(copy, 'api.json'), ' ');
+  fs.chmodSync(path.join(copy, 'api.json'), 0o444);
+  // the source changes too: the stage won't hash to h
+  fs.appendFileSync(path.join(dir, 'api.json'), ' ');
+  assert.throws(() => tree.placeCopy(where, 'my-tool', r.real, r.entries, h), (e) => e.code === 'OWN_TREE_CHANGED');
+  assert.ok(fs.existsSync(tree.markerOf(where, 'my-tool', h)), 'the marker stays');
+  assert.strictEqual(fs.statSync(path.join(copy, 'handlers', 'toolService', 'run.js')).mode & 0o222, 0, 'still read-only');
+});
+
+test('chmodNoFollow never changes a link\'s target', {skip: process.platform === 'win32'}, () => {
+  const {base} = setup();
+  const target = path.join(base, 'target.txt');
+  fs.writeFileSync(target, 'x');
+  fs.chmodSync(target, 0o444);
+  const link = path.join(base, 'link');
+  fs.symlinkSync(target, link);
+  assert.throws(() => tree.chmodNoFollow(link, 0o644), (e) => e.code === 'ELOOP' || e.code === 'EMLINK');
+  assert.strictEqual(fs.statSync(target).mode & 0o222, 0);
+});
