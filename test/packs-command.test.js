@@ -105,7 +105,7 @@ test('add-pack before any install says to install first; an installed pack is le
   const r = release();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: tmp('ch-home-')}});
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, io, r.allow), 1);
-  assert.match(io.err, /nothing is installed yet; run `npx @countinghouse\/ch-local install --pack other`/);
+  assert.match(io.err, /nothing is installed yet; run `npx @countinghouse\/ch-local install --pack other --from <dir>`/);
   const s = await installed();
   const again = s.io();
   assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: s.r.from}, again, s.r.allow), 0);
@@ -197,8 +197,9 @@ test('a part at another version names a way forward that exists: a clean install
   const newer = release({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
   const io = s.io();
   assert.strictEqual(await addPack({pack: 'other', from: newer.from}, io, newer.allow), 1);
-  // (upgrade from npm, then install --pack adds it: never --from, A11)
-  assert.match(io.err, new RegExp(`install the newer release with \`${cmd(s.home, 'upgrade')}\`, then add the pack with \`${cmd(s.home, 'install --pack other')}\``));
+  // (add-pack runs only with --from, so its hint keeps the folder: the
+  // medium on A11, 1-3)
+  assert.match(io.err, new RegExp(`install the newer release with \`${cmd(s.home, 'install --pack ci-failure-triage --from <its directory>')}\`, then add the pack with \`${cmd(s.home, 'add-pack other --from <its directory>')}\``));
 });
 
 test('a home made by an earlier development launcher (installed.json only) is told to reinstall', async () => {
