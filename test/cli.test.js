@@ -121,3 +121,45 @@ test('add-module over a pipe is refused, naming the command; without a folder, u
     fs.rmSync(base, {recursive: true, force: true});
   }
 });
+
+// The Reviewer on A-own-skill: add-module's yes is the user's own, at a
+// terminal both ways (B-own-add). The one io that claims a terminal in what
+// ch-local ships (bin/ and lib/; scripts/ and test/ are not shipped) is
+// bin/ch-local.js's, and it reads both from the process's real terminals. A
+// harness that stands the terminal in (the acceptance run's Windows step)
+// lives outside it.
+test('only bin/ch-local.js builds an io that claims a terminal, and only from the real ones', () => {
+  const ROOT = path.join(__dirname, '..');
+  const files = [BIN, ...fs.readdirSync(path.join(ROOT, 'lib'), {recursive: true}).filter((f) => String(f).endsWith('.js')).map((f) => path.join(ROOT, 'lib', String(f)))];
+  const claims = [];
+  for (const file of files) {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (/^\s*(\/\/|\*)/.test(line)) continue;
+      // (an object's key -- at a line's start, or after { or , -- whose
+      // value is anything but false: an io that says it has no terminal
+      // only adds a refusal)
+      for (const m of line.matchAll(/(?:^|[{,])\s*(interactive|stdoutTTY|stdinIsTTY|terminal)\s*:\s*([^,}\n]+)/g)) {
+        if (m[2].trim() !== 'false') claims.push(`${path.relative(ROOT, file).split(path.sep).join('/')}: ${m[1]}: ${m[2].trim()}`);
+      }
+    }
+  }
+  assert.deepStrictEqual(claims.sort(), [
+    'bin/ch-local.js: interactive: Boolean(process.stdin.isTTY)',
+    'bin/ch-local.js: stdinIsTTY: Boolean(process.stdin.isTTY)',
+    'bin/ch-local.js: stdoutTTY: Boolean(process.stdout.isTTY)',
+    'bin/ch-local.js: terminal: Boolean(process.stdin.isTTY && process.stderr.isTTY)'
+  ], claims.join('\n'));
+});
+
+test('add-module run with no terminal (pipes both ways) is refused, naming the command, and asks nothing', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-local-'));
+  try {
+    const r = spawnSync(process.execPath, [BIN, 'add-module', path.join(home, 'mine')], {encoding: 'utf8', input: 'y\n', env: {...process.env, COUNTINGHOUSE_HOME: home}});
+    assert.strictEqual(r.status, 2, `${r.stdout}\n${r.stderr}`);
+    assert.match(r.stderr, /add-module asks you, in your own terminal: run `.*add-module .*mine.*` there\./);
+    assert.ok(!/Add it\?/.test(r.stdout + r.stderr), 'nothing asked');
+    assert.ok(!fs.existsSync(path.join(home, 'own.json')));
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
