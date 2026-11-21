@@ -545,6 +545,37 @@ test('--from refuses a folder\'s shim as it refuses a pack: other bytes than the
   await refused((r) => [folderShim(r, {version: `0.5.0-${'a'.repeat(65)}`})], /: not a version a home's record can hold/);
 });
 
+// The reviewer's high on A-shim-from, F1: under unreleased pins a shim at a
+// release's version (dev bytes under a name a release uses) is refused; and
+// an unreleased home's shim is never 'current' to an install from npm, which
+// fetches and verifies the release's own
+test('F1: an unreleased install\'s shim must carry a pre-release version; an npm install over an unreleased home fetches the release\'s shim', async () => {
+  const r = release(); const h = home();
+  const s = folderShim(r);
+  const allow = {...r.allow, pins: {}, shim: {packages: SHIM_PACKAGES}, runtime: {...r.allow.runtime, lockfile: null}};
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  const f = pinsFile(r, {pins: {...r.pins, [s.name]: s.pin}, runtimeLockfile: r.lockfile});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 1);
+  assert.match(io.err, /@0\.5\.0: an unreleased install's shim carries a pre-release version \(dogfood's -dev\.<hash>\), never a release's/);
+  assert.match(io.err, /nothing was installed/);
+  // (an npm install over an unreleased home whose record names the same
+  // version: fetched and verified, never kept as current)
+  const r2 = release(); const h2 = home();
+  const n = await npmRelease(r2, {shim: true});
+  try {
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io2, n.allow, n.fromNpm), 0, io2.err);
+    const file = path.join(h2, 'modules.json');
+    fs.writeFileSync(file, JSON.stringify({...JSON.parse(fs.readFileSync(file, 'utf8')), unreleased: true}, null, 2) + '\n');
+    const {prepareShim} = require('../lib/shim-install');
+    const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const ready = await prepareShim({data: {shim: n.allow.shim, pins: n.allow.pins}, record: rec, home: h2, io: io2, ...n.fromNpm});
+    assert.strictEqual(ready.status, 'ready', 'fetched and verified, not current');
+  } finally {
+    await n.reg.close();
+  }
+});
+
 // (the reviewer's high, the medium's 7: a folder's shim refused before the
 // table's questions, over a home that has packs to ask about)
 test('--from over an unreleased home: a refused shim is refused before the table asks anything', async (t) => {
