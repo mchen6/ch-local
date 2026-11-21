@@ -822,3 +822,42 @@ test('upgrade against a release in a later pins format names the npx install of 
     s.done();
   }
 });
+
+// K3 (the feature audit): upgrade and upgrade --check say a release's
+// security marking and its own change notes before anything is asked,
+// cleaned as any text ch-local did not write (a note holding a hidden
+// character is refused with the release: the next test).
+test('upgrade and upgrade --check show the release\'s security marking and its change notes, cleaned, before the question', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release(), {edit: (doc) => {
+    doc.release.security = {fixes: 'a credential no longer reaches a module it was not added for'};
+    doc.release.notes = ['the triage tool says which test failed', 'owner hints name later commits too'];
+  }});
+  try {
+    for (const check of [false, true]) {
+      const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+      assert.strictEqual(await upgrade(check ? {check: true} : {}, io, w.fromNpm), 0, io.err);
+      assert.match(io.out, /ch-local 0\.2\.0 is a security fix: a credential no longer reaches a module it was not added for\n/);
+      assert.match(io.out, /changes in 0\.2\.0:\n  - the triage tool says which test failed\n  - owner hints name later commits too\n/);
+      if (!check) assert.ok(io.out.indexOf('changes in 0.2.0') < io.out.indexOf('nothing changed'));
+    }
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+test('a release\'s notes: null, or 1 to 8 plain strings of at most 200 characters; release is {security} or {security, notes}', () => {
+  const {parseReleasePins} = require('../lib/release-pins');
+  const base = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
+  const withNotes = (notes) => ({...base, release: {...base.release, notes}});
+  for (const ok of [null, ['one'], Array.from({length: 8}, (_, i) => `note ${i}`), ['x'.repeat(200)]]) {
+    assert.strictEqual(parseReleasePins(withNotes(ok)).problem, undefined, JSON.stringify(ok));
+  }
+  assert.strictEqual(parseReleasePins(base).problem, undefined, 'notes may be omitted');
+  for (const bad of [[], Array.from({length: 9}, () => 'n'), ['x'.repeat(201)], [''], [3], 'one', [`a${String.fromCharCode(7)}b`]]) {
+    const r = parseReleasePins(withNotes(bad));
+    assert.match(String(r.problem), /release\.notes/, JSON.stringify(bad));
+    assert.strictEqual(r.later, false, 'a known key: not a later format');
+  }
+});

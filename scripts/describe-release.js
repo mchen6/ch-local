@@ -4,7 +4,7 @@
 // packs.<p>.modules and modules.<package> (lib/describe-module.js), so the
 // descriptions are never written by hand.
 //
-//   node scripts/describe-release.js <directory of tarballs> [--check]
+//   node scripts/describe-release.js <directory of tarballs> [--check] [--notes <file> | --notes none]
 //   node scripts/describe-release.js <directory of tarballs> --unreleased-pins <file> [--check]
 //
 // The directory holds one .tgz per module of every pack the file lists
@@ -113,13 +113,28 @@ function describePinned(release, pins, dir) {
   return describeRelease(release, pins, readTarballs(dir, {only: pinnedModules(release, pins)}), {only: true}).modules;
 }
 
+// --notes <file>: the release's change notes, which upgrade shows before it
+// asks (release.notes; the feature audit, K3): the maintainer's text file,
+// one change per line, blank lines left out, at most 8 lines of at most 200
+// characters each; --notes none: a release with none (null). Without
+// --notes the document's notes stay as they are. The release's own document
+// only, never a development pins file.
+function notesOf(arg) {
+  if (arg === 'none') return null;
+  let text;
+  try { text = fs.readFileSync(arg, 'utf8'); } catch (err) { refuse(`cannot read the notes file ${arg} (${err.code})`); }
+  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
+}
+
 function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePins = RELEASE_PINS} = {}) {
   const check = argv.includes('--check');
   const at = argv.indexOf('--unreleased-pins');
   const devFile = at >= 0 ? argv[at + 1] : null;
-  const dir = argv.filter((a, i) => !a.startsWith('--') && (at < 0 || i !== at + 1))[0];
-  if (dir == null || (at >= 0 && devFile == null)) {
-    stderr.write('usage: node scripts/describe-release.js <directory of tarballs> [--unreleased-pins <file>] [--check]\n');
+  const nt = argv.indexOf('--notes');
+  const notesArg = nt >= 0 ? argv[nt + 1] : undefined;
+  const dir = argv.filter((a, i) => !a.startsWith('--') && (at < 0 || i !== at + 1) && (nt < 0 || i !== nt + 1))[0];
+  if (dir == null || (at >= 0 && devFile == null) || (nt >= 0 && (notesArg == null || devFile != null || check))) {
+    stderr.write('usage: node scripts/describe-release.js <directory of tarballs> [--unreleased-pins <file>] [--check] [--notes <file> | --notes none] (--notes with the release\'s own document, never --check)\n');
     return 2;
   }
   try {
@@ -142,6 +157,7 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
       // high review of #98, 4)
       next = {...doc, v: 2, packs: described.packs, modules: described.modules};
       delete next.allowedOrigins;
+      if (notesArg !== undefined) next.release = {...doc.release, notes: notesOf(notesArg)};
     }
     if (check) {
       // the release's own document is also checked as every command reads
