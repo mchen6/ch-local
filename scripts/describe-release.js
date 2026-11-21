@@ -77,6 +77,9 @@ function describeRelease(release, pins, tarballs, {only = false} = {}) {
   for (const [m, t] of Object.entries(tarballs)) {
     if (!listed.includes(m)) refuse(`${t.file}: ${m} is no module of this release's packs`);
     if (pins[m] != null && pins[m].version !== t.version) refuse(`${t.file}: ${m} ${t.version} is not its pin (${pins[m].version})`);
+    // (the release's floor: no release is described from a part below it)
+    const floor = release.floors != null ? release.floors[m] : undefined;
+    if (floor != null && require('../lib/release-pins').belowFloor(t.version, floor)) refuse(`${t.file}: ${m} ${t.version} is below its floor ${floor}`);
   }
   const friendly = friendlyNames(Object.fromEntries(listed.map((m) => [m, tarballs[m].api])));
   if (friendly.problem != null) refuse(friendly.problem);

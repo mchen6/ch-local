@@ -141,6 +141,21 @@ The checks are grouped. Within a group, the order doesn't matter.
     - Evidence: the marketplace.json commit, and the test install's
       `claude plugin list --json` entry.
 
+21. **The release pins no part below its floor.**
+    - Why: a home's parts are only as new as its release's pins. A floor
+      (`floors` in lib/release-pins.json) names the version that carries a
+      fix every release must hold. Today's floors: ch-step-redact 0.2.3,
+      ch-step-log-clean 0.2.2 (secrets and key blocks masked before a result
+      reaches the model) and ch-access-github 0.2.1 (the GitHub remote asks
+      for read-only tools).
+    - How: the machine check holds it. lib/release-pins.js refuses a pin
+      below its floor, and `node scripts/describe-release.js <tarballs>`
+      refuses a release tarball below its floor. This line is the reminder
+      to run that step on the release's own tarballs and to read its output.
+    - Check: the step exits 0 on the release's tarballs, and `npm test`'s
+      release-pins test passes on the tag's commit.
+    - Evidence: the step's output, saved with the checklist.
+
 ## Reviews, Windows and the notes
 
 16. **The pre-release trust-boundary review is done, and its findings are
