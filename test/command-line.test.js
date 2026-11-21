@@ -30,18 +30,20 @@ const FORMS = [
 // Not a command to run: what each names, and why it stays bare
 const ALLOWED = [
   // the program's own name before its error, as every CLI writes it
-  /ch-local [a-z-]+: /,
+  // (only at a string's start: one later in a line is a hint followed by a colon)
+  /[`'"]ch-local [a-z-]+: /,
   // a lock's owner label, said when another command waits on it
   /withStoreLock\([^)]*'ch-local (credentials add|credentials remove|uninstall)'/,
   // a version of ch-local, not a command
-  /ch-local \$\{(found\.to|from|to|ours|version|v)\}/,
+  /ch-local \$\{(found\.to|from|ours)\}/,
+  /on ch-local \$\{v\}; restart/,
+  /comes back with ch-local \$\{to\};/,
   // ... the same, as the daemon's handover, status's header and its held
   // packs, and rollback's held packs name the version
   /ch-local \$\{(mine\.daemonVersion|installedSelf \|\| '\(unknown\)'|under)\}/,
   /needs ch-local \$\{h\.from != null && h\.from\.release != null \? h\.from\.release : 'a later release'\}/,
   // the usage text: each command as `ch-local` takes it, at the line's start
-  /^\s+ch-local [a-z]/,
-  /^const USAGE = `usage: ch-local /,
+  // (bin/ch-local.js's USAGE only: see usageLines below)
   // ch-local's own start, named as what refuses (not something to run)
   /ch-local start refuses to start/,
   /cannot be passed to ch-local start/
@@ -53,7 +55,15 @@ function violations() {
   for (const file of files) {
     const name = path.relative(path.join(LIB, '..'), file).replace(/^lib\//, '');
     const lines = fs.readFileSync(file, 'utf8').split('\n');
+    // (bin/ch-local.js's USAGE text, from its `const USAGE` line to the
+    // closing backquote: each command as ch-local takes it)
+    const usageLines = new Set();
+    if (file === BIN) {
+      const from = lines.findIndex((l) => /^const USAGE = `/.test(l));
+      for (let k = from; k >= 0 && k < lines.length; k++) { usageLines.add(k); if (k > from && /`;\s*$/.test(lines[k])) break; }
+    }
     lines.forEach((line, i) => {
+      if (usageLines.has(i)) return;
       const code = line.trim();
       if (code.startsWith('//') || code.startsWith('*') || code.startsWith('/*')) return;
       // (a trailing comment is not printed)
