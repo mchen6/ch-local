@@ -168,3 +168,24 @@ test('the runtime\'s heldBackFile vectors: each accepted file is written as give
     assert.ok(ruleTakes(out), `${why}: ${JSON.stringify(out).slice(0, 200)}`);
   }
 });
+
+// A-heldback-win: the file is born private on Windows too: the temporary
+// file is made by win-acl createPrivate (an owner-only protected DACL, in
+// the call that creates it), then renamed in place
+test('on Windows the file is made by createPrivate, owner-only from its first instant, then renamed in place', () => {
+  const dir = tmp('ch-held-win-');
+  const made = [];
+  const acl = {createPrivate: (file, data) => { made.push(path.basename(file)); fs.writeFileSync(file, data, {flag: 'wx'}); }};
+  const file = write(dir, '{"v":1,"modules":[]}\n', {platform: 'win32', acl});
+  assert.strictEqual(made.length, 1);
+  assert.match(made[0], /^\.held-back\.json\.\d+\.\d+\.tmp$/, 'a temporary name, made exclusively');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"v":1,"modules":[]}\n');
+  assert.deepStrictEqual(fs.readdirSync(dir), [FILE], 'renamed in place');
+});
+
+// (the Windows leg: a real write's ACL passes the owner-only rule)
+test('on Windows a real write\'s ACL is this user\'s alone (privateProblem)', {skip: process.platform !== 'win32' && 'Windows ACLs'}, () => {
+  const winAcl = require('../lib/win-acl');
+  const file = write(tmp('ch-held-acl-'), '{"v":1,"modules":[]}\n');
+  assert.strictEqual(winAcl.privateProblem(file, winAcl.fileAcl(file)), null);
+});
