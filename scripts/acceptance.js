@@ -352,8 +352,9 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       await new Promise((r) => setTimeout(r, 250));
     }
     mark('listed');
-    // exactly these: the pack's one tool and the runtime's two built-ins (the
-    // settings tool is listed in the single-identity profile); anything else fails
+    // exactly these, sorted: the pack's one tool and the runtime's three
+    // built-ins (the overview in every mode, countinghouse #490; the settings
+    // tool in the single-identity profile); anything else fails
     check('tools/list is exactly ci_failure_triage, countinghouse_overview, countinghouse_settings and countinghouse_usage_report', JSON.stringify(tools) === JSON.stringify(['ci_failure_triage', 'countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report']), JSON.stringify(tools));
 
     const called = await mcp.request('tools/call', {name: 'ci_failure_triage', arguments: {repo: RECORDED_REPO}});
