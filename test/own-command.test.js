@@ -311,3 +311,12 @@ test('calls listed twice or more than 256: refused before the yes, nothing copie
   assert.deepStrictEqual([io.asked, io2.asked], [[], []]);
   assert.strictEqual(readOwnRecord(where), null);
 });
+
+test('a name another\'s is once Windows trims its trailing dots: refused (#113 high, 1)', async () => {
+  const {base, home, where} = setup();
+  fs.mkdirSync(path.join(where.moduleStore, 'my-tool.', '1.0.0'), {recursive: true});
+  const dir = writeModule(path.join(base, 'work', 'mine'));
+  const io = ioWith(home, ['y']);
+  assert.strictEqual(await addModule({dir}, io, {where}), 2);
+  assert.match(io.err, /my-tool is already used here by pack module my-tool\./);
+});

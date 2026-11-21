@@ -29,6 +29,7 @@ test('a record that is there and malformed is refused, never "none"', () => {
     '{', JSON.stringify({v: 2, modules: {}}), JSON.stringify({v: 1, modules: {}, extra: 1}),
     JSON.stringify({v: 1, modules: {'Not A Name': entry()}}),
     JSON.stringify({v: 1, modules: {'@countinghouse/ch-x': entry()}}),
+    JSON.stringify({v: 1, modules: {'my-tool.': entry()}}),
     JSON.stringify({v: 1, modules: {'my-tool': entry({tree: 'short'})}}),
     JSON.stringify({v: 1, modules: {'my-tool': entry({from: 'relative/path'})}}),
     JSON.stringify({v: 1, modules: {'my-tool': entry({addedAt: 'yesterday'})}}),

@@ -85,6 +85,8 @@ test('refused: the path, then the walk (nothing read), then the package', () => 
   const ctl = writeModule(path.join(work, 'ctl'));
   fs.writeFileSync(path.join(ctl, 'package.json'), JSON.stringify({name: 'my-tool', version: '1.0.0\r\u001b[2K', countinghouse: {role: 'scenario'}}));
   cases.push([ctl, /package\.json's version is not a plain version/]);
+  // a name Windows would trim to another's (the reviewer's high on #113, 1)
+  cases.push([writeModule(path.join(work, 'dot'), {name: 'my-tool.'}), /package\.json's name ends in a dot/]);
   for (const [dir, want] of cases) {
     const r = tree.checkFolder(dir, where.home);
     assert.ok(Array.isArray(r.problems) && r.problems.some((p) => want.test(p)), `${dir}: ${JSON.stringify(r.problems)}`);
