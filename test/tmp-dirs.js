@@ -113,6 +113,18 @@ function probeBorn() {
   if (dir != null) { try { fs.rmSync(dir, {recursive: true, force: true}); } catch (err) { /* gone */ } }
   return bornReal;
 }
+// A temporary directory removed whole: an own module's copy under one is
+// read-only (B-own-add), so on EACCES/EPERM every folder and file under it
+// is made writable by its owner -- by lstat, never through a link -- and the
+// removal tried again.
+function removeTree(dir) {
+  try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); return; } catch (err) {
+    if (err.code !== 'EACCES' && err.code !== 'EPERM' && err.code !== 'ENOTEMPTY') throw err;
+  }
+  // (ch-local's own rule: lib/own-tree.js unlockTree)
+  require('../lib/own-tree').unlockTree(dir);
+  fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
+}
 const bornOf = (st) => (probeBorn() && st.birthtimeNs != null && st.birthtimeNs > 0n ? String(st.birthtimeNs) : null);
 const lstatBig = (d) => fs.lstatSync(d, {bigint: true});
 
@@ -144,7 +156,7 @@ const removeListed = (e, under) => {
   const born = bornOf(st);
   if (typeof e.born !== 'string' || born == null) return false;
   if (born !== e.born) return true;
-  try { fs.rmSync(e.dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); return true; } catch (err) { return err.code === 'ENOENT'; }
+  try { removeTree(e.dir); return true; } catch (err) { return err.code === 'ENOENT'; }
 };
 // the manifests in `dir` (the temporary directory, by default) of processes
 // that are gone, made on this boot in this pid namespace, and this user's:
@@ -225,7 +237,7 @@ if (global[KEY] == null) {
   const removeMade = () => {
     let all = true;
     for (const dir of made) {
-      try { fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 100}); } catch (err) { all = false; }
+      try { removeTree(dir); } catch (err) { all = false; }
     }
     made.clear();
     if (fd != null) { try { fs.closeSync(fd); } catch (err) { /* closed */ } fd = null; }

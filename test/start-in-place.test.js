@@ -106,9 +106,10 @@ test('start spawns its runtime with the control channel', async () => {
   const s = await running();
   assert.deepStrictEqual(s.args().slice(s.args().indexOf('--controlChannel'), s.args().indexOf('--controlChannel') + 2), ['--controlChannel', 'ipc']);
   // where every module loaded, at start or in place, may be (#413 section
-  // 7.2): the module store only, never the app, which holds the runtime
+  // 7.2): the module store and the user's own modules' copies (B-own-add),
+  // never the app, which holds the runtime
   const roots = s.args().flatMap((a, i) => (s.args()[i - 1] === '--modulesRoot' ? [a] : []));
-  assert.deepStrictEqual(roots, [path.join(s.home, 'module-store')]);
+  assert.deepStrictEqual(roots, [path.join(s.home, 'module-store'), path.join(s.home, 'own')]);
   assert.ok(!s.args().includes('--packsRoot'));
   s.end();
   assert.strictEqual(await s.done, 0);
@@ -1822,4 +1823,102 @@ test('a key stored under COUNTINGHOUSE_GITHUB_TOKEN: the pack loads, the start s
     s.end();
     await s.done;
   }
+});
+
+// B-own-add: the user's own modules in place (the own-modules design §2.2).
+// own.json is watched: one added is loaded from its copy with its callees'
+// dirs; one re-added with changed code is unloaded, then loaded (the
+// runtime's reload switches a module only when its version changes, and an
+// own module's may not); one removed is unloaded; an own.json that can't be
+// read unloads them all, said once.
+const ownTree = require('../lib/own-tree');
+const {writeOwnRecord} = require('../lib/own-record');
+function placeOwn(home, name, {calls = [], body = ''} = {}) {
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  const src = path.join(fs.realpathSync.native(tmp('ch-ownsrc-')), name);
+  fs.mkdirSync(path.join(src, 'handlers', 'toolService'), {recursive: true});
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse: {role: 'scenario', calls}}));
+  fs.writeFileSync(path.join(src, 'api.json'), JSON.stringify({device: {friendlyName: name, serviceList: {'urn:countinghouse-test:serviceID:toolService': {actionList: [{name: 'run'}]}}}}));
+  fs.writeFileSync(path.join(src, 'handlers', 'toolService', 'run.js'), `module.exports = async () => ({output: {}});\n${body}`);
+  const c = ownTree.checkFolder(src, home);
+  assert.strictEqual(c.problems, undefined, JSON.stringify(c.problems));
+  const tree = ownTree.treeHash(c.real, c.entries);
+  ownTree.placeCopy(where, name, c.real, c.entries, tree);
+  return {where, tree, entry: {tree, version: '1.0.0', friendlyName: name, addedAt: new Date(0).toISOString(), from: c.real, calls}};
+}
+const ownAsks = (s, name = 'my-tool') => s.requests.filter((m) => ['load', 'unload', 'reload'].includes(m.type) && named(m) === name);
+const OWN_SKIP = process.platform === 'win32' && 'own modules run only under enforce (Windows: countinghouse#195)';
+
+test('an own module added while start runs loads from its copy; changed code: unloaded, then loaded; removed: unloaded', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  const a = placeOwn(s.home, 'my-tool', {calls: ['ch-access-github/githubService.listRuns']});
+  writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+  await until(() => ownAsks(s).length === 1);
+  const load = ownAsks(s)[0];
+  assert.strictEqual(load.type, 'load');
+  assert.strictEqual(load.dirs['my-tool'], ownTree.copyDir(a.where, 'my-tool', a.tree));
+  assert.ok(typeof load.dirs[ACCESS] === 'string' && load.dirs[ACCESS].startsWith(path.join(s.home, 'module-store')), JSON.stringify(load.dirs));
+  assert.strictEqual(load.notice, `my-tool added (own, ${a.tree.slice(0, 12)})`);
+  // re-added with changed code
+  const b = placeOwn(s.home, 'my-tool', {calls: ['ch-access-github/githubService.listRuns'], body: '// edited\n'});
+  writeOwnRecord(a.where, {v: 1, modules: {'my-tool': b.entry}});
+  await until(() => ownAsks(s).length === 3);
+  assert.deepStrictEqual(ownAsks(s).map((m) => m.type), ['load', 'unload', 'load']);
+  assert.strictEqual(ownAsks(s)[1].notice, 'my-tool unloaded: its code changed; loading the new code');
+  assert.strictEqual(ownAsks(s)[2].dirs['my-tool'], ownTree.copyDir(a.where, 'my-tool', b.tree));
+  // removed
+  writeOwnRecord(a.where, {v: 1, modules: {}});
+  await until(() => ownAsks(s).length === 4);
+  assert.deepStrictEqual([ownAsks(s)[3].type, ownAsks(s)[3].notice], ['unload', 'my-tool removed']);
+  s.end();
+  await s.done;
+});
+
+test('an own.json that can\'t be read while start runs: its modules unloaded, said once; the pack stays', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  const a = placeOwn(s.home, 'my-tool');
+  writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+  await until(() => ownAsks(s).length === 1);
+  fs.writeFileSync(a.where.ownRecord, '{');
+  await until(() => ownAsks(s).length === 2);
+  assert.strictEqual(ownAsks(s)[1].type, 'unload');
+  assert.ok(!s.requests.some((m) => m.type === 'unload' && /ch-pack-ci-failure-triage/.test(String(m.name))), 'the pack stays');
+  await until(() => s.history().some((h) => /your own modules are not loaded: /.test(String(h.notice))));
+  assert.strictEqual(s.history().filter((h) => /your own modules are not loaded: /.test(String(h.notice))).length, 1);
+  s.end();
+  await s.done;
+});
+
+// the reviewer's high on #113, 5: own A calls own B; B's code changes. A is
+// never left calling B's old code: A is unloaded before B's swap and loaded
+// after it, callers out first, callees in first.
+test('an own module whose own callee\'s code changed is unloaded around the callee\'s swap, and loaded after it', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  const b = placeOwn(s.home, 'my-b');
+  const a = placeOwn(s.home, 'my-a', {calls: ['my-b/toolService.run']});
+  writeOwnRecord(b.where, {v: 1, modules: {'my-b': b.entry, 'my-a': a.entry}});
+  await until(() => ownAsks(s, 'my-a').length === 1 && ownAsks(s, 'my-b').length === 1);
+  const b2 = placeOwn(s.home, 'my-b', {body: '// edited\n'});
+  const at = s.requests.length;
+  writeOwnRecord(b.where, {v: 1, modules: {'my-b': b2.entry, 'my-a': a.entry}});
+  await until(() => s.requests.slice(at).filter((m) => ['load', 'unload', 'reload'].includes(m.type)).length === 4);
+  const seq = s.requests.slice(at).filter((m) => ['load', 'unload', 'reload'].includes(m.type)).map((m) => `${m.type} ${named(m)}`);
+  assert.deepStrictEqual(seq, ['unload my-a', 'unload my-b', 'load my-b', 'load my-a']);
+  const loadA = s.requests.slice(at).find((m) => m.type === 'load' && m.name === 'my-a');
+  assert.strictEqual(loadA.dirs['my-b'], ownTree.copyDir(b.where, 'my-b', b2.tree), 'A loads with B\'s new code');
+  s.end();
+  await s.done;
+});
+
+// the medium on #113's round 1: a callee that moves between own and a pack
+// is a code change on either side
+test('ownCodeChanged: a callee whose version is a tree on either side, and differs', () => {
+  const {ownCodeChanged} = require('../lib/in-place');
+  const t1 = 'a'.repeat(64);
+  const t2 = 'b'.repeat(64);
+  assert.strictEqual(ownCodeChanged({x: t1}, {x: t2}), 'x');
+  assert.strictEqual(ownCodeChanged({x: t1}, {x: '1.2.0'}), 'x');
+  assert.strictEqual(ownCodeChanged({x: '1.2.0'}, {x: t1}), 'x');
+  assert.strictEqual(ownCodeChanged({x: '1.2.0'}, {x: '1.3.0'}), null);
+  assert.strictEqual(ownCodeChanged({x: t1}, {x: t1}), null);
 });

@@ -127,7 +127,8 @@ test('start runs the profile: local store, enforce, the one store, no auth file,
   // each part by --partDir, under --modulesRoot
   assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--loadModule'), [path.join(home, 'module-store', ...SCENARIO.split('/'), '1.0.0')]);
   assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--partDir'), [path.join(home, 'module-store', '@countinghouse', 'ch-access-github', '1.0.0')]);
-  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--modulesRoot'), [path.join(home, 'module-store')]);
+  // (and the user's own modules' copies: B-own-add)
+  assert.deepStrictEqual(args.filter((a, i) => args[i - 1] === '--modulesRoot'), [path.join(home, 'module-store'), path.join(home, 'own')]);
   assert.ok(!args.includes('--packsRoot'));
   // countinghouse-stdio.js adds --stdio=true itself.
   for (const absent of ['--authConfigPath', '--usageDir', '--port', '--stdio', '--debug']) assert.ok(!args.includes(absent), absent);
