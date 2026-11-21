@@ -73,18 +73,20 @@ test('shim.json is written 0600, never through a symlink, and rewritten in place
   }
 });
 
-test('a client\'s entry names the shim with --home where there is a binary', () => {
-  const shim = '/home/dev/.countinghouse/app/node_modules/@countinghouse/ch-shim-linux-x64/bin/ch-shim';
+test('a client\'s entry never names the shim: it runs the home\'s launcher\'s session, which chooses at each start (#120)', () => {
+  // (an entry naming <home>/shim/ch-shim broke once install set the shim
+  // aside: the reviewer's high on #120, 1; the choice is lib/session.js's)
   const home = '/home/dev/.countinghouse';
-  const cursor = JSON.parse(snippet('cursor', {node: '/n', launcher: '/l', shim, home}).text).mcpServers.countinghouse;
-  assert.deepStrictEqual(cursor, {command: shim, args: ['--home', home]});
-  const vscode = JSON.parse(snippet('vscode', {node: '/n', launcher: '/l', shim, home}).text).mcpServers.countinghouse;
-  assert.deepStrictEqual(vscode, {type: 'stdio', command: shim, args: ['--home', home]});
-  assert.match(snippet('codex', {node: '/n', launcher: '/l', shim, home}).text, /command = ".*ch-shim"\nargs = \["--home", "\/home\/dev\/\.countinghouse"\]/);
-  assert.match(snippet('claude-code', {node: '/n', launcher: '/l', shim, home}).text, /-- "?\/home\/dev\/.*ch-shim"? --home \/home\/dev\/\.countinghouse\n$/);
-  // without one, today's entry: the per-session runtime
-  const own = JSON.parse(snippet('cursor', {node: '/n', launcher: '/l'}).text).mcpServers.countinghouse;
-  assert.deepStrictEqual(own, {command: '/n', args: ['/l', 'start', '--stdio']});
+  const launcher = `${home}/bin/ch-local.js`;
+  const cursor = JSON.parse(snippet('cursor', {node: '/n', launcher, home}).text).mcpServers.countinghouse;
+  assert.deepStrictEqual(cursor, {command: '/n', args: [launcher, 'session', '--home', home]});
+  const vscode = JSON.parse(snippet('vscode', {node: '/n', launcher, home}).text).mcpServers.countinghouse;
+  assert.deepStrictEqual(vscode, {type: 'stdio', command: '/n', args: [launcher, 'session', '--home', home]});
+  assert.match(snippet('codex', {node: '/n', launcher, home}).text, /command = "\/n"\nargs = \["\/home\/dev\/\.countinghouse\/bin\/ch-local\.js", "session", "--home", "\/home\/dev\/\.countinghouse"\]/);
+  assert.match(snippet('claude-code', {node: '/n', launcher, home}).text, /-- \/n \/home\/dev\/\.countinghouse\/bin\/ch-local\.js session --home \/home\/dev\/\.countinghouse\n$/);
+  // (a shim passed in changes nothing: the snippet takes none)
+  const withShim = JSON.parse(snippet('cursor', {node: '/n', launcher, home, shim: `${home}/shim/ch-shim`}).text).mcpServers.countinghouse;
+  assert.deepStrictEqual(withShim, cursor);
 });
 
 test('the shim install puts in <home>/shim wins over any other lookup; a link there is not trusted', () => {

@@ -7,7 +7,8 @@
 //   ch-local add <client>                         writes that entry, and records it
 //   ch-local uninstall [--keep-data]              takes back what install and add wrote
 //   ch-local upgrade [--check | --auto on|off]    installed and available versions; asks once (--check: never)
-//   ch-local start --stdio [options]              what a client runs: the runtime with the installed packs
+//   ch-local session [--home <abs>]               what a client runs: the shared runtime through the shim, or its own
+//   ch-local start --stdio [options]              this session's own runtime with the installed packs
 //   ch-local add-pack <name> --from <dir>         another pack beside the installed ones
 //   ch-local remove-pack <name>                   a pack, and the parts no other pack calls
 //   ch-local add-module <dir>                     your own module, asked in your own terminal
@@ -37,6 +38,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local settings set <module>.<setting> [<value>]
        ch-local settings reset <module>[.<setting>]
        ch-local credentials [list | add <module> [--to <origin>] | remove <module>]
+       ch-local session [--home <absolute home>]
        ch-local start --stdio [countinghouse options]
 `;
 
@@ -65,7 +67,7 @@ function snippetCommand(client, io) {
   const h = home(io.env, io.homedir);
   const found = require('../lib/shim-binary').shimFor({home: h, locate: io.locateShim ?? undefined});
   if (found.note != null) io.stderr.write(found.note);
-  const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir), shim: found.shim, home: h});
+  const {text, note} = snippet(client, {node: io.node, launcher: launcherPath(io.env, io.homedir), home: h});
   io.stdout.write(text);
   if (note != null) {
     io.stderr.write(note);
@@ -165,6 +167,27 @@ async function main(argv, io) {
       const handoff = a.flags['--handoff'] === true ? await io.readHandoff() : null;
       return await require('../lib/daemon').daemon({home: a.values['--home'], handoff}, io);
     }
+    if (command === 'session') {
+      // (--home: the entry clients add writes, so a client's
+      // COUNTINGHOUSE_HOME can't pick another home; the plugin's has none,
+      // and takes the home rule, as its launch.js found this launcher by)
+      const a = parse(rest, {values: ['--home']});
+      if (a == null || a.positional.length > 0 || (rest.includes('--home') && a.values['--home'] === undefined)) return usage();
+      let home = null;
+      if (a.values['--home'] !== undefined) {
+        const v = a.values['--home'];
+        const {isFullPath} = require('../lib/home');
+        if (!isFullPath(v)) { io.stderr.write('ch-local session: --home must be an absolute path\n'); return 2; }
+        const fs = require('node:fs');
+        let st = null;
+        try { st = fs.statSync(v); } catch (err) { st = null; }
+        if (st == null || !st.isDirectory()) { io.stderr.write(`ch-local session: --home ${v} is not a directory\n`); return 2; }
+        home = fs.realpathSync(v);
+        const owned = require('../lib/home').homeOwnershipProblem(home);
+        if (owned != null) { io.stderr.write(`ch-local session: --home ${v}: ${owned}\n`); return 2; }
+      }
+      return await require('../lib/session').session({home}, io);
+    }
     if (command === 'start') {
       if (rest[0] !== '--stdio') return usage();
       // ch-local's own options, before any pass-through runtime flag: the
@@ -240,9 +263,12 @@ async function main(argv, io) {
 
 // The real io: this process, its terminal, npm through child processes, fetch.
 function realIo() {
+  // stdout, stderr and interactive are read only when used: `session` runs
+  // the shim in this process's place, and Node opening a stdio pipe makes
+  // it O_NONBLOCK for the shim too (lib/session.js)
   return {
-    stdout: process.stdout,
-    stderr: process.stderr,
+    get stdout() { return process.stdout; },
+    get stderr() { return process.stderr; },
     env: process.env,
     node: process.execPath,
     version: process.version,
@@ -269,13 +295,13 @@ function realIo() {
     fetch: (url, options) => globalThis.fetch(url, options),
     pid: process.pid,
     // A terminal to ask on: rollback over a security fix asks, or needs --yes.
-    interactive: Boolean(process.stdin.isTTY),
+    get interactive() { return Boolean(process.stdin.isTTY); },
     // A terminal both ways (credentials add: the prompt seen, the typing not)
-    terminal: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+    get terminal() { return Boolean(process.stdin.isTTY && process.stderr.isTTY); },
     // (a terminal on standard input alone: credentials add refuses it)
-    stdinIsTTY: Boolean(process.stdin.isTTY),
+    get stdinIsTTY() { return Boolean(process.stdin.isTTY); },
     // (add-module's lines are seen: standard output a terminal too)
-    stdoutTTY: Boolean(process.stdout.isTTY),
+    get stdoutTTY() { return Boolean(process.stdout.isTTY); },
     readHidden: (prompt) => require('../lib/hidden-input').readHidden(prompt),
     // standard input, read whole up to max bytes (credentials add --to: a
     // key piped in); more than max is cut there, and the caller refuses it

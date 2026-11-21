@@ -29,7 +29,7 @@ test('the instructions: gh auth login, the claude mcp add line with no token, cl
   try {
     const text = dogfood.instructions({node: '/usr/bin/node', home: '/home/me/.countinghouse', defaultHome: '/home/me/.countinghouse'});
     assert.match(text, /^  gh auth login$/m, 'the token is gh\'s, held in memory by the launcher');
-    assert.ok(text.includes('  claude mcp add --scope user countinghouse -- /usr/bin/node /home/me/.countinghouse/bin/ch-local.js start --stdio'), text);
+    assert.ok(text.includes('  claude mcp add --scope user countinghouse -- /usr/bin/node /home/me/.countinghouse/bin/ch-local.js session'), text);
     assert.match(text, /^  claude --resume$/m);
     assert.ok(!text.includes(value));
     assert.ok(!/COUNTINGHOUSE_GITHUB_TOKEN|read -rs/.test(text), 'no token variable goes into Claude Code\'s configuration');
@@ -42,7 +42,7 @@ test('the instructions: gh auth login, the claude mcp add line with no token, cl
 
 test('another home is carried into the line, status and uninstall, quoted when it has spaces', {skip: BASH_ONLY}, () => {
   const text = dogfood.instructions({node: '/opt/my node/bin/node', home: '/home/me/my home', defaultHome: '/home/me/.countinghouse'});
-  assert.ok(text.includes(`-e "COUNTINGHOUSE_HOME=/home/me/my home" -- '/opt/my node/bin/node' '/home/me/my home/bin/ch-local.js' start --stdio`), text);
+  assert.ok(text.includes(`-e "COUNTINGHOUSE_HOME=/home/me/my home" -- '/opt/my node/bin/node' '/home/me/my home/bin/ch-local.js' session`), text);
   assert.ok(text.includes(`COUNTINGHOUSE_HOME='/home/me/my home' '/opt/my node/bin/node' '/home/me/my home/bin/ch-local.js' status`), text);
   assert.ok(text.includes(`COUNTINGHOUSE_HOME='/home/me/my home' '/opt/my node/bin/node' '/home/me/my home/bin/ch-local.js' uninstall`), text);
 });
@@ -113,7 +113,7 @@ test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY |
   assert.deepStrictEqual(Object.keys(record.packs), ['ci-failure-triage']);
   assert.strictEqual(record.unreleased, true);
   assert.ok(fs.existsSync(path.join(home, 'app', 'node_modules', 'countinghouse', 'bin', 'countinghouse-stdio.js')));
-  assert.ok(out.text.includes(`claude mcp add --scope user countinghouse -e "COUNTINGHOUSE_HOME=${home}" -- ${process.execPath} ${path.join(home, 'bin', 'ch-local.js')} start --stdio`), out.text.slice(-1500));
+  assert.ok(out.text.includes(`claude mcp add --scope user countinghouse -e "COUNTINGHOUSE_HOME=${home}" -- ${process.execPath} ${path.join(home, 'bin', 'ch-local.js')} session`), out.text.slice(-1500));
   assert.ok(!out.text.includes(value), 'never a token value');
   assert.ok(!/COUNTINGHOUSE_GITHUB_TOKEN is set|start will use/.test(out.text), 'install did not look at this shell\'s token');
   assert.deepStrictEqual(fs.readdirSync(parent), ['home'], 'nothing beside the home');
