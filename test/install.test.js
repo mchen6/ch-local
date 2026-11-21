@@ -1430,6 +1430,10 @@ test('install, add-pack and the readers of <home>/app run none of a home\'s code
   const c = require('../lib/ceiling').ceilingFor(where, {platform: process.platform, env: {}});
   assert.strictEqual(c.state, 'untrusted', JSON.stringify(c));
   assert.match(c.problem, /so another user could change what runs from it/);
+  // (said as the home's problem, never an operator ceiling's: the medium on the round, 2)
+  const refusal = require('../lib/ceiling').ceilingRefusal(c, 'autoUpgrade', true);
+  assert.match(String(refusal && refusal.message), /^this home can't be used: /);
+  assert.doesNotMatch(String(refusal && refusal.message), /operator's ceiling file/);
   assert.throws(() => require('../lib/module-values').planModuleSetting(where, io2, 'ch-step-redact.x', '1'), (e) => /so another user could change what runs from it/.test(e.message));
   assert.ok(!fs.existsSync(marker), 'the readers loaded none of it');
 });
@@ -1465,4 +1469,23 @@ test('Windows: a new home whose DACL is not private after makePrivateDirs is ref
   const ME = 'S-1-5-21-1-2-3-1001';
   const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
   assert.throws(() => ensureHome(path.join(home(), 'h2'), 'win32', {makePrivateDirs: () => [OPEN]}), /could not be made private: it is accessible by S-1-1-0/);
+});
+
+// the medium on #126's round, 1: a first install is held to the folders it
+// would make the home under, before anything is made
+test('a first install under a folder another user could write in is refused, and makes nothing', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const r = release();
+  const os = require('node:os');
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-first-above-')));
+  fs.chmodSync(parent, 0o777);
+  try {
+    const h = path.join(parent, 'new-home');
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, r.allow), 1);
+    assert.match(io.err, /is under .*, and group or others can write in it \(mode 777\); another user could move the home away/);
+    assert.ok(!fs.existsSync(h), 'no home made');
+  } finally {
+    fs.chmodSync(parent, 0o700);
+    fs.rmSync(parent, {recursive: true, force: true});
+  }
 });

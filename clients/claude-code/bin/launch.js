@@ -68,21 +68,25 @@ const shown = (p, platform = process.platform) => (plain(p, platform) ? `"${p}"`
 function aboveProblem(home) {
   const QUOTE = shown;
   const given = path.resolve(home);
-  let real;
-  try { real = fs.realpathSync.native(given); } catch (e) { return {why: `it could not be read (${e.code || e.message})`, fix: null}; }
-  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
-  const gid = typeof process.getgid === 'function' ? process.getgid() : null;
-  for (const start of [given, real]) {
+  let real = null;
+  try { real = fs.realpathSync.native(given); } catch (e) { if (e.code !== 'ENOENT') return {why: `it could not be read (${e.code || e.message})`, fix: null}; }
+  const uid = typeof process.geteuid === 'function' ? process.geteuid() : null;
+  const gid = typeof process.getegid === 'function' ? process.getegid() : null;
+  for (const start of real != null ? [given, real] : [given]) {
     for (let at = path.dirname(start); ; at = path.dirname(at)) {
       let st;
-      try { st = fs.statSync(at); } catch (e) { return {why: `it is under ${at}, which could not be checked (${e.code || e.message})`, fix: null}; }
+      try { st = fs.statSync(at); } catch (e) {
+        if (real == null && e.code === 'ENOENT' && path.dirname(at) !== at) continue;
+        return {why: `it is under ${at}, which could not be checked (${e.code || e.message})`, fix: null};
+      }
       if (uid != null && st.uid !== uid && st.uid !== 0) return {why: `it is under ${at}, which is not yours (nor root's); another user could move the home away and put theirs in its place`, fix: null};
       const sticky = (st.mode & 0o1000) !== 0;
       const others = (st.mode & 0o002) !== 0 && !sticky;
       const group = (st.mode & 0o020) !== 0 && !sticky && st.gid !== gid;
       if (others || group) {
         const mine = uid != null && st.uid === uid;
-        return {why: `it is under ${at}, and group or others can write in it (mode ${(st.mode & 0o7777).toString(8)}); another user could move the home away and put theirs in its place`, fix: mine ? `run \`chmod go-w ${QUOTE(at)}\`` : null};
+        const q = QUOTE(at);
+        return {why: `it is under ${at}, and group or others can write in it (mode ${(st.mode & 0o7777).toString(8)}); another user could move the home away and put theirs in its place`, fix: mine && q !== '"<its folder>"' ? `run \`chmod go-w ${q}\`` : null};
       }
       if (path.dirname(at) === at) break;
     }

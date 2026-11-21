@@ -379,6 +379,14 @@ test('a home under a folder another user could write in is refused; a sticky one
   assert.strictEqual(p.fix, `run \`chmod go-w "${open.parent}"\``);
   assert.strictEqual(homeOpenProblem(under(0o1777).h), null, 'sticky, as /tmp');
   assert.strictEqual(homeOpenProblem(under(0o775).h), null, 'writable by this user\'s own primary group (umask 0002)');
+  // (a folder whose path can't be quoted safely: no fix to paste, the medium on the round, 4)
+  const odd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-above-$x-')));
+  roots.push(odd);
+  fs.mkdirSync(path.join(odd, 'home'), {mode: 0o700});
+  fs.chmodSync(odd, 0o777);
+  const q = homeOpenProblem(path.join(odd, 'home'));
+  assert.ok(q != null && q.fix === null, JSON.stringify(q));
+  fs.chmodSync(odd, 0o700);
   // and the session refuses it, exit 2, nothing started
   const r = await runIt(process.execPath, [path.join(ROOT, 'bin', 'ch-local.js'), 'session', '--home', open.h], envWith({}));
   assert.strictEqual(r.code, 2, r.err);
@@ -388,7 +396,7 @@ test('a home under a folder another user could write in is refused; a sticky one
 
 // the reviewer's high on #126, L9: on Windows a session reads its home's ACL
 // once, for both of its checks (each read is a PowerShell run)
-test('Windows: session reads its home\'s ACL once for its owner and its DACL checks (ACLs given)', async() => {
+test('Windows: session reads its home\'s ACL once for its owner and its DACL checks (ACLs given)', {skip: process.platform !== 'win32' && 'the home is judged by this machine\'s own platform'}, async() => {
   const h = home();
   const ME = 'S-1-5-21-1-2-3-1001';
   const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
