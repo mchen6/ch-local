@@ -2,8 +2,8 @@
 name: countinghouse-module
 description: Use when writing a new countinghouse module, or when a user asks for a tool to be hosted on a countinghouse runtime. Covers decomposing a requirement into services and actions, the module file layout, and the validate/load/call loop.
 ---
+<!-- Copied from countinghouse 279bd8412f04a88e80ed80b948bd23ecd8d5ee25, .claude/skills/countinghouse-module/SKILL.md; its doc references point at that commit. Re-copied with each release's countinghouse (docs/development/release-checklist.md); never edited here. -->
 
-<!-- Copied from countinghouse f7aac0d03a4762a1b5102854aefca3c2835f34a7, .claude/skills/countinghouse-module/SKILL.md; its doc references point at that commit. Re-copied with each release's countinghouse (docs/development/release-checklist.md); never edited here. -->
 
 # Writing a countinghouse module
 
@@ -33,7 +33,7 @@ constraint, and encoding it is most of the value they came for.
 - **A chain belongs in a composite action**, not in the model. If the user's
   request is "read X, then check Y, then report" and the intermediate data is
   large or sensitive, that is one action calling others via `ctx.serviceClient`
-  — not three tools the model has to join. See `https://github.com/mchen6/countinghouse/blob/f7aac0d03a4762a1b5102854aefca3c2835f34a7/docs/composite-tools.md`.
+  — not three tools the model has to join. See `https://github.com/mchen6/countinghouse/blob/279bd8412f04a88e80ed80b948bd23ecd8d5ee25/docs/composite-tools.md`.
 - **Name for a reader who has never seen it.** The action `description` is what
   an LLM reads to decide whether to call it, and an action with no description
   is skipped entirely when `tools/list` is built.
@@ -98,7 +98,7 @@ module.exports = async (input, ctx) => {
 };
 ```
 
-Full reference: `https://github.com/mchen6/countinghouse/blob/f7aac0d03a4762a1b5102854aefca3c2835f34a7/docs/module-development.md`.
+Full reference: `https://github.com/mchen6/countinghouse/blob/279bd8412f04a88e80ed80b948bd23ecd8d5ee25/docs/module-development.md`.
 
 ## The loop
 
@@ -120,16 +120,48 @@ with ch-local, `node "<home>/app/node_modules/countinghouse/bin/countinghouse-va
 Never a bare `npx countinghouse-validate`: without a local copy it fetches
 whatever npm package has that name.
 
-The authoring tools need the runtime started with `--authoringTools` and an
-admin key. If they are missing from `tools/list`, that is why. Keep the
+On a hosted runtime, the authoring tools need the runtime started with
+`--authoringTools` and an admin key. If they are missing from `tools/list`,
+that is why (under ch-local, see below). Keep the
 default worker mode: a module whose handler file crashes or calls
 `process.exit()` while being required by `countinghouse_load_module` is a
 reported failure in worker mode, but takes the whole runtime down under
 `--no-workerThread`.
 
+## Under ch-local
+
+You are under ch-local, the user's own install, when `tools/list` has
+`countinghouse_validate_plan`, `countinghouse_validate_module` and
+`countinghouse_load_module` but no `countinghouse_call_tool`. There the loop
+ends differently:
+
+- Write the module in a folder the user chooses, outside the ch-local home
+  (`~/.countinghouse`, or `$COUNTINGHOUSE_HOME`). A folder inside it, one
+  holding it, or one reached through a link is refused
+  (`OWN_MODULE_PATH_REFUSED`).
+- Its `package.json` declares `"countinghouse": {"role": "scenario"}`:
+  only a scenario's tools are listed here.
+- `countinghouse_validate_plan` works as above. `countinghouse_validate_module`
+  checks the files without running any of the module's code. A problem with
+  the folder itself (a link, a special file, too large) is reported first,
+  alone: fix it and validate again before the other checks run.
+- `countinghouse_load_module` (with the folder's absolute path) loads
+  nothing. It answers `OWN_MODULE_NEEDS_TERMINAL`, which is expected, not a
+  failure: its message holds the command the user runs in their own
+  terminal. Give the user that command exactly as the answer has it; do not
+  rebuild it. Never run it yourself, and never answer its question: the user
+  confirms what is added. Step 4's `toolNames` and retry advice do not apply.
+- Once the user has added it, its tools are in `tools/list` like a pack's:
+  call them directly. `countinghouse_call_tool` does not exist here, and
+  calling it is answered like any unknown tool.
+- Never suggest `--authoringTools` or an admin key: they are for a hosted
+  runtime.
+- After any change to the module's code, the user runs `add-module` again
+  and confirms again.
+
 ## When it does not appear in tools/list
 
-`https://github.com/mchen6/countinghouse/blob/f7aac0d03a4762a1b5102854aefca3c2835f34a7/docs/module-development.md` has the full checklist. The five that account for
+`https://github.com/mchen6/countinghouse/blob/279bd8412f04a88e80ed80b948bd23ecd8d5ee25/docs/module-development.md` has the full checklist. The five that account for
 almost everything:
 
 1. `MODULE_LAYOUT_UNSUPPORTED` — a main entry (`"main"` or `index.js`) and no

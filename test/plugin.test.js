@@ -232,7 +232,7 @@ test('launch.js fetches nothing', () => {
 // at the recorded commit, its doc references pointing there. Re-copied with
 // each release's countinghouse (docs/development/release-checklist.md): the
 // record below moves with it, and a copy edited here fails.
-const MODULE_SKILL = {source: 'f7aac0d03a4762a1b5102854aefca3c2835f34a7', sha256: 'd3bb668129577d408934e48c17d7a3c615e20d1f1de0d68631fa0cc525ff25b3'};
+const MODULE_SKILL = {source: '279bd8412f04a88e80ed80b948bd23ecd8d5ee25', sha256: '45cfaf8150444644c8a7c45f2948a4d012ee8ec0ce56a7e05316f6e059b4490a'};
 test('the countinghouse-module skill: countinghouse\'s own at the recorded commit, its source said, never edited here', () => {
   const skill = fs.readFileSync(path.join(PLUGIN, 'skills', 'countinghouse-module', 'SKILL.md'), 'utf8');
   assert.match(skill, /^---\nname: countinghouse-module\ndescription: .+\n---\n/);
