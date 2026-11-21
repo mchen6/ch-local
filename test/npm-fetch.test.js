@@ -132,3 +132,17 @@ test('the defaults: tarballs at most 50 MB, packuments 16 MB', () => {
   assert.strictEqual(npmFetch.TARBALL_MAX, 50 * 1024 * 1024);
   assert.strictEqual(npmFetch.PACKUMENT_MAX, 16 * 1024 * 1024);
 });
+
+// the reviewer's high on #124, 7: `unreachable` only when the registry gave
+// no answer at all; one that answered an error, or a body cut after a 200,
+// is not "no network"
+test('FETCH_FAILED is marked unreachable only when the registry gave no answer', async() => {
+  const reg = await fakeRegistry();
+  const url = reg.url;
+  await reg.close();
+  await assert.rejects(npmFetch.packument(NAME, io, {registry: url}), (e) => e.code === 'FETCH_FAILED' && e.unreachable === true);
+  const broken = {env: {}, fetch: async() => new Response('no', {status: 503})};
+  await assert.rejects(npmFetch.packument(NAME, broken, {registry: url}), (e) => e.code === 'FETCH_FAILED' && e.unreachable === undefined);
+  const cut = {env: {}, fetch: async() => new Response(new ReadableStream({start(c) { c.error(new Error('reset')); }}), {status: 200})};
+  await assert.rejects(npmFetch.packument(NAME, cut, {registry: url}), (e) => e.code === 'FETCH_FAILED' && e.unreachable === undefined);
+});

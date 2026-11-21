@@ -135,3 +135,91 @@ test('terminalText: every control or format character is ?; a cut keeps whole co
   const cut = terminalText(`${'x'.repeat(79)}\u{1F600}yy`, 80);
   assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cut), JSON.stringify(cut));
 });
+
+// A command template's lines to parse: each ${...} (scanned with its braces
+// balanced, so a nested {} or a literal holding } stays inside it) stands
+// for one word, and in turn for each string literal it holds, an empty or a
+// multi-word one included (the reviewer's high on #124, 8 and 9); a
+// <placeholder> is one word. -> [line, ...]
+function variantsOf(template) {
+  const parts = [];   // text, or {expr}
+  let i = 0; let text = '';
+  while (i < template.length) {
+    if (template[i] === '$' && template[i + 1] === '{') {
+      let depth = 1; let j = i + 2; let quote = null;
+      for (; j < template.length && depth > 0; j++) {
+        const c = template[j];
+        if (quote != null) { if (c === '\\') j++; else if (c === quote) quote = null; continue; }
+        if (c === "'" || c === '"' || c === '`') quote = c;
+        else if (c === '{') depth++;
+        else if (c === '}') depth--;
+      }
+      parts.push(text, {expr: template.slice(i + 2, j - 1)});
+      text = ''; i = j; continue;
+    }
+    text += template[i]; i++;
+  }
+  parts.push(text);
+  const word = (x) => x.replace(/<[^>]*>/g, 'x');
+  const join = (choose) => word(parts.map((p, k) => (typeof p === 'string' ? p : choose(p, k))).join(''));
+  const lines = [join(() => 'x')];
+  parts.forEach((p, k) => {
+    if (typeof p === 'string') return;
+    // (a literal the expansion can be: an alternative after ?, :, || or ??,
+    // never an argument inside it, such as a replace's '')
+    for (const m of p.expr.matchAll(/(?:\?\?|\|\||\?|:)\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")/g)) {
+      const lit = m[1] !== undefined ? m[1] : m[2];
+      lines.push(join((q, n) => (n === k ? lit : 'x')));
+    }
+  });
+  return lines;
+}
+
+test('the pin\'s reading of a template: nested braces, a } in a literal, an empty or a multi-word alternative', () => {
+  assert.deepStrictEqual(variantsOf('install --pack ${packArg(Object.keys(record.packs || {})[0])} --from <dir>'), ['install --pack x --from x']);
+  assert.deepStrictEqual(variantsOf("credentials add ${gh != null ? gh[0] : '<module>'}"), ['credentials add x', 'credentials add x']);
+  assert.deepStrictEqual(variantsOf("rollback${yes ? ' --yes' : ''}"), ['rollbackx', 'rollback --yes', 'rollback']);
+  assert.deepStrictEqual(variantsOf("snippet ${x || '}'}"), ['snippet x', 'snippet }']);
+  assert.deepStrictEqual(variantsOf("credentials add ${m.replace(/^@[^/]+\\//, '')}"), ['credentials add x'], 'an argument is not an alternative');
+});
+
+// The reviewer on #120's high: a printed hint must name a command that
+// parses. Every command line made by chLocal(where, '<command>') in lib/ and
+// bin/ch-local.js is read lexically (a template's ${...} stands for one
+// word) and parsed by the CLI's own parser, never a copy of its rules.
+// (A shell command, such as a chmod line, is not chLocal's and is not read.)
+test('every ch-local command a hint prints parses as the command line takes it', () => {
+  const {parseCommand} = require('../bin/ch-local.js');
+  // (chLocalSelf's commands too: the running ch-local's own)
+  const CALL = /chLocal(?:Self)?\(\s*[^,()]+,\s*(['`])((?:\\.|(?!\1)[^\\])*)\1/g;
+  // (every .js under lib/, its subdirectories too, and the CLI)
+  const walk = (d) => fs.readdirSync(d, {withFileTypes: true}).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith('.js') && e.name !== 'command-line.js' ? [path.join(d, e.name)] : []);
+  const files = [...walk(LIB), BIN];
+  const seen = [];
+  const unread = [];
+  const bad = [];
+  for (const file of files) {
+    const text = fs.readFileSync(file, 'utf8');
+    // a call the pattern can't read (a first argument with ( or ,, a
+    // command that is not a literal) is a failure too, the medium's 8
+    const calls = (text.match(/\bchLocal(?:Self)?\(/g) || []).length - (text.match(/function chLocal(?:Self)?\(/g) || []).length;
+    const read = [...text.matchAll(CALL)].length;
+    if (read !== calls) unread.push(`${path.relative(LIB, file)}: ${calls - read} chLocal call(s) not read`);
+    for (const m of text.matchAll(CALL)) {
+      const lines = variantsOf(m[2]);
+      seen.push(lines[0]);
+      for (const line of lines) {
+        const argv = line.split(/\s+/).filter((w) => w !== '');
+        if (parseCommand(argv) == null) bad.push(`${path.basename(file)}: ch-local ${line}`);
+      }
+    }
+  }
+  assert.ok(seen.length >= 40, `the scan found ${seen.length} hints: it reads them`);
+  assert.ok(seen.includes('install'), 'the bare install hint is among them');
+  assert.deepStrictEqual(unread, [], 'every chLocal call is read');
+  assert.deepStrictEqual(bad, [], `hints that do not parse:\n${bad.join('\n')}`);
+  // and the parser refuses what it should (the pin is not vacuous)
+  for (const argv of [['install', 'extra'], ['nope'], ['status', 'x'], ['credentials', 'add']]) {
+    assert.strictEqual(parseCommand(argv), null, argv.join(' '));
+  }
+});

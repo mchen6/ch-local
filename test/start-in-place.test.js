@@ -1236,7 +1236,7 @@ test('a record older than this ch-local, while running: judged by this release, 
   const s = await running();
   try {
     editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
-    const line = `this home's record is not this ch-local's release; run \`${said(s.home, 'install')}\` to bring the home to ${require('../lib/allowlist').ALLOWLIST.release.version}`;
+    const line = `this home's record is not this ch-local's release; run \`${said(s.home, 'install --pack ci-failure-triage')}\` to bring the home to ${require('../lib/allowlist').ALLOWLIST.release.version}`;
     await until(() => notices(s).some(([, t]) => t === line));
     // not frozen: a pack added loads
     assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);

@@ -82,6 +82,16 @@ test('an unknown client or command exits 2 with usage', () => {
   }
 });
 
+// the reviewer on the install hints: `install` with no --pack says, in its
+// help, that it never adds a pack and never moves to another release
+test('the usage says what install with no --pack does, and what it never does', () => {
+  const r = run(['frobnicate'], {});
+  assert.ok(r.stderr.includes(`       ch-local install [--from <directory of tarballs>]
+                reinstalls what this home lists, at this ch-local's own release:
+                it never adds a pack, and never moves to another release
+`), r.stderr);
+});
+
 // The real io's question (bin/ch-local.js realIo.ask): the answer is resolved
 // before readline closes, since close() fires the 'close' listener at once.
 // Every yes/no answer was read as empty, on a terminal and over a pipe alike.
@@ -173,4 +183,12 @@ test('add-module run with no terminal (pipes both ways) is refused, naming the c
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
+});
+
+// the medium on the install hints, 6: one rule, one answer
+test('install --unreleased-pins with no --pack says why, not the whole usage', () => {
+  const r = run(['install', '--unreleased-pins', 'f'], {});
+  assert.strictEqual(r.status, 2);
+  assert.match(r.stderr, /--unreleased-pins reinstalls only with the pack it is for: pass --pack <name> with it/);
+  assert.doesNotMatch(r.stderr, /usage:/);
 });

@@ -672,7 +672,7 @@ test('a record that cannot be read is set aside and named; the install goes on, 
   const aside = fs.readdirSync(h).filter((n) => n.startsWith('modules.json.unreadable-'));
   assert.strictEqual(aside.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(h, aside[0]), 'utf8'), '{"v": 2', 'kept as it was');
-  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`${cmd(h, 'add-pack')}\``));
+  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`${cmd(h, 'add-pack <pack>')}\``));
   assert.deepStrictEqual(Object.keys(record(h).packs), ['other']);
   assert.ok(fs.existsSync(path.join(h, 'previous', 'keep')), 'the rollback target kept');
 });
@@ -1113,6 +1113,73 @@ test('--unreleased-pins refuses a pin below the release\'s floor, before anythin
   }
 });
 
+// `install` with no --pack (the reviewer on the install hints, 2026-11-21):
+// reinstalls exactly what the record lists, at this ch-local's pins, through
+// install itself. It never adds a pack and never moves the home to another
+// release than this ch-local's; with nothing installed, or an unreleased
+// home, it says the full command; with no network, the --from line.
+// this release, as the npm stub installs it (ch-local 0.2.0): a reinstall
+// stays on the home's own release
+const ours = (r) => ({...r.allow, release: {version: '0.2.0', security: null}});
+
+test('install with no --pack: nothing installed is refused with the --pack line', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({from: r.from}, io, r.allow), 2);
+  assert.match(io.err, /nothing is installed here, so there is nothing to reinstall: run `ch-local install --pack <name>`/);
+  assert.deepStrictEqual(fs.readdirSync(h), [], 'nothing written');
+});
+
+test('install with no --pack reinstalls what the record lists, at this release\'s pins, and adds no pack', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const before = record(h);
+  // a module's files gone from the store, as the hints' "files are missing"
+  const gone = path.join(h, 'module-store', '@countinghouse', 'ch-step-redact', '0.1.0');
+  fs.rmSync(gone, {recursive: true, force: true});
+  fs.rmSync(`${gone}.json`, {force: true});
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({from: r.from}, io2, ours(r)), 0, io2.err);
+  assert.ok(fs.existsSync(gone), 'the missing module is back');
+  const rec = record(h);
+  assert.deepStrictEqual(Object.keys(rec.packs), ['ci-failure-triage'], 'only the recorded pack: "other", which the release lists, is not added');
+  assert.deepStrictEqual(rec.packs['ci-failure-triage'].from, before.packs['ci-failure-triage'].from, 'this ch-local\'s own release, as before');
+  assert.deepStrictEqual(rec.runtime.versions, before.runtime.versions, 'no move to another release');
+});
+
+test('install with no --pack on an unreleased home: refused with the full --from and --unreleased-pins line', async () => {
+  const r = release(); const h = home();
+  const allow = {...r.allow, pins: {}, runtime: {...r.allow.runtime, lockfile: null}};
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  const f = pinsFile(r, {pins: r.pins, runtimeLockfile: r.lockfile});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  assert.strictEqual(await install({from: r.from}, io2, allow), 2);
+  assert.match(io2.err, new RegExp(`this is an unreleased install \\(development only\\): reinstall it with \`${cmd(h, 'install --pack ci-failure-triage --from <release directory> --unreleased-pins <pins file>')}\`; nothing was installed`));
+});
+
+test('install with no --pack and no network: one line naming install --from, and why', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const nr = require('../lib/npm-release');
+  const real = nr.fetchRelease;
+  // (what lib/npm-fetch.js throws when the registry can't be reached)
+  nr.fetchRelease = async () => { throw Object.assign(new Error('the packument of countinghouse could not be fetched (ENOTFOUND)'), {code: 'FETCH_FAILED', unreachable: true}); };
+  try {
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    // (a release with its identity, so the reinstall goes to npm)
+    const {ALLOWLIST} = require('../lib/allowlist');
+    assert.strictEqual(await install({}, io2, {...ours(r), self: ALLOWLIST.self}), 1);
+    const lines = io2.err.trim().split('\n').filter((l) => /npm registry|--from/.test(l));
+    assert.strictEqual(lines.length, 1, io2.err);
+    assert.match(lines[0], new RegExp(`could not fetch this release from the npm registry \\(the packument of countinghouse could not be fetched \\(ENOTFOUND\\)\\); with no network, run \`${cmd(h, 'install --from <release directory>')}\` with this release's tarballs; nothing was installed`));
+  } finally {
+    nr.fetchRelease = real;
+  }
+});
+
 // A fresh install on an account whose umask is Ubuntu's default (0002): the
 // home is made 0700 itself, never by the umask, so the shared runtime's
 // daemon accepts it (lib/home.js homeOwnershipProblem refuses a group- or
@@ -1212,4 +1279,96 @@ test('a group-writable home is refused before any fetch or shim step', {skip: pr
     Object.assign(nr, {fetchRelease: real.fetchRelease});
     Object.assign(si, {prepareShim: real.prepareShim, placeShim: real.placeShim, setAside: real.setAside});
   }
+});
+
+// the medium on the install hints
+test('install with no --pack: an unreadable record names install --pack, never itself (1)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  fs.writeFileSync(path.join(h, 'modules.json'), '{"v": 2');
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({from: r.from}, io2, ours(r)), 1);
+  assert.match(io2.err, new RegExp(`install a pack again with \`${cmd(h, 'install --pack <name>')}\`, which sets this record aside and starts a new one; nothing was installed`));
+  assert.doesNotMatch(io2.err, new RegExp(`\`${cmd(h, 'install')}\` again`));
+});
+
+test('install with no --pack: a recorded pack this release does not list is said, not reinstalled (3)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const without = {...ours(r), packs: {other: r.allow.packs.other}};
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({from: r.from}, io2, without), 0, io2.err);
+  assert.match(io2.out + io2.err, /pack ci-failure-triage is not in this release, so it was not reinstalled/);
+  assert.ok(!Object.keys(record(h).packs).includes('other'), '"other" is not added');
+});
+
+test('install with no --pack: a registry that answered (not unreachable) gets install\'s own line, never the no-network one (4)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const nr = require('../lib/npm-release');
+  const real = nr.fetchRelease;
+  nr.fetchRelease = async () => { throw Object.assign(new Error('the registry answered 500 for the packument of countinghouse'), {code: 'FETCH_FAILED', package: 'countinghouse'}); };
+  try {
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    const {ALLOWLIST} = require('../lib/allowlist');
+    assert.strictEqual(await install({}, io2, {...ours(r), self: ALLOWLIST.self}), 1);
+    assert.doesNotMatch(io2.err, /no network/);
+    assert.match(io2.err, /countinghouse: the registry answered 500/);
+  } finally {
+    nr.fetchRelease = real;
+  }
+});
+
+test('install with no --pack never moves the home to another release: another ch-local than the home\'s is refused, with the home\'s own launcher (5)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const before = fs.readFileSync(path.join(h, 'modules.json'), 'utf8');
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({from: r.from}, io2, {...r.allow, release: {version: '0.1.0', security: null}}), 2);
+  assert.match(io2.err, new RegExp(`this home's ch-local is 0\\.2\\.0, and this one is 0\\.1\\.0: a reinstall stays on the home's own release; run \`${cmd(h, 'install')}\` \\(the home's own launcher\\), or \`${cmd(h, 'upgrade')}\` or \`${cmd(h, 'rollback')}\` to move it; nothing was installed`));
+  assert.strictEqual(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'), before, 'nothing changed');
+});
+
+// the reviewer's high on #124
+test('install with no --pack: a record it can\'t read (permissions) names the file and its fix, never a command that can\'t fix it (high, 1)', {skip: (process.platform === 'win32' || process.getuid() === 0) && 'POSIX modes, not root'}, async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  const file = path.join(h, 'modules.json');
+  fs.chmodSync(file, 0o000);
+  try {
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await install({from: r.from}, io2, ours(r)), 1);
+    assert.ok(io2.err.includes(`${file} is not readable (EACCES); make it readable by you again: check its owner and mode (\`ls -l "${file}"\`); nothing was installed`), io2.err);
+    assert.doesNotMatch(io2.err, /install --pack|sets this record aside/);
+    // the record's own advice says the same, wherever it is read
+    assert.throws(() => require('../lib/module-record').readModulesRecord(layout({COUNTINGHOUSE_HOME: h})), (e) => e.code === 'RECORD_IO' && e.message.includes(`check its owner and mode (\`ls -l "${file}"\`)`));
+  } finally {
+    fs.chmodSync(file, 0o600);
+  }
+});
+
+test('install with no --pack: an interrupted rollback says rollback, before the record is read (high, 2)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  fs.writeFileSync(layout({COUNTINGHOUSE_HOME: h}).journal, '{}');
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({from: r.from}, io2, ours(r)), 1);
+  assert.match(io2.err, new RegExp(`a rollback was interrupted; run \`${cmd(h, 'rollback')}\` to finish it; nothing was installed`));
+  assert.doesNotMatch(io2.err, /sets this record aside/);
+});
+
+test('install with no --pack from the home\'s own launcher, whose release the record does not name yet: it names the install that finishes it, never itself (high, 3)', async () => {
+  const r = release(); const h = home();
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  // (the home's app is ch-local 0.3.0, its record still 0.2.0: an install that did not finish)
+  const io2 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {selfVersion: '0.3.0'});
+  assert.strictEqual(await install({from: r.from}, io2, {...r.allow, release: {version: '0.3.0', security: null}}), 2);
+  assert.match(io2.err, new RegExp(`this home's record names release 0\\.2\\.0, but its launcher is ch-local 0\\.3\\.0: an install or upgrade did not finish; run \`${cmd(h, 'install --pack ci-failure-triage')}\` to finish it; nothing was installed`));
 });
