@@ -1,0 +1,19 @@
+{
+  "device": {
+    "friendlyName": "own-smoke",
+    "manufacturer": "ch-local-test",
+    "modelDescription": "ch-local's smoke-test own module: shouts its text through the smoke pack's step.",
+    "serviceList": {
+      "urn:ch-local-test:serviceID:ownService": {
+        "actionList": [
+          {
+            "name": "own_shout",
+            "description": "Returns the text in capitals, through the smoke pack's step ch-step-smoke.",
+            "input": {"schema": "/ownService/own_shout/input"},
+            "output": {"schema": "/ownService/own_shout/output"}
+          }
+        ]
+      }
+    }
+  }
+}

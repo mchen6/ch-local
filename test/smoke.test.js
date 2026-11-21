@@ -106,6 +106,55 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       assert.deepStrictEqual(fs.existsSync(path.join(home, 'run')) ? fs.readdirSync(path.join(home, 'run')) : [], [], 'the run directory is removed');
       assert.strictEqual(stderr.split('\n').filter((l) => /unreleased install/.test(l)).length, 1, 'start says once that the install is unreleased');
       assert.match(stderr, /loading ch-pack-smoke/);
+
+      // A-own-skill: the user's own module, added in their own terminal
+      // (B-own-add, ch-local#113) and then served by a start: listed beside
+      // the pack's tool and callable, through the pack's step it calls.
+      // add-module asks only at a terminal whose output is seen: a run
+      // with no terminal is refused and adds nothing; on a pseudo-terminal
+      // (test/pty-answer.py) the question is shown and answered y.
+      const own = path.join(work, 'own-smoke');
+      fs.cpSync(path.join(ROOT, 'test', 'fixtures', 'smoke', 'own-smoke'), own, {recursive: true});
+      const launcher = path.join(home, 'bin', 'ch-local.js');
+      const noTerminal = spawnSync(process.execPath, [launcher, 'add-module', own], {env: plain, encoding: 'utf8', timeout: 60000});
+      assert.strictEqual(noTerminal.status, 2, `${noTerminal.stdout}\n${noTerminal.stderr}`);
+      assert.match(noTerminal.stderr, /add-module asks you, in your own terminal: run `node ".+ch-local\.js" add-module ".+own-smoke"` there\./);
+      assert.ok(!fs.existsSync(path.join(home, 'own.json')), 'nothing added without a terminal');
+      const added = spawnSync('python3', [path.join(ROOT, 'test', 'pty-answer.py'), 'y', 'Add it? [y/N]', process.execPath, launcher, 'add-module', own],
+        {env: plain, encoding: 'utf8', timeout: 120000});
+      assert.strictEqual(added.status, 0, `${added.stdout}\n${added.stderr}`);
+      assert.match(added.stdout, /^Add your own module own-smoke 1\.0\.0 \(code [0-9a-f]{12}, 4 files\)\?\r?$/m, added.stdout);
+      assert.match(added.stdout, /^It calls ch-step-smoke\.\r?$/m, added.stdout);
+      const hash = /Added own-smoke \(own, ([0-9a-f]{12})\): your clients see it now\./.exec(added.stdout);
+      assert.ok(hash != null, added.stdout);
+      const ownStatus = spawnSync(process.execPath, [launcher, 'status'], {env: plain, encoding: 'utf8', timeout: 60000});
+      assert.match(ownStatus.stdout, new RegExp(`own-smoke \\(own, unpinned, ${hash[1]}\\)\\s+on; tools: own_shout`), ownStatus.stdout);
+
+      let stderr2 = '';
+      child = spawn(process.execPath, [launcher, 'start', '--stdio'], {cwd: repo, env: {...process.env, COUNTINGHOUSE_HOME: home}, stdio: ['pipe', 'pipe', 'pipe']});
+      child.stderr.on('data', (d) => { stderr2 += d; });
+      const exited2 = new Promise((resolve) => child.on('exit', (c) => resolve(c)));
+      const mcp2 = session(child);
+      const init2 = await mcp2.request('initialize', {protocolVersion: '2026-07-28', capabilities: {}, clientInfo: {name: 'ch-local-smoke', version: '0'}}, 120000)
+        .catch((err) => { throw new Error(`${err.message}\n--- stderr ---\n${stderr2.slice(-4000)}`); });
+      assert.ok(init2.result != null, JSON.stringify(init2));
+      mcp2.notify('notifications/initialized', {});
+      let listed2 = null;
+      for (const until = Date.now() + 60000; Date.now() < until;) {
+        listed2 = await mcp2.request('tools/list', {});
+        const names = (listed2.result.tools || []).map((x) => x.name);
+        if (names.includes('own_shout') && names.includes('smoke_echo')) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      assert.deepStrictEqual(listed2.result.tools.map((t) => t.name).sort(),
+        ['countinghouse_load_module', 'countinghouse_overview', 'countinghouse_settings', 'countinghouse_usage_report', 'countinghouse_validate_module', 'countinghouse_validate_plan', 'own_shout', 'smoke_echo'], `${JSON.stringify(listed2)}\n--- stderr ---\n${stderr2.slice(-4000)}`);
+      const ownCalled = await mcp2.request('tools/call', {name: 'own_shout', arguments: {text: 'mine'}});
+      assert.ok(ownCalled.result != null && ownCalled.result.isError === false, JSON.stringify(ownCalled).slice(0, 2000) + `\n--- stderr ---\n${stderr2.slice(-4000)}`);
+      assert.deepStrictEqual(ownCalled.result.structuredContent, {mine: 'MINE'}, 'through the pack\'s step');
+      child.stdin.end();
+      const code2 = await Promise.race([exited2, new Promise((resolve) => setTimeout(() => resolve('timeout'), 30000))]);
+      assert.notStrictEqual(code2, 'timeout', 'the runtime exits when the client closes stdin');
+      child = null;
     } finally {
       if (child != null) child.kill('SIGKILL');
       fs.rmSync(work, {recursive: true, force: true});
