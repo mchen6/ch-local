@@ -66,7 +66,13 @@ test('a development pins file\'s descriptions: only the pack modules it pins, th
 
 // a whole release document with this test's pack (the shipped one's other
 // parts)
-const wholeDoc = (modules) => ({...JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8')), packs: {x: {modules: [PACK, ACCESS]}}, modules, pins: {}});
+// (the shipped document with this file's pack: its floors, which name the
+// shipped pack's modules, go with the shipped pack)
+const wholeDoc = (modules) => {
+  const {floors, ...rest} = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
+  void floors;
+  return {...rest, packs: {x: {modules: [PACK, ACCESS]}}, modules, pins: {}};
+};
 
 test('--check: 0 when the file\'s descriptions match the tarballs, 1 when they differ, and nothing is written', () => {
   const dir = dirOf();
@@ -126,6 +132,7 @@ test('the release document is written only as the parser reads it: version 2, al
   const dir = dirOf();
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-whole-')), 'release-pins.json');
   const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
+  delete shipped.floors;
   const quiet = {write: () => {}};
   // a version 1 document with this release's packs: converted
   fs.writeFileSync(file, JSON.stringify({...shipped, v: 1, packs: {x: {packages: [PACK, ACCESS], credentials: ['X_TOKEN']}}, modules: undefined, allowedOrigins: {[ORIGIN]: ['X_TOKEN']}}));
@@ -141,4 +148,19 @@ test('the release document is written only as the parser reads it: version 2, al
   assert.strictEqual(main([dir], {stdout: quiet, stderr: err, releasePins: file}), 1);
   assert.match(err.text, /nothing was written/);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), bad);
+});
+
+// floors (the reviewer on the redaction fixes): the release step refuses a
+// module's tarball below its floor, so no release is described from one
+test('a tarball below its floor is refused whole', () => {
+  const r = {...release(), floors: {[ACCESS]: '0.3.0'}};
+  assert.match(refusal(() => describeRelease(r, {}, readTarballs(dirOf()))) || '', /ch-access-x 0\.2\.0 is below its floor 0\.3\.0/);
+  const ok = {...release(), floors: {[ACCESS]: '0.2.0'}};
+  assert.strictEqual(refusal(() => describeRelease(ok, {}, readTarballs(dirOf()))), null, 'at its floor');
+  // (a pre-release of the floor's own version comes before it)
+  const pre = {...release(), floors: {[ACCESS]: '0.2.1'}};
+  const dir = dirOf([PACK]);
+  const [manifest, files] = tarballs[ACCESS];
+  fs.writeFileSync(path.join(dir, 'countinghouse-ch-access-x-0.2.1-rc.1.tgz'), packageTgz({...manifest, version: '0.2.1-rc.1'}, files));
+  assert.match(refusal(() => describeRelease(pre, {}, readTarballs(dir))) || '', /ch-access-x 0\.2\.1-rc\.1 is below its floor 0\.2\.1/);
 });

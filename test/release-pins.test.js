@@ -236,3 +236,42 @@ test('the review of #48: a first pin for a name this install uses (the runtime, 
   ]);
   assert.deepStrictEqual(r.named, []);
 });
+
+// The reviewer on the redaction fixes (release 1): a home's parts are only as
+// new as the release's pins, so the file names a floor per part that carries
+// a fix a release must hold, and no pin may go below it.
+test('floors: optional; each a strict version of a module some pack lists; a pin below its floor refused', () => {
+  const d = shipped();
+  // the shipped floors: the redaction and GitHub fixes (A-redact)
+  assert.deepStrictEqual(d.floors, {'@countinghouse/ch-access-github': '0.2.1', '@countinghouse/ch-step-log-clean': '0.2.2', '@countinghouse/ch-step-redact': '0.2.3'});
+  assert.strictEqual(problemOf(d), undefined);
+  const without = shipped();
+  delete without.floors;
+  assert.strictEqual(problemOf(without), undefined, 'optional');
+  for (const [mutate, re] of [
+    [(x) => { x.floors = []; }, /floors must be an object/],
+    [(x) => { x.floors['@countinghouse/ch-step-nope'] = '1.0.0'; }, /floor for @countinghouse\/ch-step-nope names no module/],
+    [(x) => { x.floors['@countinghouse/ch-step-redact'] = '0.2'; }, /floor for @countinghouse\/ch-step-redact is no strict/],
+    [(x) => { x.pins['@countinghouse/ch-step-redact'] = pin('0.2.2'); }, /ch-step-redact 0\.2\.2 is below its floor 0\.2\.3/]
+  ]) {
+    const x = shipped();
+    mutate(x);
+    assert.match(problemOf(x) || '', re);
+  }
+  const at = shipped();
+  at.pins['@countinghouse/ch-step-redact'] = pin('0.2.3');
+  at.pins['@countinghouse/ch-step-redact'].repository = 'mchen6/ch-step-redact';
+  assert.strictEqual(problemOf(at), undefined, 'at its floor');
+});
+
+// the medium on the floors, 1: a pre-release comes before its version, and
+// what is no version is below every floor (fail closed)
+test('belowFloor: semver precedence, pre-releases below their version, a non-version below every floor', () => {
+  const {belowFloor} = require('../lib/release-pins');
+  assert.strictEqual(belowFloor('0.2.3', '0.2.3'), false);
+  assert.strictEqual(belowFloor('0.2.4', '0.2.3'), false);
+  assert.strictEqual(belowFloor('0.10.0', '0.2.3'), false);
+  assert.strictEqual(belowFloor('0.2.2', '0.2.3'), true);
+  for (const v of ['0.2.3-rc.1', '0.2.2-rc.1', '0.2', 'x', '', undefined]) assert.strictEqual(belowFloor(v, '0.2.3'), true, String(v));
+  assert.deepStrictEqual(require('../lib/allowlist').ALLOWLIST.floors, shipped().floors, 'the allowlist carries the floors');
+});

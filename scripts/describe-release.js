@@ -29,6 +29,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {readMembers} = require('../lib/tar');
 const {describeModule, friendlyNames} = require('../lib/describe-module');
+const {belowFloor, modulesProblem, parseReleasePins} = require('../lib/release-pins');
 
 const root = path.resolve(__dirname, '..');
 const RELEASE_PINS = path.join(root, 'lib', 'release-pins.json');
@@ -77,6 +78,9 @@ function describeRelease(release, pins, tarballs, {only = false} = {}) {
   for (const [m, t] of Object.entries(tarballs)) {
     if (!listed.includes(m)) refuse(`${t.file}: ${m} is no module of this release's packs`);
     if (pins[m] != null && pins[m].version !== t.version) refuse(`${t.file}: ${m} ${t.version} is not its pin (${pins[m].version})`);
+    // (the release's floor: no release is described from a part below it)
+    const floor = release.floors != null ? release.floors[m] : undefined;
+    if (floor != null && belowFloor(t.version, floor)) refuse(`${t.file}: ${m} ${t.version} is below its floor ${floor}`);
   }
   const friendly = friendlyNames(Object.fromEntries(listed.map((m) => [m, tarballs[m].api])));
   if (friendly.problem != null) refuse(friendly.problem);
@@ -89,7 +93,7 @@ function describeRelease(release, pins, tarballs, {only = false} = {}) {
   // what it writes, held to the format the pins are read by: a description
   // the parser would refuse is refused here, never written (the medium on
   // L5b, 4)
-  const bad = require('../lib/release-pins').modulesProblem(modules, new Set(listed));
+  const bad = modulesProblem(modules, new Set(listed));
   if (bad != null) refuse(bad);
   const packs = Object.fromEntries(Object.entries(release.packs).map(([p, e]) => [p, {modules: [...(e.modules || e.packages)]}]));
   return {packs, modules};
@@ -144,7 +148,7 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
       // it: one a write would convert, or the parser would refuse, does not
       // match (the medium on #98's high round, 6)
       if (devFile == null) {
-        const parsed = require('../lib/release-pins').parseReleasePins(JSON.parse(JSON.stringify(doc)));
+        const parsed = parseReleasePins(JSON.parse(JSON.stringify(doc)));
         if (doc.v !== 2 || Object.prototype.hasOwnProperty.call(doc, 'allowedOrigins') || parsed.problem != null) {
           stdout.write(`${target}: not a document this ch-local reads as it is${parsed.problem != null ? ` (${parsed.problem})` : ''}; run without --check to write it\n`);
           return 1;
@@ -155,7 +159,7 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
       return same ? 0 : 1;
     }
     if (devFile == null) {
-      const parsed = require('../lib/release-pins').parseReleasePins(JSON.parse(JSON.stringify(next)));
+      const parsed = parseReleasePins(JSON.parse(JSON.stringify(next)));
       if (parsed.problem != null) refuse(parsed.problem);
     }
     fs.writeFileSync(target, JSON.stringify(next, null, 2) + '\n');
