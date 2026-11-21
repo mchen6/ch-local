@@ -959,3 +959,61 @@ test('--unreleased-pins refuses a pin below the release\'s floor, before anythin
     }
   }
 });
+
+// A fresh install on an account whose umask is Ubuntu's default (0002): the
+// home is made 0700 itself, never by the umask, so the shared runtime's
+// daemon accepts it (lib/home.js homeOwnershipProblem refuses a group- or
+// world-writable home); an existing such home is named with its chmod line
+// and left as it is (the reviewer, 2026-11-21: found in the replay's prep)
+test('a fresh install makes its home 0700 whatever the umask, and the daemon accepts it', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const {daemon} = require('../lib/daemon');
+  const {daemonIo} = require('./daemon-fakes');
+  const r = release();
+  const h = path.join(home(), 'nested', 'home');
+  const was = process.umask(0o002);
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await run(r, io), 0, io.err);
+    assert.strictEqual(fs.statSync(h).mode & 0o777, 0o700);
+    // the daemon's own home check passes, and it goes on to start the runtime
+    const dio = daemonIo(h);
+    let started = false;
+    await daemon({home: h}, dio, {run: async () => { started = true; return 0; }});
+    assert.ok(started, `the daemon started its runtime on the installed home: ${dio.err}`);
+    assert.doesNotMatch(dio.err, /writable/);
+  } finally {
+    process.umask(was);
+  }
+});
+
+test('an existing group-writable home: install says so with the chmod line, and changes nothing', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const r = release(); const h = home();
+  fs.chmodSync(h, 0o775);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 0, io.err);
+  assert.strictEqual(fs.statSync(h).mode & 0o777, 0o775, 'not changed');
+  const said = io.out + io.err;
+  assert.match(said, /group- or world-writable \(mode 0775\)/);
+  assert.ok(said.includes(`chmod 700 '${fs.realpathSync.native(h)}'`) || said.includes(`chmod 700 "${fs.realpathSync.native(h)}"`) || said.includes(`chmod 700 ${fs.realpathSync.native(h)}`), said);
+});
+
+test('ensureHome: a missing home and its parents made 0700 under umask 0002; one that exists left as it is; a first setting makes it the same way', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const {ensureHome, layout} = require('../lib/home');
+  const {withSettingsLock} = require('../lib/settings');
+  const base = home();
+  const was = process.umask(0o002);
+  try {
+    const h = path.join(base, 'a', 'home');
+    assert.strictEqual(ensureHome(h), true);
+    assert.strictEqual(fs.statSync(h).mode & 0o777, 0o700);
+    assert.strictEqual(fs.statSync(path.dirname(h)).mode & 0o777, 0o700, 'its parent too');
+    fs.chmodSync(h, 0o750);
+    assert.strictEqual(ensureHome(h), false);
+    assert.strictEqual(fs.statSync(h).mode & 0o777, 0o750, 'an existing home is not changed');
+    const s = path.join(base, 'settings-home');
+    withSettingsLock(layout({COUNTINGHOUSE_HOME: s}), () => 0);
+    assert.strictEqual(fs.statSync(s).mode & 0o777, 0o700, 'settings\' first lock');
+  } finally {
+    process.umask(was);
+  }
+});
