@@ -1112,3 +1112,104 @@ test('--unreleased-pins refuses a pin below the release\'s floor, before anythin
     }
   }
 });
+
+// A fresh install on an account whose umask is Ubuntu's default (0002): the
+// home is made 0700 itself, never by the umask, so the shared runtime's
+// daemon accepts it (lib/home.js homeOwnershipProblem refuses a group- or
+// world-writable home); an existing such home is named with its chmod line
+// and left as it is (the reviewer, 2026-11-21: found in the replay's prep)
+test('a fresh install makes its home 0700 whatever the umask, and the daemon accepts it', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const {daemon} = require('../lib/daemon');
+  const {daemonIo} = require('./daemon-fakes');
+  const r = release();
+  const h = path.join(home(), 'nested', 'home');
+  const was = process.umask(0o002);
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await run(r, io), 0, io.err);
+    assert.strictEqual(fs.statSync(h).mode & 0o777, 0o700);
+    // the daemon's own home check passes, and it goes on to start the runtime
+    const dio = daemonIo(h);
+    let started = false;
+    await daemon({home: h}, dio, {run: async () => { started = true; return 0; }});
+    assert.ok(started, `the daemon started its runtime on the installed home: ${dio.err}`);
+    assert.doesNotMatch(dio.err, /writable/);
+  } finally {
+    process.umask(was);
+  }
+});
+
+test('an existing group-writable home: refused with the chmod line, nothing installed and nothing changed', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const r = release(); const h = home();
+  fs.chmodSync(h, 0o775);
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await run(r, io), 1);
+  assert.strictEqual(fs.statSync(h).mode & 0o777, 0o775, 'not changed');
+  assert.deepStrictEqual(fs.readdirSync(h), [], 'nothing installed');
+  assert.ok(io.err.includes(`this home is group- or world-writable (mode 0775), so another user could change what runs from it; run \`chmod 700 "${fs.realpathSync.native(h)}"\`, then install again`), io.err);
+  assert.match(io.err, /nothing was installed/);
+  // a path the command line can't quote safely: refused the same, with no line to paste
+  const odd = path.join(home(), 'my$home');
+  fs.mkdirSync(odd, {mode: 0o700});
+  fs.chmodSync(odd, 0o777);
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: odd}, exec: npm()});
+  assert.strictEqual(await run(r, io2), 1);
+  assert.match(io2.err, /world-writable \(mode 0777\), so another user could change what runs from it\n/);
+  assert.doesNotMatch(io2.err, /chmod/);
+});
+
+test('ensureHome: a missing home and its parents made 0700 under umask 0002; one that exists left as it is; a first setting makes it the same way', {skip: process.platform === 'win32' && 'POSIX modes'}, () => {
+  const {ensureHome, layout} = require('../lib/home');
+  const {withSettingsLock} = require('../lib/settings');
+  const base = home();
+  const was = process.umask(0o002);
+  try {
+    const h = path.join(base, 'a', 'home');
+    assert.strictEqual(ensureHome(h), true);
+    assert.strictEqual(fs.statSync(h).mode & 0o777, 0o700);
+    assert.strictEqual(fs.statSync(path.dirname(h)).mode & 0o777, 0o775, 'its parent as mkdir -p makes it: only the home is private');
+    fs.chmodSync(h, 0o750);
+    assert.strictEqual(ensureHome(h), false);
+    assert.strictEqual(fs.statSync(h).mode & 0o777, 0o750, 'an existing home is not changed');
+    const s = path.join(base, 'settings-home');
+    withSettingsLock(layout({COUNTINGHOUSE_HOME: s}), () => 0);
+    assert.strictEqual(fs.statSync(s).mode & 0o777, 0o700, 'settings\' first lock');
+    // a umask that takes the owner's own bits: the mode is set whole after mkdir
+    process.umask(0o200);
+    const w = path.join(base, 'w-home');
+    assert.strictEqual(ensureHome(w), true);
+    assert.strictEqual(fs.statSync(w).mode & 0o777, 0o700);
+    // a file written before install into a missing home (writeAtomic) makes it private too
+    process.umask(0o002);
+    const early = path.join(base, 'early-home');
+    require('../lib/atomic').writeAtomic(path.join(early, 'x.json'), '{}');
+    assert.strictEqual(fs.statSync(early).mode & 0o777, 0o700);
+  } finally {
+    process.umask(was);
+  }
+});
+
+// the reviewer on #122's merge with #120: a home another user could write
+// into is refused before anything is fetched or placed, the shim included
+test('a group-writable home is refused before any fetch or shim step', {skip: process.platform === 'win32' && 'POSIX modes'}, async () => {
+  const r = release(); const h = home();
+  fs.chmodSync(h, 0o775);
+  const nr = require('../lib/npm-release');
+  const si = require('../lib/shim-install');
+  const real = {fetchRelease: nr.fetchRelease, prepareShim: si.prepareShim, placeShim: si.placeShim, setAside: si.setAside};
+  const called = [];
+  nr.fetchRelease = async () => { called.push('fetchRelease'); throw new Error('not here'); };
+  si.prepareShim = async () => { called.push('prepareShim'); return null; };
+  si.placeShim = () => { called.push('placeShim'); };
+  si.setAside = () => { called.push('setAside'); return false; };
+  try {
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, r.allow), 1);
+    assert.deepStrictEqual(called, []);
+    assert.match(io.err, /this home is group- or world-writable \(mode 0775\), so another user could change what runs from it; run `chmod 700 "/);
+    assert.deepStrictEqual(fs.readdirSync(h), []);
+  } finally {
+    Object.assign(nr, {fetchRelease: real.fetchRelease});
+    Object.assign(si, {prepareShim: real.prepareShim, placeShim: real.placeShim, setAside: real.setAside});
+  }
+});
