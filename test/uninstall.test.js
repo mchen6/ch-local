@@ -507,7 +507,9 @@ test('A9: the packs.lock bound elapsing while the removal runs is never said as 
 
 test('A-140-nits: a start.lock of this host with no pid, or with no host, gets the way out, never "on undefined"', async () => {
   const {lockHost} = require('../lib/lock');
-  for (const [body, there] of [[JSON.stringify({host: lockHost(), at: new Date().toISOString()}), /if nothing is running on /], [JSON.stringify({}), /if nothing is running there\./]]) {
+  // (this host's own lock is "there", never "on another machine named
+  // <this host>" -- the closing pass, L4)
+  for (const [body, there] of [[JSON.stringify({host: lockHost(), at: new Date().toISOString()}), /if nothing is running there\./], [JSON.stringify({}), /if nothing is running there\./]]) {
     const s = setup();
     try {
       fs.mkdirSync(runDaemon(s.home), {recursive: true, mode: 0o700});
