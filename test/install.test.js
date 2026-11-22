@@ -570,6 +570,11 @@ test('F1: an unreleased install\'s shim must carry a pre-release version; an npm
     const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
     const ready = await prepareShim({data: {shim: n.allow.shim, pins: n.allow.pins}, record: rec, home: h2, io: io2, ...n.fromNpm});
     assert.strictEqual(ready.status, 'ready', 'fetched and verified, not current');
+  } finally {
+    await n.reg.close();
+  }
+});
+
 // A3 (the reviewer): the session's note says to run install when shim.json
 // names a Node that is gone; a bare reinstall writes shim.json's node and
 // chLocal again, from this process, and keeps the shim, so the session picks
