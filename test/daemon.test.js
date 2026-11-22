@@ -21,7 +21,7 @@ const path = require('node:path');
 const {fakeIo} = require('./fake-io');
 const {daemon, probe} = require('../lib/daemon');
 
-const {fakeRuntime, daemonIo, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame, stopLeftDaemons} = require('./daemon-fakes');
+const {ADOPT_MS, fakeRuntime, daemonIo, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame, stopLeftDaemons} = require('./daemon-fakes');
 // a test that fails before it stops its daemon leaves none running
 test.afterEach(() => stopLeftDaemons());
 const {isPipeName} = require('../lib/session-socket');
@@ -49,8 +49,9 @@ test('no daemon yet: it starts the runtime, writes daemon.json once the socket p
   try {
     const io = daemonIo(home);
     const done = daemon({home}, io, {run});
-    const until = Date.now() + 5000;
+    const until = Date.now() + ADOPT_MS;
     while (!fs.existsSync(path.join(runDirOf(home), 'daemon.json')) && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(fs.existsSync(path.join(runDirOf(home), 'daemon.json')), `daemon.json never appeared within ${ADOPT_MS / 1000} s`);
     const info = readDaemonJson(home);
     assert.strictEqual(info.pid, process.pid);
     // on Windows a pipe of the form (C4c), on POSIX the run directory's socket
@@ -365,8 +366,9 @@ test('a home too long for a socket path: the runtime listens in $TMPDIR/ch-<uid>
       opts.onListening({type: 'listening', socket: opts.socket});
       return new Promise((resolve) => opts.signal.addEventListener('abort', () => resolve(143)));
     }});
-    const until = Date.now() + 5000;
+    const until = Date.now() + ADOPT_MS;
     while (!fs.existsSync(path.join(runDirOf(home), 'daemon.json')) && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(fs.existsSync(path.join(runDirOf(home), 'daemon.json')), `daemon.json never appeared within ${ADOPT_MS / 1000} s`);
     assert.strictEqual(given.socket, want);
     assert.strictEqual(given.sessionDir, runDirOf(home));
     assert.strictEqual(readDaemonJson(home).socket, want);
