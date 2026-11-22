@@ -281,3 +281,19 @@ test('--check with --unreleased-pins: the runtime is the one the file pins, besi
   assert.strictEqual(main([dir, '--unreleased-pins', dev, '--check'], {stdout: o, stderr: o, releasePins: rel}), 1);
   assert.match(o.s, /countinghouse-9\.0\.0\.tgz: it holds countinghouse 7\.1\.2, not the pinned 9\.0\.0/);
 });
+
+// The closing pass on release 1, L1: the release's own document (gating's
+// mode) with the shim's tarball beside the release's: never described,
+// never opened (as the runtime's), so never refused as no module of its packs
+test('the release\'s own document: a shim tarball beside the release\'s is skipped, as the runtime\'s are', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-pins-')), 'release-pins.json');
+  const doc = wholeDoc(DESCRIBED);
+  fs.writeFileSync(file, JSON.stringify(doc));
+  const dir = dirOf();
+  runtimeTgz(dir);
+  const shim = Object.values(doc.shim.packages)[0];
+  fs.writeFileSync(path.join(dir, `${shim.replace(/^@/, '').replace('/', '-')}-0.0.0-dev.6496c6f9469b.tgz`), packageTgz({name: shim, version: '0.0.0-dev.6496c6f9469b'}));
+  const o = {s: '', write(x) { this.s += x; }};
+  assert.strictEqual(main([dir, '--check'], {stdout: o, stderr: o, releasePins: file}), 0, o.s);
+  assert.match(o.s, /the descriptions match the tarballs/);
+});

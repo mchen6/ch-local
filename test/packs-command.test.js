@@ -199,7 +199,19 @@ test('a part at another version names a way forward that exists: a clean install
   assert.strictEqual(await addPack({pack: 'other', from: newer.from}, io, newer.allow), 1);
   // (add-pack runs only with --from, so its hint keeps the folder: the
   // medium on A11, 1-3)
-  assert.match(io.err, new RegExp(`install the newer release with \`${cmd(s.home, 'install --pack ci-failure-triage --from <its directory>')}\`, then add the pack with \`${cmd(s.home, 'add-pack other --from <its directory>')}\``));
+  // (the newer release installed by THIS ch-local, never the home's older
+  // launcher -- the closing pass, nit; then the home's, which that install
+  // makes the newer one)
+  const self = require('../lib/command-line').chLocalSelf(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}), 'install --pack ci-failure-triage --from <its directory>');
+  const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`);
+  const note = require('../lib/command-line').homeNote(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}));
+  assert.match(io.err, new RegExp(`install the newer release with \`${reEsc(self)}\`${reEsc(note)}, then add the pack with \`${cmd(s.home, 'add-pack other --from <its directory>')}\``));
+  // (on Windows this ch-local's path names no home: the home said after it,
+  // or the newer release goes to the default home -- the medium on the
+  // closing pass, 1)
+  const win = Object.assign(s.io(), {platform: 'win32'});
+  assert.strictEqual(await addPack({pack: 'other', from: newer.from}, win, newer.allow), 1);
+  assert.match(win.err, /install the newer release with `[^`]+ install --pack ci-failure-triage --from <its directory>` \(with COUNTINGHOUSE_HOME set to [^)]+\), then add the pack with `/);
 });
 
 test('a home made by an earlier development launcher (installed.json only) is told to reinstall', async () => {

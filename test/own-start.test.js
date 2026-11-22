@@ -143,6 +143,14 @@ test('a home with own modules and no pack starts, loading them; with neither, st
   const empty = io(home);
   assert.strictEqual(await start({passThrough: []}, empty), 1);
   assert.match(empty.err, /no pack is installed/);
+  // (the hint as every pre-install hint: the Windows home note too -- the
+  // closing pass, L3)
+  assert.ok(empty.err.includes(`no pack is installed; run ${require('../lib/command-line').hintCommand(where, 'install --pack <name>')}`), empty.err);
+  // (start's own platform decides it, as every decision of a start)
+  const win = Object.assign(io(home), {platform: 'win32'});
+  assert.strictEqual(await start({passThrough: []}, win), 1);
+  assert.ok(win.err.includes(`no pack is installed; run ${require('../lib/command-line').hintCommand(where, 'install --pack <name>', 'win32')}`), win.err);
+  assert.match(win.err, /\(with COUNTINGHOUSE_HOME set to /);
   const tree = addOwn('my-tool');
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);

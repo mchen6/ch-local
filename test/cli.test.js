@@ -33,7 +33,11 @@ test('snippet prints the entry for this machine: the running node and the home\'
     assert.strictEqual(r.status, 0, r.stderr);
     assert.strictEqual(r.stdout, snippet('cursor', {node: process.execPath, launcher: path.join(home, 'bin', 'ch-local.js'), home}).text);
     assert.ok(r.stderr.includes(process.execPath), 'names the node it pinned');
-    assert.match(r.stderr, /upgrade changes this path; run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local snippet cursor` again/);
+    // (as every pre-install hint: hintCommand, with the Windows home note --
+    // the closing pass, L3)
+    const hint = require('../lib/command-line').hintCommand(require('../lib/home').layout({COUNTINGHOUSE_HOME: home}), 'snippet cursor');
+    assert.ok(r.stderr.includes(`upgrade changes this path; run ${hint} again`), r.stderr);
+    assert.match(hint, /npx @countinghouse\/ch-local snippet cursor`/);
     assert.ok(!(r.stdout + r.stderr).includes('secret-value-123'), 'never a credential value');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
