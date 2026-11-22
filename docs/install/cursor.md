@@ -1,6 +1,6 @@
 # Cursor
 
-`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"`.
+`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"` in cmd, or `node "$env:USERPROFILE\.countinghouse\bin\ch-local.js"` in PowerShell.
 
 ## Add
 

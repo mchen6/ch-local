@@ -48,10 +48,10 @@ The checks are grouped. Within a group, the order doesn't matter.
 6. **Audit mode warns, and refuses a pack's writes outside its own area.**
    - How: `ch-local start --stdio --moduleSandbox audit`, and a start with
      `moduleSandbox: audit` stored, and a start on Windows.
-   - Check: each says "audit watches what a pack reads and refuses its file
-     writes outside its own area, but only reports, and does not stop, a
-     process, a thread or native code it starts; only enforce confines it"
-     exactly once. countinghouse's audit
+   - Check: each says "under audit, countinghouse logs what a pack reads and
+     refuses its file writes outside its own area; it does not stop a module
+     that starts a process, a thread or native code: enforce refuses those"
+     exactly once, as one notice (within the runtime's 200-character cut). countinghouse's audit
      writes test passes.
    - Evidence: `test/start.test.js` (ch-local), countinghouse's
      `test/sandbox/60-audit-writes.js`, and one hand start's stderr.
@@ -190,9 +190,10 @@ The checks are grouped. Within a group, the order doesn't matter.
     - How: write the notes file (plain text, one change per line, at most 8
       lines of at most 200 characters; blank lines are left out) and pass it
       to the step: `node scripts/describe-release.js <tarballs> --notes
-      <file>`. Notes may be omitted: `--notes none` writes `null`, and a
-      release with no `notes` key at all is read as none. Without `--notes`,
-      the step keeps what the file already holds.
+      <file>`, or `--notes none` for a release with none (it writes `null`).
+      Pass one of them for every release: without `--notes` the step keeps
+      what the file already holds, which is the last release's notes (it
+      says so on stderr).
     - Check: `release.notes` in lib/release-pins.json is the file's lines,
       and the release-pins test passes.
     - Evidence: the notes file, saved with the checklist.

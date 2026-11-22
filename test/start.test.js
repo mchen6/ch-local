@@ -723,7 +723,7 @@ test('on Windows with a runtime older than countinghouse#195: audit, said; an ex
   const f = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
-  assert.match(f.err, /the installed countinghouse cannot run --moduleSandbox enforce on Windows \(it is older than countinghouse#195\): running audit; audit watches what a pack reads and refuses its file writes outside its own area, but only reports, and does not stop, a process, a thread or native code it starts; only enforce confines it; `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade` installs one that can/);
+  assert.match(f.err, /the installed countinghouse is older than countinghouse#195.*; `[^`]+ upgrade` installs one that can$/m);
   for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
     const g = io(home, {platform: 'win32'});
     assert.notStrictEqual(await start({passThrough}, g), 0);
@@ -769,21 +769,27 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
 // a thread or native code a pack starts is reported, not stopped: only
 // enforce confines it. Start says so, once, whenever the runtime runs under
 // audit.
-const AUDIT_TEXT = /audit watches what a pack reads and refuses its file writes outside its own area, but only reports, and does not stop, a process, a thread or native code it starts; only enforce confines it/g;
+const AUDIT_TEXT = /^ch-local: under audit, countinghouse logs what a pack reads and refuses its file writes outside its own area; it does not stop a module that starts a process, a thread or native code: enforce refuses those$/gm;
 test('audit, passed, stored or forced on Windows, says what it watches and that it refuses writes outside the pack\'s area, once', async () => {
   const count = (f) => (f.err.match(AUDIT_TEXT) || []).length;
   const home = installedHome();
   const passed = io(home, {platform: 'linux'});
   assert.strictEqual(await start({passThrough: ['--moduleSandbox', 'audit']}, passed), 0, passed.err);
   assert.strictEqual(count(passed), 1, passed.err);
-  assert.match(passed.err, /--moduleSandbox audit: audit watches/);
+  // (one notice, within the runtime's 200-character cut: the final pass, L2)
+  assert.ok(require('./notice-length').atRealisticHome(passed.err.match(AUDIT_TEXT)[0].replace(/^ch-local: /, '')) <= 200);
   const enforce = io(home, {platform: 'linux'});
   assert.strictEqual(await start({passThrough: []}, enforce), 0, enforce.err);
   assert.strictEqual(count(enforce), 0, 'never under enforce');
   const windows = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, windows), 0, windows.err);
   assert.strictEqual(count(windows), 1, `in WINDOWS_AUDIT, and not twice: ${windows.err}`);
-  assert.match(windows.err, /running audit; audit watches what a pack reads/);
+  assert.match(windows.err, /^ch-local: the installed countinghouse is older than countinghouse#195 and cannot enforce the sandbox on Windows, so it runs under audit|^ch-local: the installed countinghouse is older than countinghouse#195.*…; `[^`]+ upgrade` installs one that can$/m);
+  assert.match(windows.err, /; `[^`]+ upgrade` installs one that can$/m, 'its command whole');
+  // (at a user's home: the npx form's home as long as a typical one)
+  // (one fitted to the cut, "…" before its command, measured as sent)
+  const atHome = (l) => { const t = l.replace(/^ch-local: /, ''); return /…/.test(t) ? [...t].length : require('./notice-length').atRealisticHome(t.replace(/COUNTINGHOUSE_HOME="[^"]*"/g, 'COUNTINGHOUSE_HOME="/home/alexandra/.countinghouse"')); };
+  for (const l of windows.err.split('\n').filter((x) => /countinghouse#195|under audit/.test(x))) assert.ok(atHome(l) <= 200, `${atHome(l)}: ${l}`);
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
   const stored = io(home, {platform: 'linux'});
   assert.strictEqual(await start({passThrough: []}, stored), 0, stored.err);

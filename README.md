@@ -71,11 +71,11 @@ One install page per client is in [docs/install](docs/install/README.md).
 
 ## Commands
 
-`ch-local` here is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"`.
+`ch-local` here is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"` in cmd, or `node "$env:USERPROFILE\.countinghouse\bin\ch-local.js"` in PowerShell.
 
 | Command | What it does |
 |---|---|
-| `ch-local install --pack ci-failure-triage --from <dir>` | checks each tarball in `<dir>` against the version and sha512 integrity this launcher pins (a tarball not on the list, a wrong hash or a missing one stops it before anything runs). It builds `<home>/app` with the runtime (this launcher and countinghouse) as an npm project with its lockfile, pinned at release so every dependency's version and integrity is fixed too, by `npm ci --omit=optional --ignore-scripts`. The pack's own packages have no npm dependencies and are unpacked beside it by a strict tar reader (files and directories only, no links, size-capped); one that declares dependencies is refused. The new app is swapped in only when complete (the old one goes back if it cannot, and the one replaced is kept in `<home>/previous` for `rollback`). Install writes `<home>/bin/ch-local.js`, `<home>/modules.json` and `<home>/shim.json`, and places each module in `<home>/module-store/<package>/<version>/` (one already there at its pin is not placed again). Every other installed pack this release lists moves to its pins; one it no longer lists stays recorded, as withdrawn. From npm it also places this platform's shim (below) |
+| `ch-local install --pack ci-failure-triage --from <dir>` | checks each tarball in `<dir>` against the version and sha512 integrity this launcher pins (a tarball not on the list, a wrong hash or a missing one stops it before anything runs). It builds `<home>/app` with the runtime (this launcher and countinghouse) as an npm project with its lockfile, pinned at release so every dependency's version and integrity is fixed too, by `npm ci --omit=optional --ignore-scripts`. The pack's own packages have no npm dependencies and are unpacked beside it by a strict tar reader (files and directories only, no links, size-capped); one that declares dependencies is refused. The new app is swapped in only when complete (the old one goes back if it cannot, and the one replaced is kept in `<home>/previous` for `rollback`). Install writes `<home>/bin/ch-local.js`, `<home>/modules.json` and `<home>/shim.json`, and places each module in `<home>/module-store/<package>/<version>/` (one already there at its pin is not placed again). Every other installed pack this release lists moves to its pins; one it no longer lists stays recorded, as withdrawn. From npm, or from a folder that holds this platform's shim, it also places that shim (below) |
 | `ch-local install [--from <dir>]` | with no `--pack`: installs again exactly what the home's record lists, at this ch-local's own release; it never adds a pack and never changes the release |
 | `ch-local add-pack <name> --from <dir>` | adds another pack this release pins beside the installed ones, checked the same way; a part another pack already uses is shared at its pinned version, and one installed at another version stops it (run `upgrade` first). No client file changes: the entry runs `start`, which loads every pack |
 | `ch-local remove-pack <name>` | removes the pack and each of its parts no other installed pack uses |
@@ -85,7 +85,7 @@ One install page per client is in [docs/install](docs/install/README.md).
 | `ch-local uninstall [--keep-data]` | takes back exactly the recorded entries, lists `<home>` and asks once, and removes only the names ch-local owns there. While the shared runtime still serves, it removes nothing and says so: the runtime stops 10 minutes after the last client closes; `--keep-data` keeps the store, module data, usage and caches but removes the program, the identity secret and `auth.json`; ends by naming the credentials to revoke |
 | `ch-local restart` | the shared runtime takes what is stored now, as any start reads it, the ceiling's bounds applied: a changed ch-local handed over to, else drained and started again, its sessions asked to resume. A client's own restart only attaches to the shared runtime again. With no shared runtime running, it says to restart the client |
 | `ch-local session [--home <abs>]` | what a client's entry runs: the shared runtime through the installed shim, or else `start --stdio` (below) |
-| `ch-local start --stdio [options]` | a session's own runtime: the installed runtime over stdio, in one per-user store under `<home>/store`, the sandbox enforced (on Windows too, with a runtime that has [countinghouse#195](https://github.com/mchen6/countinghouse/issues/195); with an older one, `audit`, said, until `ch-local upgrade`), no port. It loads each installed module that is on, allowed by the operator's ceiling, at its pins and with its credential in ch-local's store (never the environment), and your own modules under `enforce`; each one it doesn't load is said, with why. Each module's credential goes in a slot of its own, for its declared address only, and start names the variable it sends, never the value. Only `--moduleSandbox enforce` or `audit` (to diagnose: audit watches what a pack reads and refuses its file writes outside its own area, but only reports, and does not stop, a process, a thread or native code it starts; only enforce confines it; start says so) and `--locale` may be passed; every other option is refused. What one start writes is in `<home>/run/<host>-<pid>-<random>/`, removed when it ends |
+| `ch-local start --stdio [options]` | a session's own runtime: the installed runtime over stdio, in one per-user store under `<home>/store`, the sandbox enforced (on Windows too, with a runtime that has [countinghouse#195](https://github.com/mchen6/countinghouse/issues/195); with an older one, `audit`, said, until `ch-local upgrade`), no port. It loads each installed module that is on, allowed by the operator's ceiling, at its pins and with its credential in ch-local's store (never the environment), and your own modules under `enforce`; each one it doesn't load is said, with why. Each module's credential goes in a slot of its own, for its declared address only, and start names the variable it sends, never the value. Only `--moduleSandbox enforce` or `audit` (to diagnose: under audit, countinghouse logs what a pack reads and refuses its file writes outside its own area; it does not stop a module that starts a process, a thread or native code: enforce refuses those; start says so) and `--locale` may be passed; every other option is refused. What one start writes is in `<home>/run/<host>-<pid>-<random>/`, removed when it ends |
 | `ch-local rollback [--yes]` | returns, in one step, to the release the last install replaced, which install keeps in `<home>/previous`: the runtime, packs and parts only; caches, usage records, settings, the identity secret and client entries are untouched. Running it again returns to the newer release. A pack the older release lacks stays recorded but is not loaded, and `status` says it needs the newer release. Undoing a release marked as a security fix names it, says what it fixed and asks, and without a terminal needs `--yes`. If one pack got worse, `remove-pack` it on the current release instead |
 | `ch-local credentials [list \| add <module> [--to <origin>] \| remove <module>]` | a module's key, in ch-local's store: `add` asks for it at a terminal without showing it, after saying where it will be sent (for GitHub it can offer your `gh` login); with `--to <origin>` it reads the key from stdin, and the origin must be the one the module declares. `list` shows each variable, its origin and its source, never a value; `remove` deletes one. A running shared runtime restarts to use the change |
 | `ch-local settings [get \| set <name> <value> \| reset]` | ch-local's settings; `settings modules [<module>]`, `settings set <module>.<setting> [<value>]` and `settings reset <module>[.<setting>]` for each module's own. A loosening is confirmed at a terminal, and every change is written to `<home>/history.jsonl` |
@@ -224,7 +224,9 @@ contract 2; 2026-11-15, the main branch's release build):
   npm fetches only this platform's `@countinghouse/ch-shim-<os>-<arch>`, at
   the version this launcher pins, checked by its integrity and provenance as
   each pack's tarballs are, and places it at `<home>/shim/ch-shim`. An
-  install with `--from` sets the shim aside. Client entries never name it:
+  install with `--from` places and records the folder's shim the same way,
+  checked by the sha512 its pins name; a folder with no shim for this
+  platform leaves the shim aside. Client entries never name it:
   `session` runs it. A source checkout uses `shim/target/release/ch-shim`
   (cargo's build), else the platform package in its own `node_modules`
   (`lib/shim-binary.js`).
@@ -242,9 +244,9 @@ running. The daemon holds the runtime for every session of this user.
   asked with `gh auth token` at each start), goes to the runtime in a slot
   of its own, `COUNTINGHOUSE_CREDENTIAL_<n>`, for that module and its
   declared address only. A key added or removed while it runs restarts its
-  runtime once the calls in flight finish, waiting for them at most 2
-  minutes and 2 seconds (the longest a call may take, and the answer's way
-  back). A
+  runtime once the calls in flight finish, waiting for them at most 55
+  seconds (so the other sessions keep theirs: a call still running then is
+  cut). A
   module without one isn't loaded; the runtime still starts, with
   ch-local's own tools, and `countinghouse_overview` lists the module as
   held back for a missing credential, with the command that adds it. No session's environment gives a credential, so no
@@ -252,8 +254,7 @@ running. The daemon holds the runtime for every session of this user.
 - **Installs and rollbacks are picked up while it runs.** `ch-local install`
   and `ch-local rollback` leave an upgrade request in
   `<home>/run/daemon/requests`. A daemon that's running then drains its
-  runtime (waiting for the calls in flight, at most 2 minutes and 2
-  seconds) and restarts
+  runtime (waiting for the calls in flight, at most 55 seconds) and restarts
   it on the release now in place. If ch-local itself
   changed, it hands over to a new daemon. Confirmed loosenings don't survive
   a hand-over (each session is told), and tightenings do.

@@ -53,6 +53,28 @@ const until = async (cond, ms = 10000) => {
 // the tests here are given it read already (ch-local's intermittent
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
+// The final pass on #134 (M1, L2): every notice a start tells, in every case
+// below, fits the runtime's 200-character notice cut at a user's home (the
+// launcher path as long as a typical one: test/notice-length.js), so no
+// command in it arrives cut. Checked after each test, for each start in it.
+const NOTICE_MAX = 200;
+const runs = [];
+test.afterEach(() => {
+  const {atRealisticHome} = require('./notice-length');
+  const long = [];
+  for (const requests of runs.splice(0)) {
+    // (a notice fitted to the cut -- its explanation cut, "…", before the
+    // command -- is measured as sent: fitted to its own launcher path; any
+    // other at a user's home)
+    for (const m of requests) {
+      if (m.type !== 'notice') continue;
+      const len = /…/.test(m.text) ? [...m.text].length : atRealisticHome(m.text);
+      if (len > NOTICE_MAX) long.push(`${len}: ${m.text}`);
+    }
+  }
+  assert.deepStrictEqual(long, [], 'a notice past the runtime\'s cut');
+});
+
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null, deep = false,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null, heldRetryMs = null} = {}) {
   // (deep: a home whose launcher path is as long as a user's, or longer:
@@ -100,6 +122,7 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   const done = start({passThrough, session: shared ? {home, socket: path.join(home, 'run', 'daemon', 's')} : null}, f);
   await until(() => end != null);
   const runDir = () => path.join(home, 'run', fs.readdirSync(path.join(home, 'run'))[0]);
+  runs.push(requests);
   return {home, r, f, requests, cmd, done, args: () => spawnedArgs, end: () => end(0), runDir, ask: (m) => listener(m),
     history: () => (fs.existsSync(path.join(home, 'history.jsonl')) ? fs.readFileSync(path.join(home, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [])};
 }
@@ -355,7 +378,7 @@ test('while running: an outside edit is said and recorded once; a raise is sent 
   assert.deepStrictEqual(outside, ['maxOutputBytes', 'pack.ci-failure-triage']);
   // turned back on by hand: the ceiling forbids turning a pack on, so it stays off
   fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024, 'pack.ci-failure-triage': true}}));
-  await until(() => /pack\.ci-failure-triage was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: pack\.ci-failure-triage cannot be changed to on on this machine: its operator's ceiling forbids it/.test(s.f.err));
+  await until(() => /pack\.ci-failure-triage was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: its operator's ceiling forbids it/.test(s.f.err));
   assert.ok(!s.requests.some((m) => m.type === 'load'), 'not loaded');
   } finally {
     s.end();
@@ -2045,7 +2068,7 @@ test('an own module the runtime refuses: held back as refused with its code, its
     writeOwnRecord(a.where, {v: 1, modules: {'my-tool': b.entry}});
     await until(() => ownAsks(s).filter((m) => m.type === 'load').length === 2);
     s.ask({type: 'module-stopped', name: 'my-tool', code: 'MODULE_INVALID', when: 'start'});
-    const said = `my-tool, your own module, is not loaded: this release's runtime refuses it (MODULE_INVALID); \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'status')}\` says why, \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'remove-module my-tool')}\` removes it`;
+    const said = `my-tool, your own module, is not loaded: this release's runtime refuses it (MODULE_INVALID); \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'status')}\` says why and how to remove it`;
     await until(() => notices(s).some(([, t]) => t === said));
     await until(() => held().some((m) => m.name === 'my-tool'));
     assert.deepStrictEqual(held().find((m) => m.name === 'my-tool'), {name: 'my-tool', reason: 'refused', code: 'MODULE_INVALID'});
