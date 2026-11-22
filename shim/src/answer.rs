@@ -91,13 +91,30 @@ pub fn unreachable(id: &[u8], reason: &str) -> Vec<u8> {
 /// a backtick, a dollar, a control character): the line keeps its words.
 pub fn status_command(root: &std::path::Path) -> Option<String> {
     let launcher = root.join("bin").join("ch-local.js");
+    // (only a launcher that is there: a partial install or a moved home
+    // names none -- the medium, 4)
+    if !launcher.is_file() {
+        return None;
+    }
     let s = launcher.to_str()?;
-    if s.chars()
-        .any(|c| c.is_control() || matches!(c, '"' | '`' | '$' | '%' | '!' | '\\') && !(cfg!(windows) && c == '\\'))
-    {
+    if s.chars().any(|c| unsafe_in_command(c) && !(cfg!(windows) && c == '\\')) {
         return None;
     }
     Some(format!("node \"{s}\" status"))
+}
+
+/// A character a terminal would not read plainly in a printed command:
+/// ch-local's own set (lib/command-line.js UNSAFE: quotes, a backtick, a
+/// dollar, a percent, a bang, a caret, the typographic quotes PowerShell
+/// reads as quotes, and the controls, bidi and invisible marks a terminal
+/// shows as nothing -- the medium, 1). Windows' backslash is its separator.
+fn unsafe_in_command(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '"' | '`' | '$' | '\\' | '%' | '!' | '^')
+        || matches!(c as u32,
+            0x00AD | 0x034F | 0x061C | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x180B..=0x180F
+            | 0x2018..=0x201F | 0x200B..=0x200F | 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2060..=0x2069
+            | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFFB | 0xE0000..=0xE007F)
 }
 
 /// unreachable, naming `status` (status_command) when it is given.
@@ -149,13 +166,27 @@ mod tests {
             let v: serde_json::Value = serde_json::from_slice(&a).unwrap();
             v["error"]["message"].as_str().unwrap().to_string()
         };
-        let plain = line("/home/u/.countinghouse");
+        // (a home with its launcher there)
+        let mut b = [0u8; 6];
+        getrandom::fill(&mut b).unwrap();
+        let root = std::env::temp_dir()
+            .join(format!("ch-shim-answer-{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()));
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin").join("ch-local.js"), "").unwrap();
+        let plain = line(root.to_str().unwrap());
         let want = format!(
             "if it keeps failing, run `node \"{}\" status` in your own terminal to see why",
-            std::path::Path::new("/home/u/.countinghouse").join("bin").join("ch-local.js").display()
+            root.join("bin").join("ch-local.js").display()
         );
+        let _ = std::fs::remove_dir_all(&root);
         assert!(plain.ends_with(&want), "{plain}");
-        let odd = line("/home/a\"b/.countinghouse");
-        assert!(odd.ends_with("if it keeps failing, countinghouse's status in your own terminal says why"), "{odd}");
+        let words = "if it keeps failing, countinghouse's status in your own terminal says why";
+        // (no launcher there: the words, never a command that fails)
+        assert!(line("/nonexistent-home-for-a-test/.countinghouse").ends_with(words));
+        // (a character a terminal would not read plainly: refused)
+        for c in ['"', '^', '\u{2019}', '\u{202e}', '\u{200b}'] {
+            assert!(unsafe_in_command(c), "{c:?}");
+        }
+        assert!(!unsafe_in_command('a') && !unsafe_in_command('/'));
     }
 }

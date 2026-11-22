@@ -44,7 +44,7 @@ test('asked at a terminal only: elsewhere refused, naming the command', async ()
   const dir = writeModule(path.join(base, 'work', 'mine'));
   const io = ioWith(home, [], false);
   assert.strictEqual(await addModule({dir}, io, {where}), 2);
-  assert.match(io.err, /add-module asks you, in your own terminal: run `.*add-module ".+mine"` there\./);
+  assert.match(io.err, /add-module asks you, in your own terminal: run `.*add-module ".+mine"`(?: \(with COUNTINGHOUSE_HOME set to "[^"]+"\))? there\./);
   assert.strictEqual(readOwnRecord(where), null);
 });
 
@@ -53,7 +53,7 @@ test('a terminal on standard input whose output is not one: refused, nothing ask
   const dir = writeModule(path.join(base, 'work', 'mine'));
   const io = Object.assign(ioWith(home, ['y']), {stdoutTTY: false});
   assert.strictEqual(await addModule({dir}, io, {where}), 2);
-  assert.match(io.err, /add-module asks you, in your own terminal: run `.*add-module ".+mine"` there\./);
+  assert.match(io.err, /add-module asks you, in your own terminal: run `.*add-module ".+mine"`(?: \(with COUNTINGHOUSE_HOME set to "[^"]+"\))? there\./);
   assert.deepStrictEqual(io.asked, []);
   assert.strictEqual(readOwnRecord(where), null);
 });
@@ -143,7 +143,7 @@ test('the sandbox set to audit, or one the runtime can\'t enforce here: refused 
   fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
   const io = ioWith(home, ['y']);
   assert.strictEqual(await addModule({dir}, io, {where}), 2);
-  assert.match(io.err, /Own modules run only with the sandbox enforced: run `.*settings set moduleSandbox enforce` first\./);
+  assert.match(io.err, /Own modules run only with the sandbox enforced: run `.*settings set moduleSandbox enforce`(?: \(with COUNTINGHOUSE_HOME set to "[^"]+"\))? first\./);
   assert.deepStrictEqual(io.asked, []);
   fs.rmSync(where.settings);
   // (an installed runtime without the virtual drive: no enforce on Windows)
@@ -279,7 +279,7 @@ test('nothing installed (no record): add-module says to install first; nothing c
   const dir = writeModule(path.join(base, 'work', 'mine'));
   const io = ioWith(home, ['y']);
   assert.strictEqual(await addModule({dir}, io, {where}), 2);
-  assert.match(io.err, /nothing is installed yet: run `.*install --pack <name>` first; your own modules run with what it installs\./);
+  assert.match(io.err, /nothing is installed yet: run `.*install --pack <name>`(?: \(with COUNTINGHOUSE_HOME set to "[^"]+"\))? first; your own modules run with what it installs\./);
   assert.deepStrictEqual(io.asked, []);
   assert.strictEqual(readOwnRecord(where), null);
 });

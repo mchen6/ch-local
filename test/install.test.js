@@ -1403,7 +1403,7 @@ test('install with no --pack and no network: one line naming install --from, and
     assert.strictEqual(await install({}, io2, {...ours(r), self: ALLOWLIST.self}), 1);
     const lines = io2.err.trim().split('\n').filter((l) => /npm registry|--from/.test(l));
     assert.strictEqual(lines.length, 1, io2.err);
-    assert.match(lines[0], new RegExp(`could not fetch this release from the npm registry \\(the packument of countinghouse could not be fetched \\(ENOTFOUND\\)\\); with no network, run \`${cmd(h, 'install --from <release directory>')}\` with this release's tarballs \\(its packs', its runtime's and this machine's shim's\\); nothing was installed`));
+    assert.match(lines[0], new RegExp(`could not fetch this release from the npm registry \\(the packument of countinghouse could not be fetched \\(ENOTFOUND\\)\\); with no network, run \`${cmd(h, 'install --from <release directory>')}\`(?: \\(with COUNTINGHOUSE_HOME set to "[^"]+"\\))? with this release's tarballs \\(its packs', its runtime's and this machine's shim's\\); nothing was installed`));
   } finally {
     nr.fetchRelease = real;
   }
@@ -1591,7 +1591,7 @@ test('install with no --pack: an interrupted rollback says rollback, before the 
   fs.writeFileSync(layout({COUNTINGHOUSE_HOME: h}).journal, '{}');
   const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await install({from: r.from}, io2, ours(r)), 1);
-  assert.match(io2.err, new RegExp(`a rollback was interrupted; run \`${cmd(h, 'rollback')}\` to finish it; nothing was installed`));
+  assert.match(io2.err, new RegExp(`a rollback was interrupted; run \`${cmd(h, 'rollback')}\`(?: \\(with COUNTINGHOUSE_HOME set to "[^"]+"\\))? to finish it; nothing was installed`));
   assert.doesNotMatch(io2.err, /sets this record aside/);
 });
 

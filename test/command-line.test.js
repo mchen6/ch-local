@@ -192,7 +192,8 @@ test('the pin\'s reading of a template: nested braces, a } in a literal, an empt
 test('every ch-local command a hint prints parses as the command line takes it', () => {
   const {parseCommand} = require('../bin/ch-local.js');
   // (chLocalSelf's commands too: the running ch-local's own)
-  const CALL = /(?:chLocal(?:Self)?|npxLatest)\(\s*[^,()]+,\s*(['`])((?:\\.|(?!\1)[^\\])*)\1/g;
+  // (hintCommand's too: the hints it prints are chLocal's, with Windows' home words)
+  const CALL = /(?:chLocal(?:Self)?|npxLatest|hintCommand)\(\s*[^,()]+,\s*(['`])((?:\\.|(?!\1)[^\\])*)\1/g;
   // (every .js under lib/, its subdirectories too, and the CLI)
   const walk = (d) => fs.readdirSync(d, {withFileTypes: true}).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith('.js') && e.name !== 'command-line.js' ? [path.join(d, e.name)] : []);
   const files = [...walk(LIB), BIN];
@@ -203,7 +204,7 @@ test('every ch-local command a hint prints parses as the command line takes it',
     const text = fs.readFileSync(file, 'utf8');
     // a call the pattern can't read (a first argument with ( or ,, a
     // command that is not a literal) is a failure too, the medium's 8
-    const calls = (text.match(/\b(?:chLocal(?:Self)?|npxLatest)\(/g) || []).length - (text.match(/function (?:chLocal(?:Self)?|npxLatest)\(/g) || []).length;
+    const calls = (text.match(/\b(?:chLocal(?:Self)?|npxLatest|hintCommand)\(/g) || []).length - (text.match(/function (?:chLocal(?:Self)?|npxLatest|hintCommand)\(/g) || []).length;
     const read = [...text.matchAll(CALL)].length;
     if (read !== calls) unread.push(`${path.relative(LIB, file)}: ${calls - read} chLocal call(s) not read`);
     for (const m of text.matchAll(CALL)) {
@@ -264,4 +265,11 @@ test('hintCommand: the npx form names a non-default home on every platform; the 
   assert.strictEqual(hintCommand(w, 'install --pack <name>', 'win32'), '`npx @countinghouse/ch-local install --pack <name>` (with COUNTINGHOUSE_HOME set to "D:\\ch")');
   assert.strictEqual(hintCommand({home: '/home/dev/ch'}, 'status', 'linux'), '`COUNTINGHOUSE_HOME="/home/dev/ch" npx @countinghouse/ch-local status`');
   assert.strictEqual(hintCommand(layout({}, require('node:os').homedir), 'status', 'linux'), '`npx @countinghouse/ch-local status`', 'the default home');
+  assert.strictEqual(hintCommand(layout({}, require('node:os').homedir), 'status', 'win32'), '`npx @countinghouse/ch-local status`', 'the default home on Windows: no words');
+  // (the launcher's form names its home: no words, on Windows either)
+  const h = tmp('ch-cmdline-hint-');
+  fs.mkdirSync(path.join(h, 'bin'));
+  fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), '');
+  const withLauncher = hintCommand(layout({COUNTINGHOUSE_HOME: h}), 'status', 'win32');
+  assert.ok(withLauncher.startsWith('`node "') && withLauncher.endsWith(' status`'), withLauncher);
 });
