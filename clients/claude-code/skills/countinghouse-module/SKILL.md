@@ -1,8 +1,8 @@
 ---
 name: countinghouse-module
-description: Use when writing a new countinghouse module, or when a user asks for a tool to be hosted on a countinghouse runtime. Covers decomposing a requirement into services and actions, the module file layout, and the validate/load/call loop.
+description: "Use when writing a new countinghouse module, or when a user asks for a tool to be hosted on a countinghouse runtime. Covers decomposing a requirement into services and actions, the module file layout, and checking it. On ch-local you never load a module yourself: the user adds it with add-module in their own terminal."
 ---
-<!-- Copied from countinghouse 279bd8412f04a88e80ed80b948bd23ecd8d5ee25, .claude/skills/countinghouse-module/SKILL.md; its doc references point at that commit. Re-copied with each release's countinghouse (docs/development/release-checklist.md); never edited here. -->
+<!-- Copied from countinghouse bb6c2ab3642ce80078fab9c30ea68d9030a7e1f0, .claude/skills/countinghouse-module/SKILL.md; its doc references point at that commit. Re-copied with each release's countinghouse (docs/development/release-checklist.md); never edited here. -->
 
 
 # Writing a countinghouse module
@@ -33,7 +33,7 @@ constraint, and encoding it is most of the value they came for.
 - **A chain belongs in a composite action**, not in the model. If the user's
   request is "read X, then check Y, then report" and the intermediate data is
   large or sensitive, that is one action calling others via `ctx.serviceClient`
-  — not three tools the model has to join. See `https://github.com/mchen6/countinghouse/blob/279bd8412f04a88e80ed80b948bd23ecd8d5ee25/docs/composite-tools.md`.
+  — not three tools the model has to join. See `https://github.com/mchen6/countinghouse/blob/bb6c2ab3642ce80078fab9c30ea68d9030a7e1f0/docs/composite-tools.md`.
 - **Name for a reader who has never seen it.** The action `description` is what
   an LLM reads to decide whether to call it, and an action with no description
   is skipped entirely when `tools/list` is built.
@@ -98,7 +98,7 @@ module.exports = async (input, ctx) => {
 };
 ```
 
-Full reference: `https://github.com/mchen6/countinghouse/blob/279bd8412f04a88e80ed80b948bd23ecd8d5ee25/docs/module-development.md`.
+Full reference: `https://github.com/mchen6/countinghouse/blob/bb6c2ab3642ce80078fab9c30ea68d9030a7e1f0/docs/module-development.md`.
 
 ## The loop
 
@@ -161,7 +161,7 @@ ends differently:
 
 ## When it does not appear in tools/list
 
-`https://github.com/mchen6/countinghouse/blob/279bd8412f04a88e80ed80b948bd23ecd8d5ee25/docs/module-development.md` has the full checklist. The five that account for
+`https://github.com/mchen6/countinghouse/blob/bb6c2ab3642ce80078fab9c30ea68d9030a7e1f0/docs/module-development.md` has the full checklist. The five that account for
 almost everything:
 
 1. `MODULE_LAYOUT_UNSUPPORTED` — a main entry (`"main"` or `index.js`) and no
