@@ -840,12 +840,14 @@ test('A5: ch-local restart said only as seen: asked of an earlier ch-local\'s da
     x = await run(500);
     assert.strictEqual(x.code, 1);
     assert.match(x.r.err, /could not start again \(it failed 5 times in 10 minutes\), so the sessions run their own runtimes for now; .*failed\.json records it$/m);
-    // (a reason the daemon never writes: a fixed word, never printed -- N5)
+    // (a reason the daemon never writes: ignored, as the shim ignores it --
+    // read by its rule, lib/failed-json.js -- and never printed: N5, and
+    // the medium on the closing pass, 1)
     plant();
     then = () => { fs.rmSync(file); fs.writeFileSync(path.join(dir, 'failed.json'), JSON.stringify({v: 1, at: Date.now(), exit: 1, signal: null, reason: '\u001b[31mplanted'}), {mode: 0o600}); };
     x = await run(500);
-    assert.match(x.r.err, /could not start again \(it failed\)/);
-    assert.doesNotMatch(x.r.err, /planted/);
+    assert.doesNotMatch(x.r.out + x.r.err, /planted|could not start again/);
+    assert.match(x.r.out, /stopped and has not started again/);
     fs.rmSync(path.join(dir, 'failed.json'));
     // (stopped: gone, no failed.json, no successor within the bound)
     plant();
@@ -1183,6 +1185,7 @@ test('M2: a refused read of the requests file is tried again, and its request is
     await s.nth(1);
     assert.strictEqual(refusals, 1, 'the first read was refused');
     assert.match(io.err, /a restart was asked for/);
+    assert.strictEqual((io.err.match(/the requests file could not be read \(EPERM\); trying again/g) || []).length, 1, 'said once, by its code');
     t.mock.restoreAll();
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);
@@ -1254,9 +1257,15 @@ test('L6: a stop signal while the daemon waits on start.lock for its first start
     let inside = false;
     const holding = withLockFile(path.join(dir, 'start.lock'), dir, io, async() => { inside = true; await held; });
     while (!inside) await tick();
+    // (the signal sent once the daemon has trapped signals, never after a
+    // fixed sleep: before or inside the lock wait, the same stop -- the
+    // medium on the closing pass, 9)
+    let trapped = false;
+    const trap = io.trapSignals;
+    io.trapSignals = (...a) => { trapped = true; return trap(...a); };
     const s = scripted(home);
     const done = daemon({home}, io, {run: s.run});
-    await tick(200);
+    while (!trapped) await tick();
     io.signal('SIGTERM');
     free();
     await holding;
@@ -1296,6 +1305,65 @@ test('L3: ch-local restart re-reads daemon.json only when it changed', async(t) 
     assert.ok(reads <= 3, `${reads} private reads of an unchanged daemon.json over 1.5 s`);
   } finally {
     t.mock.restoreAll();
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the medium on the closing pass, 2: with the socket already null (a
+// restart that never listened), clearSocket writes nothing, so the identity
+// check runs on its own: another daemon's daemon.json still stops this one
+test('L2: with the socket already null, a later end still finds daemon.json another daemon\'s and stops, never sleeping the backoff', async() => {
+  const {home, io} = setup();
+  try {
+    io.daemonBackoffMs = [0, 5000, 5000, 5000];
+    io.daemonReadyMs = 300;
+    const s = scripted(home);
+    s.delay = (n) => (n === 2 ? 60000 : 0);   // runtime 2 never listens
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    await one.exit(1);
+    await s.nth(1);
+    plantOther(home);
+    const t0 = Date.now();
+    const ended = await Promise.race([done.then(() => true), tick(4000).then(() => false)]);
+    if (!ended) { io.signal('SIGTERM'); for (const c of s.calls) await c.exit(0); await done; }
+    assert.ok(ended && Date.now() - t0 < 4000, `ended without sleeping the 5 s backoff: ${io.err}`);
+    assert.doesNotMatch(io.err, /restarting in 5 s/);
+    assert.match(io.err, /another daemon's now/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the medium on the closing pass, 3: a refusal that lasts is said once and
+// tried less often each time, never every retry for the daemon's life
+test('M2: a refusal that lasts is said once and retried less often each time', async(t) => {
+  const {home, io} = setup();
+  try {
+    io.daemonRefusedRetryMs = 100;
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    await adopted(home);
+    const pf = require('../lib/private-file');
+    const real = pf.readPrivateIn;
+    let reads = 0;
+    t.mock.method(pf, 'readPrivateIn', (dir, name, ...rest) => {
+      if (name === 'requests') { reads += 1; throw Object.assign(new Error('refused'), {code: 'EACCES'}); }
+      return real(dir, name, ...rest);
+    });
+    await requestRestart(home);
+    await tick(2000);
+    // (100, 200, 400, 800 ms between tries: about 5 reads in 2 s, never
+    // the 20 a fixed 100 ms retry would make)
+    assert.ok(reads >= 2 && reads <= 7, `${reads} reads in 2 s`);
+    assert.strictEqual((io.err.match(/the requests file could not be read \(EACCES\); trying again/g) || []).length, 1);
+    assert.strictEqual(s.calls.length, 1, 'nothing acted on while it cannot be read');
+    t.mock.restoreAll();
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
 });

@@ -478,8 +478,12 @@ test('--from with this platform\'s shim in the folder: placed by its pinned sha5
   const runDir = path.join(h, 'run', 'daemon');
   fs.chmodSync(path.join(h, 'run'), 0o700);
   fs.chmodSync(runDir, 0o700);
-  fs.writeFileSync(path.join(runDir, 'failed.json'), JSON.stringify({v: 1, at: Date.parse('2026-11-22T10:00:00Z'), exit: 1, signal: null, reason: 'restarts-exhausted'}), {mode: 0o600});
+  fs.writeFileSync(path.join(runDir, 'failed.json'), JSON.stringify({v: 1, at: Date.now(), exit: 1, signal: null, reason: 'restarts-exhausted'}), {mode: 0o600});
   if (process.platform !== 'win32') assert.match(await statusOf(), /^the shared runtime: gave up \(it failed 5 times in 10 minutes\); the sessions run their own runtimes for now$/m);
+  // (one a session would ignore -- stale -- is no "gave up", as the shim
+  // reads it: the medium on the closing pass, 1)
+  fs.writeFileSync(path.join(runDir, 'failed.json'), JSON.stringify({v: 1, at: Date.now() - 600001, exit: 1, signal: null, reason: 'restarts-exhausted'}), {mode: 0o600});
+  assert.match(await statusOf(), /^the shared runtime: not running; the next session starts it$/m);
   fs.rmSync(path.join(runDir, 'failed.json'));
   const d = require('../lib/daemon');
   const realServing = d.daemonServing;
