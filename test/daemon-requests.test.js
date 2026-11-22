@@ -119,3 +119,30 @@ test('Windows (injected): a daemon directory whose DACL is not private gets no r
     fs.rmSync(h, {recursive: true, force: true});
   }
 });
+
+// A2 (the final pass): the daemon polls its requests every second, and on
+// Windows each private read is two synchronous PowerShell runs (its folder's
+// ACL and the file's), 1 to 10 s each. A stat comes first: nothing has grown
+// past the offset, nothing is read.
+test('readRequests stats first: a file that has not grown past the offset, or is not there, is not read', {skip: process.platform === 'win32'}, async (t) => {
+  const h = home();
+  try {
+    const pf = require('../lib/private-file');
+    const real = pf.readPrivateIn;
+    let reads = 0;
+    t.mock.method(pf, 'readPrivateIn', (...a) => { reads += 1; return real(...a); });
+    assert.deepStrictEqual(readRequests(h, 0), {requests: [], offset: 0}, 'no file yet');
+    assert.strictEqual(reads, 0, 'nothing to read');
+    await requestUpgrade(h, {now: () => 1});
+    const a = readRequests(h, 0);
+    assert.deepStrictEqual([a.requests, reads], [[{op: 'upgrade', at: 1}], 1]);
+    assert.deepStrictEqual(readRequests(h, a.offset), {requests: [], offset: a.offset});
+    assert.strictEqual(reads, 1, 'not grown: not read');
+    await requestUpgrade(h, {now: () => 2});
+    assert.deepStrictEqual(readRequests(h, a.offset).requests, [{op: 'upgrade', at: 2}]);
+    assert.strictEqual(reads, 2, 'grown: read, by the private-file checks');
+    // (emptied, as emptyRequests leaves it: smaller than the offset, read)
+    fs.truncateSync(file(h), 0);
+    assert.deepStrictEqual(readRequests(h, a.offset).offset, 0);
+  } finally { fs.rmSync(h, {recursive: true, force: true}); }
+});
