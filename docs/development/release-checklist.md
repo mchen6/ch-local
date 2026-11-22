@@ -57,7 +57,9 @@ The checks are grouped. Within a group, the order doesn't matter.
      `test/sandbox/60-audit-writes.js`, and one hand start's stderr.
 7. **Uninstall leaves nothing.**
    - How: the acceptance run's last check, plus one hand uninstall on each
-     system. Answer yes, then check the home is gone.
+     system. Close the clients first: while the shared runtime still serves,
+     uninstall removes nothing and says so, and the runtime stops 10 minutes
+     after the last client closes. Answer yes, then check the home is gone.
    - Check: `<home>` no longer exists. The client entries ch-local wrote
      are removed, and no others are touched.
    - Evidence: the acceptance report's "uninstall leaves nothing" check,
