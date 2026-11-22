@@ -1,8 +1,9 @@
 //! The runtime's secret: read from its file (64 lowercase hex characters,
 //! optionally followed by one newline), held as a Secret that never prints
 //! and is zeroed when dropped. The owner and mode checks on the file and
-//! its directory, and the reading of it, are the trust module's (the next
-//! change); parse is the only way to make a Secret.
+//! its directory, and the reading of it, are the trust module's
+//! (`config.rs` reads it with `trust::read_private_in`); parse is the only
+//! way to make a Secret.
 
 use zeroize::Zeroize;
 

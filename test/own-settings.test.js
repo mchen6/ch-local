@@ -1,6 +1,6 @@
 'use strict';
 require('./tmp-dirs');
-// B-own-settings (Matt 2026-11-20: own-module settings are adjustable in
+// B-own-settings (the maintainer's decision: own-module settings are adjustable in
 // release 1): `ch-local settings modules/set/reset` for the user's own
 // modules, the declaration read from the module's checked copy (own.json's
 // tree), under the same rules as a pack's: the installed runtime's reader,

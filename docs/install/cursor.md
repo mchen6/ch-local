@@ -1,9 +1,13 @@
 # Cursor
 
+`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"`.
+
 ## Add
 
 `ch-local snippet cursor` prints the entry for this machine. Merge it into
-`~/.cursor/mcp.json` (every project) or `.cursor/mcp.json` (one project),
+`~/.cursor/mcp.json` (every project; the file `ch-local add cursor` writes,
+checked by hand against Cursor's MCP docs, November 2026) or
+`.cursor/mcp.json` (one project),
 under `mcpServers`:
 
     {
@@ -57,7 +61,8 @@ reads one line from standard input.
 ## Node
 
 The entry names the absolute path of your Node. An nvm or system Node upgrade
-changes that path: run `ch-local snippet cursor` again and replace the entry.
+changes that path: run `ch-local add cursor` again (or `ch-local snippet cursor`,
+and replace the entry). Run `ch-local install` once too, so the shared runtime starts with the new Node.
 
 ## Remove
 

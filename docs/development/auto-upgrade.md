@@ -1,8 +1,9 @@
 # Upgrades from npm: `ch-local upgrade` and automatic upgrades
 
-A design note, for review before the build. Today `ch-local upgrade` shows
-the versions and asks, and the automatic check only announces; neither
-installs anything. This note covers the install step both will share.
+A design note, now built: `ch-local upgrade` and the automatic upgrade both
+install from npm, through `install`'s one step. Nothing installs until a
+release is published and pinned. This note covers that step and what each
+of them adds around it.
 
 ## What the maintainer decided
 
@@ -304,8 +305,10 @@ A pin without all five is refused.
 
 ## Announcements: every outcome
 
-Each outcome is one line on the session's stderr (start's notice, which the
-runtime shows the session once), and one `history.jsonl` record:
+Each outcome is one line on stderr, and one `history.jsonl` record. The
+line is start's own stderr, never a client notice: in a session's own
+runtime it reaches the client's log, and under the shared runtime, whose
+daemon's stderr goes nowhere, the history alone has it. The record is:
 `{kind: "upgrade", how: "auto" | "cli", outcome, from, to, reason}`. A
 failure changes nothing that's installed.
 
@@ -400,17 +403,21 @@ included (as the acceptance run's security review showed). So:
 
 ## Turning it on
 
-- `ch-local install` asks once, after a successful install, at a terminal
-  only (stdin and stdout both TTYs): `Turn on automatic upgrades? They
-  install new versions of ch-local and its packs, checked as above, 72 hours
-  after each is published. (yes/no)`.
-  - Only `yes` turns them on, through `cliSet`, under the operator's
+- `ch-local install --pack <name>` asks once, after a successful install,
+  with the setting unset, at a terminal only (stdin a TTY). It says on
+  stdout: `Automatic upgrades install new versions of ch-local and its
+  packs, each checked by its pin and its provenance, 72 hours after each is
+  published; <rollback> undoes one.` It then asks, on stderr, as every
+  loosening is asked: `Loosen autoUpgrade from off to on? This is kept until
+  you change it back. [y/N]`.
+  - `y` or `yes` turns them on, through `cliSet`, under the operator's
     ceiling.
-  - Anything else, or no terminal, leaves them off. With no terminal, the
-    install says: `automatic upgrades are off (no terminal to ask); ch-local
-    upgrade --auto on turns them on`.
-- It's asked again only after an install that found the setting unset, never
-  after an answer.
+  - Any other answer stores off, never asked again (so does a settings
+    file busy or unreadable at that moment). A refusal by the operator's
+    ceiling leaves it unset, so the next install asks again. With
+    no terminal, the install says: `automatic upgrades are off (no terminal
+    to ask); ch-local upgrade --auto on turns them on`, and leaves it unset.
+- A bare `install` and `add-pack` never ask.
 - `ch-local upgrade --auto on|off` stays as it is.
 
 ## Rollback
@@ -426,8 +433,9 @@ included (as the acceptance run's security review showed). So:
 
 - **One session's own runtime:** start's check runs the child under
   `packs.lock`.
-  - The running runtime keeps the release it started with.
-  - Packs that changed are reloaded in place, as an install does now.
+  - The running runtime keeps the release it started with: under another
+    release's record it reloads nothing, unloads only what the new release
+    withdrew or moved back, and says to restart the client.
   - A runtime or ch-local change applies at the session's next start,
     announced as such.
 - **Under the shared runtime:** the daemon's check runs the same child.
