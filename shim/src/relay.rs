@@ -74,6 +74,8 @@ pub struct Setup {
 #[derive(Clone, Copy, Debug)]
 pub struct Timing {
     pub attach: Duration,
+    /// The first attach's, once it has itself started the daemon.
+    pub cold_attach: Duration,
     pub retry_unit: Duration,
     /// After stdin's EOF, how long answers are still relayed.
     pub closing: Duration,
@@ -87,12 +89,18 @@ impl Default for Timing {
     fn default() -> Timing {
         Timing {
             attach: attach::BUDGET,
+            cold_attach: attach::COLD_BUDGET,
             retry_unit: Duration::from_secs(1),
             closing: CLOSING_GRACE,
             settle: SETTLE_DEADLINE,
             barrier: STDOUT_BARRIER,
         }
     }
+}
+
+/// The longer budget, for the first attach only.
+fn first_attach_budget(first: &mut bool, cold: Duration) -> Option<Duration> {
+    std::mem::take(first).then_some(cold)
 }
 
 enum Ev {
@@ -152,6 +160,8 @@ pub struct Relay {
     replays: u64,
     reconnecting: bool,
     retries: usize,
+    /// No attach made yet: the next is the one a cold start may extend.
+    first_attach: bool,
     stdin_done: bool,
     /// When this connection was welcomed, and how many connections in a
     /// row were lost soon after: the backoff before attaching again.
@@ -281,6 +291,7 @@ impl Relay {
             replays: 0,
             reconnecting: false,
             retries: 0,
+            first_attach: true,
             stdin_done: false,
             attached_at: None,
             quick_losses: 0,
@@ -329,8 +340,16 @@ impl Relay {
         self.state = if matches!(self.state, State::Closing(_)) { return } else { State::Attaching };
         let (tx, home, resume, budget) =
             (self.tx.clone(), self.setup.home.clone(), self.resume.clone(), self.setup.timing.attach);
+        // (only the process's first attach: a re-attach that happens to start
+        // a daemon keeps its budget)
+        let cold = first_attach_budget(&mut self.first_attach, self.setup.timing.cold_attach);
         thread::spawn(move || {
-            let _ = tx.send(Ev::Attached(attach::attach_within(&home, resume.as_deref(), Instant::now() + budget)));
+            let now = Instant::now();
+            let got = match cold {
+                Some(c) => attach::attach_first(&home, resume.as_deref(), now + budget, now + c),
+                None => attach::attach_within(&home, resume.as_deref(), now + budget),
+            };
+            let _ = tx.send(Ev::Attached(got));
         });
     }
 
@@ -1784,6 +1803,15 @@ mod tests {
     }
 
     #[test]
+    fn only_the_first_attach_may_take_the_cold_budget() {
+        let mut first = true;
+        let cold = Duration::from_secs(28);
+        assert_eq!(first_attach_budget(&mut first, cold), Some(cold));
+        assert_eq!(first_attach_budget(&mut first, cold), None, "a re-attach keeps its budget");
+        assert_eq!(first_attach_budget(&mut first, cold), None);
+    }
+
+    #[test]
     fn unreachable_answers_each_request_then_a_background_retry_attaches() {
         let (home, sock) = home();
         // no socket yet; the stand-in daemon (the conditions script) starts
@@ -1792,6 +1820,7 @@ mod tests {
         let sink = Sink::default();
         let timing = Timing {
             attach: Duration::from_millis(400),
+            cold_attach: Duration::from_millis(400),
             retry_unit: Duration::from_millis(100),
             closing: CLOSING_GRACE,
             settle: SETTLE_DEADLINE,

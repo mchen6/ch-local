@@ -20,7 +20,10 @@
 //!   checked, a timeout: again after 100 ms to 2 s, randomised;
 //! - PROTOCOL, an unknown code, a file that fails its trust check: stop,
 //!   saying why;
-//! - 20 s gone: give up, saying the last reason.
+//! - 20 s gone: give up, saying the last reason. Only the first attach of a
+//!   shim that itself started the daemon may go on to COLD_BUDGET: that daemon
+//!   and its runtime are starting from nothing, and on a busy machine take
+//!   longer than 20 s (the dry run, 11-22).
 
 use std::fmt;
 use std::io;
@@ -37,6 +40,12 @@ use crate::trust::TrustKind;
 
 /// How long an attach may take in all.
 pub const BUDGET: Duration = Duration::from_secs(20);
+/// How long the first attach of a shim that itself started the daemon may
+/// take: under Claude Code's 30 s for a stdio server's connection, which also
+/// covers its one retry, with 2 s for the answer to reach it. Past BUDGET a
+/// give-up there leaves the retry too little time, and the server failed for
+/// the session (measured on 2.1.330, the dry run, 11-22).
+pub const COLD_BUDGET: Duration = Duration::from_secs(28);
 /// The longest one connect and handshake may take.
 const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 /// The pause before the files are read again after a wrong proof.
@@ -68,7 +77,7 @@ impl fmt::Display for AttachError {
         match self {
             AttachError::Stop(why) => write!(f, "{why}"),
             AttachError::SharedFailed(r) => write!(f, "the shared runtime failed ({r})"),
-            AttachError::GaveUp(why) => write!(f, "no answer within {} s ({why})", BUDGET.as_secs()),
+            AttachError::GaveUp(why) => write!(f, "no answer within {why}"),
         }
     }
 }
@@ -142,12 +151,41 @@ pub fn startup_fallback(home: &Home) -> Option<crate::failed::Reason> {
 }
 
 pub fn attach_within(home: &Home, resume: Option<&str>, deadline: Instant) -> Result<Attached, AttachError> {
+    attach_until(home, resume, deadline, None)
+}
+
+/// A shim's first attach: `deadline`, or `cold` once this attach has itself
+/// started the daemon. A daemon found running, or one another session is
+/// starting, keeps `deadline`.
+pub fn attach_first(
+    home: &Home,
+    resume: Option<&str>,
+    deadline: Instant,
+    cold: Instant,
+) -> Result<Attached, AttachError> {
+    attach_until(home, resume, deadline, Some(cold))
+}
+
+fn attach_until(
+    home: &Home,
+    resume: Option<&str>,
+    deadline: Instant,
+    cold: Option<Instant>,
+) -> Result<Attached, AttachError> {
+    let mut deadline = deadline;
+    let mut budget = BUDGET;
     let mut resume = resume.map(String::from);
     let mut spawned = false;
     let mut last = String::from("not tried");
-    let pause = |d: Duration| thread::sleep(d.min(deadline.saturating_duration_since(Instant::now())));
     while Instant::now() < deadline {
-        match try_once(home, resume.as_deref(), deadline, &mut spawned) {
+        let tried = try_once(home, resume.as_deref(), deadline, &mut spawned);
+        if let (true, Some(c)) = (spawned, cold) {
+            deadline = deadline.max(c);
+            budget = COLD_BUDGET;
+        }
+        let until = deadline;
+        let pause = |d: Duration| thread::sleep(d.min(until.saturating_duration_since(Instant::now())));
+        match tried {
             Ok((conn, welcome)) => return Ok(Attached { conn, welcome, new_session: resume.is_none() }),
             Err(Next::NewSession) if resume.is_some() => resume = None,
             Err(Next::NewSession) => {
@@ -170,7 +208,7 @@ pub fn attach_within(home: &Home, resume: Option<&str>, deadline: Instant) -> Re
             }
         }
     }
-    Err(AttachError::GaveUp(last))
+    Err(AttachError::GaveUp(format!("{} s ({last})", budget.as_secs())))
 }
 
 /// No reachable daemon: start one, once per attach.
@@ -492,6 +530,100 @@ mod tests {
             "seen at the next poll, not the budget's end: {:?}",
             started.elapsed()
         );
+    }
+
+    // The cold start (the dry run, 11-22): only the FIRST attach of a shim that
+    // itself started the daemon may wait past BUDGET, up to COLD_BUDGET. Each
+    // other attach keeps its own deadline, so the contract's "attaches within
+    // its 20 s" stays true for them.
+    fn stand_in_daemon(t: &TestHome) -> std::path::PathBuf {
+        let script = t.home.root().join("fake-ch-local.sh");
+        let spawned = t.home.root().join("spawned");
+        fs::write(&script, format!("touch '{}'\n", spawned.display())).unwrap();
+        let shim = serde_json::json!({"node": "/bin/sh", "chLocal": script, "env": {"PATH": "/usr/bin:/bin", "HOME": t.home.root()}});
+        private(&t.home.shim_json(), shim.to_string().as_bytes());
+        spawned
+    }
+
+    #[test]
+    fn the_first_attach_of_a_shim_that_started_the_daemon_waits_to_the_cold_deadline() {
+        let t = home();
+        let spawned = stand_in_daemon(&t);
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_millis(400), now + Duration::from_millis(1400));
+        assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
+        assert!(now.elapsed() >= Duration::from_millis(1300), "it waited past the plain deadline: {:?}", now.elapsed());
+        assert!(spawned.exists(), "it started the daemon");
+        assert!(r.err().unwrap().to_string().starts_with(&format!("no answer within {} s", COLD_BUDGET.as_secs())));
+    }
+
+    /// The point of it: a daemon that comes up after the plain deadline, and
+    /// before the cold one, is attached to.
+    #[test]
+    fn a_daemon_that_listens_after_the_plain_deadline_is_attached_to() {
+        let t = home();
+        let spawned = stand_in_daemon(&t);
+        let key = [7u8; 32];
+        let root = t.home.clone();
+        let late = std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(10);
+            while !spawned.exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::thread::sleep(Duration::from_millis(700));
+            write_secret(&root, &key);
+            write_daemon_json(&root);
+            fake_runtime(&root, key, vec![Reply::Welcome])
+        });
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_millis(400), now + Duration::from_secs(6));
+        let _rx = late.join().unwrap();
+        assert!(r.is_ok(), "{:?}", r.as_ref().err());
+        assert!(now.elapsed() > Duration::from_millis(400), "past the plain deadline: {:?}", now.elapsed());
+    }
+
+    #[test]
+    fn a_first_attach_that_found_a_daemon_running_keeps_its_deadline() {
+        let replies = (0..60).map(|_| Reply::Refuse("BUSY")).collect();
+        let (t, _rx) = ready(replies);
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_millis(400), now + Duration::from_millis(3000));
+        assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
+        assert!(now.elapsed() < Duration::from_millis(2500), "the plain deadline: {:?}", now.elapsed());
+        assert!(r.err().unwrap().to_string().starts_with(&format!("no answer within {} s", BUDGET.as_secs())));
+    }
+
+    #[test]
+    fn a_second_session_during_the_same_cold_start_keeps_its_deadline() {
+        let t = home();
+        let spawned = stand_in_daemon(&t);
+        fs::create_dir_all(t.home.run_dir()).unwrap();
+        fs::set_permissions(t.home.run_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+        // (the first session's daemon holds start.lock while it starts)
+        let held = crate::lock::acquire(&t.home.start_lock(), Instant::now() + Duration::from_secs(2)).unwrap();
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_millis(400), now + Duration::from_millis(3000));
+        drop(held);
+        assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
+        assert!(now.elapsed() < Duration::from_millis(2500), "the plain deadline: {:?}", now.elapsed());
+        assert!(!spawned.exists(), "it started nothing");
+    }
+
+    #[test]
+    fn a_re_attach_that_happens_to_start_a_daemon_keeps_its_deadline() {
+        let t = home();
+        let spawned = stand_in_daemon(&t);
+        let now = Instant::now();
+        let r = attach_within(&t.home, None, now + Duration::from_millis(500));
+        assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
+        assert!(now.elapsed() < Duration::from_millis(1400), "its own deadline: {:?}", now.elapsed());
+        assert!(spawned.exists(), "it did start one");
+        assert!(r.err().unwrap().to_string().starts_with(&format!("no answer within {} s", BUDGET.as_secs())));
+    }
+
+    #[test]
+    fn the_cold_budget_fits_under_the_clients_thirty_seconds() {
+        assert_eq!((BUDGET.as_secs(), COLD_BUDGET.as_secs()), (20, 28));
     }
 
     #[test]
