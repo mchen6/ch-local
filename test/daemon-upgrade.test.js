@@ -102,6 +102,31 @@ test('the runtime changed: drained, stopped, and the new one started with the ta
   }
 });
 
+// A9 (the medium on its round, 2): a daemon waiting on start.lock while an
+// uninstall removes the run directory starts nothing, and makes no home again
+test('A9: a daemon whose run directory goes while it waits on start.lock starts nothing, and makes no run directory again', async() => {
+  const {home, io} = setup();
+  try {
+    const {withLockFile} = require('../lib/lock');
+    const dir = runDirOf(home);
+    fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+    let release = null;
+    const held = withLockFile(path.join(dir, 'start.lock'), dir, io, () => new Promise((r) => { release = r; }), {wait: true});
+    while (release == null) await tick();
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await tick(200);
+    fs.rmSync(path.join(home, 'run'), {recursive: true, force: true});
+    release(0);
+    await held;
+    assert.strictEqual(await done, 0);
+    assert.strictEqual(s.calls.length, 0, 'no runtime started');
+    assert.match(io.err, /the home's run directory was removed \(an uninstall\): not starting/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('an upgrade request with nothing changed does nothing', async() => {
   const {home, io} = setup();
   try {

@@ -212,11 +212,11 @@ test('uninstall removes a leftover packs.lock with the program, and waits for no
 // socket daemon.json names proves the secret), refuses the removal; anything
 // else is stale. Then start.lock, packs.lock: the daemon's own order.
 const runDaemon = (h) => path.join(h, 'run', 'daemon');
-function plantDaemon(h, {socket = path.join(runDaemon(h), 'sessions.sock'), secret = true} = {}) {
+function plantDaemon(h, {socket = path.join(runDaemon(h), 'sessions.sock'), secret = true, started = new Date().toISOString()} = {}) {
   fs.mkdirSync(runDaemon(h), {recursive: true, mode: 0o700});
   fs.chmodSync(path.join(h, 'run'), 0o700);
   fs.chmodSync(runDaemon(h), 0o700);
-  fs.writeFileSync(path.join(runDaemon(h), 'daemon.json'), JSON.stringify({pid: 4242, socket}), {mode: 0o600});
+  fs.writeFileSync(path.join(runDaemon(h), 'daemon.json'), JSON.stringify({pid: 4242, socket, started}), {mode: 0o600});
   if (secret) fs.writeFileSync(path.join(runDaemon(h), 'secret'), require('node:crypto').randomBytes(32).toString('hex'), {mode: 0o600});
 }
 const SERVING = /^ch-local uninstall: the shared runtime is still serving; nothing was removed\. Close the clients that use countinghouse; it stops 10 minutes after the last one closes\. Then run `[^`]+uninstall` again\.$/m;
@@ -225,7 +225,7 @@ test('A9: a serving shared runtime refuses the removal: nothing removed, how to 
   const s = setup();
   try {
     plantDaemon(s.home);
-    t.mock.method(require('../lib/daemon'), 'daemonServing', async () => true);
+    t.mock.method(require('../lib/daemon'), 'daemonServing', async () => ({serving: true, pid: 4242}));
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 1);
     assert.match(u.err, SERVING);
@@ -239,7 +239,7 @@ test('A9: a daemon started while the prompt waits is judged after the yes: refus
   const s = setup();
   try {
     let up = false;
-    t.mock.method(require('../lib/daemon'), 'daemonServing', async () => up);
+    t.mock.method(require('../lib/daemon'), 'daemonServing', async () => ({serving: up, pid: 4242}));
     const u = io(s, ['yes']);
     const ask = u.ask;
     u.ask = async (q) => { plantDaemon(s.home); up = true; return ask(q); };
@@ -251,11 +251,11 @@ test('A9: a daemon started while the prompt waits is judged after the yes: refus
   }
 });
 
-test('A9: a daemon.json a crash left (a secret, nothing serving at its socket) is stale: removed as today', async () => {
+test('A9: a daemon.json a crash left (a secret, nothing serving at its socket, its pid gone) is stale: removed as today', async () => {
   const s = setup();
   try {
     plantDaemon(s.home);
-    const u = io(s, ['yes']);
+    const u = Object.assign(io(s, ['yes']), {alive: () => false});
     assert.strictEqual(await uninstall({}, u), 0, u.err);
     assert.ok(!fs.existsSync(s.home));
   } finally {
@@ -308,6 +308,47 @@ test('A9: the daemon\'s order, start.lock then packs.lock: a runtime starting un
     assert.deepStrictEqual(order, ['the runtime took packs.lock']);
     assert.ok(!fs.existsSync(s.home));
   } finally {
+    s.done();
+  }
+});
+
+test('A9: a daemon whose socket answers nothing but whose pid lives (draining, or between a crash and its restart) refuses the removal', async () => {
+  const s = setup();
+  try {
+    plantDaemon(s.home);
+    const u = Object.assign(io(s, ['yes']), {alive: (pid) => pid === 4242});
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, SERVING);
+    assert.ok(fs.existsSync(path.join(s.home, 'settings.json')), 'nothing removed');
+  } finally {
+    s.done();
+  }
+});
+
+test('A9: a daemon.json from before this boot is stale, its pid since reused', {skip: process.platform !== 'linux' && 'the boot time is read on Linux'}, async () => {
+  const s = setup();
+  try {
+    plantDaemon(s.home, {started: '2000-01-01T00:00:00.000Z'});
+    const u = Object.assign(io(s, ['yes']), {alive: () => true});
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    assert.ok(!fs.existsSync(s.home));
+  } finally {
+    s.done();
+  }
+});
+
+test('A9: run/ (where start.lock is held) goes last, after everything else', async (t) => {
+  const s = setup();
+  try {
+    const real = fs.rmSync;
+    const order = [];
+    t.mock.method(fs, 'rmSync', (p, o) => { if (path.dirname(String(p)) === s.home) order.push(path.basename(String(p))); return real(p, o); });
+    const u = Object.assign(io(s, ['yes']), {alive: () => false});
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    const at = order.indexOf('run');
+    assert.ok(at >= 0 && order.slice(at + 1).every((n) => !['app', 'node', 'bin', 'modules', 'store', 'settings.json'].includes(n)), order.join(' '));
+  } finally {
+    t.mock.restoreAll();
     s.done();
   }
 });
