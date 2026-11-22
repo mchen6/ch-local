@@ -924,6 +924,57 @@ test('a new pack taking a module at a version a refused reload could not move is
   await s.done;
 });
 
+// the medium on #147's last round, 1 and 3: in shared mode a clash names no
+// command (a pack turned on may be a loosening), and one that clears and
+// comes back is told again
+test('A5: in shared mode a clash is told with no command, and told again when it comes back', async () => {
+  const s = await running({shared: true, deep: true, answer: (m) => (m.type === 'reload' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  try {
+    const r2 = release({versions: {'@countinghouse/ch-access-github': '0.1.1'}, extra: {'@countinghouse/ch-pack-other': {countinghouse: {role: 'scenario', calls: ['ch-step-redact/redactService.redact', 'ch-step-other/otherService.go', 'ch-access-github/githubService.listRuns']}}}});
+    r2.allow.packs.other = {...r2.allow.packs.other, modules: [...r2.allow.packs.other.modules, '@countinghouse/ch-access-github']};
+    assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
+    const clash = () => notices(s).map(([, t]) => t).filter((t) => /^ch-pack-other not loaded in place: /.test(t));
+    await until(() => clash().length === 1);
+    assert.match(clash()[0], /^ch-pack-other not loaded in place: @countinghouse\/ch-access-github 0\.1\.1 is kept at 0\.1\.0 by ch-pack-ci-failure-triage; it applies when the shared runtime restarts$/);
+    assert.doesNotMatch(clash()[0], /`/);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
+    await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other' && e.reason === 'off'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true}}));
+    await until(() => clash().length === 2);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on #147's last round, 2: a moved-back unload refused in shared
+// mode at a deep home never cuts a command in half
+test('A5: in shared mode a refused moved-back unload is told whole, its command never cut', async () => {
+  // (a short code: the failure line's tail is shorter than the command's,
+  // where a second cut of a notice that ends in a command split it)
+  const s = await running({shared: true, deep: true, answer: (m) => (m.type === 'unload' ? {ok: false, code: 'NO'} : {ok: true})});
+  try {
+    s.f.selfVersion = '0.2.1';
+    editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null},
+      packs: {...r.packs, 'ci-failure-triage': {...r.packs['ci-failure-triage'], modules: {...r.packs['ci-failure-triage'].modules, '@countinghouse/ch-step-redact': '0.0.9'}}}}));
+    await until(() => notices(s).some(([, t]) => /was moved back to 0\.0\.9 .*not applied in place \(NO\)/.test(t)));
+    for (const [, t] of notices(s)) {
+      assert.ok([...t].length <= 200, `${[...t].length}: ${t}`);
+      assert.strictEqual((t.match(/`/g) || []).length % 2, 0, `a command cut: ${t}`);
+      if (/not applied in place/.test(t)) assert.doesNotMatch(t, /stopped until|\?node/, `a command cut: ${t}`);
+    }
+    // (the failure line is built on the explanation alone, never on the
+    // notice that already ends in a command)
+    assert.ok(notices(s).some(([, t]) => /^ch-step-redact was moved back to 0\.0\.9 by the rollback just made; [^`]*: not applied in place \(NO\); it applies when the shared runtime restarts$/.test(t)), JSON.stringify(notices(s)));
+    const sent = s.requests.find((m) => m.type === 'unload' && /was moved back/.test(m.notice || ''));
+    assert.match(sent.notice, /; stopped until `[^`]+ restart` is run$/, 'the unload\'s own notice keeps its command whole');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // module-stopped (#413 section 7.3; L2a): the runtime stopped a top-level
 // module for good. Out of what is loaded and of run.json's loaded, recorded
 // as stopped, told once, never loaded again in this start unless its active

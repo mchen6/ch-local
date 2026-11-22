@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const {requestUpgrade, readRequests} = require('../lib/daemon-requests');
+const {requestUpgrade, requestRestart, readRequests} = require('../lib/daemon-requests');
 
 const home = () => {
   const h = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-rq-')));
@@ -163,4 +163,22 @@ test('readRequests stats first: a file not there, at the offset, or at the size 
     fs.truncateSync(file(h), 0);
     assert.strictEqual(readRequests(h, a.offset).offset, 0);
   } finally { fs.rmSync(h, {recursive: true, force: true}); }
+});
+
+// the medium on #147's last round, 9: offsets are byte positions, whatever
+// a line holds (an invalid UTF-8 byte never shifts them)
+test('readRequests: a line with an invalid byte shifts no offset', {skip: process.platform === 'win32'}, async () => {
+  const h = home();
+  try {
+    await requestUpgrade(h, {now: () => 1});
+    fs.appendFileSync(file(h), Buffer.from([0xff, 0xfe, 0x0a]));
+    await requestRestart(h, {now: () => 2});
+    const size = fs.statSync(file(h)).size;
+    const a = readRequests(h, 0);
+    assert.deepStrictEqual(ops(a.requests), [{op: 'upgrade', at: 1}, {op: 'restart', at: 2}]);
+    assert.strictEqual(a.offset, size);
+    assert.strictEqual(a.requests[1].end, size);
+  } finally {
+    fs.rmSync(h, {recursive: true, force: true});
+  }
 });

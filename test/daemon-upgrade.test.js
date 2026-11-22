@@ -851,7 +851,7 @@ test('A5: ch-local restart said only as seen: asked of an earlier ch-local\'s da
     then = () => fs.rmSync(file);
     x = await run(500);
     assert.strictEqual(x.code, 0);
-    assert.match(x.r.out, /the shared runtime stopped; waiting up to 35 s for its successor/);
+    assert.match(x.r.out, /the shared runtime stopped; waiting up to 45 s for its successor/);
     assert.match(x.r.out, /the shared runtime stopped and has not started again; the next session starts it, with what is stored/);
     // (an idle stop waits only a daemon's start for a successor, not the
     // whole bound -- N1; and a successor seen after "gone" is a restart -- L5)
@@ -1007,6 +1007,62 @@ test('A5: ch-local restart while another start holds start.lock past its bound: 
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);
   } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the medium on #147's last round, 4: a version unreadable at the daemon's
+// start and readable now is a change, so an upgrade is taken up
+test('A5: a runtime version unreadable at the daemon\'s start and readable at the upgrade restarts onto it', async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    fs.writeFileSync(runtimePkg, '{half');
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    await adopted(home);
+    fs.writeFileSync(runtimePkg, JSON.stringify({name: 'countinghouse', version: '8.1.0'}));
+    await requestUpgrade(home);
+    await s.nth(1);
+    assert.match(io.err, /countinghouse unknown -> 8\.1\.0/);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the medium on #147's last round, 5 and 7: a daemon killed with its
+// daemon.json left, and one gone before the request, are never a promise
+test('A5: ch-local restart with the daemon gone at the bound, or before the request, promises nothing', async(t) => {
+  const {fakeIo} = require('./fake-io');
+  const {restart} = require('../lib/restart-command');
+  const d = require('../lib/daemon');
+  const rq = require('../lib/daemon-requests');
+  const {home} = setup();
+  try {
+    const dir = runDirOf(home);
+    fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+    const file = path.join(dir, 'daemon.json');
+    fs.writeFileSync(file, JSON.stringify({pid: process.pid, socket: path.join(dir, 'sessions.sock'), started: 's', runtimeStarted: 'r0'}), {mode: 0o600});
+    let serving = {serving: true, pid: process.pid, by: 'socket'};
+    t.mock.method(d, 'daemonServing', async() => serving);
+    let then = () => {};
+    t.mock.method(rq, 'requestRestart', async(h, o) => { then(); o.underLock(); return true; });
+    // (killed: daemon.json left, nothing serves at the bound)
+    then = () => { setTimeout(() => { serving = {serving: false, pid: null, by: 'pid'}; }, 50); };
+    let r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 400});
+    assert.strictEqual(await restart({}, r), 1);
+    assert.match(r.err, /the shared runtime's daemon has gone without restarting it; the next session starts it/);
+    assert.doesNotMatch(r.out, /it will once its calls finish/);
+    // (gone between the check and the request)
+    serving = {serving: true, pid: process.pid, by: 'socket'};
+    then = () => fs.rmSync(file);
+    r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 400});
+    assert.strictEqual(await restart({}, r), 0);
+    assert.match(r.out, /^the shared runtime stopped before the restart was asked for; the next session starts it, with what is stored$/m);
+  } finally {
+    t.mock.restoreAll();
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
