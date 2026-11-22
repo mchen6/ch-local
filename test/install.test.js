@@ -448,7 +448,8 @@ const EXE_HERE = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
 test('--from with this platform\'s shim in the folder: placed by its pinned sha512, recorded, and the one a session runs', async () => {
   const r = release(); const h = home();
   const s = folderShim(r);
-  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  // (this Node in shim.json, which a session checks before the shim: A3)
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {node: process.execPath});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, s)), 0, io.err);
   assert.ok(fs.readFileSync(path.join(h, 'shim', EXE_HERE)).equals(hostProgram()), 'the tarball\'s binary, placed');
   assert.deepStrictEqual(record(h).shim, {package: s.name, version: '0.5.0'});
@@ -461,14 +462,14 @@ test('--from with this platform\'s shim in the folder: placed by its pinned sha5
   await require('../lib/packs-command').status({}, st);
   assert.match(st.out, /^the shared runtime's shim, as recorded: 0\.5\.0$/m);
   // (again: the same shim, checked again, moves nothing)
-  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  const io2 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {node: process.execPath});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io2, withShim(r.allow, s)), 0, io2.err);
   assert.ok(!fs.existsSync(path.join(h, 'shim', 'ch-shim.previous')), 'the same binary moves nothing');
   // (a rebuilt folder at the same version: its bytes are placed, never the
   // one there kept by its version -- the medium, 1)
   const rebuilt = Buffer.concat([hostProgram(), Buffer.from('rebuilt')]);
   const s2 = folderShim(r, {body: rebuilt});
-  const io3 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  const io3 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {node: process.execPath});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io3, withShim(r.allow, s2)), 0, io3.err);
   assert.ok(fs.readFileSync(path.join(h, 'shim', EXE_HERE)).equals(rebuilt), 'the rebuilt binary, placed');
   assert.strictEqual(require('../lib/session').sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
@@ -497,7 +498,7 @@ test('--unreleased-pins with a shim in the folder (dogfood --release-dir): place
   // reviewer's high, F1)
   const s = folderShim(r, {version: '0.5.0-dev.0123456789ab'});
   const allow = {...r.allow, pins: {}, shim: {packages: SHIM_PACKAGES}, runtime: {...r.allow.runtime, lockfile: null}};
-  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()}), {node: process.execPath});
   const f = pinsFile(r, {pins: {...r.pins, [s.name]: s.pin}, runtimeLockfile: r.lockfile});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
   assert.deepStrictEqual(record(h).shim, {package: s.name, version: '0.5.0-dev.0123456789ab'});
