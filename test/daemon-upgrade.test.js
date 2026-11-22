@@ -35,8 +35,14 @@ function scripted(home) {
     const call = {opts, restore: opts.restore(), requests: [], ended: false};
     call.exit = async(code) => { if (call.ended) return; call.ended = true; await rt.close(); if (typeof r.onEnd === 'function') r.onEnd(call); end(code); };
     call.tell = (m) => opts.onTold(m);
-    // (r.hangDrain: this runtime never answers a drain request)
-    opts.onControl((msg) => { call.requests.push(msg); return (r.hangDrain && msg.type === 'drain') ? new Promise(() => {}) : Promise.resolve({ok: true}); });
+    // (r.hangDrain: this runtime never answers a drain request; r.drainReply:
+    // what it answers one with)
+    opts.onControl((msg) => {
+      call.requests.push(msg);
+      if (msg.type === 'drain' && r.hangDrain) return new Promise(() => {});
+      if (msg.type === 'drain' && r.drainReply != null) return Promise.resolve(r.drainReply);
+      return Promise.resolve({ok: true});
+    });
     opts.signal.addEventListener('abort', () => { call.exit(143); });
     r.calls.push(call);
     // r.delay: this runtime is slow to listen (ms)
@@ -474,11 +480,15 @@ test('A13: a restart\'s drain waits up to the bound, with a low timeout stored; 
   }
 });
 
-test('A13: a runtime that ends during the drain ends the wait: the upgrade goes on at once', async() => {
+// (the drain also waits for the loop to take that end before its caller
+// goes on; in one process the loop, waiting on the same end first, always
+// takes it first, so that order is guaranteed there, not tested here)
+test('A13: a runtime that ends during the drain ends the wait; that end counted once, and restarted once', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
     delete io.daemonDrainMs;
-    io.daemonDrainTimers = heldTimers();
+    const timers = heldTimers();
+    io.daemonDrainTimers = timers;
     const s = scripted(home);
     const done = daemon({home}, io, {run: s.run});
     const one = await s.nth(0);
@@ -487,11 +497,68 @@ test('A13: a runtime that ends during the drain ends the wait: the upgrade goes 
     await requestUpgrade(home);
     await drainSeen(one);
     await one.exit(1);
+    await s.nth(1);
     const until = Date.now() + 10000;
     while (JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).runtimeVersion !== '8.1.0' && Date.now() < until) await tick();
-    assert.strictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).runtimeVersion, '8.1.0', 'the upgrade finished, not held to the bound');
+    // (the wait ended on the runtime's end: its bound cleared, never fired)
+    assert.strictEqual(timers.cleared, 1, 'the drain\'s wait ended');
+    assert.strictEqual((io.err.match(/the shared runtime ended \(exit 1\)/g) || []).length, 1, 'the end counted by the loop');
+    await tick(300);
+    assert.strictEqual(s.calls.length, 2, 'restarted once: the upgrade found the loop\'s restart');
+    // (and the daemon reads requests again: the upgrade ended)
+    set(runtimePkg, '8.2.0');
+    await requestUpgrade(home);
+    const two = s.calls[1];
+    await drainSeen(two);
+    two.tell({type: 'drained'});
+    await s.nth(2);
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('A13: a drain the runtime answers refused waits only the unanswered bound, not the whole one', async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    io.daemonDrainMs = 60000;
+    io.daemonDrainUnansweredMs = 300;
+    const s = scripted(home);
+    s.drainReply = {ok: false, code: 'CONTROL_NO_ANSWER'};
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    await drainSeen(one);
+    const at = Date.now();
+    await s.nth(1, 5000);
+    assert.ok(Date.now() - at < 5000);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('A13: a daemon stopped during a ch-local upgrade\'s drain stays stopped: nothing handed over', async() => {
+  const {home, io, self, set} = setup();
+  try {
+    delete io.daemonDrainMs;
+    io.daemonDrainTimers = heldTimers();
+    let spawned = 0;
+    io.spawnDaemon = () => { spawned++; return true; };
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    set(self, '1.1.0');
+    await requestUpgrade(home);
+    await drainSeen(one);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+    assert.strictEqual(spawned, 0, 'no new daemon');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
