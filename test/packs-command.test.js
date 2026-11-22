@@ -204,7 +204,8 @@ test('a part at another version names a way forward that exists: a clean install
   // makes the newer one)
   const self = require('../lib/command-line').chLocalSelf(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}), 'install --pack ci-failure-triage --from <its directory>');
   const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`);
-  assert.match(io.err, new RegExp(`install the newer release with \`${reEsc(self)}\`, then add the pack with \`${cmd(s.home, 'add-pack other --from <its directory>')}\``));
+  const note = require('../lib/command-line').homeNote(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}));
+  assert.match(io.err, new RegExp(`install the newer release with \`${reEsc(self)}\`${reEsc(note)}, then add the pack with \`${cmd(s.home, 'add-pack other --from <its directory>')}\``));
   // (on Windows this ch-local's path names no home: the home said after it,
   // or the newer release goes to the default home -- the medium on the
   // closing pass, 1)
