@@ -119,3 +119,43 @@ test('Windows (injected): a daemon directory whose DACL is not private gets no r
     fs.rmSync(h, {recursive: true, force: true});
   }
 });
+
+// A2 (the final pass): the daemon polls its requests every second, and on
+// Windows each private read is two synchronous PowerShell runs (its folder's
+// ACL and the file's), 1 to 10 s each. A stat comes first: nothing has grown
+// past the offset, nothing is read.
+test('readRequests stats first: a file not there, at the offset, or at the size its last refused read saw, is not read', async (t) => {
+  const h = home();
+  try {
+    // (the private read itself stood in for, so this runs on Windows too,
+    // where the cost is: the medium on A2, 2)
+    const pf = require('../lib/private-file');
+    let reads = 0;
+    let refuse = false;
+    t.mock.method(pf, 'readPrivateIn', (dir, name) => { reads += 1; if (refuse) throw new Error('not private'); return fs.readFileSync(path.join(dir, name)); });
+    assert.deepStrictEqual(readRequests(h, 0), {requests: [], offset: 0, size: null}, 'no file yet');
+    assert.strictEqual(reads, 0, 'nothing to read');
+    const line = (at) => `${JSON.stringify({op: 'upgrade', at})}\n`;
+    fs.appendFileSync(file(h), line(1));
+    const a = readRequests(h, 0);
+    assert.deepStrictEqual([a.requests, reads], [[{op: 'upgrade', at: 1}], 1]);
+    assert.deepStrictEqual(readRequests(h, a.offset).requests, []);
+    assert.strictEqual(reads, 1, 'not grown: not read');
+    fs.appendFileSync(file(h), line(2));
+    assert.deepStrictEqual(readRequests(h, a.offset).requests, [{op: 'upgrade', at: 2}]);
+    assert.strictEqual(reads, 2, 'grown: read, by the private-file checks');
+    // (a read refused: at that size again, not read again; grown, read)
+    refuse = true;
+    fs.appendFileSync(file(h), line(3));
+    const b = readRequests(h, a.offset + line(2).length);
+    assert.deepStrictEqual([b.requests, reads], [[], 3]);
+    assert.deepStrictEqual(readRequests(h, a.offset + line(2).length, b.size).requests, []);
+    assert.strictEqual(reads, 3, 'the refused size again: not read');
+    refuse = false;
+    fs.appendFileSync(file(h), line(4));
+    assert.deepStrictEqual(readRequests(h, a.offset + line(2).length, b.size).requests, [{op: 'upgrade', at: 3}, {op: 'upgrade', at: 4}]);
+    // (emptied, as emptyRequests leaves it: smaller than the offset, read)
+    fs.truncateSync(file(h), 0);
+    assert.strictEqual(readRequests(h, a.offset).offset, 0);
+  } finally { fs.rmSync(h, {recursive: true, force: true}); }
+});

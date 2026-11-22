@@ -91,7 +91,13 @@ const choose = (h) => sessionChoice({where: layout({COUNTINGHOUSE_HOME: h}, os.h
 
 test('the shim only when the record names it and the file in place passes the checks; else the session\'s own runtime', {skip: NO_PROBE}, () => {
   const ok = home();
-  assert.deepStrictEqual(choose(ok), {shim: path.join(ok, 'shim', EXE), note: null});
+  // (an unreleased home, as these are: said even with the shim, F2)
+  assert.deepStrictEqual(choose(ok), {shim: path.join(ok, 'shim', EXE), note: `ch-local: ${require('../lib/pins').UNRELEASED_LINE}\n`});
+  // (a released one: nothing said)
+  const released = home();
+  const rec = JSON.parse(fs.readFileSync(path.join(released, 'modules.json'), 'utf8'));
+  fs.writeFileSync(path.join(released, 'modules.json'), JSON.stringify({...rec, unreleased: false, release: {version: '0.9.0', security: null}}, null, 2) + '\n');
+  assert.deepStrictEqual(choose(released), {shim: path.join(released, 'shim', EXE), note: null});
   // set aside (SHIM_BUSY; a rollback to a release with none): the record names none
   assert.deepStrictEqual(choose(home({recorded: false})), {shim: null, note: null});
   // no record at all, or one that can't be read: start reports it
@@ -233,7 +239,9 @@ test('the plugin\'s path (launch.js session, the home rule) and the entry client
     const plugin = await runIt(process.execPath, [launch, 'session'], envWith({COUNTINGHOUSE_HOME: h}));
     const said = (r) => `${r.code} ${/^SHIM /m.test(r.out) ? 'shim' : 'own'} ${r.err.trim()}`;
     assert.strictEqual(said(plugin), said(added), label);
-    assert.match(said(added), label === 'shim set aside' ? /^1 own ch-local: no pack is installed/ : /^0 shim $/, label);
+    // (these homes are unreleased: the shim's session says so before the
+    // exec -- the reviewer's high on A-shim-from, F2)
+    assert.match(said(added), label === 'shim set aside' ? /^1 own ch-local: no pack is installed/ : /^0 shim ch-local: this is an unreleased install \(development only\); upgrade is refused until a clean install from a release$/, label);
     if (label !== 'shim set aside') assert.match(plugin.out, new RegExp(`args=--home ${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
   }
 });
@@ -454,4 +462,32 @@ test('Windows: session reads its home\'s ACL once for its owner and its DACL che
   const {session} = require('../lib/session');
   assert.strictEqual(await session({home: h}, io), 2);
   assert.strictEqual(reads, 1, said.join(''));
+});
+
+// A2 (the final pass, a regression from #126): session built its ACL object
+// from io.winAcl alone, which a real io has none of, so on Windows every
+// session's shim check failed ("acl.privateProblem is not a function") and
+// ran its own runtime. Win-acl's functions, with a test's own over them and
+// the session's cached reader over both.
+test('A2: the session\'s ACL object carries win-acl\'s checks whatever io gives; the shim passes with only a reader faked', () => {
+  const {sessionAcl} = require('../lib/session');
+  const h = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-session-acl-')));
+  roots.push(h);
+  fs.mkdirSync(path.join(h, 'shim'));
+  fs.writeFileSync(path.join(h, 'shim', 'ch-shim.exe'), 'MZ');
+  const me = 'S-1-5-21-1-2-3-1001';
+  const PRIVATE = {user: me, owner: me, otherAces: false, rules: [{sid: me, rights: 2032127, type: 'Allow', inheritOnly: false}, {sid: 'S-1-5-18', rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  let read = 0;
+  const acl = sessionAcl({platform: 'win32', winAcl: {fileAcl: () => { read += 1; return PRIVATE; }}}, layout({COUNTINGHOUSE_HOME: h}, os.homedir));
+  assert.strictEqual(typeof acl.privateProblem, 'function', 'win-acl\'s own check');
+  const here = require('../lib/shim-binary').installedShim(h, {platform: 'win32', acl});
+  assert.deepStrictEqual(here, {file: path.join(h, 'shim', 'ch-shim.exe')});
+  // (each path read once: the session's cache)
+  const before = read;
+  require('../lib/shim-binary').installedShim(h, {platform: 'win32', acl});
+  assert.strictEqual(read, before, 'read once per path');
+  // (a field given as undefined never removes win-acl's check)
+  assert.strictEqual(typeof sessionAcl({platform: 'win32', winAcl: {fileAcl: () => PRIVATE, privateProblem: undefined}}, layout({COUNTINGHOUSE_HOME: h}, os.homedir)).privateProblem, 'function');
+  // (and a real io, with no winAcl at all, still gets win-acl's checks)
+  assert.strictEqual(typeof sessionAcl({platform: 'win32'}, layout({COUNTINGHOUSE_HOME: h}, os.homedir)).privateProblem, 'function');
 });

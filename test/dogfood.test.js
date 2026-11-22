@@ -121,7 +121,7 @@ test('the whole path into a temporary home', {timeout: 900000, skip: BASH_ONLY |
   fs.rmSync(parent, {recursive: true, force: true});
 });
 
-// A-firstrun d2: a prepared local release for Matt's acceptance run, and the
+// A-firstrun d2: a prepared local release for the maintainer's acceptance run, and the
 // one command that installs from it, as the setup skill builds it: the
 // folder's own launcher, each path one single-quoted word, forward slashes
 // (the reviewer's high on #105, 1 and 2). Platform-aware: a Windows path is
@@ -242,5 +242,64 @@ test('bundledProblem: each bundled dependency must load, its own dependencies in
     assert.match(dogfood.bundledProblem(base, 'own.tgz'), /own\.tgz: its package\.json can't be read/);
   } finally {
     fs.rmSync(base, {recursive: true, force: true});
+  }
+});
+
+// A-shim-from (the reviewer, 11-21): a prepared folder brings this machine's
+// shim, packed as its platform package and pinned by its sha512, which
+// install --from checks before placing it
+test('shimInto: this machine\'s shim packed into the release as its platform package, pinned by its sha512', async () => {
+  const {spawnSync} = require('node:child_process');
+  const work = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'ch-dogfood-shim-')));
+  try {
+    const release = path.join(work, 'release');
+    fs.mkdirSync(release);
+    const fake = path.join(work, 'built');
+    fs.writeFileSync(fake, 'the built shim');
+    const pins = {};
+    const npmIo = {node: process.execPath, exec: async (cmd, a, {cwd}) => spawnSync(cmd, a, {cwd, encoding: 'utf8', shell: process.platform === 'win32'})};
+    const said = [];
+    const packed = await dogfood.shimInto(npmIo, release, work, pins, (l) => said.push(l), {build: () => fake, platform: 'linux', arch: 'x64'});
+    const version = require('../npm-shim/assemble').cargoVersion(path.join(__dirname, '..', 'shim', 'Cargo.toml'));
+    // (Cargo's version, -dev. and the binary's sha512: never a released
+    // version, each build its own -- the medium, 1-2)
+    const dev = `${version}-dev.${require('node:crypto').createHash('sha512').update('the built shim').digest('hex').slice(0, 12)}`;
+    assert.strictEqual(packed, `@countinghouse/ch-shim-linux-x64@${dev}`);
+    const file = require('../lib/unpack').tarballName('@countinghouse/ch-shim-linux-x64', dev);
+    const bytes = fs.readFileSync(path.join(release, file));
+    assert.deepStrictEqual(pins['@countinghouse/ch-shim-linux-x64'], {version: dev, integrity: require('../lib/integrity').integrityOf(bytes)});
+    assert.strictEqual(require('../lib/tar').readMember(bytes, 'bin/ch-shim').toString(), 'the built shim');
+    const manifest = JSON.parse(require('../lib/tar').readMember(bytes, 'package.json').toString());
+    assert.deepStrictEqual([manifest.os, manifest.cpu], [['linux'], ['x64']]);
+    // (a host-target build, said as such, not publish's musl triple: F7)
+    assert.match(manifest.description, /built from this machine's host target, by dogfood --release-dir/);
+    // (no target for the machine: no shim, said)
+    assert.strictEqual(await dogfood.shimInto(npmIo, release, work, {}, (l) => said.push(l), {build: () => fake, platform: 'sunos', arch: 'x64'}), null);
+    assert.match(said.join('\n'), /no target for sunos-x64; the folder brings no shim/);
+  } finally {
+    fs.rmSync(work, {recursive: true, force: true});
+  }
+});
+
+test('builtExecutable: the executable cargo names in its JSON messages, wherever its target dir is', () => {
+  const lines = [
+    JSON.stringify({reason: 'compiler-artifact', target: {name: 'libc'}, executable: null}),
+    'not json',
+    JSON.stringify({reason: 'compiler-artifact', target: {name: 'ch-shim'}, executable: '/elsewhere/x86_64-unknown-linux-musl/release/ch-shim'}),
+    JSON.stringify({reason: 'build-finished', success: true}),
+  ].join('\n');
+  assert.strictEqual(dogfood.builtExecutable(lines, 'ch-shim'), '/elsewhere/x86_64-unknown-linux-musl/release/ch-shim');
+  assert.strictEqual(dogfood.builtExecutable(lines, 'ch-shim.exe'), null);
+});
+
+test('releaseShim: a shim build that fails is the folder\'s problem, said with what --release-dir needs, never a throw', async () => {
+  const work = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'ch-dogfood-shim-')));
+  try {
+    const pins = {};
+    const r = await dogfood.releaseShim({}, path.join(work, 'release'), work, pins, () => {}, {build: () => { throw new Error('cargo build of the shim failed (ENOENT): '); }, platform: 'linux', arch: 'x64'});
+    assert.match(r.problem, /^--release-dir builds this machine's shim from shim\/ with cargo \(Rust, rustup\.rs\), and could not: cargo build of the shim failed \(ENOENT\)/);
+    assert.deepStrictEqual(pins, {}, 'nothing pinned');
+  } finally {
+    fs.rmSync(work, {recursive: true, force: true});
   }
 });

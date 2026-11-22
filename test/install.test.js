@@ -424,6 +424,158 @@ test('no --from: this platform\'s native shim is installed too, and recorded; wi
   }
 });
 
+// A-shim-from (the reviewer, 11-21): a prepared folder carries this
+// platform's shim, pinned by its sha512 as its packs are, and --from places
+// and records it as the npm path does. A program header this machine's
+// session check takes (lib/session.js formatProblem).
+const {hostProgram} = require('./host-program');
+const HOST_KEY = `${process.platform}-${process.arch}`;
+const SHIM_PACKAGES = Object.fromEntries(['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'].map((t) => [t, `@countinghouse/ch-shim-${t}`]));
+// a shim package's tarball put in the folder -> {name, version, pin} (lie: a
+// pin naming other bytes)
+// files: the package's files in place of bin/<exe>; raw: the tarball's bytes
+function folderShim(r, {key = HOST_KEY, body = hostProgram(), version = '0.5.0', lie = false, files = null, raw = null} = {}) {
+  const name = SHIM_PACKAGES[key] || `@countinghouse/ch-shim-${key}`;
+  const exe = key.startsWith('win32') ? 'ch-shim.exe' : 'ch-shim';
+  const bytes = raw != null ? raw : require('./tgz').packageTgz({name, version}, files != null ? files : {[`bin/${exe}`]: body});
+  fs.writeFileSync(path.join(r.from, require('../lib/install').tarballName(name, version)), bytes);
+  const integrity = `sha512-${require('node:crypto').createHash('sha512').update(lie ? Buffer.from('other') : bytes).digest('base64')}`;
+  return {name, version, pin: {version, integrity}};
+}
+const withShim = (allow, ...shims) => ({...allow, shim: {packages: SHIM_PACKAGES}, pins: {...allow.pins, ...Object.fromEntries(shims.map((x) => [x.name, x.pin]))}});
+const EXE_HERE = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
+
+test('--from with this platform\'s shim in the folder: placed by its pinned sha512, recorded, and the one a session runs', async () => {
+  const r = release(); const h = home();
+  const s = folderShim(r);
+  // (this Node in shim.json, which a session checks before the shim: A3)
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {node: process.execPath});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, s)), 0, io.err);
+  assert.ok(fs.readFileSync(path.join(h, 'shim', EXE_HERE)).equals(hostProgram()), 'the tarball\'s binary, placed');
+  assert.deepStrictEqual(record(h).shim, {package: s.name, version: '0.5.0'});
+  assert.match(io.out, /the shared runtime's shim 0\.5\.0 is at /);
+  // (end to end: the recorded version is versions.json's, so session execs it)
+  const {sessionChoice} = require('../lib/session');
+  assert.strictEqual(sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
+  // (status names it: the reviewer's high, F2)
+  const st = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
+  await require('../lib/packs-command').status({}, st);
+  assert.match(st.out, /^the shared runtime's shim, as recorded: 0\.5\.0$/m);
+  // (again: the same shim, checked again, moves nothing)
+  const io2 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {node: process.execPath});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io2, withShim(r.allow, s)), 0, io2.err);
+  assert.ok(!fs.existsSync(path.join(h, 'shim', 'ch-shim.previous')), 'the same binary moves nothing');
+  // (a rebuilt folder at the same version: its bytes are placed, never the
+  // one there kept by its version -- the medium, 1)
+  const rebuilt = Buffer.concat([hostProgram(), Buffer.from('rebuilt')]);
+  const s2 = folderShim(r, {body: rebuilt});
+  const io3 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {node: process.execPath});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io3, withShim(r.allow, s2)), 0, io3.err);
+  assert.ok(fs.readFileSync(path.join(h, 'shim', EXE_HERE)).equals(rebuilt), 'the rebuilt binary, placed');
+  assert.strictEqual(require('../lib/session').sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
+  // (and other bytes than the pin's are refused though the record names
+  // that version -- the medium, 3)
+  const s3 = folderShim(r, {lie: true});
+  const io4 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io4, withShim(r.allow, s3)), 1, io4.out);
+  assert.match(io4.err, /the tarball's integrity is not the pinned one/);
+  assert.ok(fs.readFileSync(path.join(h, 'shim', EXE_HERE)).equals(rebuilt), 'the one there kept');
+});
+
+test('--from with a release\'s whole set of shims: this machine\'s is placed, the others left alone', async () => {
+  const r = release(); const h = home();
+  const other = HOST_KEY === 'linux-arm64' ? 'linux-x64' : 'linux-arm64';
+  const ours = folderShim(r);
+  const theirs = folderShim(r, {key: other});
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, ours, theirs)), 0, io.err);
+  assert.deepStrictEqual(record(h).shim, {package: ours.name, version: '0.5.0'});
+});
+
+test('--unreleased-pins with a shim in the folder (dogfood --release-dir): placed and recorded, the home still unreleased', async () => {
+  const r = release(); const h = home();
+  // (a dev build's version, as dogfood gives it: never a released one -- the
+  // reviewer's high, F1)
+  const s = folderShim(r, {version: '0.5.0-dev.0123456789ab'});
+  const allow = {...r.allow, pins: {}, shim: {packages: SHIM_PACKAGES}, runtime: {...r.allow.runtime, lockfile: null}};
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()}), {node: process.execPath});
+  const f = pinsFile(r, {pins: {...r.pins, [s.name]: s.pin}, runtimeLockfile: r.lockfile});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
+  assert.deepStrictEqual(record(h).shim, {package: s.name, version: '0.5.0-dev.0123456789ab'});
+  assert.strictEqual(record(h).unreleased, true);
+  assert.match(io.err, /this is an unreleased install \(development only\)/);
+  assert.strictEqual(require('../lib/session').sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})}).shim, path.join(h, 'shim', EXE_HERE));
+});
+
+test('--from refuses a folder\'s shim as it refuses a pack: other bytes than the pin\'s, not a program this machine runs, no binary, a refused tarball, missing, a version the record can\'t hold', async () => {
+  const refused = async (shims, re) => {
+    const r = release(); const h = home();
+    const made = shims(r);
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+    assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, ...made)), 1, io.out);
+    assert.match(io.err, re);
+    assert.match(io.err, /nothing was installed/);
+    assert.ok(!fs.existsSync(path.join(h, 'modules.json')), 'nothing recorded');
+    assert.ok(!fs.existsSync(path.join(h, 'shim', EXE_HERE)), 'nothing placed');
+  };
+  await refused((r) => [folderShim(r, {lie: true})], new RegExp(`${SHIM_PACKAGES[HOST_KEY] || `@countinghouse/ch-shim-${HOST_KEY}`}@0\\.5\\.0: the tarball's integrity is not the pinned one`));
+  if (process.platform !== 'win32') {
+    await refused((r) => [folderShim(r, {body: '#!/bin/sh\necho hi\n'})], new RegExp(`@0\\.5\\.0's bin/ch-shim is not a program this machine runs \\(${HOST_KEY}: not an? (ELF|Mach-O) program`));
+  }
+  // (an ELF of another architecture under this machine's name: F's tests)
+  if (process.platform === 'linux') {
+    const other = hostProgram();
+    other.writeUInt16LE(process.arch === 'arm64' ? 0x3e : 0xb7, 18);
+    await refused((r) => [folderShim(r, {body: other})], new RegExp(`is not a program this machine runs \\(${HOST_KEY}: not an ELF program for ${process.arch}\\)`));
+  }
+  // (no binary, and a tarball the strict reader refuses: a link)
+  await refused((r) => [folderShim(r, {files: {'README.md': 'no binary'}})], new RegExp(`@0\\.5\\.0 holds no bin/${EXE_HERE.replace('.', '\\.')}`));
+  const {member, tgz} = require('./tgz');
+  await refused((r) => [folderShim(r, {raw: tgz(member('package/package.json', {data: '{}'}), member(`package/bin/${EXE_HERE}`, {type: '2', linkname: '/bin/sh'}))})], /@0\.5\.0's tarball was refused \(/);
+  // (pinned for this machine but not in the folder, as a pack's tarball:
+  // F4, F5)
+  await refused((r) => { const s = folderShim(r); fs.rmSync(path.join(r.from, require('../lib/install').tarballName(s.name, '0.5.0'))); return [s]; }, new RegExp(`${SHIM_PACKAGES[HOST_KEY] || ''}@0\\.5\\.0: no .*ch-shim-${HOST_KEY}-0\\.5\\.0\\.tgz in `));
+  // (a version a home's record can't hold: refused before the app is
+  // swapped, F3)
+  await refused((r) => [folderShim(r, {version: `0.5.0-${'a'.repeat(65)}`})], /: not a version a home's record can hold/);
+});
+
+// The reviewer's high on A-shim-from, F1: under unreleased pins a shim at a
+// release's version (dev bytes under a name a release uses) is refused; and
+// an unreleased home's shim is never 'current' to an install from npm, which
+// fetches and verifies the release's own
+test('F1: an unreleased install\'s shim must carry a pre-release version; an npm install over an unreleased home fetches the release\'s shim', async () => {
+  const r = release(); const h = home();
+  const s = folderShim(r);
+  const allow = {...r.allow, pins: {}, shim: {packages: SHIM_PACKAGES}, runtime: {...r.allow.runtime, lockfile: null}};
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  const f = pinsFile(r, {pins: {...r.pins, [s.name]: s.pin}, runtimeLockfile: r.lockfile});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 1);
+  assert.match(io.err, /@0\.5\.0: an unreleased install's shim carries dogfood's version \(<x\.y\.z>-dev\.<12 hex>\), never one a release could use/);
+  // (a pre-release a release could publish is refused too: the medium, 1)
+  const rc = folderShim(r, {version: '0.5.0-rc.1'});
+  const io3 = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: pinsFile(r, {pins: {...r.pins, [rc.name]: rc.pin}, runtimeLockfile: r.lockfile})}, io3, allow), 1);
+  assert.match(io3.err, /@0\.5\.0-rc\.1: an unreleased install's shim carries dogfood's version/);
+  assert.match(io.err, /nothing was installed/);
+  // (an npm install over an unreleased home whose record names the same
+  // version: fetched and verified, never kept as current)
+  const r2 = release(); const h2 = home();
+  const n = await npmRelease(r2, {shim: true});
+  try {
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io2, n.allow, n.fromNpm), 0, io2.err);
+    const file = path.join(h2, 'modules.json');
+    fs.writeFileSync(file, JSON.stringify({...JSON.parse(fs.readFileSync(file, 'utf8')), unreleased: true}, null, 2) + '\n');
+    const {prepareShim} = require('../lib/shim-install');
+    const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const ready = await prepareShim({data: {shim: n.allow.shim, pins: n.allow.pins}, record: rec, home: h2, io: io2, ...n.fromNpm});
+    assert.strictEqual(ready.status, 'ready', 'fetched and verified, not current');
+  } finally {
+    await n.reg.close();
+  }
+});
+
 // A3 (the reviewer): the session's note says to run install when shim.json
 // names a Node that is gone; a bare reinstall writes shim.json's node and
 // chLocal again, from this process, and keeps the shim, so the session picks
@@ -456,6 +608,49 @@ test('A3: after node moves, a bare reinstall writes shim.json again and keeps th
   } finally {
     await n.reg.close();
   }
+});
+
+// (the reviewer's high, the medium's 7: a folder's shim refused before the
+// table's questions, over a home that has packs to ask about)
+test('--from over an unreleased home: a refused shim is refused before the table asks anything', async (t) => {
+  const r = release(); const h = home();
+  const good = folderShim(r, {version: '0.5.0-dev.0123456789ab'});
+  const allow = {...r.allow, pins: {}, shim: {packages: SHIM_PACKAGES}, runtime: {...r.allow.runtime, lockfile: null}};
+  const env = {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'};
+  const f = pinsFile(r, {pins: {...r.pins, [good.name]: good.pin}, runtimeLockfile: r.lockfile});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, fakeIo({env, exec: npm()}), allow), 0);
+  const asked = [];
+  const table = require('../lib/pack-table');
+  const real = table.askAll;
+  t.mock.method(table, 'askAll', async (...a) => { asked.push(a[2]); return real(...a); });
+  // (the control: with its shim as pinned, the table is asked)
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, fakeIo({env, exec: npm()}), allow), 0);
+  assert.strictEqual(asked.length, 1, 'an unreleased home: the table runs');
+  // (the shim's bytes not the pin's: refused, and nothing asked)
+  const lie = folderShim(r, {version: '0.5.0-dev.0123456789ab', lie: true});
+  const f2 = pinsFile(r, {pins: {...r.pins, [lie.name]: lie.pin}, runtimeLockfile: r.lockfile});
+  const io = fakeIo({env, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f2}, io, allow), 1);
+  assert.match(io.err, /the tarball's integrity is not the pinned one/);
+  assert.strictEqual(asked.length, 1, 'nothing asked');
+});
+
+test('--from on a machine whose shim isn\'t named or pinned: said as from npm, whatever other platforms\' shims the folder holds (F4)', async () => {
+  const other = HOST_KEY === 'linux-arm64' ? 'linux-x64' : 'linux-arm64';
+  // (unpinned: the packages name this machine's, the pins only another's)
+  const r = release(); const h = home();
+  const theirs = folderShim(r, {key: other});
+  const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io, withShim(r.allow, theirs)), 0, io.err);
+  assert.strictEqual(record(h).shim, undefined);
+  assert.match(io.out, /no shared-runtime shim is pinned for this platform in this release: each session runs its own runtime/);
+  // (unsupported: no package for this machine at all)
+  const r2 = release(); const h2 = home();
+  const theirs2 = folderShim(r2, {key: other});
+  const packages = Object.fromEntries(Object.entries(SHIM_PACKAGES).filter(([k]) => k !== HOST_KEY));
+  const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h2}, exec: npm()});
+  assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, io2, {...withShim(r2.allow, theirs2), shim: {packages}}), 0, io2.err);
+  assert.match(io2.out, /there is no shared-runtime shim for this platform: each session runs its own runtime/);
 });
 
 test('a shim from before is set aside by an install that brings none: from --from, or from npm with none pinned', async () => {
@@ -1208,7 +1403,7 @@ test('install with no --pack and no network: one line naming install --from, and
     assert.strictEqual(await install({}, io2, {...ours(r), self: ALLOWLIST.self}), 1);
     const lines = io2.err.trim().split('\n').filter((l) => /npm registry|--from/.test(l));
     assert.strictEqual(lines.length, 1, io2.err);
-    assert.match(lines[0], new RegExp(`could not fetch this release from the npm registry \\(the packument of countinghouse could not be fetched \\(ENOTFOUND\\)\\); with no network, run \`${cmd(h, 'install --from <release directory>')}\` with this release's tarballs; nothing was installed`));
+    assert.match(lines[0], new RegExp(`could not fetch this release from the npm registry \\(the packument of countinghouse could not be fetched \\(ENOTFOUND\\)\\); with no network, run \`${cmd(h, 'install --from <release directory>')}\` with this release's tarballs \\(its packs', its runtime's and this machine's shim's\\); nothing was installed`));
   } finally {
     nr.fetchRelease = real;
   }

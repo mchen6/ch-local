@@ -421,3 +421,26 @@ test('add-pack with no --from names install --pack; status with nothing installe
   assert.match(io2.out + io2.err, /nothing is installed; run `[^`]*install --pack <name>`/);
   assert.doesNotMatch(io2.out + io2.err, /--from <dir>/);
 });
+
+// the reviewer on #136: a notice reaches only the sessions open when it is
+// told, so status says the last automatic upgrade check's outcome, as it was
+// told, from history.jsonl
+test('status says the last automatic upgrade check\'s outcome, as it was told, with when', async () => {
+  const {appendHistory} = require('../lib/history');
+  const s = await installed();
+  const where = layout({COUNTINGHOUSE_HOME: s.home});
+  const io0 = s.io();
+  assert.strictEqual(await status({}, io0), 0, io0.err);
+  assert.doesNotMatch(io0.out, /the last automatic upgrade check/, 'none yet: nothing said');
+  appendHistory(where, {by: 'auto-upgrade', change: 'upgrade check', notice: 'automatic upgrade check failed (exit 1: no network); nothing changed'}, {now: Date.parse('2026-11-20T10:00:00Z')});
+  appendHistory(where, {by: 'settings', change: 'x', notice: 'not an upgrade'});
+  appendHistory(where, {by: 'auto-upgrade', change: 'upgrade check', notice: 'upgraded ch-local 0.1.0 -> 0.1.1; rollback undoes it‮'}, {now: Date.parse('2026-11-21T10:00:00Z')});
+  // (the user's local time with its offset, from the recorded UTC stamp:
+  // business on #136; a zone with a :30 offset too)
+  for (const [TZ, when] of [['America/Los_Angeles', '2026-11-21T02:00:00-08:00'], ['Asia/Kolkata', '2026-11-21T15:30:00+05:30'], ['UTC', '2026-11-21T10:00:00+00:00']]) {
+    const io = s.io({TZ});
+    assert.strictEqual(await status({}, io), 0, io.err);
+    assert.ok(io.out.includes(`\nthe last automatic upgrade check (${when}): upgraded ch-local 0.1.0 -> 0.1.1; rollback undoes it?\n`), `${TZ}: ${io.out}`);
+  }
+  assert.match(fs.readFileSync(path.join(s.home, 'history.jsonl'), 'utf8'), /"at":"2026-11-21T10:00:00\.000Z"/, 'history stays UTC');
+});

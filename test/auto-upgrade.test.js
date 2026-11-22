@@ -54,6 +54,9 @@ test('on: the child runs as `ch-local upgrade --apply-auto`, with the allowliste
   assert.deepStrictEqual(Object.keys(first.runs[0].opts.env).sort(), ['COUNTINGHOUSE_HOME', 'HOME', 'LANG', 'PATH', 'TMPDIR'], 'no npm_execpath, NODE_OPTIONS, npm_config_*, proxy or CA variable');
   assert.strictEqual(first.runs[0].opts.env.COUNTINGHOUSE_HOME, h);
   assert.deepStrictEqual(first.said, ['ch-local 0.3.0 is available; it installs automatically after 2026-01-01T00:00:00.000Z']);
+  // (recorded, as the other outcomes are, for status: the reviewer on #136)
+  const told = require('../lib/history').lastHistory(where, (e) => e.by === 'auto-upgrade' && e.change === 'upgrade check');
+  assert.strictEqual(told.notice, 'ch-local 0.3.0 is available; it installs automatically after 2026-01-01T00:00:00.000Z');
   const again = await run(where, undefined, now + 60 * 60 * 1000);
   assert.deepStrictEqual([again.r.checked, again.r.why, again.runs.length], [false, 'not due', 0]);
   assert.strictEqual((await run(where, undefined, now + 25 * 60 * 60 * 1000)).r.checked, true);
