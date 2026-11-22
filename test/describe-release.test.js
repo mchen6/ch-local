@@ -74,8 +74,15 @@ const wholeDoc = (modules) => {
   return {...rest, packs: {x: {modules: [PACK, ACCESS]}}, modules, pins: {}};
 };
 
+// a runtime tarball whose lib/held-back.js lists `reasons` on its one
+// REASONS line (countinghouse's form)
+const OURS = [...require('../lib/held-back').REASONS];
+const runtimeTgz = (dir, reasons = OURS, {version = '9.0.0', line = null} = {}) => fs.writeFileSync(path.join(dir, `countinghouse-${version}.tgz`),
+  packageTgz({name: RUNTIME, version}, {'lib/held-back.js': `'use strict';\n${line != null ? line : `const REASONS = [${reasons.map((r) => `'${r}'`).join(', ')}];`}\nmodule.exports = {};\n`}));
+
 test('--check: 0 when the file\'s descriptions match the tarballs, 1 when they differ, and nothing is written', () => {
   const dir = dirOf();
+  runtimeTgz(dir);
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-pins-')), 'release-pins.json');
   const out = () => { let s = ''; return {write: (x) => { s += x; }, get text() { return s; }}; };
   fs.writeFileSync(file, JSON.stringify(wholeDoc(DESCRIBED)));
@@ -190,4 +197,87 @@ test('--notes <file> writes the release\'s change notes, one per line; --notes n
   assert.strictEqual(main([dir, '--notes', notes], {stdout: quiet, stderr: err, releasePins: file}), 1);
   assert.match(err.text, /release\.notes[\s\S]*nothing was written/);
   assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).release.notes, null);
+});
+
+// A-own-gone: --check holds the runtime the release pins to every held-back
+// reason this ch-local writes (lib/held-back.js REASONS), read from its
+// tarball in the directory: one that lacks any, or that can't be read so,
+// fails the check (the gate for E10's gone: countinghouse c313b561)
+test('--check: the pinned runtime must know every held-back reason this ch-local writes; a missing or unreadable one fails', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-pins-')), 'release-pins.json');
+  fs.writeFileSync(file, JSON.stringify(wholeDoc(DESCRIBED)));
+  const out = () => { let s = ''; return {write: (x) => { s += x; }, get text() { return s; }}; };
+  const check = (dir) => { const o = out(); return {code: main([dir, '--check'], {stdout: o, stderr: o, releasePins: file}), text: o.text}; };
+  // (every reason known: the check goes on to the descriptions; the
+  // runtime's and ch-local's own tarballs beside the release's are never
+  // described, ch-local's -- which bundles what the strict reader refuses --
+  // never opened)
+  const {member, tgz} = require('./tgz');
+  let dir = dirOf();
+  runtimeTgz(dir);
+  fs.writeFileSync(path.join(dir, 'countinghouse-ch-local-0.4.0.tgz'), tgz(member('package/package.json', {data: JSON.stringify({name: '@countinghouse/ch-local', version: '0.4.0'})}),
+    member('package/escape', {type: '2', linkname: '../../etc/passwd'})));
+  assert.deepStrictEqual(check(dir), {code: 0, text: `${file}: the descriptions match the tarballs\n`});
+  // (one without gone: refused, naming it and the runtime's version)
+  dir = dirOf();
+  runtimeTgz(dir, OURS.filter((r) => r !== 'gone'), {version: '7.1.2'});
+  let r = check(dir);
+  assert.strictEqual(r.code, 1);
+  assert.strictEqual(r.text, `${file}: the pinned countinghouse 7.1.2 does not know the held-back reason gone, which this ch-local writes: pin a countinghouse that does\n`);
+  // (no runtime tarball; two; a REASONS line not in its one-line form; none)
+  dir = dirOf();
+  r = check(dir);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.text, /the runtime's held-back reasons can't be checked \(no single countinghouse tarball in .*: 0\)/);
+  runtimeTgz(dir);
+  runtimeTgz(dir, OURS, {version: '9.0.1'});
+  r = check(dir);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.text, /can't be checked \(no single countinghouse tarball in .*: 2\)/);
+  // (a runtime with no held-back file: too old, said so)
+  dir = dirOf();
+  fs.writeFileSync(path.join(dir, 'countinghouse-9.0.0.tgz'), packageTgz({name: RUNTIME, version: '9.0.0'}));
+  r = check(dir);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.text, /can't be checked \(countinghouse-9\.0\.0\.tgz: it has no lib\/held-back\.js \(a runtime older than the held-back file\)\)/);
+  // (CRLF line endings: read as the same line)
+  dir = dirOf();
+  runtimeTgz(dir, OURS, {line: `const REASONS = [${OURS.map((x) => `'${x}'`).join(', ')}];\r`});
+  assert.strictEqual(check(dir).code, 0);
+  // (a pack module whose name starts as the runtime's, then a digit, is
+  // still a module of the release, never skipped as a runtime tarball)
+  dir = dirOf([]);
+  fs.writeFileSync(path.join(dir, 'countinghouse-2fa-check-1.0.0.tgz'), packageTgz({name: '@countinghouse/2fa-check', version: '1.0.0'}));
+  runtimeTgz(dir);
+  assert.deepStrictEqual(Object.keys(readTarballs(dir, {skip: [RUNTIME]})), ['@countinghouse/2fa-check'], 'the runtime skipped, the module read');
+  for (const line of ["const REASONS = ['credential',\n  'off'];", 'const REASONS = new Set(OTHERS);', '// none here']) {
+    dir = dirOf();
+    runtimeTgz(dir, OURS, {line});
+    r = check(dir);
+    assert.strictEqual(r.code, 1, line);
+    assert.match(r.text, /can't be checked \(countinghouse-9\.0\.0\.tgz: its lib\/held-back\.js has no one-line REASONS list\)/, line);
+  }
+});
+
+test('--check with --unreleased-pins: the runtime is the one the file pins, beside others', () => {
+  const dir = dirOf();
+  runtimeTgz(dir, OURS.filter((r) => r !== 'gone'), {version: '7.1.2'});
+  runtimeTgz(dir, OURS, {version: '9.0.0'});
+  const at = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-dev-'));
+  const rel = path.join(at, 'release-pins.json');
+  const dev = path.join(at, 'pins.json');
+  fs.writeFileSync(rel, JSON.stringify({...release(), modules: DESCRIBED}));
+  const o = {s: '', write(x) { this.s += x; }};
+  for (const [v, code] of [['9.0.0', 0], ['7.1.2', 1]]) {
+    fs.writeFileSync(dev, JSON.stringify({pins: {[RUNTIME]: {version: v}, [PACK]: {version: '0.5.0'}, [ACCESS]: {version: '0.2.0'}}, runtimeLockfile: {}, modules: DESCRIBED}));
+    o.s = '';
+    assert.strictEqual(main([dir, '--unreleased-pins', dev, '--check'], {stdout: o, stderr: o, releasePins: rel}), code, o.s);
+  }
+  assert.match(o.s, /the pinned countinghouse 7\.1\.2 does not know the held-back reason gone/);
+  // (the file named for the pin holds another version: refused)
+  fs.writeFileSync(path.join(dir, 'countinghouse-9.0.0.tgz'), packageTgz({name: RUNTIME, version: '7.1.2'}, {'lib/held-back.js': `const REASONS = [${OURS.map((x) => `'${x}'`).join(', ')}];\n`}));
+  fs.writeFileSync(dev, JSON.stringify({pins: {[RUNTIME]: {version: '9.0.0'}, [PACK]: {version: '0.5.0'}, [ACCESS]: {version: '0.2.0'}}, runtimeLockfile: {}, modules: DESCRIBED}));
+  o.s = '';
+  assert.strictEqual(main([dir, '--unreleased-pins', dev, '--check'], {stdout: o, stderr: o, releasePins: rel}), 1);
+  assert.match(o.s, /countinghouse-9\.0\.0\.tgz: it holds countinghouse 7\.1\.2, not the pinned 9\.0\.0/);
 });

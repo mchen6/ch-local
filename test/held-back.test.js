@@ -132,16 +132,18 @@ test('the launcher, the runtime\'s rule: none for a missing one, a backslash off
   assert.strictEqual(safeLauncher(whereIn(path.join(base, 'none')), 'linux'), null, 'none installed');
 });
 
-// countinghouse #490's wire vectors for the file (heldBackFile, copied in
-// test/vectors/module-messages.json). A checker written from the vectors'
-// rule text is first held to the vectors themselves (it takes every
-// accepted file and refuses every refused one). Then:
+// countinghouse's wire vectors for the file (heldBackFile, copied in
+// test/vectors/module-messages.json at c313b561: #534's rule, with gone). A
+// checker written from the vectors' rule text is first held to the vectors
+// themselves (it takes every accepted file and refuses every refused one).
+// Then:
 // - every accepted file is written exactly as given from the same verdict;
 // - from each refused file's own entries, fields and all, the writer writes
 //   only a file the checker takes.
 // (the reviewer's high on #106, 3, and round 2, 5; the medium on round 2, 3)
-const RULE_REASONS = ['credential', 'off', 'ceiling', 'missing', 'pin', 'withdrawn', 'stopped', 'restart', 'calls'];
-const RULE_ROOTS = [...RULE_REASONS.filter((r) => r !== 'calls'), 'not-installed'];
+const RULE_REASONS = ['credential', 'off', 'ceiling', 'missing', 'pin', 'withdrawn', 'stopped', 'restart', 'changed', 'gone', 'sandbox', 'collision', 'refused', 'calls'];
+const RULE_ROOTS = ['credential', 'off', 'ceiling', 'missing', 'pin', 'withdrawn', 'not-installed'];
+const RULE_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const rulePackage = (n) => typeof n === 'string' && n.length <= 214 && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._~-]*$/.test(n);
 const ruleCallee = (n) => typeof n === 'string' && n.length >= 1 && n.length <= 64 && !/[/.\u0000-\u001f\u007f]/.test(n);
 const isObj = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
@@ -150,18 +152,26 @@ function ruleTakes(doc) {
   if (Object.keys(doc).some((k) => !['v', 'modules', 'launcher'].includes(k))) return false;
   const seen = new Set();
   for (const m of doc.modules) {
-    if (!isObj(m) || Object.keys(m).some((k) => !['name', 'reason', 'root', 'via'].includes(k))) return false;
+    if (!isObj(m) || Object.keys(m).some((k) => !['name', 'reason', 'root', 'via', 'code'].includes(k))) return false;
     if (!rulePackage(m.name) || seen.has(m.name) || !RULE_REASONS.includes(m.reason)) return false;
     seen.add(m.name);
-    if ((m.root !== undefined) !== (m.via !== undefined)) return false;
+    // code exactly on refused
+    if ((m.reason === 'refused') !== (m.code !== undefined)) return false;
+    if (m.code !== undefined && !(typeof m.code === 'string' && RULE_CODE.test(m.code))) return false;
+    // root only on calls; via exactly when root is, or on collision
     if (m.root !== undefined && (m.reason !== 'calls' || !RULE_ROOTS.includes(m.root))) return false;
-    if (m.via !== undefined && !(m.root === 'not-installed' ? ruleCallee(m.via) : rulePackage(m.via))) return false;
+    if (m.reason === 'collision') {
+      if (m.root !== undefined || !rulePackage(m.via)) return false;
+    } else {
+      if ((m.root !== undefined) !== (m.via !== undefined)) return false;
+      if (m.via !== undefined && !(m.root === 'not-installed' ? ruleCallee(m.via) : rulePackage(m.via))) return false;
+    }
   }
   return true;
 }
 test('the runtime\'s heldBackFile vectors: each accepted file is written as given; from a refused file\'s entries, only a file the rule takes', () => {
   const V = require('./vectors/module-messages.json').heldBackFile;
-  assert.ok(V.accepted.length >= 5 && V.refused.length >= 16);
+  assert.ok(V.accepted.length >= 7 && V.refused.length >= 23);
   for (const {why, file} of V.accepted) assert.ok(ruleTakes(file), `the checker takes: ${why}`);
   for (const {why, file} of V.refused) assert.ok(!ruleTakes(file), `the checker refuses: ${why}`);
   const h = tmp('ch-held-');   // no launcher here: the vectors carry none
@@ -202,4 +212,15 @@ test('on Windows a real write is this user\'s alone even where the directory gra
   assert.notStrictEqual(winAcl.privateProblem(plain, winAcl.fileAcl(plain)), null, 'premise: a plain file there inherits the grant');
   const file = write(dir, '{"v":1,"modules":[]}\n');
   assert.strictEqual(winAcl.privateProblem(file, winAcl.fileAcl(file)), null);
+});
+
+// E10 (A-own-gone): an own module whose copy is gone is written as gone, a
+// reason and never a root (countinghouse #534, c313b561)
+test('an own module whose copy is gone: written with reason gone, apart from changed; a caller\'s chain never roots at it', () => {
+  const h = tmp('ch-held-');
+  const out = JSON.parse(contentOf(whereIn(h), new Map([
+    ['my-tool', {kind: 'gone', reason: 'its copy is gone'}],
+    ['other-tool', {kind: 'changed', reason: 'its files changed'}],
+    ['caller-tool', {kind: 'calls', root: 'gone', via: 'my-tool'}]])));
+  assert.deepStrictEqual(out.modules, [{name: 'my-tool', reason: 'gone'}, {name: 'other-tool', reason: 'changed'}, {name: 'caller-tool', reason: 'calls'}]);
 });

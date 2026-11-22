@@ -73,6 +73,27 @@ test('a copy changed since the yes: held back (changed), the line naming add-mod
   assert.strictEqual(unhomed(u.line), `not loading my-tool: its files changed since you added it: run \`npx @countinghouse\/ch-local add-module "${h.ownRecord.modules['my-tool'].from}"\` again`);
 });
 
+// E10 (A-own-gone): a copy whose directory is not there at all is said as
+// gone, apart from one there but changed; the line as the overview's
+// (countinghouse #534), naming only the folder it was added from
+test('a copy whose directory is gone: held back (gone), the line naming add-module on its folder', () => {
+  const h = home();
+  const tree = h.addOwn('my-tool');
+  const dir = ownTree.copyDir(h.where, 'my-tool', tree);
+  ownTree.unlockTree(dir);
+  fs.rmSync(dir, {recursive: true});
+  const u = run(h).unavailable.get('my-tool');
+  assert.deepStrictEqual([u.kind, u.via], ['gone', null]);
+  assert.strictEqual(unhomed(u.line), `not loading my-tool: its copy is gone: run \`npx @countinghouse\/ch-local add-module "${h.ownRecord.modules['my-tool'].from}"\` again`);
+});
+
+test('a copy there whose marker is gone is changed, never gone (only a directory not there at all is gone)', () => {
+  const h = home();
+  const tree = h.addOwn('my-tool');
+  fs.rmSync(ownTree.markerOf(h.where, 'my-tool', tree), {force: true});
+  assert.strictEqual(run(h).unavailable.get('my-tool').kind, 'changed');
+});
+
 test('the sandbox not enforced: every own module held back (sandbox); the packs load', () => {
   const h = home();
   h.addOwn('my-tool');
