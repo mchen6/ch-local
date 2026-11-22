@@ -239,8 +239,12 @@ async function main(argv, io) {
     if (command === 'daemon') {
       const {isFullPath} = require('../lib/home');
       if (!isFullPath(p.home)) { io.stderr.write('ch-local daemon: --home must be an absolute path\n'); return 2; }
+      // (daemon.js loaded first, so the version it records is read before the
+      // handoff's wait, which an install's swap could land in: the medium on
+      // A6, 3)
+      const {daemon} = require('../lib/daemon');
       const handoff = p.handoff ? await io.readHandoff() : null;
-      return await require('../lib/daemon').daemon({home: p.home, handoff}, io);
+      return await daemon({home: p.home, handoff}, io);
     }
     if (command === 'session') {
       let home = null;
