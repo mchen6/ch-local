@@ -179,7 +179,7 @@ test('a writer that throws: the line is dropped, counted, and said once writing 
   await log.close();
   const text = read(log.file);
   assert.doesNotMatch(text, /lost [12]/);
-  assert.match(text, /ch-local daemon: 2 lines dropped\n.* kept$/m);
+  assert.match(text, /\[runtime log\] 2 lines dropped\n.* kept$/m);
 });
 
 test('a writer that never returns: every line is still taken at once, the queue stays bounded, nothing waits', async() => {
@@ -213,7 +213,7 @@ test('a writer that stalls, then recovers: what queued past the bound is dropped
   await log.close();
   const lines = read(log.file).trim().split('\n');
   assert.ok(lines.length < 40, `bounded: ${lines.length} lines written of 5000`);
-  const said = lines.find((l) => /ch-local daemon: \d+ lines dropped$/.test(l));
+  const said = lines.find((l) => /\[runtime log\] \d+ lines dropped$/.test(l));
   assert.ok(said != null && Number(said.match(/(\d+) lines dropped/)[1]) > 4900, said);
   assert.strictEqual(lines[lines.length - 1], 'after the stall');
 });
