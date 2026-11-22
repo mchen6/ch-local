@@ -199,7 +199,19 @@ test('a part at another version names a way forward that exists: a clean install
   assert.strictEqual(await addPack({pack: 'other', from: newer.from}, io, newer.allow), 1);
   // (add-pack runs only with --from, so its hint keeps the folder: the
   // medium on A11, 1-3)
-  assert.match(io.err, new RegExp(`install the newer release with \`${cmd(s.home, 'install --pack ci-failure-triage --from <its directory>')}\`, then add the pack with \`${cmd(s.home, 'add-pack other --from <its directory>')}\``));
+  // (the newer release installed by THIS ch-local, never the home's older
+  // launcher -- the closing pass, nit; then the home's, which that install
+  // makes the newer one)
+  const self = require('../lib/command-line').chLocalSelf(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}), 'install --pack ci-failure-triage --from <its directory>');
+  const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`);
+  const note = require('../lib/command-line').homeNote(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}));
+  assert.match(io.err, new RegExp(`install the newer release with \`${reEsc(self)}\`${reEsc(note)}, then add the pack with \`${cmd(s.home, 'add-pack other --from <its directory>')}\``));
+  // (on Windows this ch-local's path names no home: the home said after it,
+  // or the newer release goes to the default home -- the medium on the
+  // closing pass, 1)
+  const win = Object.assign(s.io(), {platform: 'win32'});
+  assert.strictEqual(await addPack({pack: 'other', from: newer.from}, win, newer.allow), 1);
+  assert.match(win.err, /install the newer release with `[^`]+ install --pack ci-failure-triage --from <its directory>` \(with COUNTINGHOUSE_HOME set to [^)]+\), then add the pack with `/);
 });
 
 test('a home made by an earlier development launcher (installed.json only) is told to reinstall', async () => {
@@ -431,7 +443,7 @@ test('status says the last automatic upgrade check\'s outcome, as it was told, w
   const where = layout({COUNTINGHOUSE_HOME: s.home});
   const io0 = s.io();
   assert.strictEqual(await status({}, io0), 0, io0.err);
-  assert.doesNotMatch(io0.out, /the last automatic upgrade check/, 'none yet: nothing said');
+  assert.doesNotMatch(io0.out, /the last automatic upgrade notice/, 'none yet: nothing said');
   appendHistory(where, {by: 'auto-upgrade', change: 'upgrade check', notice: 'automatic upgrade check failed (exit 1: no network); nothing changed'}, {now: Date.parse('2026-11-20T10:00:00Z')});
   appendHistory(where, {by: 'settings', change: 'x', notice: 'not an upgrade'});
   appendHistory(where, {by: 'auto-upgrade', change: 'upgrade check', notice: 'upgraded ch-local 0.1.0 -> 0.1.1; rollback undoes it‮'}, {now: Date.parse('2026-11-21T10:00:00Z')});
@@ -440,7 +452,7 @@ test('status says the last automatic upgrade check\'s outcome, as it was told, w
   for (const [TZ, when] of [['America/Los_Angeles', '2026-11-21T02:00:00-08:00'], ['Asia/Kolkata', '2026-11-21T15:30:00+05:30'], ['UTC', '2026-11-21T10:00:00+00:00']]) {
     const io = s.io({TZ});
     assert.strictEqual(await status({}, io), 0, io.err);
-    assert.ok(io.out.includes(`\nthe last automatic upgrade check (${when}): upgraded ch-local 0.1.0 -> 0.1.1; rollback undoes it?\n`), `${TZ}: ${io.out}`);
+    assert.ok(io.out.includes(`\nthe last automatic upgrade notice (${when}): upgraded ch-local 0.1.0 -> 0.1.1; rollback undoes it?\n`), `${TZ}: ${io.out}`);
   }
   assert.match(fs.readFileSync(path.join(s.home, 'history.jsonl'), 'utf8'), /"at":"2026-11-21T10:00:00\.000Z"/, 'history stays UTC');
 });

@@ -125,8 +125,30 @@ test('launch.js without an installed launcher exits non-zero with one line namin
     assert.strictEqual(r.stdout, '', 'stdout is the MCP channel: nothing on it');
     assert.strictEqual(r.stderr.trim().split('\n').length, 1);
     assert.match(r.stderr, new RegExp(esc(`npx ${SCOPE}/ch-local install --pack ci-failure-triage`)));
+    // (COUNTINGHOUSE_HOME set: the home named in words, on every platform,
+    // or the install goes to the default home -- the closing pass, L3)
+    assert.match(r.stderr, new RegExp(esc(`install --pack ci-failure-triage (with COUNTINGHOUSE_HOME set to ${home})`)));
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the medium on the closing pass, 4: the home in the install hint is
+// checked as every hint's: a value a terminal would misshow is never
+// printed, and the default home is not named
+test('launch.js: a COUNTINGHOUSE_HOME a terminal would misshow is not printed; the default home is not named', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-launch-'));
+  try {
+    const odd = path.join(base, 'ch\nfake line');
+    let r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', env: {...process.env, COUNTINGHOUSE_HOME: odd}});
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /\(with COUNTINGHOUSE_HOME set to the folder it names now\)/);
+    assert.doesNotMatch(r.stderr, /fake line\)/, 'the value is never printed whole in the hint');
+    r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', env: {...process.env, HOME: base, USERPROFILE: base, COUNTINGHOUSE_HOME: path.join(base, '.countinghouse')}});
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /install --pack ci-failure-triage$/m, 'the default home: no words');
+  } finally {
+    fs.rmSync(base, {recursive: true, force: true});
   }
 });
 

@@ -41,6 +41,17 @@ const RELEASE_PINS = path.join(root, 'lib', 'release-pins.json');
 class StepError extends Error {}
 const refuse = (why) => { throw new StepError(why); };
 
+// the packages a release ships that are no pack's modules: its runtime's
+// and its shims' (lib/release-pins.json runtime.packages, shim.packages).
+// Their tarballs beside the release's are never described (the closing
+// pass on release 1, L1: a shim tarball was refused as no module of its
+// packs)
+function releaseOwnPackages(release) {
+  const runtime = release.runtime != null && Array.isArray(release.runtime.packages) ? release.runtime.packages : [];
+  const shims = release.shim != null && release.shim.packages != null && typeof release.shim.packages === 'object' ? Object.values(release.shim.packages).filter((n) => typeof n === 'string') : [];
+  return [...runtime, ...shims];
+}
+
 // -> {<package>: {version, manifest, api}} from every .tgz in dir, or with
 // only ({package: version}) from those packages' tarballs alone, by npm
 // pack's file name, before any is opened: a directory install's --from
@@ -186,7 +197,7 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
     // ch-local's tarballs beside them, as install's --from holds them: the
     // medium on L5b, 1)
     const tarballs = devFile != null ? readTarballs(dir, {only: pinnedModules(release, doc.pins || {})})
-      : readTarballs(dir, {skip: release.runtime != null && Array.isArray(release.runtime.packages) ? release.runtime.packages : []});
+      : readTarballs(dir, {skip: releaseOwnPackages(release)});
     const described = describeRelease(release, doc.pins || {}, tarballs, {only: devFile != null});
     let next;
     if (devFile != null) {
