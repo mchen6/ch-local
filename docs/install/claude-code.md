@@ -139,7 +139,7 @@ reads one line from standard input.
 
 The hand-added entry names the absolute path of your Node. An nvm or system
 Node upgrade changes that path: run `ch-local snippet claude-code` again, then
-`claude mcp remove --scope user countinghouse` and add the new line. Run `ch-local install` once too, so the shared runtime starts with the new Node; until then each session runs its own runtime, and says so.
+`claude mcp remove --scope user countinghouse` and add the new line. Run `ch-local install` once too, so the shared runtime starts with the new Node.
 The plugin runs `node` from the `PATH` Claude Code sees, which must be Node
 22.16 or later; below that it stops with one line saying so.
 

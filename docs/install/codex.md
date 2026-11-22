@@ -60,7 +60,7 @@ reads one line from standard input.
 
 The entry names the absolute path of your Node. An nvm or system Node upgrade
 changes that path: run `ch-local add codex` again (or `ch-local snippet codex`,
-and replace the entry). Run `ch-local install` once too, so the shared runtime starts with the new Node; until then each session runs its own runtime, and says so.
+and replace the entry). Run `ch-local install` once too, so the shared runtime starts with the new Node.
 
 ## Remove
 

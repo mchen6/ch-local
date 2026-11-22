@@ -27,7 +27,7 @@ entry names the absolute path of the Node that ran `ch-local`, because a
 client started from the dock or the Start menu often has no `PATH` set up by
 nvm. An nvm or system Node upgrade changes that path: run `ch-local snippet
 <client>` again and replace the entry (or `ch-local add <client>` for Cursor, VS Code and
-Codex). Run `ch-local install` once too, so the shared runtime starts with the new Node; until then each session runs its own runtime, and says so.
+Codex). Run `ch-local install` once too, so the shared runtime starts with the new Node.
 
 A module that needs a credential gets it from ch-local's store, never from
 the environment your client starts from, and no config entry sets or
