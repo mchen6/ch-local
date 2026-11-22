@@ -41,7 +41,7 @@ test('the modules first, then the packs: a header, each module with what it is, 
   assert.strictEqual(code, 0, err);
   const r = record(s.home);
   const versions = r.runtime.versions;
-  assert.match(out, new RegExp(`^ch-local ${versions['@countinghouse/ch-local'].replace(/\./g, '\\.')}, countinghouse ${versions.countinghouse.replace(/\./g, '\\.')}\nmodules:\n`));
+  assert.match(out, new RegExp(`^ch-local ${versions['@countinghouse/ch-local'].replace(/\./g, '\\.')}, countinghouse ${versions.countinghouse.replace(/\./g, '\\.')}\nthe shared runtime's shim: none recorded \\(each session runs its own runtime\\)\nmodules:\n`));
   assert.strictEqual(lineOf(out, 'ch-pack-ci-failure-triage'), 'on; tools: ci_failure_triage');
   assert.strictEqual(lineOf(out, 'ch-access-github'), 'part; credential GITHUB_TOKEN -> https://api.githubcopilot.com (stored)');
   assert.strictEqual(lineOf(out, 'ch-step-redact'), 'part');
