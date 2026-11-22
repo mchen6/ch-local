@@ -439,6 +439,31 @@ test('A5: in shared mode a setting the runtime could not take in place is told, 
   }
 });
 
+// business's condition on #147: a loosening is never told with the restart
+// that applies it. A setting loosened is line 14 (no command); a change not
+// applied in place -- which may carry one, a pack turned on -- names no
+// command in shared mode either
+test('A5: in shared mode no loosening is told with a restart command: a setting loosened, a sandbox loosened, a pack added and refused', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true, answer: (m) => (m.name === '@countinghouse/ch-pack-other' || m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
+  try {
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
+    setSetting(where, 'moduleSandbox', 'audit', {by: 'cli', mayLoosen: true});
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => notices(s).some(([, t]) => /maxOutputBytes loosened/.test(t)) && notices(s).some(([, t]) => /moduleSandbox loosened/.test(t)) && notices(s).some(([, t]) => /ch-pack-other added/.test(t)));
+    const told = notices(s).map(([, t]) => t);
+    assert.ok(told.some((t) => /^maxOutputBytes loosened from 16MiB to 32MiB, when the shared runtime restarts \(NOT_NOW\)$/.test(t)), told.join(' | '));
+    assert.ok(told.some((t) => /^moduleSandbox loosened from enforce to audit, when the shared runtime restarts$/.test(t)), told.join(' | '));
+    assert.ok(told.some((t) => /^ch-pack-other added 0\.3\.0: not applied in place \(NOT_NOW\); it applies when the shared runtime restarts$/.test(t)), told.join(' | '));
+    for (const t of told.filter((x) => /loosened|added/.test(x))) assert.doesNotMatch(t, / restart`/, t);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 test('never silent: a loosening applied while running is told to the client; a tightening is not', async () => {
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');
