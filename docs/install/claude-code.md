@@ -180,8 +180,9 @@ the checked upgrade.
 
 Claude Code's MCP server output for countinghouse shows only the session's
 connection. The shared runtime that serves it logs to
-`<home>/run/daemon/runtime.log` (readable by you only; the one before is
-`runtime.log.1`), and `ch-local status` names that file. It may hold what
+`<home>/run/daemon/runtime.log` (readable by you only), and `ch-local
+status` names that file. It's kept until it reaches about 5 MiB, then moved
+to `runtime.log.1` (one older copy kept). It may hold what
 your modules print or report, such as repository names, your CI's log text
 or file paths. A session running a runtime of its own logs to Claude Code's
 MCP server output instead.

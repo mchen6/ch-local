@@ -437,7 +437,13 @@ function realIo() {
       const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', out, out, 'ipc'] : 'inherit', env, detached, windowsHide: true});
       if (output != null && control) { output.forward(child.stdout); output.forward(child.stderr); }
       const exited = new Promise((resolve) => {
-        child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
+        child.on('error', (err) => {
+          const line = `ch-local: could not start the runtime (${err.code || err.message})\n`;
+          process.stderr.write(line);
+          // (a shared runtime's: in its log too)
+          if (output != null) output.write(line);
+          resolve(1);
+        });
         child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
       });
       return {kill: (signal) => { try { child.kill(signal); } catch (err) { /* already gone */ } }, exited, pid: child.pid,

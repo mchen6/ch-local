@@ -262,9 +262,10 @@ running. The daemon holds the runtime for every session of this user.
   - The secret always stays in `<home>/run/daemon`.
 - **Where the shared runtime logs.** The daemon writes its own lines and the
   shared runtime's log to `<home>/run/daemon/runtime.log`, readable by this user
-  only; `ch-local status` names it. A daemon's own start keeps the last log as
-  `runtime.log.1`, and so does a log that reaches 5 MiB; a hand-over to a new
-  daemon goes on in the same file. One line is at most 8 KiB. It may hold
+  only; `ch-local status` names it. It's kept until it reaches about 5 MiB,
+  then moved to `runtime.log.1` (one older copy kept); a restart or a
+  hand-over to a new daemon goes on in the same file. One line is at most
+  8 KiB, and the runtime's own lines start with `[runtime]`. It may hold
   what your modules print or report (repository names, your CI's log text,
   file paths), so keep it as private as it is made. A session on a runtime of
   its own logs to its client's MCP log, as before.

@@ -728,13 +728,15 @@ test('A7: a running daemon meeting another daemon\'s daemon.json never rewrites 
 });
 
 // C-daemon-log: the daemon's own lines go to <run>/runtime.log as well as
-// where they went; a hand-over's daemon appends to the same file, a fresh
-// start makes the last one runtime.log.1
-test('C-daemon-log: the daemon\'s own lines land in runtime.log; a handed-over daemon goes on in it, a fresh one starts it anew', async() => {
+// where they went; a hand-over's daemon and a later start append to the same
+// file (rotation is by size only). On Windows the log alone gets a fake ACL:
+// the daemon's home and run directories are judged by the real one
+const logAcl = () => (process.platform === 'win32' ? {acl: {createPrivate: (f, d) => fs.writeFileSync(f, d), fileAcl: () => ({}), privateProblem: () => null}} : {});
+test('C-daemon-log: the daemon\'s own lines land in runtime.log; a handed-over daemon and a later start go on in it', async() => {
   const {home, io} = setup();
   try {
     io.runtimeLog = true;
-    if (process.platform === 'win32') io.winAcl = Object.assign({}, require('../lib/win-acl'), {createPrivate: (f, d) => fs.writeFileSync(f, d), fileAcl: () => ({}), privateProblem: () => null});
+    io.runtimeLogOptions = logAcl();
     const s = scripted(home);
     const done = daemon({home}, io, {run: s.run});
     const one = await s.nth(0);
@@ -756,13 +758,14 @@ test('C-daemon-log: the daemon\'s own lines land in runtime.log; a handed-over d
     assert.strictEqual(await two, 0);
     assert.ok(fs.readFileSync(file, 'utf8').startsWith(first), 'appended to, not started anew');
     assert.strictEqual(fs.existsSync(`${file}.1`), false);
-    // a fresh start: the last log set aside as .1
+    // a later start: the same file still (by size only)
     const s3 = scripted(home);
     const three = daemon({home}, io, {run: s3.run});
     await s3.nth(0);
     io.signal('SIGTERM');
     assert.strictEqual(await three, 0);
-    assert.ok(fs.readFileSync(`${file}.1`, 'utf8').startsWith(first));
+    assert.ok(fs.readFileSync(file, 'utf8').startsWith(first), 'appended to');
+    assert.strictEqual(fs.existsSync(`${file}.1`), false, 'nothing rotated at a start');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
@@ -772,8 +775,7 @@ test('C-daemon-log: a second daemon that finds one serving leaves its log as it 
   const {home, io} = setup();
   try {
     io.runtimeLog = true;
-    const fakeWin = () => Object.assign({}, require('../lib/win-acl'), {createPrivate: (f, d) => fs.writeFileSync(f, d), fileAcl: () => ({}), privateProblem: () => null});
-    if (process.platform === 'win32') io.winAcl = fakeWin();
+    io.runtimeLogOptions = logAcl();
     const s = scripted(home);
     let handed = null;
     const done = daemon({home}, io, {run: (opts, runIo) => { handed = runIo.runtimeOutput; return s.run(opts, runIo); }});
@@ -787,13 +789,28 @@ test('C-daemon-log: a second daemon that finds one serving leaves its log as it 
     // a second daemon on the same home: another one serves, it goes
     const io2 = daemonIo(home);
     io2.runtimeLog = true;
-    if (process.platform === 'win32') io2.winAcl = fakeWin();
+    io2.runtimeLogOptions = logAcl();
     assert.strictEqual(await daemon({home}, io2, {run: scripted(home).run}), 0);
     assert.match(io2.err, /another daemon \(pid \d+\) is running/);
     assert.strictEqual(fs.existsSync(`${file}.1`), false, 'not rotated by the second daemon');
     assert.ok(fs.readFileSync(file, 'utf8').startsWith(before), 'the serving daemon\'s log as it was');
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('C-daemon-log: an error that ends the daemon reaches its log before it goes', async() => {
+  const {home, io} = setup();
+  try {
+    io.runtimeLog = true;
+    io.runtimeLogOptions = logAcl();
+    const boom = Object.assign(new Error('a failure no one said'), {code: 'EBOOM'});
+    // (a read the daemon makes once its log is open throws)
+    Object.defineProperty(io, 'daemonPollMs', {get() { throw boom; }, configurable: true});
+    await assert.rejects(daemon({home}, io, {run: scripted(home).run}), /a failure no one said/);
+    assert.match(fs.readFileSync(path.join(runDirOf(home), 'runtime.log'), 'utf8'), /ch-local daemon: ended by an error: Error: a failure no one said/);
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
