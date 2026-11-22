@@ -463,13 +463,20 @@ mod tests {
     fn a_daemon_this_shim_started_that_gives_up_is_seen_at_the_next_poll() {
         let t = home();
         let script = t.home.root().join("fake-ch-local.sh");
-        fs::write(&script, "exit 0\n").unwrap();
+        let spawned = t.home.root().join("spawned");
+        // (the stand-in daemon marks that it ran: failed.json is written only
+        // after the spawn, so the read after it is the path that runs)
+        fs::write(&script, format!("touch '{}'\n", spawned.display())).unwrap();
         let shim = serde_json::json!({"node": "/bin/sh", "chLocal": script, "env": {"PATH": "/usr/bin:/bin", "HOME": t.home.root()}});
         private(&t.home.shim_json(), shim.to_string().as_bytes());
         let failed = t.home.run_dir().join("failed.json");
         // (written after the spawn, as a daemon that never listened writes it)
         let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(400));
+            let until = Instant::now() + Duration::from_secs(10);
+            while !spawned.exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(spawned.exists(), "the daemon was spawned");
             let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
             private(
                 &failed,
