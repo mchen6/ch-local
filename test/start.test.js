@@ -723,7 +723,7 @@ test('on Windows with a runtime older than countinghouse#195: audit, said; an ex
   const f = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
-  assert.match(f.err, /this countinghouse is older than countinghouse#195: it cannot enforce the sandbox.*; `[^`]+ upgrade` installs one that can$/m);
+  windowsLine(f.err);
   for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
     const g = io(home, {platform: 'win32'});
     assert.notStrictEqual(await start({passThrough}, g), 0);
@@ -769,6 +769,15 @@ test('a stored moduleSandbox audit reaches the runtime once', async () => {
 // a thread or native code a pack starts is reported, not stopped: only
 // enforce confines it. Start says so, once, whenever the runtime runs under
 // audit.
+// the Windows line, as sent: its upgrade command whole at the end; its words
+// whole unless the test's home is long enough to fit it to the cut ("…")
+// (at a home so long the command alone takes the cut, only the command is
+// sent: the 1.1 row on fitNotice's tail)
+const windowsLine = (err) => {
+  const line = err.split('\n').find((l) => /^ch-local: (this countinghouse is |`)/.test(l) && /upgrade` installs one that can$/.test(l));
+  assert.ok(line != null, err);
+  if (!/…/.test(line) && !/^ch-local: `/.test(line)) assert.ok(line.startsWith('ch-local: this countinghouse is older than countinghouse#195: it cannot enforce the sandbox on Windows, so it runs audit; '), line);
+};
 const AUDIT_TEXT = /^ch-local: under audit, countinghouse logs what a pack reads and refuses its file writes outside its own area; it does not stop a module that starts a process, a thread or native code: enforce refuses those$/gm;
 test('audit, passed, stored or forced on Windows, says what it watches and that it refuses writes outside the pack\'s area, once', async () => {
   const count = (f) => (f.err.match(AUDIT_TEXT) || []).length;
@@ -786,8 +795,7 @@ test('audit, passed, stored or forced on Windows, says what it watches and that 
   assert.strictEqual(count(windows), 1, `in WINDOWS_AUDIT, and not twice: ${windows.err}`);
   // (whole at a typical home's launcher; this test's home, with no launcher,
   // names the npx form with its home, so the explanation is cut before it)
-  assert.match(windows.err, /^ch-local: this countinghouse is older than countinghouse#195: it cannot enforce the sandbox.*; `[^`]+ upgrade` installs one that can$/m);
-  assert.match(windows.err, /; `[^`]+ upgrade` installs one that can$/m, 'its command whole');
+  windowsLine(windows.err);
   // (at a user's home: the npx form's home as long as a typical one)
   // (one fitted to the cut, "…" before its command, measured as sent)
   const atHome = (l) => { const t = l.replace(/^ch-local: /, ''); return /…/.test(t) ? [...t].length : require('./notice-length').atRealisticHome(t.replace(/COUNTINGHOUSE_HOME="[^"]*"/g, 'COUNTINGHOUSE_HOME="/home/alexandra/.countinghouse"')); };
