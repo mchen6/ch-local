@@ -81,7 +81,7 @@ test('a running client\'s word: a module it stopped, with its code; a client on 
   const live = Object.assign(s.io(), {hostname: 'box-1', alive: (pid) => pid === 4242 || pid === 4343 || pid === 4444});
   const {out, code, err} = await statusOf(live);
   assert.strictEqual(code, 0, err);
-  assert.strictEqual(lineOf(out, 'ch-pack-ci-failure-triage'), 'on; stopped in a running client (MODULE_SUSPENDED): restart that client');
+  assert.match(lineOf(out, 'ch-pack-ci-failure-triage'), /^on; stopped in a running client \(MODULE_SUSPENDED\): restart that client, or with the shared runtime run `[^`]+ restart`$/);
   assert.strictEqual(out.split('\n').filter((l) => /^a running client is still on ch-local 0\.0\.1; restart it, or with the shared runtime run `[^`]+ restart`$/.test(l)).length, 1, out);
   const dead = Object.assign(s.io(), {hostname: 'box-1', alive: () => false});
   const d = await statusOf(dead);

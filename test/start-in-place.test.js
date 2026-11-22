@@ -412,8 +412,27 @@ test('A5: in shared mode, what applies at the next start names `ch-local restart
     setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
     await until(() => notices(s).some(([, t]) => /autoUpgrade loosened/.test(t)));
     const line = notices(s).find(([, t]) => /autoUpgrade loosened/.test(t))[1];
-    assert.match(line, /^autoUpgrade loosened from off to on, when the shared runtime restarts \(`[^`]+ restart`\)$/);
-    assert.doesNotMatch(line, /next start|restart your client/);
+    // (a loosening hands the model no command: applying it stays the
+    // user's own act -- the reviewer's high on #147, M5)
+    assert.strictEqual(line, 'autoUpgrade loosened from off to on, when the shared runtime restarts');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (and a line the user must act on goes out as a notice in shared mode,
+// whose stderr is the daemon's: the reviewer's high on #147, L2, L5)
+test('A5: in shared mode a setting the runtime could not take in place is told, naming `ch-local restart`', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true, answer: (m) => (m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
+  try {
+    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'requestTimeout', '10s', {by: 'cli'});
+    await until(() => notices(s).some(([, t]) => /requestTimeout set to/.test(t)));
+    const line = notices(s).find(([, t]) => /requestTimeout set to/.test(t))[1];
+    assert.match(line, /^requestTimeout set to 10s: applies when the shared runtime restarts \(`[^`]+ restart`\) \(NOT_NOW\)$/);
+    assert.ok(line.length <= 200, line);
   } finally {
     s.end();
     await s.done;
@@ -945,7 +964,7 @@ const stale = (s) => { s.f.selfVersion = '0.1.9'; };
 const {restartEither: either} = require('../lib/command-line');
 const eitherIn = (h) => either(require('../lib/home').layout({COUNTINGHOUSE_HOME: h}));
 // (a running runtime takes it at a restart: the client's, or the shared one's: A5)
-const UPGRADED = (h) => `ch-local in this home is now 0.2.0 (upgraded); ${eitherIn(h)} to use it`;
+const UPGRADED = () => 'ch-local in this home is now 0.2.0 (upgraded); restart your client to use it';
 test('another release\'s record: a module moved up is not reloaded, a new one not loaded; said once', async () => {
   const s = await running();
   try {
@@ -1375,7 +1394,7 @@ test('a home rolled back under a running start: "ch-local in this home is now <v
     // this process is the later release; the home's ch-local is the earlier
     s.f.selfVersion = '0.2.1';
     editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
-    const line = `ch-local in this home is now 0.2.0 (rolled back); ${eitherIn(s.home)} to use it`;
+    const line = 'ch-local in this home is now 0.2.0 (rolled back); restart your client to use it';
     await until(() => notices(s).some(([, t]) => t === line));
     await settled(s);
     assert.strictEqual(notices(s).filter(([, t]) => t === line).length, 1);
@@ -1411,7 +1430,7 @@ test('a credential removed while running unloads the callers of its module, said
   try {
     await until(() => s.args() != null);
     require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
-    const line = `ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or ${eitherIn(s.home)}`;
+    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or restart your client';
     await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
     // a later change sends no second unload
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
