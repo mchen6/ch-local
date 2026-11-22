@@ -470,6 +470,29 @@ test('--from with this platform\'s shim in the folder: placed by its pinned sha5
   await require('../lib/packs-command').status({}, st2);
   assert.ok(st2.out.includes(`the shared runtime's log: ${logAt}\n`), st2.out);
   fs.rmSync(logAt, {force: true});
+  // (and how the shared runtime is, so the shim's "status says why" is
+  // true: serving, restarting, gave up with its reason, or not running --
+  // the closing pass, L5)
+  const statusOf = async() => { const o = fakeIo({env: {COUNTINGHOUSE_HOME: h}}); await require('../lib/packs-command').status({}, o); return o.out; };
+  assert.match(await statusOf(), /^the shared runtime: not running; the next session starts it$/m);
+  const runDir = path.join(h, 'run', 'daemon');
+  fs.chmodSync(path.join(h, 'run'), 0o700);
+  fs.chmodSync(runDir, 0o700);
+  fs.writeFileSync(path.join(runDir, 'failed.json'), JSON.stringify({v: 1, at: Date.parse('2026-11-22T10:00:00Z'), exit: 1, signal: null, reason: 'restarts-exhausted'}), {mode: 0o600});
+  if (process.platform !== 'win32') assert.match(await statusOf(), /^the shared runtime: gave up \(it failed 5 times in 10 minutes\); the sessions run their own runtimes for now$/m);
+  fs.rmSync(path.join(runDir, 'failed.json'));
+  const d = require('../lib/daemon');
+  const realServing = d.daemonServing;
+  try {
+    d.daemonServing = async() => ({serving: true, pid: 4242, by: 'socket'});
+    assert.match(await statusOf(), /^the shared runtime: serving \(pid 4242\)$/m);
+    d.daemonServing = async() => ({serving: true, pid: 4242, by: 'pid'});
+    assert.match(await statusOf(), /^the shared runtime: restarting \(pid 4242; its socket does not answer yet\)$/m);
+    d.daemonServing = async() => ({serving: true, pid: null, by: 'unreadable'});
+    assert.match(await statusOf(), /^the shared runtime: can't be told \(.*daemon\.json can't be read\)$/m);
+  } finally {
+    d.daemonServing = realServing;
+  }
   // (again: the same shim, checked again, moves nothing)
   const io2 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {node: process.execPath});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io2, withShim(r.allow, s)), 0, io2.err);
