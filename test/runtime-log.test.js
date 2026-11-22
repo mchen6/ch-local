@@ -474,23 +474,32 @@ test('Windows: on the running path, a file found at the name (a recheck, a rotat
   assert.deepStrictEqual([acl.created, acl.read], [[], []], 'no createPrivate, no fileAcl while running');
 });
 
-test('a rotation whose fresh file could not be made renames nothing again: only the fresh file is tried next', async() => {
-  const dir = runDir();
-  let failMake = 1;
-  let renames = 0;
-  const excl = (flags) => flags === 'ax' || (typeof flags === 'number' && (flags & fs.constants.O_EXCL) !== 0);
-  const fsx = Object.assign({}, fs, {
-    renameSync(a, b) { renames++; return fs.renameSync(a, b); },
-    openSync(p, flags, mode) { if (excl(flags) && failMake-- > 0) throw Object.assign(new Error('no'), {code: 'EMFILE'}); return fs.openSync(p, flags, mode); }
+// (both ways a log is made, on every OS: the POSIX flags, and Windows' 'ax'
+// with the fake ACL -- the first open makes the file exclusively on Windows
+// too, so the failure planned is the rotation's, set once the log is open)
+for (const [how, opts] of [['POSIX', {platform: 'linux'}], ['Windows', {platform: 'win32', acl: fakeAcl()}]]) {
+  test(`${how}: a rotation whose fresh file could not be made renames nothing again: only the fresh file is tried next`, {skip: how === 'POSIX' && WIN && 'POSIX flags'}, async() => {
+    const dir = runDir();
+    let failMake = 0;
+    let renames = 0;
+    const excl = (flags) => flags === 'ax' || (typeof flags === 'number' && (flags & fs.constants.O_EXCL) !== 0);
+    const fsx = Object.assign({}, fs, {
+      renameSync(x, y) { renames++; return fs.renameSync(x, y); },
+      openSync(p, flags, mode) { if (excl(flags) && failMake > 0) { failMake--; throw Object.assign(new Error('no'), {code: 'EMFILE'}); } return fs.openSync(p, flags, mode); }
+    });
+    const log = openRuntimeLog(dir, {...opts, fsx, cap: 120});
+    assert.strictEqual(log.problem, null, 'the log is open');
+    failMake = 1;
+    log.own();
+    for (let i = 0; i < 4; i++) log.write(`line ${i} ${'r'.repeat(20)}`);
+    await log.close();
+    assert.strictEqual(renames, 1, 'renamed once, then the fresh file made');
+    assert.strictEqual(failMake, 0, 'the fresh file\'s first try failed');
+    assert.ok(fs.existsSync(`${log.file}.1`), 'rotated');
+    const all = read(`${log.file}.1`) + read(log.file);
+    for (let i = 0; i < 4; i++) assert.match(all, new RegExp(`line ${i} `), `line ${i} kept`);
   });
-  const log = openRuntimeLog(dir, {...platformOpts(), fsx, cap: 120});
-  log.own();
-  for (let i = 0; i < 4; i++) log.write(`line ${i} ${'r'.repeat(20)}`);
-  await log.close();
-  assert.strictEqual(renames, 1, 'renamed once, then the fresh file made');
-  const all = read(`${log.file}.1`) + read(log.file);
-  for (let i = 0; i < 4; i++) assert.match(all, new RegExp(`line ${i} `), `line ${i} kept`);
-});
+}
 
 test('drops not yet said are said at close (under the hard cap; past it nothing more is written)', async() => {
   const dir = runDir();
