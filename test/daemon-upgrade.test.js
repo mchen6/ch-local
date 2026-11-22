@@ -860,7 +860,7 @@ test('A5: ch-local restart said only as seen: asked of an earlier ch-local\'s da
     then = () => fs.rmSync(file);
     x = await run(500);
     assert.strictEqual(x.code, 0);
-    assert.match(x.r.out, /the shared runtime stopped; waiting up to 49 s for its successor/);
+    assert.match(x.r.out, /the shared runtime stopped; waiting up to 45 s for its successor/);
     assert.match(x.r.out, /the shared runtime stopped and has not started again; the next session starts it, with what is stored/);
     // (an idle stop waits only a daemon's start for a successor, not the
     // whole bound -- N1; and a successor seen after "gone" is a restart -- L5)
@@ -1374,25 +1374,78 @@ test('M2: a refusal that lasts is said once and retried less often each time', a
   }
 });
 
-// The cold start (the dry run, 11-22): the daemon may take 24 s for its
-// runtime to listen, inside the shim's 28 s for a first attach that started
-// it. What follows from READY_MS, pinned on purpose. And the session window:
-// a restored session waits at most READY_MS for the new runtime to listen,
-// then at most the shim's longest retry gap for its next attempt, then at
-// most one handshake, all inside the runtime's 60 s reconnect window
-test('cold start: READY_MS 24 s, the bounds that follow from it, and a restored session still inside its 60 s window', () => {
+// The cold start (the dry run, 11-22): 24 s for a runtime to listen ONLY when
+// there is provably nothing to restore: no handoff at all, an empty table, and
+// no daemon.json left behind (a crashed daemon's, readable or not; an idle stop
+// removes its own). Everything else keeps READY_MS, so a restored session's
+// worst case stays what it was: READY_MS for the runtime to listen, the shim's
+// longest retry gap, one handshake, inside the runtime's 60 s window.
+test('cold start: 24 s only with provably nothing to restore; the bounds that follow; a restored session inside its 60 s', () => {
   const d = require('../lib/daemon');
   const {restartBoundMs, successorWaitMs} = require('../lib/restart-command');
   const {uninstallLockBoundMs} = require('../lib/uninstall');
-  assert.strictEqual(d.READY_MS, 24000);
-  assert.strictEqual(restartBoundMs(), 99000);
-  assert.strictEqual(successorWaitMs(), 49000);
-  assert.strictEqual(uninstallLockBoundMs(), 89000);
+  assert.deepStrictEqual([d.READY_MS, d.COLD_READY_MS], [20000, 26000]);
+  const bound = (o) => d.firstReadyMs({handoff: null, rows: 0, leftover: false, ready: 20000, cold: 26000, ...o});
+  assert.strictEqual(bound({}), 26000, 'nothing to restore');
+  assert.strictEqual(bound({elapsed: 3000}), 23000, 'counted from the daemon\'s process start');
+  assert.strictEqual(bound({elapsed: 15000}), 20000, 'never shorter than READY_MS');
+  assert.strictEqual(bound({handoff: Buffer.alloc(0)}), 20000, 'a handoff, even an empty or unreadable one');
+  assert.strictEqual(bound({handoff: Buffer.from('not a frame')}), 20000);
+  assert.strictEqual(bound({rows: 1}), 20000, 'a table with a row');
+  assert.strictEqual(bound({rows: null}), 20000, 'a table that can\'t be judged');
+  assert.strictEqual(bound({leftover: true}), 20000, 'a daemon.json left behind');
+  assert.strictEqual(bound({leftover: null}), 20000, 'whether one was left can\'t be told');
+  // (a restart's own runtime and a hand-over keep READY_MS: unchanged)
+  assert.strictEqual(restartBoundMs(), 95000);
+  // (after a stop, a shim may start a fresh daemon: its cold start ends within
+  // COLD_READY_MS of its process start, inside READY_MS and the 10 s for a boot)
+  assert.strictEqual(successorWaitMs(), 45000);
+  assert.ok(d.COLD_READY_MS <= d.READY_MS + 10000);
+  // (the longest hold of start.lock is still a restart's: backoff, ready, stop)
+  assert.strictEqual(uninstallLockBoundMs(), 85000);
+  assert.ok(Math.max(...d.BACKOFF_MS) + d.READY_MS + d.STOP_MS >= d.COLD_READY_MS + d.STOP_MS, 'a first start\'s hold is inside it');
   const src = (f) => fs.readFileSync(path.join(__dirname, '..', 'shim', 'src', f), 'utf8');
   const retries = /const RETRIES: \[u64; \d+\] = \[([\d, ]+)\];/.exec(src('relay.rs'))[1].split(',').map(Number);
   const handshake = Number(/const HANDSHAKE_LIMIT: Duration = Duration::from_secs\((\d+)\);/.exec(src('attach.rs'))[1]);
   const cold = Number(/pub const COLD_BUDGET: Duration = Duration::from_secs\((\d+)\);/.exec(src('attach.rs'))[1]);
-  assert.ok(d.READY_MS + Math.max(...retries) * 1000 + handshake * 1000 < d.SESSION_WINDOW_MS, 'a restored session reattaches inside its window');
-  assert.ok(d.READY_MS < cold * 1000, 'the daemon gives up before the shim that started it');
+  assert.strictEqual(d.READY_MS + Math.max(...retries) * 1000 + handshake * 1000, 55000, 'a restored session\'s worst case, as before');
+  assert.ok(55000 < d.SESSION_WINDOW_MS);
+  assert.ok(d.COLD_READY_MS + 2000 <= cold * 1000, 'the daemon gives up before the shim that started it, with 2 s to answer');
   assert.ok(cold * 1000 < 30000, 'under Claude Code\'s 30 s for a stdio server');
+});
+
+// the same rule through a real first start: a runtime that listens between the
+// two bounds is served from an empty start, and not after a crash's leftover
+// daemon.json or a handoff
+test('cold start: a runtime listening between the two bounds is served only when there is nothing to restore', async() => {
+  const start = async(prepare, {handoff = null} = {}) => {
+    const {home, io} = setup();
+    try {
+      io.daemonReadyMs = 250;
+      io.daemonColdReadyMs = 1500;
+      io.daemonBackoffMs = [0, 0, 0, 0];
+      prepare(home);
+      const s = scripted(home);
+      s.delay = (n) => (n === 1 ? 700 : 60000);   // the first runtime listens at 700 ms
+      const done = daemon({home, handoff}, io, {run: s.run});
+      const one = await s.nth(0);
+      const until = Date.now() + 1400;
+      while (one.listenedAt == null && Date.now() < until) await tick();
+      await tick(200);
+      const adoptedIt = !one.ended;
+      io.signal('SIGTERM');
+      for (const c of s.calls) await c.exit(0);
+      await done;
+      return adoptedIt;
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  };
+  assert.strictEqual(await start(() => {}), true, 'nothing to restore: it waits for the runtime');
+  const leftover = (home) => {
+    fs.mkdirSync(runDirOf(home), {recursive: true, mode: 0o700});
+    fs.writeFileSync(daemonJson(home), JSON.stringify({pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: 'z', started: 'crashed'}), {mode: 0o600});
+  };
+  assert.strictEqual(await start(leftover), false, 'a crashed daemon\'s daemon.json: READY_MS');
+  assert.strictEqual(await start(() => {}, {handoff: encodeHandoff({sessions: [], declines: []})}), false, 'a handoff, even of an empty table: READY_MS');
 });

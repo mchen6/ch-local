@@ -195,6 +195,11 @@ const HOLDER_MAX: u64 = 4096;
 
 /// readHolder, opened without following a symlink and without blocking on a
 /// FIFO, at most HOLDER_MAX bytes read.
+/// Whether `lock`'s holder names this pid.
+pub fn held_by(lock: &Path, pid: u32) -> bool {
+    read_holder(lock).and_then(|h| h.integer_pid()) == Some(i64::from(pid))
+}
+
 fn read_holder(lock: &Path) -> Option<Holder> {
     use std::io::Read;
     let file = open_nofollow(lock).ok()?;
