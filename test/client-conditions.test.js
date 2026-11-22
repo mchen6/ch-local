@@ -421,3 +421,16 @@ test('the plugin route: a root that differs from its real path only by case is k
     assert.strictEqual(pluginRootScanned(flip(p.root), plugins, process.platform), true, 'only the case differs');
   }
 });
+
+test('the plugin route: a name that matches without case is known only when it is the same directory (a case-sensitive volume\'s two directories are not)', {skip: process.platform === 'win32' && 'a case-insensitive file system here'}, () => {
+  const {pluginRootScanned} = require('../lib/client-conditions');
+  const w = world();
+  const p = pluginEnv(w);
+  // (on this file system the two cases may be two directories, as on a
+  // case-sensitive APFS volume; compared as macOS compares names)
+  const other = p.root.replace(/cache/, 'Cache');
+  let twoDirs = false;
+  try { fs.mkdirSync(other, {recursive: true}); twoDirs = fs.statSync(other).ino !== fs.statSync(p.root).ino; } catch (err) { twoDirs = false; }
+  if (twoDirs) assert.strictEqual(pluginRootScanned(other, [p.root], 'darwin'), false, 'another directory, though its name matches without case');
+  assert.strictEqual(pluginRootScanned(p.root, [p.root], 'darwin'), true, 'the same directory');
+});
