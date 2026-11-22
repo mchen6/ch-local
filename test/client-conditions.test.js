@@ -317,64 +317,83 @@ test('stopAt and conditionsStopAt are reachable only from tests: in lib/, bin/ a
 // ${CLAUDE_PLUGIN_ROOT}/bin/launch.js session`): Claude Code 2.1.326-2.1.330
 // starts a plugin's stdio MCP server with CLAUDE_PLUGIN_ROOT (the plugin's
 // directory) and CLAUDE_PLUGIN_DATA (its data directory) in its environment.
-// ROOT is scanned as a plugin, on its real path, as a --plugin-dir is; DATA
-// (and CLAUDE_PLUGIN_OPTION_*, user-config values a hook gets) are known and
-// loaded from by nothing; any other CLAUDE_PLUGIN_* is still unreadable.
-const pluginEnv = (w, {hook = false} = {}) => {
-  const root = path.join(w.home, '.claude', 'plugins', 'cache', 'ch-packs', 'ch-packs', '0.1.0');
+// ROOT is known only as one of the plugins the scan reads (the cache, a
+// --plugin-dir, CLAUDE_CODE_PLUGIN_DIRS, a seed), named by its real path;
+// DATA (and CLAUDE_PLUGIN_OPTION_*, user-config values a hook gets) are
+// known and loaded from by nothing; any other CLAUDE_PLUGIN_* is unreadable.
+const cached = (w, name = 'ch-packs') => path.join(w.home, '.claude', 'plugins', 'cache', name, name, '0.1.0');
+const pluginEnv = (w, {root = cached(w), hook = false} = {}) => {
   w.write(path.join(root, '.claude-plugin', 'plugin.json'), {name: 'ch-packs'});
   if (hook) w.write(path.join(root, 'hooks', 'hooks.json'), HOOK('Elicitation'));
   const data = path.join(w.home, '.claude', 'plugins', 'data', 'ch-packs-ch-packs');
   fs.mkdirSync(data, {recursive: true});
   return {root, data, env: Object.assign({}, w.env, {CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: data, CLAUDE_PLUGIN_OPTION_REGION: 'eu'})};
 };
+const UNREADABLE = {mayElicit: false, why: 'client settings unreadable'};
 
-test('the plugin route: CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA, with no hook anywhere: yes', () => {
+test('the plugin route: a cached plugin\'s CLAUDE_PLUGIN_ROOT and its CLAUDE_PLUGIN_DATA, no hook anywhere: yes', () => {
   const w = world();
-  const p = pluginEnv(w);
-  assert.deepStrictEqual(w.ask({env: p.env}), {mayElicit: true, why: null});
+  assert.deepStrictEqual(w.ask({env: pluginEnv(w).env}), {mayElicit: true, why: null});
+  // (and without the variables, the same: they add nothing but are known)
+  assert.deepStrictEqual(w.ask(), {mayElicit: true, why: null});
 });
 
-test('the plugin route: an Elicitation hook in the plugin CLAUDE_PLUGIN_ROOT names: plugin hook present', () => {
+test('the plugin route: a --plugin-dir plugin\'s root is one the scan reads too: yes', () => {
   const w = world();
-  const p = pluginEnv(w, {hook: true});
-  assert.deepStrictEqual(w.ask({env: p.env}), {mayElicit: false, why: 'plugin hook present'});
+  const dir = path.join(w.root, 'dev-plugin');
+  const p = pluginEnv(w, {root: dir});
+  assert.deepStrictEqual(w.ask({env: p.env, parentCommandLines: () => [['claude', '--plugin-dir', dir]]}), {mayElicit: true, why: null});
 });
 
-test('the plugin route: a root outside the cache is scanned too, on its real path (a link to a plugin with a hook)', {skip: process.platform === 'win32' && 'symlinks need privilege'}, () => {
-  const w = world();
-  const outside = path.join(w.root, 'elsewhere', 'plugin');
-  w.write(path.join(outside, 'hooks', 'hooks.json'), HOOK('ElicitationResult'));
-  const link = path.join(w.root, 'link-to-plugin');
-  fs.symlinkSync(outside, link, 'dir');
-  const env = Object.assign({}, w.env, {CLAUDE_PLUGIN_ROOT: link});
-  assert.deepStrictEqual(w.ask({env}), {mayElicit: false, why: 'plugin hook present'});
-});
-
-test('the plugin route: a root relative, missing or not a directory; DATA relative; another CLAUDE_PLUGIN_*: unreadable', () => {
-  const w = world();
-  const p = pluginEnv(w);
-  const file = path.join(w.root, 'a-file');
-  w.write(file, 'x');
-  for (const extra of [{CLAUDE_PLUGIN_ROOT: 'relative/plugin'}, {CLAUDE_PLUGIN_ROOT: path.join(w.root, 'nowhere')}, {CLAUDE_PLUGIN_ROOT: file},
-    {CLAUDE_PLUGIN_DATA: 'relative/data'}, {CLAUDE_PLUGIN_SOURCES: p.root}, {Claude_Plugin_Root: p.root}]) {
-    assert.deepStrictEqual(w.ask({env: Object.assign({}, p.env, extra)}), {mayElicit: false, why: 'client settings unreadable'}, JSON.stringify(extra));
+test('the plugin route: a root the scan does not read (outside every plugin source) is unreadable, hooked or not', () => {
+  for (const hook of [false, true]) {
+    const w = world();
+    const p = pluginEnv(w, {root: path.join(w.root, 'elsewhere', 'plugin'), hook});
+    assert.deepStrictEqual(w.ask({env: p.env}), UNREADABLE, `hook ${hook}`);
   }
 });
 
-test('the plugin route never masks another source: a cached plugin\'s hook, or a settings hook, still says no', () => {
+test('the plugin route: a root named through a link, even to a cached plugin, is unreadable (its relative hook paths resolve from the link)', {skip: process.platform === 'win32' && 'symlinks need privilege'}, () => {
   const w = world();
   const p = pluginEnv(w);
-  w.write(path.join(w.home, '.claude', 'plugins', 'cache', 'other', 'tool', '1.0.0', 'hooks', 'hooks.json'), HOOK('Elicitation'));
-  assert.deepStrictEqual(w.ask({env: p.env}), {mayElicit: false, why: 'plugin hook present'});
-  const v = world();
-  const q = pluginEnv(v);
-  v.write(path.join(v.home, '.claude', 'settings.json'), HOOK('Elicitation'));
-  assert.deepStrictEqual(v.ask({env: q.env}), {mayElicit: false, why: 'client hook present'});
+  const link = path.join(w.root, 'link-to-plugin');
+  fs.symlinkSync(p.root, link, 'dir');
+  assert.deepStrictEqual(w.ask({env: Object.assign({}, p.env, {CLAUDE_PLUGIN_ROOT: link})}), UNREADABLE);
 });
 
-test('a settings env block naming CLAUDE_PLUGIN_ROOT or CLAUDE_PLUGIN_DATA is still unreadable', () => {
+test('the plugin route: a root relative or missing; DATA relative; another CLAUDE_PLUGIN_*, or another spelling: unreadable', () => {
   const w = world();
-  w.write(path.join(w.project, '.claude', 'settings.json'), {env: {CLAUDE_PLUGIN_DATA: '/x'}});
-  assert.deepStrictEqual(w.ask(), {mayElicit: false, why: 'client settings unreadable'});
+  const p = pluginEnv(w);
+  for (const extra of [{CLAUDE_PLUGIN_ROOT: 'relative/plugin'}, {CLAUDE_PLUGIN_ROOT: path.join(w.root, 'nowhere')},
+    {CLAUDE_PLUGIN_DATA: 'relative/data'}, {CLAUDE_PLUGIN_SOURCES: p.root}, {Claude_Plugin_Root: p.root}]) {
+    assert.deepStrictEqual(w.ask({env: Object.assign({}, p.env, extra)}), UNREADABLE, JSON.stringify(extra));
+  }
+});
+
+test('the plugin route never masks another source: a cached plugin\'s hook, a settings hook -- with a good root or a bad one', () => {
+  for (const bad of [false, true]) {
+    const w = world();
+    const p = pluginEnv(w);
+    w.write(path.join(cached(w, 'other'), 'hooks', 'hooks.json'), HOOK('Elicitation'));
+    const env = bad ? Object.assign({}, p.env, {CLAUDE_PLUGIN_ROOT: path.join(w.root, 'nowhere')}) : p.env;
+    assert.deepStrictEqual(w.ask({env}), {mayElicit: false, why: 'plugin hook present'}, `a cached hook, ${bad ? 'a bad' : 'a good'} root`);
+    const v = world();
+    const q = pluginEnv(v);
+    v.write(path.join(v.home, '.claude', 'settings.json'), HOOK('Elicitation'));
+    const env2 = bad ? Object.assign({}, q.env, {CLAUDE_PLUGIN_ROOT: 'relative'}) : q.env;
+    assert.deepStrictEqual(v.ask({env: env2}), {mayElicit: false, why: 'client hook present'}, `a settings hook, ${bad ? 'a bad' : 'a good'} root`);
+  }
+});
+
+test('the plugin route: the plugin\'s own hook is found as a cached plugin\'s', () => {
+  const w = world();
+  assert.deepStrictEqual(w.ask({env: pluginEnv(w, {hook: true}).env}), {mayElicit: false, why: 'plugin hook present'});
+});
+
+test('a settings env block naming CLAUDE_PLUGIN_ROOT, CLAUDE_PLUGIN_DATA or a CLAUDE_PLUGIN_OPTION_ is still unreadable', () => {
+  for (const k of ['CLAUDE_PLUGIN_ROOT', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_PLUGIN_OPTION_X']) {
+    const w = world();
+    w.write(path.join(w.project, '.claude', 'settings.json'), {env: {[k]: '/x'}});
+    assert.deepStrictEqual(w.ask(), UNREADABLE, k);
+  }
 });
