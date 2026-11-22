@@ -1189,3 +1189,84 @@ test('M2: a refused read of the requests file is tried again, and its request is
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// The closing pass on the lifecycle, L2: a daemon that finds another
+// daemon's daemon.json as it clears its socket stops there -- never "restarting
+// in N s" holding start.lock through the backoff, and never a runtime
+// started after it decided to stop
+const plantOther = (home) => fs.writeFileSync(daemonJson(home), JSON.stringify({pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: '9.9.9', started: 'other'}), {mode: 0o600});
+test('L2: a runtime that ends while daemon.json is another daemon\'s: this daemon stops at once, never sleeping its backoff', async() => {
+  const {home, io} = setup();
+  try {
+    io.daemonBackoffMs = [5000, 5000, 5000, 5000];
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    plantOther(home);
+    const t0 = Date.now();
+    await one.exit(1);
+    assert.strictEqual(await done, 0, io.err);
+    assert.ok(Date.now() - t0 < 4000, 'ended without sleeping the 5 s backoff');
+    assert.match(io.err, /daemon\.json is another daemon's now: not rewritten; this daemon stops/);
+    assert.doesNotMatch(io.err, /restarting in 5 s/);
+    assert.strictEqual(s.calls.length, 1, 'nothing restarted');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('L2: a restart that finds daemon.json another daemon\'s after its drain starts no runtime', async() => {
+  const {home, io} = setup();
+  try {
+    const s = scripted(home);
+    let release = null;
+    s.drainHold = new Promise((r) => { release = r; });
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    await requestRestart(home);
+    const until = Date.now() + ADOPT_MS;
+    while (!one.requests.some((m) => m.type === 'drain') && Date.now() < until) await tick();
+    plantOther(home);
+    s.drainHold = null;
+    release();
+    assert.strictEqual(await done, 0, io.err);
+    assert.match(io.err, /this daemon stops/);
+    assert.strictEqual(s.calls.length, 1, 'no runtime started after it decided to stop');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// The closing pass on the lifecycle, L6: a stop asked while the first start
+// waits on start.lock is a stop -- never a runtime started and served with
+// the poller and the idle stop off for good
+test('L6: a stop signal while the daemon waits on start.lock for its first start starts no runtime', async() => {
+  const {withLockFile} = require('../lib/lock');
+  const {home, io} = setup();
+  try {
+    const dir = runDirOf(home);
+    fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+    let free = null;
+    const held = new Promise((r) => { free = r; });
+    let inside = false;
+    const holding = withLockFile(path.join(dir, 'start.lock'), dir, io, async() => { inside = true; await held; });
+    while (!inside) await tick();
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await tick(200);
+    io.signal('SIGTERM');
+    free();
+    await holding;
+    // (bounded: a daemon that served on after the stop is ended here, so the
+    // failure is said, never a hung run)
+    const ended = await Promise.race([done.then(() => true), tick(3000).then(() => false)]);
+    if (!ended) { for (const c of s.calls) await c.exit(0); await done; }
+    assert.ok(ended, 'the daemon ended at the stop, serving nothing');
+    assert.strictEqual(s.calls.length, 0, 'no runtime started after the stop');
+    assert.strictEqual(fs.existsSync(daemonJson(home)), false, 'no daemon.json written');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
