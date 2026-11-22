@@ -213,6 +213,25 @@ The checks are grouped. Within a group, the order doesn't matter.
       pass.
     - Evidence: the two commits.
 
+24. **The pinned countinghouse knows every held-back reason this ch-local
+    writes.**
+    - Why: start writes the held-back file the overview reads, and a
+      runtime refuses that file whole when a reason in it is one it
+      doesn't know. The overview then shows no held-back module's reason,
+      though nothing about what loads changes. Every reason in ch-local's
+      `lib/held-back.js` REASONS must be in the pinned countinghouse's:
+      `gone` (an own module's copy not there at all) needs countinghouse
+      c313b561 (#534) or later.
+    - How: the machine check holds it. `node scripts/describe-release.js
+      <tarballs> --check` reads the runtime's tarball in that directory,
+      the pinned version, else its only `countinghouse-<version>.tgz`.
+      From it the step reads `lib/held-back.js`'s one-line REASONS. It fails
+      naming each reason the runtime lacks, and it also fails when there is
+      no such tarball or the line can't be read so.
+    - Check: the step exits 0 on the release's tarballs with the runtime's
+      beside them.
+    - Evidence: the step's output, saved with the checklist.
+
 ## Reviews, Windows and the notes
 
 16. **The pre-release trust-boundary review is done, and its findings are

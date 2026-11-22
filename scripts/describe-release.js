@@ -24,7 +24,11 @@
 // L5b, Q2), checked at install as a release's are. Its packs are the
 // release's; the directory holds a tarball of each module it pins.
 // --check: writes nothing; exits 1 when the file's descriptions differ from
-// the tarballs'.
+// the tarballs', or when the runtime it pins (its tarball in the directory:
+// the version the pins name, else the one countinghouse tarball there)
+// does not know every held-back reason this ch-local writes
+// (lib/held-back.js REASONS; A-own-gone: E10's gone, countinghouse
+// c313b561) -- or its reasons can't be read so.
 const fs = require('node:fs');
 const path = require('node:path');
 const {readMembers} = require('../lib/tar');
@@ -42,9 +46,14 @@ const refuse = (why) => { throw new StepError(why); };
 // pack's file name, before any is opened: a directory install's --from
 // holds also has the runtime's and ch-local's, which bundles what the strict
 // reader refuses (the Reviewer's high review of #98, 1)
-function readTarballs(dir, {only = null} = {}) {
+// skip: package names whose tarballs, any version, are left unopened (the
+// release's runtime packages: never described, and ch-local's bundles what
+// the strict reader refuses; --check reads the runtime's on its own)
+function readTarballs(dir, {only = null, skip = []} = {}) {
   let files;
   try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.tgz')).sort(); } catch (err) { refuse(`cannot read ${dir} (${err.code})`); }
+  const prefixes = skip.map((n) => `${n.replace(/^@/, '').replace('/', '-')}-`);
+  files = files.filter((f) => !prefixes.some((p) => f.startsWith(p) && /^\d/.test(f.slice(p.length))));
   if (only != null) {
     const wanted = new Set(Object.entries(only).map(([name, version]) => require('../lib/unpack').tarballName(name, version)));
     files = files.filter((f) => wanted.has(f));
@@ -66,6 +75,28 @@ function readTarballs(dir, {only = null} = {}) {
     out[manifest.name] = {file: f, version: manifest.version, manifest, api: json('api.json')};
   }
   return out;
+}
+
+// the held-back reasons the runtime in `dir` knows: its tarball (the
+// version pinned, else the only countinghouse-<version>.tgz there), its
+// lib/held-back.js's one `const REASONS = ['a', 'b', ...];` line, read
+// strictly -> {version, reasons} | {problem} (names a file, never its text)
+function runtimeReasons(dir, version) {
+  let files;
+  try { files = fs.readdirSync(dir); } catch (err) { return {problem: `cannot read ${dir} (${err.code})`}; }
+  const named = version != null ? [require('../lib/unpack').tarballName('countinghouse', version)] : null;
+  const found = files.filter((f) => (named != null ? named.includes(f) : /^countinghouse-\d[^/\\]*\.tgz$/.test(f)));
+  if (found.length !== 1) return {problem: named != null ? `no ${named[0]} in ${dir}` : `no single countinghouse tarball in ${dir}: ${found.length}`};
+  const f = found[0];
+  let members;
+  try { members = readMembers(fs.readFileSync(path.join(dir, f)), ['package.json', 'lib/held-back.js']); } catch (err) { return {problem: `${f}: ${err.message}`}; }
+  let manifest = null;
+  try { manifest = JSON.parse(String(members['package.json'])); } catch (e) { manifest = null; }
+  if (manifest == null || manifest.name !== 'countinghouse' || typeof manifest.version !== 'string') return {problem: `${f}: it is no countinghouse package`};
+  const lines = members['lib/held-back.js'] == null ? [] : String(members['lib/held-back.js']).split('\n').filter((l) => l.startsWith('const REASONS'));
+  const m = lines.length === 1 ? /^const REASONS = \[('[a-z][a-z-]*'(?:, '[a-z][a-z-]*')*)\];$/.exec(lines[0]) : null;
+  if (m == null) return {problem: `${f}: its lib/held-back.js has no one-line REASONS list`};
+  return {version: manifest.version, reasons: m[1].split(', ').map((w) => w.slice(1, -1))};
 }
 
 // release: the release's pins document (its packs); pins: the pins to hold
@@ -144,7 +175,8 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
     // (a development file: only the pack modules it pins, the runtime's and
     // ch-local's tarballs beside them, as install's --from holds them: the
     // medium on L5b, 1)
-    const tarballs = devFile != null ? readTarballs(dir, {only: pinnedModules(release, doc.pins || {})}) : readTarballs(dir);
+    const tarballs = devFile != null ? readTarballs(dir, {only: pinnedModules(release, doc.pins || {})})
+      : readTarballs(dir, {skip: release.runtime != null && Array.isArray(release.runtime.packages) ? release.runtime.packages : []});
     const described = describeRelease(release, doc.pins || {}, tarballs, {only: devFile != null});
     let next;
     if (devFile != null) {
@@ -169,6 +201,19 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
           stdout.write(`${target}: not a document this ch-local reads as it is${parsed.problem != null ? ` (${parsed.problem})` : ''}; run without --check to write it\n`);
           return 1;
         }
+      }
+      // (the runtime pinned knows every reason this ch-local writes to the
+      // held-back file: an older one refuses the file whole, A-own-gone)
+      const pinned = doc.pins != null && doc.pins.countinghouse != null && typeof doc.pins.countinghouse.version === 'string' ? doc.pins.countinghouse.version : null;
+      const rt = runtimeReasons(dir, pinned);
+      if (rt.problem != null) {
+        stdout.write(`${target}: the runtime's held-back reasons can't be checked (${rt.problem})\n`);
+        return 1;
+      }
+      const lacking = [...require('../lib/held-back').REASONS].filter((r) => !rt.reasons.includes(r));
+      if (lacking.length > 0) {
+        stdout.write(`${target}: the pinned countinghouse ${rt.version} does not know the held-back reason${lacking.length > 1 ? 's' : ''} ${lacking.join(', ')}, which this ch-local writes: pin a countinghouse that does\n`);
+        return 1;
       }
       const same = JSON.stringify(next.modules) === JSON.stringify(doc.modules) && (devFile != null || JSON.stringify(next.packs) === JSON.stringify(doc.packs));
       stdout.write(same ? `${target}: the descriptions match the tarballs\n` : `${target}: the descriptions differ from the tarballs; run without --check to write them\n`);
