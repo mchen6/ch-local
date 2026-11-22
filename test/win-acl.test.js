@@ -65,3 +65,37 @@ test('on Windows: the run directories are made, or put right, private; the files
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// A12 (the final pass): createPrivate read its stdin as console text and
+// wrote ASCII.GetBytes of it, so every byte past ASCII became '?' (a
+// credential, a name, a home under C:\Users\José). The data goes as base64
+// of its bytes, decoded by FromBase64String: the bytes written are the
+// bytes given.
+test('A12: createPrivate hands PowerShell its data as base64 of the bytes, decoded whole', () => {
+  const winAcl = require('../lib/win-acl');
+  assert.match(winAcl.CREATE_SCRIPT, /\[System\.Convert\]::FromBase64String\(\[Console\]::In\.ReadToEnd\(\)\.Trim\(\)\)/);
+  assert.doesNotMatch(winAcl.CREATE_SCRIPT, /ASCII/);
+  const data = '{"home":"C:\\\\Users\\\\José","token":"x€y"}';
+  assert.strictEqual(Buffer.from(winAcl.createInput(data), 'base64').toString('utf8'), data);
+  const bytes = Buffer.from([0, 255, 128, 0xc3]);
+  assert.strictEqual(winAcl.createInput(bytes), bytes.toString('base64'), 'a Buffer as its bytes, never through text');
+  assert.strictEqual(winAcl.createInput(new Uint8Array([0, 255])), Buffer.from([0, 255]).toString('base64'), 'any view as its bytes');
+  for (const bad of [undefined, null, 5]) assert.throws(() => winAcl.createInput(bad), /not a string or bytes/);
+});
+
+test('A12, on Windows: a file createPrivate makes holds exactly the bytes given', {skip: process.platform !== 'win32' && 'PowerShell'}, () => {
+  const {createPrivate} = require('../lib/win-acl');
+  const dir = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'ch-acl-bytes-'));
+  try {
+    const file = require('node:path').join(dir, 'f.json');
+    const data = '{"home":"C:\\\\Users\\\\José","token":"x€y"}';
+    createPrivate(file, data);
+    assert.strictEqual(require('node:fs').readFileSync(file, 'utf8'), data);
+    // (bytes that aren't UTF-8 text, as they are)
+    const raw = Buffer.from([0, 255, 128, 0xc3]);
+    createPrivate(`${file}.bin`, raw);
+    assert.ok(require('node:fs').readFileSync(`${file}.bin`).equals(raw));
+  } finally {
+    require('node:fs').rmSync(dir, {recursive: true, force: true});
+  }
+});

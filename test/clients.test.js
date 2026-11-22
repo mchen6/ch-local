@@ -213,7 +213,7 @@ test('add needs an install, and sends Claude Code and Desktop elsewhere', async 
     fs.rmSync(path.join(s.home, 'bin', 'ch-local.js'));
     const a = io(s);
     assert.strictEqual(await add('cursor', a), 1);
-    assert.match(a.err, /not installed yet: run ch-local install --pack ci-failure-triage first/);
+    assert.match(a.err, /not installed yet: run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local install --pack ci-failure-triage first/);
     const c = io(s);
     assert.strictEqual(await add('claude-code', c), 2);
     assert.match(c.err, /claude plugin marketplace add mchen6\/ch-local/);
@@ -221,6 +221,21 @@ test('add needs an install, and sends Claude Code and Desktop elsewhere', async 
     const d = io(s);
     assert.strictEqual(await add('claude-desktop', d), 2);
     assert.match(d.err, /\.mcpb bundle/);
+  } finally {
+    s.done();
+  }
+});
+
+// (the medium on the docs PR: Copilot reads $COPILOT_HOME/mcp-config.json
+// when that is set, and add writes it there, as it honours CODEX_HOME)
+test('add vscode writes under $COPILOT_HOME when it is set', async () => {
+  const s = setup();
+  try {
+    const copilotHome = path.join(s.user, 'elsewhere-copilot');
+    const f = fakeIo({env: {COPILOT_HOME: copilotHome}, homedir: s.user});
+    assert.strictEqual(await add('vscode', f), 0, f.err);
+    assert.ok(fs.existsSync(path.join(copilotHome, 'mcp-config.json')));
+    assert.ok(!fs.existsSync(path.join(s.user, '.copilot', 'mcp-config.json')));
   } finally {
     s.done();
   }

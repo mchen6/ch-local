@@ -87,7 +87,7 @@ test('withdrawnPacks: the packs the release does not list; an unreleased install
   // CH_LOCAL_DEV=1 (lib/pins.js): the dev intent is on record
   assert.deepStrictEqual(withdrawnPacks(packs, {allow, record: {unreleased: true}}), [], 'unreleased: exempt');
   assert.deepStrictEqual(withdrawnPacks(packs, {allow: {packs: {}}, record: null}).map((p) => p.name), ['kept', 'gone']);
-  assert.strictEqual(withdrawnLine('gone'), 'pack gone was withdrawn in this release and was not started; `ch-local remove-pack gone` removes it');
+  assert.strictEqual(withdrawnLine('gone'), 'pack gone was withdrawn in this release and was not started; `npx @countinghouse\/ch-local remove-pack gone` removes it');
 });
 
 

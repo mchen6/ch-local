@@ -55,7 +55,18 @@ const NO_PROBE = !POSIX || (process.env.CI == null && spawnSync('cc', ['--versio
 // a home of this user's (0700) holding a valid record, with or without a
 // shim recorded, and the shim placed as install places it (or not)
 const sha512 = (b) => require('node:crypto').createHash('sha512').update(b).digest('hex');
-function home({recorded = true, placed = true, body = null, version = '0.5.0'} = {}) {
+// <home>/shim.json naming this Node and <home>/bin/ch-local.js, there, as
+// install writes them; fields: what to put in their place
+function writeShimJsonFor(h, fields = {}) {
+  // (0700, as install makes it: the home's checks refuse a loose bin/)
+  if (!fs.existsSync(path.join(h, 'bin'))) fs.mkdirSync(path.join(h, 'bin'), {mode: 0o700});
+  fs.chmodSync(path.join(h, 'bin'), 0o700);
+  if (!fs.existsSync(path.join(h, 'bin', 'ch-local.js'))) fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), '', {mode: 0o600});
+  const body = Object.assign(require('../lib/shim-config').shimJsonFor({node: process.execPath, home: h, env: process.env}), fields);
+  fs.writeFileSync(path.join(h, 'shim.json'), JSON.stringify(body), {mode: 0o600});
+  fs.chmodSync(path.join(h, 'shim.json'), 0o600);
+}
+function home({recorded = true, placed = true, body = null, version = '0.5.0', shimJson = true} = {}) {
   const h = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-session-')));
   roots.push(h);
   fs.chmodSync(h, 0o700);
@@ -72,6 +83,8 @@ function home({recorded = true, placed = true, body = null, version = '0.5.0'} =
     fs.writeFileSync(path.join(h, 'shim', 'versions.json'), JSON.stringify({[sha512(bin)]: version}) + '\n', {mode: 0o600});
     fs.chmodSync(path.join(h, 'shim', 'versions.json'), 0o600);
   }
+  // shim.json as install writes it: this Node, the home's launcher (A3)
+  if (shimJson) writeShimJsonFor(h);
   return h;
 }
 const choose = (h) => sessionChoice({where: layout({COUNTINGHOUSE_HOME: h}, os.homedir)});
@@ -119,6 +132,40 @@ test('the shim only when the record names it and the file in place passes the ch
   const script = home({body: '#!/bin/sh\necho hi\n'});
   assert.strictEqual(choose(script).shim, null);
   assert.match(choose(script).note, new RegExp(`the shared runtime's shim is not a program this machine runs \\(${process.platform}-${process.arch}\\); this session runs its own runtime\\. Run \`.*install\` to put it right`));
+});
+
+// A3 (the final pass): shim.json names the Node install ran under; after a
+// Node upgrade that moves it (brew, nvm) the shim could start nothing. The
+// shim is picked only when shim.json is this user's own, valid, its node
+// runnable and its chLocal readable; else the session's own runtime, in this
+// Node, and a fixed note naming which field and the errno, never a path.
+test('A3: the shim only when shim.json\'s node and chLocal are there; else the own runtime and the install line', {skip: NO_PROBE}, () => {
+  const ok = home();
+  assert.strictEqual(choose(ok).shim, path.join(ok, 'shim', EXE));
+  const note = (which, code) => new RegExp(`^ch-local: the shared runtime's settings \\(shim\\.json\\) name a ${which} that can't be used \\(${code}\\); this session runs its own runtime\\. Run \`[^\`]+ install\` to put it right\\.\\n$`);
+  const node = home();
+  writeShimJsonFor(node, {node: path.join(node, 'gone', 'node')});
+  assert.deepStrictEqual([choose(node).shim, note('Node', 'node: ENOENT').test(choose(node).note)], [null, true], choose(node).note);
+  assert.ok(!choose(node).note.includes(path.join(node, 'gone')), 'shim.json\'s path not named (the install line names the launcher, as every note does)');
+  const cl = home();
+  fs.rmSync(path.join(cl, 'bin', 'ch-local.js'));
+  assert.deepStrictEqual([choose(cl).shim, note('ch-local', 'chLocal: ENOENT').test(choose(cl).note)], [null, true], choose(cl).note);
+  const missing = home({shimJson: false});
+  assert.strictEqual(choose(missing).shim, null);
+  assert.match(choose(missing).note, /^ch-local: the shared runtime's settings \(shim\.json\) can't be used \(missing\); this session runs its own runtime\. Run `[^`]+ install` to put it right\.\n$/);
+  const loose = home();
+  fs.chmodSync(path.join(loose, 'shim.json'), 0o644);
+  assert.strictEqual(choose(loose).shim, null, 'not this user\'s own file');
+  assert.match(choose(loose).note, /\(shim\.json\) can't be used \(NOT_PRIVATE\)/);
+  const invalid = home();
+  fs.writeFileSync(path.join(invalid, 'shim.json'), JSON.stringify({node: 'relative/node'}), {mode: 0o600});
+  assert.match(choose(invalid).note, /\(shim\.json\) can't be used \(invalid\)/);
+  // (a directory where node was: access passes it, the check doesn't)
+  const dir = home();
+  fs.mkdirSync(path.join(dir, 'a-node-dir'));
+  writeShimJsonFor(dir, {node: path.join(dir, 'a-node-dir')});
+  assert.strictEqual(choose(dir).shim, null);
+  assert.match(choose(dir).note, /name a Node that can't be used \(node: not a file\)/);
 });
 
 test('formatProblem: ELF for this architecture on Linux, Mach-O (thin or fat) on macOS; anything else refused', () => {
@@ -415,4 +462,32 @@ test('Windows: session reads its home\'s ACL once for its owner and its DACL che
   const {session} = require('../lib/session');
   assert.strictEqual(await session({home: h}, io), 2);
   assert.strictEqual(reads, 1, said.join(''));
+});
+
+// A2 (the final pass, a regression from #126): session built its ACL object
+// from io.winAcl alone, which a real io has none of, so on Windows every
+// session's shim check failed ("acl.privateProblem is not a function") and
+// ran its own runtime. Win-acl's functions, with a test's own over them and
+// the session's cached reader over both.
+test('A2: the session\'s ACL object carries win-acl\'s checks whatever io gives; the shim passes with only a reader faked', () => {
+  const {sessionAcl} = require('../lib/session');
+  const h = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-session-acl-')));
+  roots.push(h);
+  fs.mkdirSync(path.join(h, 'shim'));
+  fs.writeFileSync(path.join(h, 'shim', 'ch-shim.exe'), 'MZ');
+  const me = 'S-1-5-21-1-2-3-1001';
+  const PRIVATE = {user: me, owner: me, otherAces: false, rules: [{sid: me, rights: 2032127, type: 'Allow', inheritOnly: false}, {sid: 'S-1-5-18', rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  let read = 0;
+  const acl = sessionAcl({platform: 'win32', winAcl: {fileAcl: () => { read += 1; return PRIVATE; }}}, layout({COUNTINGHOUSE_HOME: h}, os.homedir));
+  assert.strictEqual(typeof acl.privateProblem, 'function', 'win-acl\'s own check');
+  const here = require('../lib/shim-binary').installedShim(h, {platform: 'win32', acl});
+  assert.deepStrictEqual(here, {file: path.join(h, 'shim', 'ch-shim.exe')});
+  // (each path read once: the session's cache)
+  const before = read;
+  require('../lib/shim-binary').installedShim(h, {platform: 'win32', acl});
+  assert.strictEqual(read, before, 'read once per path');
+  // (a field given as undefined never removes win-acl's check)
+  assert.strictEqual(typeof sessionAcl({platform: 'win32', winAcl: {fileAcl: () => PRIVATE, privateProblem: undefined}}, layout({COUNTINGHOUSE_HOME: h}, os.homedir)).privateProblem, 'function');
+  // (and a real io, with no winAcl at all, still gets win-acl's checks)
+  assert.strictEqual(typeof sessionAcl({platform: 'win32'}, layout({COUNTINGHOUSE_HOME: h}, os.homedir)).privateProblem, 'function');
 });

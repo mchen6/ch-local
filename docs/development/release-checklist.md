@@ -48,8 +48,10 @@ The checks are grouped. Within a group, the order doesn't matter.
 6. **Audit mode warns, and refuses a pack's writes outside its own area.**
    - How: `ch-local start --stdio --moduleSandbox audit`, and a start with
      `moduleSandbox: audit` stored, and a start on Windows.
-   - Check: each says "audit watches what a pack reads and never lets it
-     change files outside its own area" exactly once. countinghouse's audit
+   - Check: each says "audit watches what a pack reads and refuses its file
+     writes outside its own area, but only reports, and does not stop, a
+     process, a thread or native code it starts; only enforce confines it"
+     exactly once. countinghouse's audit
      writes test passes.
    - Evidence: `test/start.test.js` (ch-local), countinghouse's
      `test/sandbox/60-audit-writes.js`, and one hand start's stderr.
@@ -144,10 +146,24 @@ The checks are grouped. Within a group, the order doesn't matter.
 21. **The release pins no part below its floor.**
     - Why: a home's parts are only as new as its release's pins. A floor
       (`floors` in lib/release-pins.json) names the version that carries a
-      fix every release must hold. Today's floors: ch-step-redact 0.2.3,
-      ch-step-log-clean 0.2.2 (secrets and key blocks masked before a result
-      reaches the model) and ch-access-github 0.2.1 (the GitHub remote asks
-      for read-only tools).
+      fix every release must hold, and with it every fix before it. Today's
+      floors, each with the fixes it carries:
+      - ch-step-redact 0.2.4: secrets and key blocks masked before a result
+        reaches the model, with secret names inside escaped JSON (#11) and a
+        password after an address and a colon (#12);
+      - ch-step-log-clean 0.2.3: the same masking, with an omitted bare key
+        body keeping redact's state and step names whole (#7);
+      - ch-access-github 0.2.2: the GitHub remote asks for read-only tools
+        (0.2.1), and 0.2.2 is the version pack 1 0.7.1 is built against
+        (a refusal names its cause; a large log comes back as its tail);
+      - ch-step-report 0.4.4: the summary quotes no step name and an
+        e-mail address costs its field (#7), an @ before a password or after
+        a redacted address is an address's (#8), and the final pass's (#9);
+      - ch-pack-ci-failure-triage 0.7.1: step names go through redact before
+        any part, the result or the cache (#18), with
+        ch-access-github 0.2.2.
+      The parts fixed on 11-21 for function only (error-patterns, dedupe,
+      owner-hint) have no floor.
     - How: the machine check holds it. lib/release-pins.js refuses a pin
       below its floor (a pre-release, or anything not a version, counts as
       below), `node scripts/describe-release.js <tarballs>` refuses a
@@ -161,6 +177,35 @@ The checks are grouped. Within a group, the order doesn't matter.
     - Check: the step exits 0 on the release's tarballs, and `npm test`'s
       release-pins test passes on the tag's commit.
     - Evidence: the step's output, saved with the checklist.
+
+22. **The release's change notes are written into its pins.**
+    - Why: `upgrade` and `upgrade --check` show `release.notes` before they
+      ask, cleaned, as the release's own words.
+    - How: write the notes file (plain text, one change per line, at most 8
+      lines of at most 200 characters; blank lines are left out) and pass it
+      to the step: `node scripts/describe-release.js <tarballs> --notes
+      <file>`. Notes may be omitted: `--notes none` writes `null`, and a
+      release with no `notes` key at all is read as none. Without `--notes`,
+      the step keeps what the file already holds.
+    - Check: `release.notes` in lib/release-pins.json is the file's lines,
+      and the release-pins test passes.
+    - Evidence: the notes file, saved with the checklist.
+
+23. **The guide links point at the release's tag.**
+    - Why: `countinghouse_overview` and the setup skill send the user to
+      countinghouse's module guide; on `blob/master` it can describe what
+      this release doesn't have.
+    - How: at gating, change each link from `blob/master` to
+      `blob/<the release tag>`: countinghouse `lib/overview.js` (`GUIDE`)
+      and the setup skill's section 7
+      (`clients/claude-code/skills/countinghouse-setup/SKILL.md`: the
+      module-development.md and composite-tools.md links). The tests pin
+      them, so change them in the same commit: countinghouse
+      `test/mcp-contract/42-overview.js` (`GUIDE`) and ch-local
+      `test/plugin.test.js` (the setup skill's checked sentences).
+    - Check: no `blob/master` link is left in either file, and both tests
+      pass.
+    - Evidence: the two commits.
 
 ## Reviews, Windows and the notes
 
@@ -195,6 +240,10 @@ The checks are grouped. Within a group, the order doesn't matter.
         the environment;
       - the Sigstore verifier is the last of its major version.
     - Evidence: the release notes, and the specs' residual sections.
+    - Also: set `release.security` in lib/release-pins.json from the
+      security fixes since the previous published release, in one line
+      (rollback shows it before going back), or null for the first release,
+      which has no published release before it to roll back to.
 
 ## After the tag
 

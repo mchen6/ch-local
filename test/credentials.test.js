@@ -148,7 +148,7 @@ test('standard input: --to is required and must be the declared origin; never re
   const value = made();
   const noTo = io(h, {terminal: false, stdin: `${value}\n`});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, noTo), 2);
-  assert.match(noTo.err, /a key on standard input needs `--to <origin>`: the address it is for \(`ch-local credentials list` shows what ch-access-github declares\)\. Nothing was stored\./);
+  assert.match(noTo.err, /a key on standard input needs `--to <origin>`: the address it is for \(`(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials list` shows what ch-access-github declares\)\. Nothing was stored\./);
   const wrong = io(h, {terminal: false, stdin: `${value}\n`});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: 'https://api.example.com'}, wrong), 2);
   assert.match(wrong.err, /ch-access-github 1\.0\.0 sends its credential to https:\/\/api\.githubcopilot\.com, not the address given\. Nothing was stored\./);
@@ -166,7 +166,7 @@ test('standard input: --to is required and must be the declared origin; never re
   store.bind(other, ACCESS, VAR, {origin: 'https://old.example', source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
   const rebind = io(other, {terminal: false, stdin: made()});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github', to: ORIGIN}, rebind), 2);
-  assert.match(rebind.err, /the credential stored for ch-access-github does not match this version: it sends its credential somewhere new \(https:\/\/api\.githubcopilot\.com; the stored one is for https:\/\/old\.example\); run `ch-local credentials add ch-access-github` at a terminal to allow that\. Nothing was changed\./);
+  assert.match(rebind.err, /the credential stored for ch-access-github does not match this version: it sends its credential somewhere new \(https:\/\/api\.githubcopilot\.com; the stored one is for https:\/\/old\.example\); run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github` at a terminal to allow that\. Nothing was changed\./);
   // two lines, or over 4096 bytes: refused
   for (const stdin of [`${made()}\n${made()}\n`, 'x'.repeat(4097)]) {
     const f = io(home(), {terminal: false, stdin});
@@ -191,7 +191,7 @@ test('not an installed module that declares a credential: refused, the argument 
   const value = made();
   const asName = io(h, {typed: made()});
   assert.strictEqual(await credentials({action: 'add', name: value}, asName), 2);
-  assert.match(asName.err, /that is not an installed module that declares a credential; `ch-local credentials list` and `ch-local status` show them\. Nothing was changed\./);
+  assert.match(asName.err, /that is not an installed module that declares a credential; `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials list` and `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local status` show them\. Nothing was changed\./);
   assert.ok(!asName.err.includes(value) && !asName.out.includes(value), asName.err);
   const noCred = io(h, {typed: made()});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-pack-ci-failure-triage'}, noCred), 2);
@@ -207,7 +207,7 @@ test('list shows what an installed module with no binding declares, so --to can 
   const h = home();
   const f = io(h);
   assert.strictEqual(await credentials({action: 'list'}, f), 0);
-  assert.match(f.out, /^ch-access-github {2}COUNTINGHOUSE_GITHUB_TOKEN {2}https:\/\/api\.githubcopilot\.com {2}none stored {2}\(`ch-local credentials add ch-access-github`\)$/m);
+  assert.match(f.out, /^ch-access-github {2}COUNTINGHOUSE_GITHUB_TOKEN {2}https:\/\/api\.githubcopilot\.com {2}none stored {2}\(`(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`\)$/m);
 });
 
 test('a version 1 store is read in place as a binding for its recorded module, to api.githubcopilot.com, under the name the module declares; the first write makes it version 2', POSIX, async () => {

@@ -24,7 +24,7 @@ const registry = (latest) => async (url) => {
   return {ok: true, status: 200, json: async () => ({name, 'dist-tags': {latest: latest[name]}})};
 };
 
-// `ch-local upgrade` from npm (docs/development/auto-upgrade.md): the newer
+// `npx @countinghouse\/ch-local upgrade` from npm (docs/development/auto-upgrade.md): the newer
 // ch-local, checked by its provenance, its pins read from its verified bytes,
 // shown with what it adds, and on a yes installed through install. A fake
 // registry and the test root reach it only as its test-only argument.
@@ -189,7 +189,7 @@ test('the automatic-upgrade setting is off by default, stored on request, and as
     assert.strictEqual(await upgrade({auto: 'on'}, on), 0);
     assert.match(on.asked[0], /Loosen autoUpgrade from off to on\?/);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: true}});
-    assert.match(on.out, /installs automatically 72 hours after it is published, and runs new code with your keys; ch-local rollback undoes one/);
+    assert.match(on.out, /installs automatically 72 hours after it is published, and runs new code with your keys; (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local rollback undoes one/);
     assert.strictEqual(await upgrade({auto: 'off'}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}})), 0);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: false}});
     assert.deepStrictEqual(on.fetches, []);
@@ -222,7 +222,7 @@ test('offerAuto: at a terminal, asked once (cliSet\'s own question); a yes turns
     const quiet = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}});
     quiet.interactive = false;
     await offerAuto(quiet);
-    assert.match(quiet.out, /automatic upgrades are off \(no terminal to ask\); ch-local upgrade --auto on turns them on/);
+    assert.match(quiet.out, /automatic upgrades are off \(no terminal to ask\); (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade --auto on turns them on/);
     assert.deepStrictEqual(quiet.asked, []);
     assert.strictEqual(readSettings(where).values.autoUpgrade, undefined);
     const yes = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes']});
@@ -270,7 +270,7 @@ test('the yes is a person\'s at a terminal: a piped answer installs nothing; a n
   try {
     const piped = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
     assert.strictEqual(await upgrade({}, piped, w.fromNpm), 2);
-    assert.match(piped.err, /installing 0\.2\.0 is confirmed at a terminal: run ch-local upgrade in one; nothing changed/);
+    assert.match(piped.err, /installing 0\.2\.0 is confirmed at a terminal: run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade in one; nothing changed/);
     assert.deepStrictEqual([piped.asked.length, piped.execs.length], [0, 0]);
     const no = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     assert.strictEqual(await upgrade({}, no, w.fromNpm), 0);
@@ -319,7 +319,7 @@ test('a release that withdraws the home\'s one pack upgrades: the runtime instal
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
     assert.strictEqual(await upgrade({}, io, w.fromNpm), 0, io.err);
     // said before the question, and after the install
-    assert.match(io.out, /it withdraws:\n  ci-failure-triage \(it stays installed and is not started after the upgrade; `ch-local remove-pack ci-failure-triage` removes it\)/);
+    assert.match(io.out, /it withdraws:\n  ci-failure-triage \(it stays installed and is not started after the upgrade; `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local remove-pack ci-failure-triage` removes it\)/);
     assert.match(io.out, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.2\\.0; ${cmd(s.home, 'rollback')} undoes it`));
     assert.match(io.out, new RegExp(`pack ci-failure-triage was withdrawn in this release and was not started; \`${cmd(s.home, 'remove-pack ci-failure-triage')}\` removes it`));
     assert.doesNotMatch(io.out, /was dropped/);
@@ -397,7 +397,7 @@ test('a home whose one pack the record lists as withdrawn still upgrades; a rele
 
 // The deep review of #77 (HIGH): a later full upgrade keeps a held pack (one
 // a rollback's restored release lacked), its entry and its module versions
-// in the store (Matt's "nothing deleted").
+// in the store (the maintainer's "nothing deleted").
 test('a full upgrade keeps a held pack: its entry and its module versions', async () => {
   const s = setup({'@countinghouse/ch-local': '0.1.0'});
   const {storeModule, editHome} = require('./store-helpers');
@@ -819,6 +819,97 @@ test('upgrade against a release in a later pins format names the npx install of 
     assert.doesNotMatch(io.err, /@countinghouse\/ch-local@0\.2\.0: @countinghouse\/ch-local@0\.2\.0/, 'its name once');
   } finally {
     await w.close();
+    s.done();
+  }
+});
+
+// K3 (the feature audit): upgrade and upgrade --check say a release's
+// security marking and its own change notes before anything is asked,
+// cleaned as any text ch-local did not write (a note holding a hidden
+// character is refused with the release: the next test).
+test('upgrade and upgrade --check show the release\'s security marking and its change notes, cleaned, before the question', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  const w = await npmWorld(release(), {edit: (doc) => {
+    doc.release.security = {fixes: 'a credential no longer reaches a module it was not added for'};
+    doc.release.notes = ['the triage tool says which test failed', 'owner hints name later commits too'];
+  }});
+  try {
+    for (const check of [false, true]) {
+      const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
+      assert.strictEqual(await upgrade(check ? {check: true} : {}, io, w.fromNpm), 0, io.err);
+      assert.match(io.out, /ch-local 0\.2\.0 is a security fix: a credential no longer reaches a module it was not added for\n/);
+      assert.match(io.out, /changes in 0\.2\.0:\n  - the triage tool says which test failed\n  - owner hints name later commits too\n/);
+      if (!check) assert.ok(io.out.indexOf('changes in 0.2.0') < io.out.indexOf('nothing changed'));
+    }
+  } finally {
+    await w.close();
+    s.done();
+  }
+});
+
+test('a release\'s notes: null, or 1 to 8 plain strings of at most 200 characters; release is {security} or {security, notes}', () => {
+  const {parseReleasePins} = require('../lib/release-pins');
+  const base = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
+  const withNotes = (notes) => ({...base, release: {...base.release, notes}});
+  for (const ok of [null, ['one'], Array.from({length: 8}, (_, i) => `note ${i}`), ['x'.repeat(200)]]) {
+    assert.strictEqual(parseReleasePins(withNotes(ok)).problem, undefined, JSON.stringify(ok));
+  }
+  assert.strictEqual(parseReleasePins(base).problem, undefined, 'notes may be omitted');
+  for (const bad of [[], Array.from({length: 9}, () => 'n'), ['x'.repeat(201)], [''], [3], 'one', [`a${String.fromCharCode(7)}b`]]) {
+    const r = parseReleasePins(withNotes(bad));
+    assert.match(String(r.problem), /release\.notes/, JSON.stringify(bad));
+    assert.strictEqual(r.later, false, 'a known key: not a later format');
+  }
+});
+
+// F9 (the feature audit): own modules survive an upgrade -- known, never an
+// unknown that holds it back, their record and copies byte for byte, and
+// still loaded after it (availability over the upgraded home).
+const ownTree = require('../lib/own-tree');
+const {writeOwnRecord} = require('../lib/own-record');
+function placeOwn(home, name) {
+  const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: home});
+  const src = path.join(fs.realpathSync.native(tmp('ch-ownsrc-')), name);
+  fs.mkdirSync(path.join(src, 'handlers', 'toolService'), {recursive: true});
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse: {role: 'scenario', calls: []}}));
+  fs.writeFileSync(path.join(src, 'api.json'), JSON.stringify({device: {friendlyName: name, serviceList: {'urn:countinghouse-test:serviceID:toolService': {actionList: [{name: 'run'}]}}}}));
+  fs.writeFileSync(path.join(src, 'handlers', 'toolService', 'run.js'), 'module.exports = async () => ({output: {}});\n');
+  const c = ownTree.checkFolder(src, home);
+  assert.strictEqual(c.problems, undefined, JSON.stringify(c.problems));
+  const tree = ownTree.treeHash(c.real, c.entries);
+  ownTree.placeCopy(where, name, c.real, c.entries, tree);
+  writeOwnRecord(where, {v: 1, modules: {[name]: {tree, version: '1.0.0', friendlyName: name, addedAt: new Date(0).toISOString(), from: c.real, calls: []}}});
+  return {where, tree};
+}
+const snapshot = (dir) => {
+  const out = {};
+  const walk = (d, rel) => { for (const e of fs.readdirSync(d, {withFileTypes: true})) { const r = path.join(rel, e.name); if (e.isDirectory()) walk(path.join(d, e.name), r); else out[r] = fs.readFileSync(path.join(d, e.name), 'utf8'); } };
+  walk(dir, '');
+  return out;
+};
+test('an upgrade with an own module: installed, not held back; own.json and its copy byte for byte; it still loads after', async () => {
+  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
+  const o = placeOwn(s.home, 'my-tool');
+  const ownBefore = fs.readFileSync(o.where.ownRecord, 'utf8');
+  const copyBefore = snapshot(path.join(s.home, 'own'));
+  const w = await npmWorld(release());
+  try {
+    const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes'], exec: npm(), fetch: realFetch});
+    assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
+    assert.match(io.out, /upgraded ch-local 0\.1\.0 -> 0\.2\.0/);
+    assert.doesNotMatch(io.out + io.err, /my-tool/, 'an own module is nothing an upgrade asks or says');
+    assert.strictEqual(fs.readFileSync(o.where.ownRecord, 'utf8'), ownBefore);
+    assert.deepStrictEqual(snapshot(path.join(s.home, 'own')), copyBefore);
+    const {availability} = require('../lib/availability');
+    const seams = {ceiling: () => null, off: () => null, credential: () => null};
+    const av = availability(o.where, recordOf(s.home), {release: w.pinsDoc.pins, seams, own: {record: require('../lib/own-record').readOwnRecord(o.where), sandboxOk: true}});
+    assert.ok(av.units.some((u) => u.name === 'my-tool' && u.own === true), JSON.stringify([...av.unavailable]));
+  } finally {
+    await w.close();
+    // (an own copy is read-only: made writable to be removed)
+    const open = (d) => { fs.chmodSync(d, 0o700); for (const e of fs.readdirSync(d, {withFileTypes: true})) { const f = path.join(d, e.name); if (e.isDirectory()) open(f); else fs.chmodSync(f, 0o600); } };
+    try { open(path.join(s.home, 'own')); } catch (e) { /* none */ }
     s.done();
   }
 });

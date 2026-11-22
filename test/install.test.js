@@ -287,7 +287,7 @@ test('migration: packs.json, its trees and held packs become modules.json and th
   assert.deepStrictEqual(rec.packs.other.modules, {'@countinghouse/ch-pack-other': '0.3.0', '@countinghouse/ch-step-redact': '0.1.0', '@countinghouse/ch-step-other': '0.2.0'});
   // held after a rollback: not carried over, named (the Reviewer's one rule)
   assert.strictEqual(rec.held, undefined);
-  assert.match(io.out, new RegExp(`not carried over: old; add it again with \`${cmd(h, 'add-pack old')}\` once a release lists it`));
+  assert.match(io.out, new RegExp(`not carried over: old; add it again with \`${cmd(h, 'install --pack old')}\` once a release lists it`));
   assert.strictEqual(fs.existsSync(path.join(h, 'packs.json')), false);
   // the earlier ch-local's packs/ kept whole beside the home, never collected
   assert.strictEqual(fs.existsSync(path.join(h, 'packs')), false);
@@ -321,7 +321,7 @@ test('no --from: a release with no identity to install from npm with says so; --
 // docs/development/auto-upgrade.md: no --from installs from npm, every
 // package checked against its pin and its provenance (a fake registry and the
 // test root, passed only as install's test-only argument)
-async function npmRelease(r, {lie = null, shim = false} = {}) {
+async function npmRelease(r, {lie = null, shim = false, shimBody = 'the shim'} = {}) {
   const {fakeRegistry} = require('./fake-registry');
   const {testRoot} = require('./sigstore-fixture');
   const provenance = require('../lib/provenance');
@@ -353,7 +353,7 @@ async function npmRelease(r, {lie = null, shim = false} = {}) {
     const key = `${process.platform}-${process.arch}`;
     const name = `@countinghouse/ch-shim-${key}`;
     const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
-    const bytes = require('./tgz').packageTgz({name, version: '0.5.0'}, {[`bin/${exe}`]: 'the shim'});
+    const bytes = require('./tgz').packageTgz({name, version: '0.5.0'}, {[`bin/${exe}`]: shimBody});
     reg.publish(name, '0.5.0', bytes);
     const identity = Object.assign({}, self, {workflow: '.github/workflows/shim.yml', tag: 'shim-v0.5.0'});
     const hex = crypto.createHash('sha512').update(bytes).digest('hex');
@@ -392,7 +392,7 @@ test('no --from: a release lower than the installed ch-local is refused, nothing
     fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: {'@countinghouse/ch-local': '0.9.0', countinghouse: '8.0.0'}}, packs: {}}));
     const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
     assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 1);
-    assert.match(io.err, /0\.2\.0 is lower than the installed 0\.9\.0: ch-local rollback is the way back/);
+    assert.match(io.err, /0\.2\.0 is lower than the installed 0\.9\.0: (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local rollback is the way back/);
     assert.deepStrictEqual(io.fetches, []);
   } finally {
     await n.reg.close();
@@ -428,13 +428,7 @@ test('no --from: this platform\'s native shim is installed too, and recorded; wi
 // platform's shim, pinned by its sha512 as its packs are, and --from places
 // and records it as the npm path does. A program header this machine's
 // session check takes (lib/session.js formatProblem).
-function hostProgram() {
-  const b = Buffer.alloc(4096);
-  if (process.platform === 'linux') { b.writeUInt32BE(0x7f454c46, 0); b[4] = 2; b[5] = 1; b.writeUInt16LE(process.arch === 'arm64' ? 0xb7 : 0x3e, 18); }
-  else if (process.platform === 'darwin') { b.writeUInt32LE(0xfeedfacf, 0); b.writeInt32LE(process.arch === 'arm64' ? 0x0100000c : 0x01000007, 4); }
-  else b.write('MZ', 0);
-  return b;
-}
+const {hostProgram} = require('./host-program');
 const HOST_KEY = `${process.platform}-${process.arch}`;
 const SHIM_PACKAGES = Object.fromEntries(['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'].map((t) => [t, `@countinghouse/ch-shim-${t}`]));
 // a shim package's tarball put in the folder -> {name, version, pin} (lie: a
@@ -576,6 +570,35 @@ test('F1: an unreleased install\'s shim must carry a pre-release version; an npm
     const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
     const ready = await prepareShim({data: {shim: n.allow.shim, pins: n.allow.pins}, record: rec, home: h2, io: io2, ...n.fromNpm});
     assert.strictEqual(ready.status, 'ready', 'fetched and verified, not current');
+// A3 (the reviewer): the session's note says to run install when shim.json
+// names a Node that is gone; a bare reinstall writes shim.json's node and
+// chLocal again, from this process, and keeps the shim, so the session picks
+// it again
+test('A3: after node moves, a bare reinstall writes shim.json again and keeps the shim: the session picks it again', async () => {
+  const {hostProgram} = require('./host-program');
+  const {sessionChoice} = require('../lib/session');
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true, shimBody: hostProgram()});
+  try {
+    const at = () => sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})});
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    io.node = process.execPath;
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    const exe = path.join(h, 'shim', process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim');
+    assert.strictEqual(at().shim, exe, at().note);
+    // (Node moved: shim.json still names the one install ran under)
+    const file = path.join(h, 'shim.json');
+    const body = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({...body, node: path.join(h, 'old-node', process.platform === 'win32' ? 'node.exe' : 'node')}));
+    assert.strictEqual(at().shim, null);
+    assert.match(at().note, /name a Node that can't be used \(node: ENOENT\)/);
+    // the note's fix: a bare reinstall, in the Node that runs now
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    io2.node = process.execPath;
+    assert.strictEqual(await install({}, io2, n.allow, n.fromNpm), 0, io2.err);
+    assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).node, process.execPath);
+    assert.deepStrictEqual(record(h).shim, {package: `@countinghouse/ch-shim-${process.platform}-${process.arch}`, version: '0.5.0'}, 'the shim kept');
+    assert.strictEqual(at().shim, exe, at().note);
   } finally {
     await n.reg.close();
   }
@@ -872,7 +895,7 @@ test('a record that cannot be read is set aside and named; the install goes on, 
   const aside = fs.readdirSync(h).filter((n) => n.startsWith('modules.json.unreadable-'));
   assert.strictEqual(aside.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(h, aside[0]), 'utf8'), '{"v": 2', 'kept as it was');
-  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`${cmd(h, 'add-pack <pack>')}\``));
+  assert.match(again.out, new RegExp(`it is kept as ${aside[0].replace(/[.]/g, '\\.')} for reference, and this install starts a new one: add the other packs again with \`${cmd(h, 'install --pack <pack>')}\``));
   assert.deepStrictEqual(Object.keys(record(h).packs), ['other']);
   assert.ok(fs.existsSync(path.join(h, 'previous', 'keep')), 'the rollback target kept');
 });
@@ -961,7 +984,7 @@ test('a migration carries over only the packs these pins list: a held one and an
   assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
   assert.strictEqual(record(h).held, undefined);
   // this release lists it: add-pack brings it back
-  assert.match(io.out, new RegExp(`not carried over: other; add it again with \`${cmd(h, 'add-pack other')}\`\n`));
+  assert.match(io.out, new RegExp(`not carried over: other; add it again with \`${cmd(h, 'install --pack other')}\`\n`));
 });
 
 // the medium review of #83's fixes
@@ -1062,7 +1085,7 @@ test('under development pins a pack the pins do not pin is not carried over, wit
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from, unreleasedPins: f}, io, allow), 0, io.err);
   assert.deepStrictEqual(Object.keys(record(h).packs), ['ci-failure-triage']);
   assert.match(io.out, /not carried over: other; these pins do not pin all of its modules/);
-  assert.match(io.out, new RegExp(`not carried over: kept; add it again with \`${cmd(h, 'add-pack kept')}\` once a release lists it`));
+  assert.match(io.out, new RegExp(`not carried over: kept; add it again with \`${cmd(h, 'install --pack kept')}\` once a release lists it`));
   assert.strictEqual((io.out.match(/not carried over: /g) || []).length, 2, 'each once');
 });
 
@@ -1326,7 +1349,7 @@ test('install with no --pack: nothing installed is refused with the --pack line'
   const r = release(); const h = home();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await install({from: r.from}, io, r.allow), 2);
-  assert.match(io.err, /nothing is installed here, so there is nothing to reinstall: run `ch-local install --pack <name>`/);
+  assert.match(io.err, /nothing is installed here, so there is nothing to reinstall: run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local install --pack <name>`/);
   assert.deepStrictEqual(fs.readdirSync(h), [], 'nothing written');
 });
 

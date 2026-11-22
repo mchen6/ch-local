@@ -68,3 +68,29 @@ test('an own.json that cannot be read: said, the packs still listed', async () =
   assert.match(out, /^your own modules could not be listed: .*own\.json/m);
   assert.match(out, /^packs:$/m);
 });
+
+// F9 (the feature audit): an own module a running start's runtime refused
+// as it was started: said, with the way to add it again or remove it
+test('an own module a running client\'s runtime refused: not loaded, with add-module and remove-module', {skip: ENFORCE === true ? false : ENFORCE}, async () => {
+  const {home, where, dir} = setup();
+  assert.strictEqual(await addModule({dir}, io(home), {where}), 0);
+  const {hostTag} = require('../lib/gc');
+  const run = path.join(home, 'run', 'r4242');
+  fs.mkdirSync(run, {recursive: true});
+  fs.writeFileSync(path.join(run, 'run.json'), JSON.stringify({pid: 4242, host: hostTag('box-1'), loaded: {}, stopped: {'my-tool': 'MODULE_INVALID'}, refused: {'my-tool': {code: 'MODULE_INVALID', tree: readOwnRecord(where).modules['my-tool'].tree}}}));
+  const f = Object.assign(io(home), {alive: (pid) => pid === 4242});
+  assert.strictEqual(await status({}, f), 0, f.err);
+  assert.match(f.out, /^ {2}my-tool \(own, unpinned, [0-9a-f]{12}\) +not loaded: this release's runtime refuses it \(MODULE_INVALID\); fix it and add it again with `.*add-module ".*mine"`, or remove it with `.*remove-module my-tool`$/m);
+});
+
+test('an own module refused, then added again with other code: not said refused of the new code', {skip: ENFORCE === true ? false : ENFORCE}, async () => {
+  const {home, where, dir} = setup();
+  assert.strictEqual(await addModule({dir}, io(home), {where}), 0);
+  const {hostTag} = require('../lib/gc');
+  const run = path.join(home, 'run', 'r4242');
+  fs.mkdirSync(run, {recursive: true});
+  fs.writeFileSync(path.join(run, 'run.json'), JSON.stringify({pid: 4242, host: hostTag('box-1'), loaded: {}, stopped: {}, refused: {'my-tool': {code: 'MODULE_INVALID', tree: 'f'.repeat(64)}}}));
+  const f = Object.assign(io(home), {alive: (pid) => pid === 4242});
+  assert.strictEqual(await status({}, f), 0, f.err);
+  assert.doesNotMatch(f.out, /refuses it/);
+});

@@ -75,9 +75,15 @@ test('the credential line: the launcher\'s real path in the launcher form; a pat
   const good = credentialLine(whereIn(h), '@countinghouse/ch-access-github');
   assert.strictEqual(good, `ch-access-github needs a credential: in your own terminal run \`node "${real}" credentials add ch-access-github\``);
   assert.ok(isCredentialLine(good));
+  // (a home that isn't the default, named before the npx form: auto-apply
+  // still carries the line -- the medium on the follow-up to #129, 2)
+  assert.ok(isCredentialLine('ch-access-github needs a credential: in your own terminal run `COUNTINGHOUSE_HOME="/home/dev/ch" npx @countinghouse/ch-local credentials add ch-access-github`'));
+  assert.ok(isCredentialLine('ch-access-github needs a credential: in your own terminal run `COUNTINGHOUSE_HOME="<its folder>" npx @countinghouse/ch-local credentials add ch-access-github`'));
+  assert.ok(!isCredentialLine('ch-access-github needs a credential: in your own terminal run `COUNTINGHOUSE_HOME="/h" rm -rf / credentials add x`'));
   for (const odd of ['/home/a$b/.countinghouse', '/home/a"b/.countinghouse', '/home/a`b/.countinghouse']) {
     const line = credentialLine({launcher: path.join(odd, 'bin', 'ch-local.js')}, '@countinghouse/ch-access-github');
-    assert.strictEqual(line, 'ch-access-github needs a credential: in your own terminal run `ch-local credentials add ch-access-github`', odd);
+    assert.strictEqual(line, 'ch-access-github needs a credential: in your own terminal run `npx @countinghouse\/ch-local credentials add ch-access-github`', odd);
+    assert.ok(isCredentialLine(line), odd);
     assert.ok(isCredentialLine(line));
   }
 });
@@ -121,7 +127,7 @@ test('the launcher, the runtime\'s rule: none for a missing one, a backslash off
     fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), '');
     assert.strictEqual(safeLauncher(whereIn(h), 'linux'), null, JSON.stringify(name));
     assert.strictEqual(JSON.parse(contentOf(whereIn(h), new Map())).launcher, undefined);
-    assert.strictEqual(credentialLine(whereIn(h), 'ch-access-github'), 'ch-access-github needs a credential: in your own terminal run `ch-local credentials add ch-access-github`');
+    assert.strictEqual(credentialLine(whereIn(h), 'ch-access-github'), 'ch-access-github needs a credential: in your own terminal run `npx @countinghouse\/ch-local credentials add ch-access-github`');
   }
   assert.strictEqual(safeLauncher(whereIn(path.join(base, 'none')), 'linux'), null, 'none installed');
 });

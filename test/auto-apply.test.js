@@ -1,6 +1,8 @@
 'use strict';
 require('./tmp-dirs');
-// lib/auto-apply.js, `ch-local upgrade --apply-auto` (docs/development/
+const {unhomed} = require('./unhomed');
+
+// lib/auto-apply.js, `npx @countinghouse\/ch-local upgrade --apply-auto` (docs/development/
 // auto-upgrade.md, "The child that applies it", "The 72-hour wait",
 // "Announcements"): it re-checks everything itself, then installs a newer
 // release only 72 h after the later of its publish attestation's log time
@@ -142,7 +144,7 @@ test('identity changes, a first pin, or additions block: announced, never instal
       const r = await asInstalled(installedPins || w.pinsDoc.pins, () => autoApply({io, now, fromNpm: w.fromNpm}), w.installed);
       assert.strictEqual(r.outcome, 'needs-upgrade');
       assert.match(r.line, why);
-      assert.match(r.line, /run ch-local upgrade/);
+      assert.match(r.line, /run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade/);
       assert.deepStrictEqual(io.execs, []);
     } finally {
       await w.close();
@@ -167,7 +169,7 @@ test('L4: a release held back for what it adds is announced once: the next check
     };
     const first = await check();
     assert.strictEqual(first.outcome, 'needs-upgrade');
-    assert.match(first.line, /run ch-local upgrade/);
+    assert.match(first.line, /run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade/);
     assert.deepStrictEqual(stamp(h).announced.map((e) => e.version), [TO]);
     const again = await check();
     assert.deepStrictEqual([again.outcome, again.line], ['announced', undefined], 'said once');
@@ -254,8 +256,9 @@ test('L4: a home whose record cannot be read is not upgraded automatically, and 
     fs.writeFileSync(path.join(h, 'modules.json'), '{"not": "a record"}');
     const r = await run(h, w);
     assert.strictEqual(r.outcome, 'record-unreadable');
-    // (no path named; recorded in history: the Reviewer's high on L4, 7)
-    assert.strictEqual(r.line, 'automatic upgrades are paused: this home\'s record can\'t be read: run `ch-local status`');
+    // (the record's path not named -- the command names the home, as the
+    // launcher form always did; recorded in history: the Reviewer's high on L4, 7)
+    assert.strictEqual(unhomed(r.line), 'automatic upgrades are paused: this home\'s record can\'t be read: run `npx @countinghouse\/ch-local status`');
     assert.deepStrictEqual(w.reg.requests, []);
     const last = fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).pop();
     assert.deepStrictEqual([last.how, last.outcome, last.reason], ['auto', 'record-unreadable', 'RECORD_FORMAT']);
@@ -265,12 +268,12 @@ test('L4: a home whose record cannot be read is not upgraded automatically, and 
     fs.writeFileSync(path.join(e, 'packs.json'), '{}');
     const old = await run(e, w);
     assert.strictEqual(old.outcome, 'record-unreadable');
-    assert.strictEqual(old.line, 'automatic upgrades are paused: this home was made by an earlier ch-local: run `ch-local install` again to bring it to this one');
+    assert.strictEqual(unhomed(old.line), 'automatic upgrades are paused: this home was made by an earlier ch-local: run `npx @countinghouse\/ch-local install` again to bring it to this one');
     // a development launcher's home keeps its own advice: its pack and --from
     const dev = home();
     fs.unlinkSync(path.join(dev, 'modules.json'));
     fs.writeFileSync(path.join(dev, 'installed.json'), '{"pack": "ci-failure-triage"}');
-    assert.strictEqual((await run(dev, w)).line, 'automatic upgrades are paused: this home was made by an earlier development ch-local; run `ch-local install --pack ci-failure-triage --from <dir>` again');
+    assert.strictEqual(unhomed((await run(dev, w)).line), 'automatic upgrades are paused: this home was made by an earlier development ch-local; run `npx @countinghouse\/ch-local install --pack ci-failure-triage --from <dir>` again');
   } finally {
     await w.close();
   }
@@ -284,7 +287,7 @@ test('the review of #48: a 0.x minor is a major here, announced and never instal
     writeStampFile(h, {firstSeen: {'0.2.0': now - 200 * H}});
     const r = await run(h, w, {now, exec: npm('0.2.0')});
     assert.strictEqual(r.outcome, 'major');
-    assert.match(r.line, /0\.2\.0 may break what 0\.1\.0 does .*run ch-local upgrade/);
+    assert.match(r.line, /0\.2\.0 may break what 0\.1\.0 does .*run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade/);
     assert.deepStrictEqual(r.io.execs, []);
   } finally {
     await w.close();
@@ -299,7 +302,7 @@ test('the re-check of #48: a major is never installed here, nothing of it fetche
     writeStampFile(h, {firstSeen: {'1.0.0': now - 200 * H}});
     const r = await run(h, w, {now, exec: npm('1.0.0')});
     assert.strictEqual(r.outcome, 'major');
-    assert.match(r.line, /ch-local 1\.0\.0 is a major upgrade: run ch-local upgrade to install it/);
+    assert.match(r.line, /ch-local 1\.0\.0 is a major upgrade: run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade to install it/);
     assert.deepStrictEqual(r.io.execs, []);
     assert.ok(!w.reg.requests.some((u) => u.endsWith('.tgz')));
   } finally {
@@ -410,7 +413,7 @@ test('an expired root: announced at every check, nothing fetched', () => {
   assert.strictEqual(rootExpired(require('../lib/sigstore/trusted-root.json'), Date.now()), false, 'the shipped root is current');
 });
 
-test('the CLI: `ch-local upgrade --apply-auto` runs it and prints its line; with --auto it is a usage error', async() => {
+test('the CLI: `npx @countinghouse\/ch-local upgrade --apply-auto` runs it and prints its line; with --auto it is a usage error', async() => {
   const {main} = require('../bin/ch-local');
   const h = home();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h, CH_LOCAL_DEV: '1'}});
@@ -565,6 +568,37 @@ test('an automatic upgrade says when the shim from before could not be set aside
   } finally {
     si.prepareShim = realPrepare;
     si.setAside = realAside;
+    await w.close();
+  }
+});
+
+// F9 (the feature audit): an own module never holds an automatic upgrade
+// back as unknown; its record and copy are kept byte for byte.
+test('an automatic upgrade with an own module installs; own.json and its copy byte for byte', async() => {
+  const now = Date.now();
+  const w = await world({at: new Date(now - 100 * H)});
+  const h = home();
+  const ownTree = require('../lib/own-tree');
+  const where = layout({COUNTINGHOUSE_HOME: h});
+  const src = path.join(fs.realpathSync.native(tmp('ch-ownsrc-')), 'my-tool');
+  fs.mkdirSync(path.join(src, 'handlers', 'toolService'), {recursive: true});
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name: 'my-tool', version: '1.0.0', countinghouse: {role: 'scenario', calls: []}}));
+  fs.writeFileSync(path.join(src, 'api.json'), JSON.stringify({device: {friendlyName: 'my-tool', serviceList: {'urn:countinghouse-test:serviceID:toolService': {actionList: [{name: 'run'}]}}}}));
+  fs.writeFileSync(path.join(src, 'handlers', 'toolService', 'run.js'), 'module.exports = async () => ({output: {}});\n');
+  const c = ownTree.checkFolder(src, h);
+  const tree = ownTree.treeHash(c.real, c.entries);
+  ownTree.placeCopy(where, 'my-tool', c.real, c.entries, tree);
+  require('../lib/own-record').writeOwnRecord(where, {v: 1, modules: {'my-tool': {tree, version: '1.0.0', friendlyName: 'my-tool', addedAt: new Date(0).toISOString(), from: c.real, calls: []}}});
+  const before = fs.readFileSync(where.ownRecord, 'utf8');
+  const copy = ownTree.copyDir(where, 'my-tool', tree);
+  const files = fs.readdirSync(copy, {recursive: true}).sort();
+  try {
+    assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
+    const done = await run(h, w, {now: now + 73 * H});
+    assert.strictEqual(done.outcome, 'installed', done.line);
+    assert.strictEqual(fs.readFileSync(where.ownRecord, 'utf8'), before);
+    assert.deepStrictEqual(fs.readdirSync(copy, {recursive: true}).sort(), files);
+  } finally {
     await w.close();
   }
 });

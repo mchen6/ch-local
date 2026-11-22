@@ -112,7 +112,7 @@ test('a runtime without the reader, and a ceiling file present, refuses every lo
   fs.writeFileSync(file, '{"version": 1}');
   const c = ceilingFor(where, {file});
   assert.strictEqual(c.state, 'untrusted');
-  assert.match(c.problem, /the installed countinghouse cannot read it: it is older than this ch-local; `ch-local upgrade` installs one that can/);
+  assert.match(c.problem, /the installed countinghouse cannot read it: it is older than this ch-local; `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade` installs one that can/);
   assert.strictEqual(ceilingRefusal(c, 'maxOutputBytes', 32 * MiB).code, 'SETTING_CEILING_UNTRUSTED');
   // a reader that throws fails closed too
   reader(home, null);
