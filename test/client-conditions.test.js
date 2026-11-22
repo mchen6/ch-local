@@ -21,7 +21,10 @@ const CC = {name: 'claude-code', version: '2.1.323'};
 const HOOK = (event, matcher = '') => ({hooks: {[event]: [{matcher, hooks: [{type: 'command', command: 'echo accept'}]}]}});
 
 function world() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-cond-'));
+  // (its real path: macOS's /var is a link to /private/var, Windows' temp
+  // a short name -- a plugin root named as the client names it, not as the
+  // runner's temp directory does)
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-cond-')));
   const home = path.join(root, 'home');
   const project = path.join(root, 'work', 'proj');
   const cwd = path.join(project, 'sub');
@@ -148,7 +151,10 @@ test('a client with no known conditions: no', () => {
 });
 
 test('a project under the home: the user\'s own settings, met on the way up, are still the user\'s', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-cond-'));
+  // (its real path: macOS's /var is a link to /private/var, Windows' temp
+  // a short name -- a plugin root named as the client names it, not as the
+  // runner's temp directory does)
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-cond-')));
   const home = path.join(root, 'home');
   const project = path.join(home, 'src', 'proj');
   fs.mkdirSync(project, {recursive: true});
@@ -194,7 +200,10 @@ test('review: a symlinked marketplace, plugin or version directory is read', () 
 });
 
 test('review: the user\'s own settings.local.json is read (the project is the home)', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-cond-'));
+  // (its real path: macOS's /var is a link to /private/var, Windows' temp
+  // a short name -- a plugin root named as the client names it, not as the
+  // runner's temp directory does)
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-cond-')));
   const home = path.join(root, 'home');
   fs.mkdirSync(path.join(home, '.claude'), {recursive: true});
   fs.writeFileSync(path.join(home, '.claude', 'settings.local.json'), JSON.stringify(HOOK('Elicitation')));
@@ -395,5 +404,20 @@ test('a settings env block naming CLAUDE_PLUGIN_ROOT, CLAUDE_PLUGIN_DATA or a CL
     const w = world();
     w.write(path.join(w.project, '.claude', 'settings.json'), {env: {[k]: '/x'}});
     assert.deepStrictEqual(w.ask(), UNREADABLE, k);
+  }
+});
+
+test('the plugin route: a root that differs from its real path only by case is known on Windows and macOS, never on Linux', () => {
+  const {pluginRootScanned} = require('../lib/client-conditions');
+  const w = world();
+  const p = pluginEnv(w);
+  const flip = (x) => x.replace(/[a-z]/, (c) => c.toUpperCase());
+  const plugins = [p.root];
+  if (process.platform === 'linux') {
+    assert.strictEqual(pluginRootScanned(p.root, plugins, 'linux'), true);
+    // (a case-sensitive file system: another case is another name, absent)
+    assert.strictEqual(pluginRootScanned(flip(p.root), plugins, 'linux'), false);
+  } else {
+    assert.strictEqual(pluginRootScanned(flip(p.root), plugins, process.platform), true, 'only the case differs');
   }
 });
