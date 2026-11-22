@@ -73,8 +73,10 @@ if it does, stop and tell the user.
 
 ### Before the first release: a prepared local release
 
-From a ch-local checkout, `node scripts/dogfood.js --release-dir <dir>` builds
-one into a new or empty directory, self-contained: its own launcher
+From a ch-local checkout with its dependencies installed (run `npm ci` in it
+first: ch-local's tarball carries the libraries it bundles, and the build
+refuses one without them), `node scripts/dogfood.js --release-dir <dir>`
+builds one into a new or empty directory, self-contained: its own launcher
 (`<dir>/ch-local`), the tarballs (`<dir>/release`) and their pins
 (`<dir>/pins.json`). Nothing is installed. It needs cargo (Rust): the
 folder carries a shared-runtime shim built on and for the machine that
