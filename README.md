@@ -264,8 +264,10 @@ running. The daemon holds the runtime for every session of this user.
   shared runtime's log to `<home>/run/daemon/runtime.log`, readable by this user
   only; `ch-local status` names it. A daemon's own start keeps the last log as
   `runtime.log.1`, and so does a log that reaches 5 MiB; a hand-over to a new
-  daemon goes on in the same file. One line is at most 8 KiB. A session on a
-  runtime of its own logs to its client's MCP log, as before.
+  daemon goes on in the same file. One line is at most 8 KiB. It may hold
+  what your modules print or report (repository names, your CI's log text,
+  file paths), so keep it as private as it is made. A session on a runtime of
+  its own logs to its client's MCP log, as before.
 - **On Windows its files are owner-only by DACL.**
   - `<home>\run` and `<home>\run\daemon` get a protected DACL: this user and SYSTEM only, inherited by what's made in them.
   - The daemon refuses to start, naming what's wrong, unless the home, `<home>\run` and `<home>\run\daemon` each pass the private-DACL rule the shim applies to `<home>\run\daemon`.
