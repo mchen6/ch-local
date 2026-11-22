@@ -455,4 +455,4 @@ function run() {
 
 if (require.main === module) run();
 
-module.exports = {main, run, parseCommand};
+module.exports = {main, run, parseCommand, realIo};

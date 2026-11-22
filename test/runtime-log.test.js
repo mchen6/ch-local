@@ -225,3 +225,17 @@ test('a log that can\'t be opened: problem said, lines taken and dropped', async
   log.write('nowhere');
   await log.close();
 });
+
+test('through bin\'s real spawn: a shared runtime\'s stdout and stderr, piped, land in the log', async() => {
+  const dir = runDir();
+  const log = openRuntimeLog(dir, platformOpts());
+  const io = require('../bin/ch-local').realIo();
+  const child = io.spawn(process.execPath, ['-e', 'console.log("bin out"); console.error("bin err"); if (process.disconnect) process.disconnect();'],
+    {env: process.env, control: true, output: log});
+  assert.strictEqual(await child.exited, 0);
+  await tick(100);
+  await log.close();
+  const text = read(log.file);
+  assert.match(text, /^bin out$/m);
+  assert.match(text, /^bin err$/m);
+});
