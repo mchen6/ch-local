@@ -84,6 +84,7 @@ const PROBE: std::time::Duration = std::time::Duration::from_secs(2);
 #[derive(Clone, Debug)]
 pub struct Started {
     pub pid: u32,
+    pub spawned_at: Instant,
     ended: Arc<AtomicBool>,
 }
 
@@ -137,7 +138,7 @@ fn spawn(home: &Home) -> Result<Started, StartError> {
     detach(&mut cmd)
         .map_err(|e| StartError::Unsafe(format!("the shim's own handles could not be kept from the daemon ({e})")))?;
     let mut child = cmd.spawn().map_err(StartError::Spawn)?;
-    let started = Started { pid: child.id(), ended: Arc::new(AtomicBool::new(false)) };
+    let started = Started { pid: child.id(), spawned_at: Instant::now(), ended: Arc::new(AtomicBool::new(false)) };
     let ended = started.ended.clone();
     // reaped whenever it ends, so a daemon that exits early is never left a
     // zombie of this shim's

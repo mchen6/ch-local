@@ -1374,20 +1374,22 @@ test('M2: a refusal that lasts is said once and retried less often each time', a
   }
 });
 
-// The cold start (the dry run, 11-22): 24 s for a runtime to listen ONLY when
+// The cold start (the dry run, 11-22): COLD_READY_MS for a runtime to listen ONLY when
 // there is provably nothing to restore: no handoff at all, an empty table, and
 // no daemon.json left behind (a crashed daemon's, readable or not; an idle stop
 // removes its own). Everything else keeps READY_MS, so a restored session's
 // worst case stays what it was: READY_MS for the runtime to listen, the shim's
 // longest retry gap, one handshake, inside the runtime's 60 s window.
-test('cold start: 24 s only with provably nothing to restore; the bounds that follow; a restored session inside its 60 s', () => {
+test('cold start: the longer wait only with provably nothing to restore; the bounds that follow; a restored session inside its 60 s', () => {
   const d = require('../lib/daemon');
   const {restartBoundMs, successorWaitMs} = require('../lib/restart-command');
   const {uninstallLockBoundMs} = require('../lib/uninstall');
-  assert.deepStrictEqual([d.READY_MS, d.COLD_READY_MS], [20000, 26000]);
-  const bound = (o) => d.firstReadyMs({handoff: null, rows: 0, leftover: false, ready: 20000, cold: 26000, ...o});
-  assert.strictEqual(bound({}), 26000, 'nothing to restore');
-  assert.strictEqual(bound({elapsed: 3000}), 23000, 'counted from the daemon\'s process start');
+  assert.deepStrictEqual([d.READY_MS, d.COLD_READY_MS], [20000, 25000]);
+  const bound = (o) => d.firstReadyMs({handoff: null, handedOver: false, rows: 0, leftover: false, ready: 20000, cold: 25000, ...o});
+  assert.strictEqual(bound({}), 25000, 'nothing to restore');
+  assert.strictEqual(bound({elapsed: 3000}), 22000, 'counted from the daemon\'s process start');
+  assert.strictEqual(bound({elapsed: -3600000}), 25000, 'never past the cold bound, whatever the elapsed');
+  assert.strictEqual(bound({handedOver: true}), 20000, '--handoff whose pipe could not be read');
   assert.strictEqual(bound({elapsed: 15000}), 20000, 'never shorter than READY_MS');
   assert.strictEqual(bound({handoff: Buffer.alloc(0)}), 20000, 'a handoff, even an empty or unreadable one');
   assert.strictEqual(bound({handoff: Buffer.from('not a frame')}), 20000);
@@ -1410,7 +1412,7 @@ test('cold start: 24 s only with provably nothing to restore; the bounds that fo
   const cold = Number(/pub const COLD_BUDGET: Duration = Duration::from_secs\((\d+)\);/.exec(src('attach.rs'))[1]);
   assert.strictEqual(d.READY_MS + Math.max(...retries) * 1000 + handshake * 1000, 55000, 'a restored session\'s worst case, as before');
   assert.ok(55000 < d.SESSION_WINDOW_MS);
-  assert.ok(d.COLD_READY_MS + 2000 <= cold * 1000, 'the daemon gives up before the shim that started it, with 2 s to answer');
+  assert.ok(d.COLD_READY_MS + 3000 <= cold * 1000, 'inside the shim\'s: at most 1 s of late spawn, and 2 s to answer');
   assert.ok(cold * 1000 < 30000, 'under Claude Code\'s 30 s for a stdio server');
 });
 

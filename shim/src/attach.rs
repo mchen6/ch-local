@@ -46,6 +46,13 @@ pub const BUDGET: Duration = Duration::from_secs(20);
 /// give-up there leaves the retry too little time, and the server failed for
 /// the session (measured on 2.1.330, the dry run, 11-22).
 pub const COLD_BUDGET: Duration = Duration::from_secs(28);
+/// A daemon spawned later than this into the attach may wait its whole cold
+/// bound (25 s from its own start, lib/daemon.js COLD_READY_MS) past the
+/// shim's: no extension for it. 28 = 1 of this + 25 + 2 to answer.
+const SPAWN_WINDOW: Duration = Duration::from_secs(1);
+/// After the daemon releases start.lock, its runtime is up: one bounded last
+/// attach, never on to the cold deadline.
+const RELEASE_GRACE: Duration = Duration::from_secs(2);
 /// The longest one connect and handshake may take.
 const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 /// The pause before the files are read again after a wrong proof.
@@ -175,19 +182,31 @@ fn attach_until(
     deadline: Instant,
     cold: Option<Instant>,
 ) -> Result<Attached, AttachError> {
+    let began = Instant::now();
     let plain = deadline;
     let mut deadline = deadline;
     let mut budget = BUDGET;
     let mut took_lock = false;
+    let mut released: Option<Instant> = None;
     let mut resume = resume.map(String::from);
     let mut spawned: Option<daemon::Started> = None;
     let mut last = String::from("not tried");
     while Instant::now() < deadline {
         let tried = try_once(home, resume.as_deref(), deadline, &mut spawned);
         if let (Some(child), Some(c)) = (spawned.as_ref(), cold) {
-            took_lock = took_lock || crate::lock::held_by(&home.start_lock(), child.pid);
-            let starting = took_lock && !child.ended();
-            (deadline, budget) = if starting { (c, COLD_BUDGET) } else { (plain, BUDGET) };
+            let in_time = child.spawned_at.saturating_duration_since(began) <= SPAWN_WINDOW;
+            let holds = in_time && !child.ended() && crate::lock::held_by(&home.start_lock(), child.pid);
+            (deadline, budget) = if holds {
+                took_lock = true;
+                released = None;
+                (c, COLD_BUDGET)
+            } else if took_lock && !child.ended() {
+                // released: its runtime is up, or it is about to say why not
+                let until = *released.get_or_insert_with(|| (Instant::now() + RELEASE_GRACE).min(c));
+                (plain.max(until), if until > plain { COLD_BUDGET } else { BUDGET })
+            } else {
+                (plain, BUDGET)
+            };
         }
         let until = deadline;
         let pause = |d: Duration| thread::sleep(d.min(until.saturating_duration_since(Instant::now())));
@@ -212,6 +231,13 @@ fn attach_until(
                 last = why;
                 pause(jitter());
             }
+        }
+    }
+    // (a daemon of this shim's that gave up as the deadline passed: its
+    // failed.json is read once more, so the session falls back)
+    if spawned.is_some() {
+        if let Some(r) = crate::failed::read(home) {
+            return Err(AttachError::SharedFailed(r));
         }
     }
     Err(AttachError::GaveUp(format!("{} s ({last})", budget.as_secs())))
@@ -545,13 +571,16 @@ mod tests {
     // A stand-in daemon that takes start.lock as itself (a real first start
     // holds it until its runtime is ready), then runs `after`.
     fn stand_in(t: &TestHome, holder: &str, after: &str) -> std::path::PathBuf {
+        stand_in_on(t, holder, &crate::lock::this_host(), after)
+    }
+    fn stand_in_on(t: &TestHome, holder: &str, host: &str, after: &str) -> std::path::PathBuf {
         let script = t.home.root().join("fake-ch-local.sh");
         let spawned = t.home.root().join("spawned");
         let run = t.home.run_dir();
         fs::write(
             &script,
             format!(
-                "mkdir -p '{run}'\nprintf '{{\"pid\":%s,\"host\":\"h\",\"at\":\"a\"}}\\n' {holder} > '{lock}'\ntouch '{spawned}'\n{after}\n",
+                "umask 077\nmkdir -p '{run}'\nprintf '{{\"pid\":%s,\"host\":\"{host}\",\"at\":\"a\"}}\\n' {holder} > '{lock}'\ntouch '{spawned}'\n{after}\n",
                 run = run.display(),
                 lock = t.home.start_lock().display(),
                 spawned = spawned.display(),
@@ -579,6 +608,75 @@ mod tests {
         assert!(now.elapsed() < Duration::from_millis(2500), "the plain deadline: {:?}", now.elapsed());
         assert!(spawned.exists(), "it did spawn one");
         assert!(r.err().unwrap().to_string().starts_with(&format!("no answer within {} s", BUDGET.as_secs())));
+    }
+
+    /// A holder with this child's pid in another PID namespace is not this
+    /// child: pids aren't comparable across hosts.
+    #[test]
+    fn a_holder_with_the_same_pid_on_another_host_is_not_this_shims_daemon() {
+        let t = home();
+        let spawned = stand_in_on(&t, "$$", "another-host#pid:[1]", "sleep 4");
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_millis(500), now + Duration::from_millis(3000));
+        assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
+        assert!(now.elapsed() < Duration::from_millis(2500), "the plain deadline: {:?}", now.elapsed());
+        assert!(spawned.exists());
+    }
+
+    /// A daemon spawned late (this shim first waited on start.lock) may wait
+    /// its whole cold bound from then, past the shim's: no extension.
+    #[test]
+    fn a_first_attach_that_spawned_late_keeps_its_deadline() {
+        let t = home();
+        let spawned = stand_in_daemon(&t);
+        fs::create_dir_all(t.home.run_dir()).unwrap();
+        fs::set_permissions(t.home.run_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+        let held = crate::lock::acquire(&t.home.start_lock(), Instant::now() + Duration::from_secs(2)).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(SPAWN_WINDOW + Duration::from_millis(300));
+            drop(held);
+        });
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_millis(2600), now + Duration::from_millis(6000));
+        release.join().unwrap();
+        assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
+        assert!(spawned.exists(), "it spawned once the lock was free");
+        assert!(now.elapsed() < Duration::from_millis(4500), "the plain deadline: {:?}", now.elapsed());
+    }
+
+    /// The longer budget ends with the start it was for: once the daemon has
+    /// released start.lock, one bounded last attach, never on to the cold
+    /// deadline.
+    #[test]
+    fn the_extension_ends_when_the_daemon_releases_the_lock() {
+        let t = home();
+        let lock = t.home.start_lock();
+        let spawned = stand_in(&t, "$$", &format!("sleep 0.3; rm -f '{}'; sleep 9", lock.display()));
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_millis(300), now + Duration::from_secs(8));
+        assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
+        assert!(
+            now.elapsed() < RELEASE_GRACE + Duration::from_millis(1500),
+            "not to the cold deadline: {:?}",
+            now.elapsed()
+        );
+        assert!(spawned.exists());
+    }
+
+    /// A daemon that gave up and ended past the plain deadline: its failed.json
+    /// is read before giving up, so the session falls back.
+    #[test]
+    fn a_daemon_that_gave_up_past_the_plain_deadline_is_seen() {
+        let t = home();
+        let failed = t.home.run_dir().join("failed.json");
+        let after = format!(
+            "sleep 0.7; printf '{{\"v\":1,\"at\":%s000,\"exit\":null,\"signal\":null,\"reason\":\"never-listened\"}}' \"$(date +%s)\" > '{}'; exit 1",
+            failed.display()
+        );
+        stand_in(&t, "$$", &after);
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_millis(300), now + Duration::from_secs(5));
+        assert!(matches!(r, Err(AttachError::SharedFailed(_))), "{:?}", r.as_ref().err());
     }
 
     /// A daemon that held the lock and ended (with no failed.json) ends the
