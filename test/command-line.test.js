@@ -21,7 +21,7 @@ const LIB = path.join(__dirname, '..', 'lib');
 // (the CLI's own lines too: its usage text, which names each command as
 // the command line takes it, is allowed below)
 const BIN = path.join(__dirname, '..', 'bin', 'ch-local.js');
-const SUB = '(install|add-pack|remove-pack|rollback|upgrade|status|settings|credentials|snippet|add|uninstall|start|conditions|daemon|dev-server)';
+const SUB = '(install|add-pack|remove-pack|rollback|upgrade|status|settings|credentials|snippet|add|uninstall|restart|start|conditions|daemon|dev-server)';
 const FORMS = [
   new RegExp(`ch-local ${SUB}\\b`),
   /ch-local \$\{/,
@@ -36,7 +36,7 @@ const ALLOWED = [
   /withStoreLock\([^)]*'ch-local (credentials add|credentials remove|uninstall)'/,
   // a version of ch-local, not a command
   /ch-local \$\{(found\.to|from|ours)\}/,
-  /on ch-local \$\{v\}; restart/,
+  /on ch-local \$\{v\}; \$\{restartIt\}/,
   /comes back with ch-local \$\{to\};/,
   // ... the same, as the daemon's handover, status's header and its held
   // packs, and rollback's held packs name the version
