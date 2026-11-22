@@ -248,7 +248,10 @@ async function main(argv, io) {
       // A6, 3)
       const {daemon} = require('../lib/daemon');
       const handoff = p.handoff ? await io.readHandoff() : null;
-      return await daemon({home: p.home, handoff}, io);
+      // (a cold start's wait counts from this process's start, monotonic; and
+      // --handoff is a hand-over even when its pipe could not be read)
+      io.daemonUptimeMs = () => process.uptime() * 1000;
+      return await daemon({home: p.home, handoff, handedOver: p.handoff === true}, io);
     }
     if (command === 'session') {
       let home = null;

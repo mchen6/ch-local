@@ -28,6 +28,8 @@
 
 use std::fmt;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::config::{self, ConfigError, DaemonInfo, Home};
@@ -76,14 +78,30 @@ fn running(home: &Home, info: &DaemonInfo) -> bool {
 
 const PROBE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// A daemon this shim spawned: its pid, and whether it has ended (any exit,
+/// a clean one included: another daemon won, and this one is no longer
+/// starting).
+#[derive(Clone, Debug)]
+pub struct Started {
+    pub pid: u32,
+    pub spawned_at: Instant,
+    ended: Arc<AtomicBool>,
+}
+
+impl Started {
+    pub fn ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+}
+
 /// Starts the daemon unless, under the lock, a live one is found.
-/// Returns whether this call spawned one.
-pub fn ensure_started(home: &Home, deadline: Instant) -> Result<bool, StartError> {
+/// Returns the one this call spawned, if it did.
+pub fn ensure_started(home: &Home, deadline: Instant) -> Result<Option<Started>, StartError> {
     if !home.run_dir().exists() {
         // the run directory is the daemon's to make (0700); without it there
         // is no start.lock to take, so the daemon is started unlocked, and
         // takes the lock itself
-        return spawn(home).map(|()| true);
+        return spawn(home).map(Some);
     }
     let held = lock::acquire(&home.start_lock(), deadline).map_err(StartError::Lock)?;
     let running = config::read_daemon(home).map_err(StartError::Config)?.is_some_and(|d| running(home, &d));
@@ -95,12 +113,12 @@ pub fn ensure_started(home: &Home, deadline: Instant) -> Result<bool, StartError
             return Err(StartError::Failed(r));
         }
     }
-    let spawned = if running { false } else { spawn(home).map(|()| true)? };
+    let spawned = if running { None } else { Some(spawn(home)?) };
     drop(held);
     Ok(spawned)
 }
 
-fn spawn(home: &Home) -> Result<(), StartError> {
+fn spawn(home: &Home) -> Result<Started, StartError> {
     #[cfg(unix)]
     if !crate::unix_ffi::swept() {
         return Err(StartError::Unsafe("this shim's inherited descriptors were never marked close-on-exec".into()));
@@ -120,12 +138,15 @@ fn spawn(home: &Home) -> Result<(), StartError> {
     detach(&mut cmd)
         .map_err(|e| StartError::Unsafe(format!("the shim's own handles could not be kept from the daemon ({e})")))?;
     let mut child = cmd.spawn().map_err(StartError::Spawn)?;
+    let started = Started { pid: child.id(), spawned_at: Instant::now(), ended: Arc::new(AtomicBool::new(false)) };
+    let ended = started.ended.clone();
     // reaped whenever it ends, so a daemon that exits early is never left a
     // zombie of this shim's
     std::thread::spawn(move || {
         let _ = child.wait();
+        ended.store(true, Ordering::SeqCst);
     });
-    Ok(())
+    Ok(started)
 }
 
 #[cfg(unix)]

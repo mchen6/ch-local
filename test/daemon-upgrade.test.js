@@ -1373,3 +1373,136 @@ test('M2: a refusal that lasts is said once and retried less often each time', a
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// The cold start (the dry run, 11-22): COLD_READY_MS for a runtime to listen ONLY when
+// there is provably nothing to restore: no handoff at all, an empty table, and
+// no daemon.json left behind (a crashed daemon's, readable or not; an idle stop
+// removes its own). Everything else keeps READY_MS, so a restored session's
+// worst case stays what it was: READY_MS for the runtime to listen, the shim's
+// longest retry gap, one handshake, inside the runtime's 60 s window.
+test('cold start: the longer wait only with provably nothing to restore; the bounds that follow; a restored session inside its 60 s', () => {
+  const d = require('../lib/daemon');
+  const {restartBoundMs, successorWaitMs} = require('../lib/restart-command');
+  const {uninstallLockBoundMs} = require('../lib/uninstall');
+  assert.deepStrictEqual([d.READY_MS, d.COLD_READY_MS], [20000, 25000]);
+  const bound = (o) => d.firstReadyMs({handoff: null, handedOver: false, rows: 0, leftover: false, ready: 20000, cold: 25000, ...o});
+  assert.strictEqual(bound({}), 25000, 'nothing to restore');
+  assert.strictEqual(bound({elapsed: 3000}), 22000, 'counted from the daemon\'s process start');
+  assert.strictEqual(bound({elapsed: -3600000}), 25000, 'never past the cold bound, whatever the elapsed');
+  assert.strictEqual(bound({handedOver: true}), 20000, '--handoff whose pipe could not be read');
+  assert.strictEqual(bound({elapsed: 15000}), 20000, 'never shorter than READY_MS');
+  assert.strictEqual(bound({handoff: Buffer.alloc(0)}), 20000, 'a handoff, even an empty or unreadable one');
+  assert.strictEqual(bound({handoff: Buffer.from('not a frame')}), 20000);
+  assert.strictEqual(bound({rows: 1}), 20000, 'a table with a row');
+  assert.strictEqual(bound({rows: null}), 20000, 'a table that can\'t be judged');
+  assert.strictEqual(bound({leftover: true}), 20000, 'a daemon.json left behind');
+  assert.strictEqual(bound({leftover: null}), 20000, 'whether one was left can\'t be told');
+  // (a restart's own runtime and a hand-over keep READY_MS: unchanged)
+  assert.strictEqual(restartBoundMs(), 95000);
+  // (after a stop, a shim may start a fresh daemon: its cold start ends within
+  // COLD_READY_MS of its process start, inside READY_MS and the 10 s for a boot)
+  assert.strictEqual(successorWaitMs(), 45000);
+  assert.ok(d.COLD_READY_MS <= d.READY_MS + 10000);
+  // (the longest hold of start.lock is still a restart's: backoff, ready, stop)
+  assert.strictEqual(uninstallLockBoundMs(), 85000);
+  assert.ok(Math.max(...d.BACKOFF_MS) + d.READY_MS + d.STOP_MS >= d.COLD_READY_MS + d.STOP_MS, 'a first start\'s hold is inside it');
+  const src = (f) => fs.readFileSync(path.join(__dirname, '..', 'shim', 'src', f), 'utf8');
+  const retries = /const RETRIES: \[u64; \d+\] = \[([\d, ]+)\];/.exec(src('relay.rs'))[1].split(',').map(Number);
+  const handshake = Number(/const HANDSHAKE_LIMIT: Duration = Duration::from_secs\((\d+)\);/.exec(src('attach.rs'))[1]);
+  const cold = Number(/pub const COLD_BUDGET: Duration = Duration::from_secs\((\d+)\);/.exec(src('attach.rs'))[1]);
+  assert.strictEqual(d.READY_MS + Math.max(...retries) * 1000 + handshake * 1000, 55000, 'a restored session\'s worst case, as before');
+  assert.ok(55000 < d.SESSION_WINDOW_MS);
+  assert.ok(d.COLD_READY_MS + 3000 <= cold * 1000, 'inside the shim\'s: at most 1 s of late spawn, and 2 s to answer');
+  assert.ok(cold * 1000 < 30000, 'under Claude Code\'s 30 s for a stdio server');
+});
+
+// the same rule through a real first start: a runtime that listens between the
+// two bounds is served from an empty start, and not after a crash's leftover
+// daemon.json or a handoff
+test('cold start: a runtime listening between the two bounds is served only when there is nothing to restore', async() => {
+  const start = async(prepare, {handoff = null, handedOver = false, uptime = null} = {}) => {
+    const {home, io} = setup();
+    try {
+      io.daemonReadyMs = 250;
+      io.daemonColdReadyMs = 1500;
+      io.daemonBackoffMs = [0, 0, 0, 0];
+      prepare(home);
+      const s = scripted(home);
+      s.delay = (n) => (n === 1 ? 700 : 60000);   // the first runtime listens at 700 ms
+      if (uptime != null) io.daemonUptimeMs = uptime;
+      const done = daemon({home, handoff, handedOver}, io, {run: s.run});
+      const one = await s.nth(0);
+      const until = Date.now() + 1400;
+      while (one.listenedAt == null && Date.now() < until) await tick();
+      await tick(200);
+      const adoptedIt = !one.ended;
+      io.signal('SIGTERM');
+      for (const c of s.calls) await c.exit(0);
+      await done;
+      return adoptedIt;
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  };
+  assert.strictEqual(await start(() => {}), true, 'nothing to restore: it waits for the runtime');
+  const leftover = (home) => {
+    fs.mkdirSync(runDirOf(home), {recursive: true, mode: 0o700});
+    fs.writeFileSync(daemonJson(home), JSON.stringify({pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: 'z', started: 'crashed'}), {mode: 0o600});
+  };
+  assert.strictEqual(await start(leftover), false, 'a crashed daemon\'s daemon.json: READY_MS');
+  assert.strictEqual(await start(() => {}, {handoff: encodeHandoff({sessions: [], declines: []})}), false, 'a handoff, even of an empty table: READY_MS');
+  assert.strictEqual(await start(() => {}, {handedOver: true}), false, 'a --handoff whose pipe could not be read: READY_MS');
+  assert.strictEqual(await start(() => {}, {uptime: () => 1400}), false, 'a process that has already used the time: READY_MS');
+});
+
+// the wait for the first runtime is on a monotonic clock: a wall-clock step
+// forward (an NTP correction, a VM resumed) doesn't end it
+test('cold start: a wall-clock step does not end the wait for the first runtime', async() => {
+  const {home, io} = setup();
+  const realNow = Date.now;
+  try {
+    io.daemonReadyMs = 1500;
+    io.daemonColdReadyMs = 1500;
+    io.daemonBackoffMs = [0, 0, 0, 0];
+    const s = scripted(home);
+    s.delay = (n) => (n === 1 ? 400 : 60000);
+    const done = daemon({home, handoff: null}, io, {run: s.run});
+    const one = await s.nth(0);
+    Date.now = () => realNow() + 3600000;
+    const until = performance.now() + 1400;
+    while (one.listenedAt == null && performance.now() < until) await tick();
+    await tick(200);
+    const stayed = !one.ended && one.listenedAt != null;
+    Date.now = realNow;
+    io.signal('SIGTERM');
+    for (const c of s.calls) await c.exit(0);
+    await done;
+    assert.strictEqual(stayed, true, 'it waited for the runtime through the step');
+  } finally {
+    Date.now = realNow;
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the bound of a first start is a remainder (cold - this process's uptime), so
+// the line that names it says whole seconds
+test('cold start: the give-up line says the bound in whole seconds', async() => {
+  const {home, io} = setup();
+  try {
+    io.daemonReadyMs = 100;
+    io.daemonColdReadyMs = 1500;
+    io.daemonStopMs = 500;
+    io.daemonBackoffMs = [0, 0, 0, 0];
+    io.daemonUptimeMs = () => 123.4567;
+    const said = [];
+    io.stderr = {write: (x) => { said.push(String(x)); return true; }};
+    const s = scripted(home);
+    s.delay = () => 60000;   // it never listens
+    assert.strictEqual(await daemon({home, handoff: null}, io, {run: s.run}), 1);
+    const line = said.join('').split('\n').find((l) => l.includes('did not listen within'));
+    assert.ok(line != null, said.join(''));
+    assert.match(line, /did not listen within 1 s; it was stopped/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

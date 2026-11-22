@@ -193,6 +193,12 @@ fn create(lock: &Path, mine: &Holder) -> io::Result<bool> {
 /// The most of a lock file read: a holder is a few dozen bytes.
 const HOLDER_MAX: u64 = 4096;
 
+/// Whether `lock`'s holder is this pid on this host (a pid means nothing in
+/// another PID namespace).
+pub fn held_by(lock: &Path, pid: u32) -> bool {
+    read_holder(lock).is_some_and(|h| h.on_host(&this_host()) && h.integer_pid() == Some(i64::from(pid)))
+}
+
 /// readHolder, opened without following a symlink and without blocking on a
 /// FIFO, at most HOLDER_MAX bytes read.
 fn read_holder(lock: &Path) -> Option<Holder> {
