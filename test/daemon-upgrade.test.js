@@ -1451,3 +1451,26 @@ test('cold start: a runtime listening between the two bounds is served only when
   assert.strictEqual(await start(leftover), false, 'a crashed daemon\'s daemon.json: READY_MS');
   assert.strictEqual(await start(() => {}, {handoff: encodeHandoff({sessions: [], declines: []})}), false, 'a handoff, even of an empty table: READY_MS');
 });
+
+// the bound of a first start is a remainder (cold - this process's uptime), so
+// the line that names it says whole seconds
+test('cold start: the give-up line says the bound in whole seconds', async() => {
+  const {home, io} = setup();
+  try {
+    io.daemonReadyMs = 100;
+    io.daemonColdReadyMs = 1500;
+    io.daemonStopMs = 500;
+    io.daemonBackoffMs = [0, 0, 0, 0];
+    io.daemonUptimeMs = () => 123.4567;
+    const said = [];
+    io.stderr = {write: (x) => { said.push(String(x)); return true; }};
+    const s = scripted(home);
+    s.delay = () => 60000;   // it never listens
+    assert.strictEqual(await daemon({home, handoff: null}, io, {run: s.run}), 1);
+    const line = said.join('').split('\n').find((l) => l.includes('did not listen within'));
+    assert.ok(line != null, said.join(''));
+    assert.match(line, /did not listen within 1 s; it was stopped/);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

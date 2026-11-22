@@ -240,7 +240,13 @@ fn attach_until(
             return Err(AttachError::SharedFailed(r));
         }
     }
-    Err(AttachError::GaveUp(format!("{} s ({last})", budget.as_secs())))
+    // (past a release the wait ended before the cold budget: the time it took)
+    let waited = if released.is_some() && budget == COLD_BUDGET {
+        (began.elapsed().as_millis() as u64 + 500) / 1000
+    } else {
+        budget.as_secs()
+    };
+    Err(AttachError::GaveUp(format!("{waited} s ({last})")))
 }
 
 /// No reachable daemon: start one, once per attach.
@@ -654,13 +660,21 @@ mod tests {
         let spawned = stand_in(&t, "$$", &format!("sleep 0.3; rm -f '{}'; sleep 9", lock.display()));
         let now = Instant::now();
         let r = attach_first(&t.home, None, now + Duration::from_millis(300), now + Duration::from_secs(8));
+        let waited = now.elapsed();
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
         assert!(
-            now.elapsed() < RELEASE_GRACE + Duration::from_millis(1500),
-            "not to the cold deadline: {:?}",
-            now.elapsed()
+            waited < RELEASE_GRACE + Duration::from_millis(1500),
+            "not to the cold deadline: {waited:?}"
         );
         assert!(spawned.exists());
+        // the line says the time it waited, not the budget it no longer had
+        let text = r.err().unwrap().to_string();
+        let said: u64 = text
+            .strip_prefix("no answer within ")
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(said < COLD_BUDGET.as_secs() && said <= waited.as_secs() + 1, "{text} after {waited:?}");
     }
 
     /// A daemon that gave up and ended past the plain deadline: its failed.json
