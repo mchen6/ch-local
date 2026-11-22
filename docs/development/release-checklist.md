@@ -114,14 +114,7 @@ The checks are grouped. Within a group, the order doesn't matter.
       or `shim.yml` for the shim's six), with "require two-factor
       authentication and disallow tokens" on.
     - Evidence: each package's settings on npmjs.com.
-    - Also: the shim's six binaries name no build machine's paths. cargo
-      bakes its registry's and the checkout's paths into panic messages.
-      dogfood's shim step builds with `--remap-path-prefix`; shim.yml does
-      not yet, and that change is pending the maintainer's yes, as any
-      workflow change is. Check each `bin/ch-shim*` from shim.yml's
-      artifacts as bytes, for the runner's home (`grep -a -c /home/runner`,
-      and `grep -a -c 'C:\\Users\\runneradmin'` on Windows, find 0), never
-      with a text-only search.
+    - Also: a published shim names no local home path (byte check); shim.yml remap in 1.1.
 14. **No tag and no publish has happened before.**
     - How: `git ls-remote --tags` on each repository, and `npm view <name>
       versions` for each package.
