@@ -321,7 +321,7 @@ test('no --from: a release with no identity to install from npm with says so; --
 // docs/development/auto-upgrade.md: no --from installs from npm, every
 // package checked against its pin and its provenance (a fake registry and the
 // test root, passed only as install's test-only argument)
-async function npmRelease(r, {lie = null, shim = false} = {}) {
+async function npmRelease(r, {lie = null, shim = false, shimBody = 'the shim'} = {}) {
   const {fakeRegistry} = require('./fake-registry');
   const {testRoot} = require('./sigstore-fixture');
   const provenance = require('../lib/provenance');
@@ -353,7 +353,7 @@ async function npmRelease(r, {lie = null, shim = false} = {}) {
     const key = `${process.platform}-${process.arch}`;
     const name = `@countinghouse/ch-shim-${key}`;
     const exe = process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim';
-    const bytes = require('./tgz').packageTgz({name, version: '0.5.0'}, {[`bin/${exe}`]: 'the shim'});
+    const bytes = require('./tgz').packageTgz({name, version: '0.5.0'}, {[`bin/${exe}`]: shimBody});
     reg.publish(name, '0.5.0', bytes);
     const identity = Object.assign({}, self, {workflow: '.github/workflows/shim.yml', tag: 'shim-v0.5.0'});
     const hex = crypto.createHash('sha512').update(bytes).digest('hex');
@@ -421,6 +421,40 @@ test('no --from: this platform\'s native shim is installed too, and recorded; wi
     assert.match(io.out, /no shared-runtime shim is pinned for this platform in this release: each session runs its own runtime/);
   } finally {
     await n2.reg.close();
+  }
+});
+
+// A3 (the reviewer): the session's note says to run install when shim.json
+// names a Node that is gone; a bare reinstall writes shim.json's node and
+// chLocal again, from this process, and keeps the shim, so the session picks
+// it again
+test('A3: after node moves, a bare reinstall writes shim.json again and keeps the shim: the session picks it again', async () => {
+  const {hostProgram} = require('./host-program');
+  const {sessionChoice} = require('../lib/session');
+  const r = release(); const h = home();
+  const n = await npmRelease(r, {shim: true, shimBody: hostProgram()});
+  try {
+    const at = () => sessionChoice({where: layout({COUNTINGHOUSE_HOME: h})});
+    const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    io.node = process.execPath;
+    assert.strictEqual(await install({pack: 'ci-failure-triage'}, io, n.allow, n.fromNpm), 0, io.err);
+    const exe = path.join(h, 'shim', process.platform === 'win32' ? 'ch-shim.exe' : 'ch-shim');
+    assert.strictEqual(at().shim, exe, at().note);
+    // (Node moved: shim.json still names the one install ran under)
+    const file = path.join(h, 'shim.json');
+    const body = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({...body, node: path.join(h, 'old-node', process.platform === 'win32' ? 'node.exe' : 'node')}));
+    assert.strictEqual(at().shim, null);
+    assert.match(at().note, /name a Node that can't be used \(node: ENOENT\)/);
+    // the note's fix: a bare reinstall, in the Node that runs now
+    const io2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm(), fetch: (url, opts) => globalThis.fetch(url, opts)});
+    io2.node = process.execPath;
+    assert.strictEqual(await install({}, io2, n.allow, n.fromNpm), 0, io2.err);
+    assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).node, process.execPath);
+    assert.deepStrictEqual(record(h).shim, {package: `@countinghouse/ch-shim-${process.platform}-${process.arch}`, version: '0.5.0'}, 'the shim kept');
+    assert.strictEqual(at().shim, exe, at().note);
+  } finally {
+    await n.reg.close();
   }
 });
 
