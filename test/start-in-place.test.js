@@ -434,7 +434,7 @@ test('A5: in shared mode a setting the runtime could not take in place is told, 
     await until(() => notices(s).some(([, t]) => /requestTimeout set to/.test(t)));
     const line = notices(s).find(([, t]) => /requestTimeout set to/.test(t))[1];
     assert.match(line, /^requestTimeout set to 10s: applies when the shared runtime restarts \(`[^`]+ restart`\) \(NOT_NOW\)$/);
-    assert.ok(line.length <= 200, line);
+    assert.ok(require('./notice-length').atRealisticHome(line) <= 200, line);
   } finally {
     s.end();
     await s.done;
@@ -462,7 +462,7 @@ test('A5: in shared mode no loosening is told with a restart command: a setting 
     for (const t of told.filter((x) => /loosened|added/.test(x))) assert.doesNotMatch(t, / restart`/, t);
     // (every notice within the runtime's 200, with a launcher path as long as a user's)
     assert.ok(require('../lib/command-line').chLocal(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}), 'restart').length >= 'node "/home/alexandra/.countinghouse/bin/ch-local.js" restart'.length);
-    for (const t of told) assert.ok(t.length <= 200, `${t.length}: ${t}`);
+    for (const t of told) assert.ok(require('./notice-length').atRealisticHome(t) <= 200, `${t.length}: ${t}`);
   } finally {
     s.end();
     await s.done;
@@ -960,15 +960,17 @@ test('A5: in shared mode a refused moved-back unload is told whole, its command 
       packs: {...r.packs, 'ci-failure-triage': {...r.packs['ci-failure-triage'], modules: {...r.packs['ci-failure-triage'].modules, '@countinghouse/ch-step-redact': '0.0.9'}}}}));
     await until(() => notices(s).some(([, t]) => /was moved back to 0\.0\.9 .*not applied in place \(NO\)/.test(t)));
     for (const [, t] of notices(s)) {
-      assert.ok([...t].length <= 200, `${[...t].length}: ${t}`);
+      assert.ok(require('./notice-length').atRealisticHome(t) <= 200, `${[...t].length}: ${t}`);
       assert.strictEqual((t.match(/`/g) || []).length % 2, 0, `a command cut: ${t}`);
       if (/not applied in place/.test(t)) assert.doesNotMatch(t, /stopped until|\?node/, `a command cut: ${t}`);
     }
     // (the failure line is built on the explanation alone, never on the
     // notice that already ends in a command)
     assert.ok(notices(s).some(([, t]) => /^ch-step-redact was moved back to 0\.0\.9 by the rollback just made; [^`]*: not applied in place \(NO\); it applies when the shared runtime restarts$/.test(t)), JSON.stringify(notices(s)));
-    const sent = s.requests.find((m) => m.type === 'unload' && /was moved back/.test(m.notice || ''));
-    assert.match(sent.notice, /; stopped until `[^`]+ restart` is run$/, 'the unload\'s own notice keeps its command whole');
+    // (found by its command: at a home so long the command leaves no room,
+    // the command goes alone)
+    const sent = s.requests.find((m) => m.type === 'unload' && /stopped until `/.test(m.notice || ''));
+    assert.match(sent.notice, /(?:^|; )stopped until `[^`]+ restart` is run$/, 'the unload\'s own notice keeps its command whole');
   } finally {
     s.end();
     await s.done;

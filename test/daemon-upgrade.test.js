@@ -1049,17 +1049,20 @@ test('A5: ch-local restart with the daemon gone at the bound, or before the requ
     t.mock.method(d, 'daemonServing', async() => serving);
     let then = () => {};
     t.mock.method(rq, 'requestRestart', async(h, o) => { then(); o.underLock(); return true; });
-    // (killed: daemon.json left, nothing serves at the bound)
-    then = () => { setTimeout(() => { serving = {serving: false, pid: null, by: 'pid'}; }, 50); };
+    // (killed: daemon.json left, nothing serves at the bound. Set as the
+    // request is written, never by a timer: on Windows each private read is
+    // a synchronous PowerShell run, the bound can pass before the loop
+    // first yields, and a timer would not have run by the last check)
+    then = () => { serving = {serving: false, pid: null, by: 'pid'}; };
     let r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 400});
-    assert.strictEqual(await restart({}, r), 1);
+    assert.strictEqual(await restart({}, r), 1, r.out + r.err);
     assert.match(r.err, /the shared runtime's daemon has gone without restarting it; the next session starts it/);
     assert.doesNotMatch(r.out, /it will once its calls finish/);
     // (gone between the check and the request)
     serving = {serving: true, pid: process.pid, by: 'socket'};
     then = () => fs.rmSync(file);
     r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 400});
-    assert.strictEqual(await restart({}, r), 0);
+    assert.strictEqual(await restart({}, r), 0, r.out + r.err);
     assert.match(r.out, /^the shared runtime stopped before the restart was asked for; the next session starts it, with what is stored$/m);
   } finally {
     t.mock.restoreAll();

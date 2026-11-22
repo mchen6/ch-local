@@ -257,6 +257,10 @@ test('shared mode: each credential line, as a notice carries it, fits in 200 cha
     }
   }
   lines.push(require('../lib/packs').staleLine('0.2.0', 'upgraded', where, true));
-  for (const l of lines) assert.ok(l.length <= NOTICE_MAX, `${l.length}: ${l}`);
+  // (measured as a user's home would make it; the temp home's own path,
+  // far longer on macOS and Windows runners, is not a user's -- the command
+  // kept whole is asserted on the real text above)
+  const {atRealisticHome} = require('./notice-length');
+  for (const l of lines) assert.ok(atRealisticHome(l) <= NOTICE_MAX, `${atRealisticHome(l)}: ${l}`);
   assert.ok(gh != null);
 });
