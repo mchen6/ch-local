@@ -14,7 +14,7 @@ const {npmCli} = require('../lib/npm');
 const WIN = process.platform === 'win32';
 // a prefix with bin/node and npm laid out by `lay` (the prefix's own dirs)
 function prefix(lay) {
-  const p = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-cli-'));
+  const p = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-npm-cli-'));
   fs.mkdirSync(path.join(p, 'bin'));
   fs.writeFileSync(path.join(p, 'bin', 'node'), '');
   const cliAt = (dir) => {
@@ -27,6 +27,20 @@ function prefix(lay) {
   return {p, execPath: path.join(p, 'bin', 'node'), cli: cli == null ? null : fs.realpathSync(cli), done: () => fs.rmSync(p, {recursive: true, force: true})};
 }
 const found = (t) => { const c = npmCli({execPath: t.execPath, env: {}}); return fs.realpathSync(c); };
+
+test('A10: beside node.exe (<bin>/node_modules/npm, Windows\'s layout), first', () => {
+  const t = prefix((p, cliAt) => { cliAt(path.join(p, 'lib', 'node_modules', 'npm')); return cliAt(path.join(p, 'bin', 'node_modules', 'npm')); });
+  try { assert.strictEqual(found(t), t.cli); } finally { t.done(); }
+});
+
+test('A10: an npm_execpath that is not npm-cli.js, or not there: the layout', () => {
+  const t = prefix((p, cliAt) => cliAt(path.join(p, 'lib', 'node_modules', 'npm')));
+  try {
+    for (const bogus of [path.join(t.p, 'npx-cli.js'), path.join(t.p, 'gone', 'npm-cli.js')]) {
+      assert.strictEqual(fs.realpathSync(npmCli({execPath: t.execPath, env: {npm_execpath: bogus}})), t.cli, bogus);
+    }
+  } finally { t.done(); }
+});
 
 test('A10: <prefix>/lib/node_modules/npm, as before', () => {
   const t = prefix((p, cliAt) => cliAt(path.join(p, 'lib', 'node_modules', 'npm')));
@@ -56,6 +70,12 @@ test('A10: npm_execpath first, when it is npm-cli.js and there', () => {
 test('A10: none there: the error names the npx way out', () => {
   const t = prefix(() => null);
   try {
-    assert.throws(() => npmCli({execPath: t.execPath, env: {}}), (e) => e.message === `npm was not found beside ${t.execPath}; run the same ch-local command through npx instead: \`npx @countinghouse/ch-local …\``);
+    const v = require('../package.json').version;
+    const home = path.join(t.p, 'home');
+    assert.throws(() => npmCli({execPath: t.execPath, env: {HOME: t.p}}), (e) => e.message === `npm was not found beside ${t.execPath}; run the same ch-local command through npx instead: \`npx @countinghouse/ch-local@${v} …\``);
+    // (a home that isn't the default: named, as every npx hint names it)
+    const err = (() => { try { npmCli({execPath: t.execPath, env: {HOME: t.p, COUNTINGHOUSE_HOME: home}}); } catch (e) { return e.message; } return null; })();
+    if (WIN) assert.ok(err.includes(`(with COUNTINGHOUSE_HOME set to "${home}")`), err);
+    else assert.ok(err.endsWith(`\`COUNTINGHOUSE_HOME="${home}" npx @countinghouse/ch-local@${v} …\``), err);
   } finally { t.done(); }
 });
