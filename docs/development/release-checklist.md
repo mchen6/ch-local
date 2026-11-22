@@ -114,6 +114,7 @@ The checks are grouped. Within a group, the order doesn't matter.
       or `shim.yml` for the shim's six), with "require two-factor
       authentication and disallow tokens" on.
     - Evidence: each package's settings on npmjs.com.
+    - Also: a published shim names no local home path (byte check); shim.yml remap in 1.1.
 14. **No tag and no publish has happened before.**
     - How: `git ls-remote --tags` on each repository, and `npm view <name>
       versions` for each package.
