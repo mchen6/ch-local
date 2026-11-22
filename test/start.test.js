@@ -723,7 +723,7 @@ test('on Windows with a runtime older than countinghouse#195: audit, said; an ex
   const f = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.deepStrictEqual(sandboxOf(f.spawned[0].args), ['--moduleSandbox', 'audit']);
-  assert.match(f.err, /the installed countinghouse is older than countinghouse#195.*; `[^`]+ upgrade` installs one that can$/m);
+  assert.match(f.err, /this countinghouse is older than countinghouse#195: it cannot enforce the sandbox.*; `[^`]+ upgrade` installs one that can$/m);
   for (const passThrough of [['--moduleSandbox', 'enforce'], ['--moduleSandbox=enforce']]) {
     const g = io(home, {platform: 'win32'});
     assert.notStrictEqual(await start({passThrough}, g), 0);
@@ -784,7 +784,9 @@ test('audit, passed, stored or forced on Windows, says what it watches and that 
   const windows = io(home, {platform: 'win32'});
   assert.strictEqual(await start({passThrough: []}, windows), 0, windows.err);
   assert.strictEqual(count(windows), 1, `in WINDOWS_AUDIT, and not twice: ${windows.err}`);
-  assert.match(windows.err, /^ch-local: the installed countinghouse is older than countinghouse#195 and cannot enforce the sandbox on Windows, so it runs under audit|^ch-local: the installed countinghouse is older than countinghouse#195.*…; `[^`]+ upgrade` installs one that can$/m);
+  // (whole at a typical home's launcher; this test's home, with no launcher,
+  // names the npx form with its home, so the explanation is cut before it)
+  assert.match(windows.err, /^ch-local: this countinghouse is older than countinghouse#195: it cannot enforce the sandbox.*; `[^`]+ upgrade` installs one that can$/m);
   assert.match(windows.err, /; `[^`]+ upgrade` installs one that can$/m, 'its command whole');
   // (at a user's home: the npx form's home as long as a typical one)
   // (one fitted to the cut, "…" before its command, measured as sent)

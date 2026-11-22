@@ -66,10 +66,12 @@ test.afterEach(() => {
     // (a notice fitted to the cut -- its explanation cut, "…", before the
     // command -- is measured as sent: fitted to its own launcher path; any
     // other at a user's home)
+    // (a notice told, and one carried by a load or an unload)
     for (const m of requests) {
-      if (m.type !== 'notice') continue;
-      const len = /…/.test(m.text) ? [...m.text].length : atRealisticHome(m.text);
-      if (len > NOTICE_MAX) long.push(`${len}: ${m.text}`);
+      const text = m.type === 'notice' ? m.text : typeof m.notice === 'string' ? m.notice : (m.notice != null && typeof m.notice.text === 'string') ? m.notice.text : null;
+      if (text == null) continue;
+      const len = /…/.test(text) ? [...text].length : atRealisticHome(text);
+      if (len > NOTICE_MAX) long.push(`${len}: ${text}`);
     }
   }
   assert.deepStrictEqual(long, [], 'a notice past the runtime\'s cut');
