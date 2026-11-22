@@ -266,19 +266,26 @@ test('a credentials directory or file that fails a check is refused, said with t
   assert.throws(() => store.readStore(h), (e) => /not a credentials file/.test(e.message) && !e.message.includes('has a space'));
 });
 
-test('add and remove ask a running daemon to restart its runtime (it drains first), and say what a session on its own runtime sees', POSIX, async () => {
+test('add and remove ask a running daemon to restart its runtime (it drains first), and say what a session on its own runtime sees', POSIX, async (t) => {
   const {readRequests} = require('../lib/daemon-requests');
   const h = home();
   fs.mkdirSync(path.join(h, 'run', 'daemon'), {recursive: true, mode: 0o700});
   fs.chmodSync(path.join(h, 'run'), 0o700);
   fs.chmodSync(path.join(h, 'run', 'daemon'), 0o700);
+  // (no shared runtime serves: none named -- the reviewer's high on #147, M4)
+  const none = io(h, {typed: made()});
+  assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, none), 0, none.err);
+  assert.doesNotMatch(none.out, /shared runtime/);
+  assert.match(none.out, /A session on a runtime of its own takes it at its client's next start/);
+  // (one serves: it restarts once its calls finish)
+  t.mock.method(require('../lib/daemon'), 'daemonServing', async () => ({serving: true, pid: 1, by: 'socket'}));
   const f = io(h, {typed: made()});
   assert.strictEqual(await credentials({action: 'add', name: 'ch-access-github'}, f), 0, f.err);
-  assert.match(f.out, /The shared runtime, if one is running, restarts once its calls finish \(it drains first\)\.\nA session on a runtime of its own takes it at its client's next start/);
+  assert.match(f.out, /The shared runtime restarts once its calls finish \(it drains first\)\.\nA session on a runtime of its own takes it at its client's next start/);
   const r = io(h);
   await credentials({action: 'remove', name: 'ch-access-github'}, r);
   assert.match(r.out, /A session on a runtime of its own unloads the module at once, until its client restarts\./);
-  assert.deepStrictEqual(readRequests(h, 0).requests.map((x) => x.op), ['restart', 'restart']);
+  assert.deepStrictEqual(readRequests(h, 0).requests.map((x) => x.op), ['restart', 'restart', 'restart'], 'each add and remove asks, a daemon there or not');
 });
 
 test('uninstall removes the stored credentials, with or without --keep-data, and says so', POSIX, async () => {

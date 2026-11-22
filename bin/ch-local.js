@@ -9,6 +9,7 @@
 //   ch-local snippet <client>                     the client's config entry, on stdout alone
 //   ch-local add <client>                         writes that entry, and records it
 //   ch-local uninstall [--keep-data]              takes back what install and add wrote
+//   ch-local restart                              the shared runtime takes what is stored; its sessions resume
 //   ch-local upgrade [--check | --auto on|off]    installed and available versions; asks once (--check: never)
 //   ch-local session [--home <abs>]               what a client runs: the shared runtime through the shim, or its own
 //   ch-local start --stdio [options]              this session's own runtime with the installed packs
@@ -38,6 +39,7 @@ const USAGE = `usage: ch-local snippet <${CLIENT_LIST}>
        ch-local rollback [--yes]
        ch-local add <cursor|vscode|codex>
        ch-local uninstall [--keep-data]
+       ch-local restart
        ch-local upgrade [--check | --auto on|off]
        ch-local settings [get | set <name> <value> | reset]
        ch-local settings modules [<module>]
@@ -66,7 +68,7 @@ function parse(argv, {flags = [], values = []}) {
 // this returns, and the hints' pin (test/command-line.test.js) parses every
 // printed command with it. Checks that read the disk (an absolute --home, a
 // directory) stay with the command.
-const ON_HOME = new Set(['add-pack', 'remove-pack', 'add-module', 'remove-module', 'rollback', 'status', 'add', 'credentials', 'uninstall', 'settings', 'upgrade']);
+const ON_HOME = new Set(['add-pack', 'remove-pack', 'add-module', 'remove-module', 'rollback', 'status', 'add', 'credentials', 'uninstall', 'settings', 'upgrade', 'restart']);
 function parseCommand(argv) {
   const [command, ...rest] = argv;
   const one = () => rest.length === 1 && !rest[0].startsWith('--');
@@ -91,6 +93,7 @@ function parseCommand(argv) {
       return a == null || a.positional.length > 0 ? null : {command, yes: a.flags['--yes'] === true};
     }
     case 'status': return rest.length === 0 ? {command} : null;
+    case 'restart': return rest.length === 0 ? {command} : null;
     case 'add': return rest.length === 1 ? {command, client: rest[0]} : null;
     case 'credentials': {
       const a = parse(rest, {values: ['--to']});
@@ -228,6 +231,7 @@ async function main(argv, io) {
     if (command === 'remove-module') return await require('../lib/own-command').removeModule({name: p.name}, io);
     if (command === 'rollback') return await require('../lib/rollback').rollback({yes: p.yes}, io);
     if (command === 'status') return await require('../lib/packs-command').status({}, io);
+    if (command === 'restart') return await require('../lib/restart-command').restart({}, io);
     if (command === 'add') return await require('../lib/clients').add(p.client, io);
     if (command === 'credentials') return await require('../lib/credentials-command').credentials({action: p.action, name: p.name, to: p.to}, io);
     if (command === 'uninstall') return await require('../lib/uninstall').uninstall({keepData: p.keepData}, io);

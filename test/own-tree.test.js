@@ -155,6 +155,24 @@ test('the copy: placed under its hash with its marker; refused when the folder n
 // the reviewer's high on #113, 2 (design §2.1 step 4): the copy is read-only
 // -- its files, and on POSIX its folders -- so a change to it takes an
 // explicit chmod first; ch-local's own deletes make it writable first
+// E10 (A-own-gone): gone only when the copy's directory is not there at
+// all; there but not intact is changed, whatever is wrong with it
+test('copyState: intact; changed when edited or its marker is gone; gone only when its directory is not there', () => {
+  const {base, where} = setup();
+  const dir = writeModule(path.join(base, 'work', 'c'));
+  const r = tree.checkFolder(dir, where.home);
+  const h = tree.treeHash(dir, r.entries);
+  const copy = tree.placeCopy(where, 'my-tool', r.real, r.entries, h);
+  assert.strictEqual(tree.copyState(where, 'my-tool', h), 'intact');
+  fs.renameSync(tree.markerOf(where, 'my-tool', h), `${tree.markerOf(where, 'my-tool', h)}.aside`);
+  assert.strictEqual(tree.copyState(where, 'my-tool', h), 'changed', 'its marker gone, the copy there');
+  fs.renameSync(`${tree.markerOf(where, 'my-tool', h)}.aside`, tree.markerOf(where, 'my-tool', h));
+  tree.unlockTree(copy);
+  fs.rmSync(copy, {recursive: true});
+  assert.strictEqual(tree.copyState(where, 'my-tool', h), 'gone');
+  assert.strictEqual(tree.copyState(where, 'never-added', h), 'gone', 'nothing there at all');
+});
+
 test('the copy is read-only; unlockTree makes it removable again, following no link', () => {
   const {base, where} = setup();
   const dir = writeModule(path.join(base, 'work', 'ro'));

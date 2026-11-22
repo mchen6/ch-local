@@ -1,5 +1,5 @@
 {
-  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json moduleMessages and heldBackFile, at countinghouse 9f307108 (#490's final head, accepted; the heldBackFile rule text from 57b65e22): copied, never edited here",
+  "_source": "countinghouse docs/superpowers/specs/shared-runtime-wire/vectors.json: moduleMessages at countinghouse 9f307108 (#490's final head, accepted); heldBackFile, rule text and all, at countinghouse c313b561 (#534, E10's gone): copied, never edited here",
   "moduleMessages": {
     "rule": "load names one top-level module (name) and reload one or more (names), each by its package name, with dirs: the absolute directory of each module of their closures, by package name, 1 to 64; credentials (optional) is the per-module allowance of the version 2 --remoteCredentials file, each environment name a slot, each package one dirs names. unload names one top-level module; its notice is told once, as given, on the next result of any tool, unless it carries reason: \"off\" (the module turned off), the runtime serves the settings tool (the single-identity profile with --settingsFile) and its settings file holds enabled.<name> false, when it tells every session its own off text instead: what went with it (the callers loaded at that unload; one unloaded before it is told by its own unload) and both ways back. With reason: \"calls\" and because: <the package it went with>, on such a runtime whose settings file holds enabled.<because> false, it tells \"<name> unloaded: it calls <because>, which is turned off for all your sessions (turning <because> on brings it back).\" reason and because are optional and not checked: any other value, or none, is the notice as given. A module-form message carries no scenario, pack, global or remoteCredentials. notice: module a package name or null, and text. reread: what is module-settings or held-back (the --heldBackFile list), and it carries nothing but id, type and what. module-stopped (the runtime to ch-local, unasked, no id): name, code, when start or restart",
     "packagePattern": "^(?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*$",
@@ -284,7 +284,7 @@
     ]
   },
   "heldBackFile": {
-    "rule": "exactly {v: 1, modules: [...], launcher?}; at most 256 modules, none named twice; each exactly {name, reason, root?, via?}; name an npm package name not starting with - or ~; reason one of credential, off, ceiling, missing, pin, withdrawn, stopped, restart, calls; root only on calls, one of credential, off, ceiling, missing, pin, withdrawn or not-installed; via exactly when root is: a package name (not starting with - or ~), or for not-installed the callee's declared name (1 to 64 characters, no / or . or control character). The file is a regular file, one name, no link, 0600 (or a private ACL on Windows), this user's own, at most 65536 bytes.",
+    "rule": "exactly {v: 1, modules: [...], launcher?}; at most 256 modules, none named twice; each exactly {name, reason, root?, via?, code?}; name an npm package name not starting with - or ~; reason one of credential, off, ceiling, missing, pin, withdrawn, stopped, restart, changed, gone, sandbox, collision, refused, calls (changed, gone, sandbox, collision and refused are an own module's); code exactly on refused, the runtime's code for its refusal, [A-Z][A-Z0-9_]{0,63}; root only on calls, one of credential, off, ceiling, missing, pin, withdrawn or not-installed; via exactly when root is, or on collision (the other module's package name): a package name (not starting with - or ~), or for not-installed the callee's declared name (1 to 64 characters, no / or . or control character). The file is a regular file, one name, no link, 0600 (or a private ACL on Windows), this user's own, at most 65536 bytes.",
     "accepted": [
       {
         "why": "none held back",
@@ -329,6 +329,44 @@
             {
               "name": "@countinghouse/ch-m7",
               "reason": "restart"
+            },
+            {
+              "name": "@countinghouse/ch-m8",
+              "reason": "changed"
+            },
+            {
+              "name": "@countinghouse/ch-m9",
+              "reason": "sandbox"
+            },
+            {
+              "name": "@countinghouse/ch-m10",
+              "reason": "gone"
+            }
+          ]
+        }
+      },
+      {
+        "why": "an own module whose name another module uses: via names it",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "my-tool",
+              "reason": "collision",
+              "via": "ch-pack-other"
+            }
+          ]
+        }
+      },
+      {
+        "why": "an own module this release's runtime refuses, with its code",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "my-tool",
+              "reason": "refused",
+              "code": "MODULE_INVALID"
             }
           ]
         }
@@ -464,7 +502,7 @@
           "modules": [
             {
               "name": "a",
-              "reason": "gone"
+              "reason": "vanished"
             }
           ]
         }
@@ -560,6 +598,97 @@
               "reason": "calls",
               "root": "not-installed",
               "via": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        }
+      },
+      {
+        "why": "a collision without via",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "my-tool",
+              "reason": "collision"
+            }
+          ]
+        }
+      },
+      {
+        "why": "refused without its code",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "my-tool",
+              "reason": "refused"
+            }
+          ]
+        }
+      },
+      {
+        "why": "a code on another reason",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "my-tool",
+              "reason": "stopped",
+              "code": "MODULE_INVALID"
+            }
+          ]
+        }
+      },
+      {
+        "why": "a code that is not one",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "my-tool",
+              "reason": "refused",
+              "code": "not a code"
+            }
+          ]
+        }
+      },
+      {
+        "why": "an own module's reason as a root",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "a",
+              "reason": "calls",
+              "root": "changed",
+              "via": "b"
+            }
+          ]
+        }
+      },
+      {
+        "why": "gone as a root (an own module's)",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "a",
+              "reason": "calls",
+              "root": "gone",
+              "via": "b"
+            }
+          ]
+        }
+      },
+      {
+        "why": "via on a reason that takes none",
+        "file": {
+          "v": 1,
+          "modules": [
+            {
+              "name": "a",
+              "reason": "sandbox",
+              "via": "b"
             }
           ]
         }

@@ -7,6 +7,8 @@ const {unhomed} = require('./unhomed');
 // runtime, and a slot's identity checked against the store.
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const {tmp} = require('./fake-io');
 const {storeModule, writeHome} = require('./store-helpers');
 const {layout} = require('../lib/home');
@@ -23,8 +25,14 @@ const remote = (url, credential) => ({name: 'r', url, credential});
 
 // A home with ch-access-github (GitHub's origin) and ch-step-other (its own
 // origin) installed, each declaring one credential.
-function home({accessUrl = `${GH}/mcp/`} = {}) {
-  const h = tmp('ch-mc-');
+// deep: a home at a realistic depth with its launcher there, so hints carry
+// a launcher path as long as a user's (the notice cut: #147's M3)
+function home({accessUrl = `${GH}/mcp/`, deep = false} = {}) {
+  const h = deep ? path.join(tmp('ch-mc-'), 'alexandra', '.countinghouse') : tmp('ch-mc-');
+  if (deep) {
+    fs.mkdirSync(path.join(h, 'bin'), {recursive: true, mode: 0o700});
+    fs.writeFileSync(path.join(h, 'bin', 'ch-local.js'), '');
+  }
   storeModule(h, ACCESS, '1.0.0', {countinghouse: {role: 'part', remotes: [remote(accessUrl, {env: VAR, header: 'Authorization', scheme: 'Bearer'})]}});
   storeModule(h, OTHER, '1.0.0', {countinghouse: {role: 'part', remotes: [remote(`${OTHER_ORIGIN}/mcp/`, 'OTHER_TOKEN')]}});
   writeHome(h, {p: {[ACCESS]: '1.0.0', [OTHER]: '1.0.0'}});
@@ -75,7 +83,7 @@ test('forStart: gh is asked once, and only when a binding\'s source is gh; its t
   assert.strictEqual(s.identities.get(ACCESS).source, 'gh');
   const none = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'gh is not logged in'})});
   assert.strictEqual(none.states.get(ACCESS).state, 'gh-gave-none');
-  assert.match(none.states.get(ACCESS).reason, /your gh login gave no token at this start \(gh is not logged in\): run `gh auth login` and restart your client, or `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
+  assert.match(none.states.get(ACCESS).reason, /your gh login gave no token at this start \(gh is not logged in\): run `gh auth login` and restart your client, or with the shared runtime run `[^`]+ restart`; or `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
   assert.ok(!('COUNTINGHOUSE_CREDENTIAL_1' in none.env));
 });
 
@@ -118,7 +126,7 @@ test('slotMatches and applyStates: a removed binding, a changed value, and one a
   bind(h, OTHER, 'OTHER_TOKEN', stored(OTHER_ORIGIN, 'test-value-other'));
   const other = mc.applyStates(where, record(), s.identities).get(OTHER);
   assert.strictEqual(other.state, 'new');
-  assert.match(other.reason, /restart your client to load it/);
+  assert.match(other.reason, /restart your client, or with the shared runtime run `[^`]+ restart` to load it/);
 });
 
 test('migrateV1: a version 1 entry reads as a binding to GitHub\'s origin under the name the module declares', () => {
@@ -209,4 +217,50 @@ test('a credentials directory that is a link to elsewhere is refused, and nothin
   fs.symlinkSync(elsewhere, store.paths(h).dir);
   assert.throws(() => bind(h, ACCESS, 'GITHUB_TOKEN', stored(GH, 'test-v2-value-10')));
   assert.deepStrictEqual(fs.readdirSync(elsewhere), [], 'nothing written there');
+});
+
+// the reviewer's high on #147, M3: countinghouse cuts a notice at 200
+// characters, so a shared runtime's lines name one way only and fit, with a
+// launcher path as long as a user's
+test('shared mode: each credential line, as a notice carries it, fits in 200 characters with a realistic launcher path', async () => {
+  const {where, h, record} = home({deep: true});
+  // (a launcher path longer than a user's own, /home/alexandra/.countinghouse/bin/ch-local.js at 46)
+  assert.ok(require('../lib/command-line').chLocal(where, 'restart').length >= 'node "/home/alexandra/.countinghouse/bin/ch-local.js" restart'.length, 'a launcher path as long as a user\'s');
+  const NOTICE_MAX = 200;
+  const lines = [];
+  const gh = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'gh is not logged in'}), shared: true});
+  bind(h, ACCESS, VAR, {origin: GH, source: 'gh'});
+  const ghNone = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'gh is not logged in'}), shared: true});
+  lines.push(`not loading ch-access-github: ${ghNone.states.get(ACCESS).reason}`);
+  bind(h, ACCESS, VAR, stored(GH, 'test-value-access'));
+  const s = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'x'}), shared: true});
+  bind(h, ACCESS, VAR, stored(GH, 'test-value-rotated'));
+  const changed = mc.applyStates(where, record(), s.identities, {shared: true}).get(ACCESS);
+  store.unbind(h, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+  const removed = mc.applyStates(where, record(), s.identities, {shared: true}).get(ACCESS);
+  bind(h, OTHER, 'OTHER_TOKEN', stored(OTHER_ORIGIN, 'test-value-other'));
+  const added = mc.applyStates(where, record(), s.identities, {shared: true}).get(OTHER);
+  for (const st of [changed, removed]) {
+    lines.push(`ch-access-github unloaded: ${st.reason}`);
+    lines.push(`ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which ${st.which}`);
+  }
+  lines.push(`not loading ch-pack-other: ${added.reason}`);
+  lines.push(`ch-pack-other-caller unloaded: it calls ch-pack-other, which ${added.which}`);
+  // (gh's three real reasons, lib/github-token.js, inside start in either mode)
+  bind(h, ACCESS, VAR, {origin: GH, source: 'gh'});
+  for (const why of ['gh did not answer within 10 s', 'gh, the GitHub CLI, was not found or did not answer (a client started from the dock or the Start menu may not see the PATH your shell sets)', 'gh is not logged in to github.com']) {
+    for (const shared of [true, false]) {
+      const st = (await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why}), shared})).states.get(ACCESS);
+      lines.push(`not loading ch-access-github: ${st.reason}`);
+      lines.push(`ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which ${st.which}`);
+      assert.match(st.reason, /credentials add ch-access-github`/, 'the command is kept whole');
+    }
+  }
+  lines.push(require('../lib/packs').staleLine('0.2.0', 'upgraded', where, true));
+  // (measured as a user's home would make it; the temp home's own path,
+  // far longer on macOS and Windows runners, is not a user's -- the command
+  // kept whole is asserted on the real text above)
+  const {atRealisticHome} = require('./notice-length');
+  for (const l of lines) assert.ok(atRealisticHome(l) <= NOTICE_MAX, `${atRealisticHome(l)}: ${l}`);
+  assert.ok(gh != null);
 });
