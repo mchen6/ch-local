@@ -291,6 +291,12 @@ function treeOf(root) {
   return rows.filter((row) => inTree.has(row.pid));
 }
 
+// A terminal command as a refusal names it since countinghouse #536: the
+// launcher of this run's own home (its real path), never a bare `ch-local`,
+// which is on no PATH; as it reads in JSON.stringify'd content, where its
+// quotes (and a Windows path's backslashes) are escaped.
+const terminalInJson = (launcher, args) => JSON.stringify(`node "${launcher}" ${args}`).slice(1, -1);
+
 // (b-latched), the countinghouse #337 contract: a session whose client's
 // conditions latched "no" is refused a loosening as that latch, with the
 // reason the shim handed over, never as the user's decline; a tightening
@@ -298,7 +304,7 @@ function treeOf(root) {
 // second, first: each session's tools/call of countinghouse_settings; why:
 // the conditions line's `why` ({reason, at?}) for the second client; reason:
 // the fixture's own expected reason. -> nothing; each finding via check().
-async function latchedChecks({second, first, why, reason, check}) {
+async function latchedChecks({second, first, why, reason, launcher, check}) {
   check('(b-latched) the conditions handed over for the second client say no, with the fixture\'s reason', why != null && why.reason === reason, JSON.stringify(why));
   const loosen = await second({action: 'set', name: 'requestTimeout', value: '60s'});
   const code = loosen.result != null && loosen.result._meta != null ? loosen.result._meta['countinghouse/code'] : null;
@@ -308,7 +314,7 @@ async function latchedChecks({second, first, why, reason, check}) {
   const said = why != null ? `(${why.reason}${why.at !== undefined ? `: ${why.at}` : ''})` : '(none handed over)';
   check('(b-latched) a loosening is refused as the latch, with the handed-over reason and the terminal command; never as a decline',
     loosen.result != null && loosen.result.isError === true && code === 'SETTING_CLIENT_NOT_CONFIRMED' && text.includes(said) &&
-    /ch-local settings set requestTimeout 60s/.test(text), `${said} ${JSON.stringify(loosen).slice(0, 1000)}`);
+    text.includes(terminalInJson(launcher, 'settings set requestTimeout 60s')), `${said} ${JSON.stringify(loosen).slice(0, 1000)}`);
   const tighten = await second({action: 'set', name: 'requestTimeout', value: '20s'});
   const t = tighten.result != null ? tighten.result.structuredContent : null;
   check('(b-latched) a tightening still applies to that session', t != null && t.new === 20000 && t.applies === 'this session', JSON.stringify(tighten).slice(0, 1000));
@@ -522,6 +528,9 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       acceptRelease(require('../lib/allowlist').ALLOWLIST));
     if (!check('the acceptance fixture pack is added (this run\'s release only)', added === 0, `exit ${added}`)) return 1;
     const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: home});
+    // (the command a refusal must name: this run's own launcher)
+    const launcher = require('../lib/home').safeLauncher(where);
+    if (!check('the run\'s home has a launcher a command can name', launcher != null, where.launcher)) return 1;
     // turned off by its module (L3: enabled.<module>; set pack.* is refused)
     const acceptModule = require('../lib/packs').packScenario(require('../lib/module-record').readModulesRecord(where), ACCEPT);
     require('../lib/settings').setSetting(where, `enabled.${acceptModule}`, 'off', {by: 'cli'});
@@ -608,7 +617,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     // client's (2026-11-16: a run under a home whose .claude held plugins
     // answered so; the guard above now refuses such a run)
     check('(b) a loosening, with no tested client yet, is refused with the terminal command', loosen.result != null && loosen.result.isError === true &&
-      loosenCode === 'SETTING_NEEDS_CONFIRMATION' && /ch-local settings set requestTimeout 60s/.test(JSON.stringify(loosen.result.content)),
+      loosenCode === 'SETTING_NEEDS_CONFIRMATION' && JSON.stringify(loosen.result.content).includes(terminalInJson(launcher, 'settings set requestTimeout 60s')),
       JSON.stringify(loosen).slice(0, 1000));
     const tighten = await call({action: 'set', name: 'requestTimeout', value: '10s'});
     const t = tighten.result != null ? tighten.result.structuredContent : null;
@@ -680,7 +689,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     let why = null;
     try { why = JSON.parse(conds.stdout.trim().split('\n').pop()).why || null; } catch (e) { why = null; }
     const settingsCall = (m) => (a) => m.request('tools/call', {_meta: META, name: 'countinghouse_settings', arguments: a});
-    await latchedChecks({second: settingsCall(mcp2), first: settingsCall(mcp), why, reason, check});
+    await latchedChecks({second: settingsCall(mcp2), first: settingsCall(mcp), why, reason, launcher, check});
     // it leaves with a bye (its stdin closed), and the first session is served on
     client2.stdin.end();
     await new Promise((resolve) => { const t = setTimeout(resolve, STEP_MS); client2.once('exit', () => { clearTimeout(t); resolve(); }); });
@@ -691,7 +700,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     // The fixture pack, turned on from the terminal while the daemon serves:
     // every session's (B3's all-sessions path; no form). A session's own
     // "on" needs its form, which joins with (b1).
-    // `ch-local settings set enabled.<its module> on` is a loosening, which the
+    // `<launcher> settings set enabled.<its module> on` is a loosening, which the
     // terminal confirms (lib/cli-change.js); the run has no terminal, so it
     // calls that same path with an io that answers the question "y", as the
     // user at a terminal would
