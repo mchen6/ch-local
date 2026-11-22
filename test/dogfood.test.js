@@ -316,7 +316,7 @@ test('shimInto: a built binary that names this machine\'s home is refused, never
     fs.writeFileSync(leaky, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0]), Buffer.from(`${require('node:os').homedir()}/.cargo/registry/src/x.rs`), Buffer.from([0])]));
     const pins = {};
     await assert.rejects(dogfood.shimInto({}, path.join(work, 'release'), work, pins, () => {}, {build: () => leaky, platform: 'linux', arch: 'x64'}),
-      /the built shim names this machine's home .* \(a build path\): not packed/);
+      /the built shim names this machine's \/.* \(a build path\): not packed/);
     assert.deepStrictEqual(pins, {}, 'nothing pinned');
     assert.deepStrictEqual(fs.readdirSync(path.join(work, 'release')), [], 'nothing packed');
   } finally {
@@ -324,9 +324,24 @@ test('shimInto: a built binary that names this machine\'s home is refused, never
   }
 });
 
-test('cargoBuild remaps cargo\'s home, rustup\'s home and the checkout out of the binary, keeping --locked', () => {
-  const {remapFlags} = dogfood;
-  const flags = remapFlags({HOME: '/home/u', CARGO_HOME: '/home/u/.cargo', RUSTUP_HOME: '/home/u/.rustup'}, '/home/u/src/ch-local');
-  // (rustc tries them last first: the home, then what is inside it)
-  assert.deepStrictEqual(flags, ['--remap-path-prefix=/home/u=/home', '--remap-path-prefix=/home/u/.cargo=/cargo', '--remap-path-prefix=/home/u/.rustup=/rustup', '--remap-path-prefix=/home/u/src/ch-local=/ch-local']);
+test('cargoBuild: remapped home, cargo, rustup and checkout, shortest first, --locked kept, the operator\'s flags kept', () => {
+  const {remapFlags, rustflagsFor, cargoBuild} = dogfood;
+  const env = {CARGO_HOME: '/home/u/.cargo', RUSTUP_HOME: '/home/u/.rustup'};
+  // (rustc tries them last first: the shortest first, the most specific last)
+  assert.deepStrictEqual(remapFlags(env, '/home/u/src/ch-local', '/home/u'),
+    ['--remap-path-prefix=/home/u=/build-home', '--remap-path-prefix=/home/u/.cargo=/cargo', '--remap-path-prefix=/home/u/.rustup=/rustup', '--remap-path-prefix=/home/u/src/ch-local=/ch-local']);
+  // (a container's HOME=/ is no build path)
+  assert.ok(!remapFlags({CARGO_HOME: '/cargo-home', RUSTUP_HOME: '/rustup-home'}, '/src/ch-local', '/').some((f) => f.startsWith('--remap-path-prefix=/=')));
+  // (the operator's flags kept: env ones first, else cargo's own config through --config)
+  const flags = ['--remap-path-prefix=/a=/b'];
+  assert.strictEqual(rustflagsFor({RUSTFLAGS: '-C target-cpu=native'}, flags).env.CARGO_ENCODED_RUSTFLAGS, '-C\x1ftarget-cpu=native\x1f--remap-path-prefix=/a=/b');
+  assert.strictEqual(rustflagsFor({CARGO_ENCODED_RUSTFLAGS: '-Clink-arg=x'}, flags).env.CARGO_ENCODED_RUSTFLAGS, '-Clink-arg=x\x1f--remap-path-prefix=/a=/b');
+  assert.deepStrictEqual(rustflagsFor({}, flags).args, ['--config', 'build.rustflags=["--remap-path-prefix=/a=/b"]']);
+  // (cargoBuild hands them to cargo, --locked kept)
+  const seen = [];
+  const runner = (cmd, args, opts) => { seen.push({cmd, args, opts}); return {status: 0, stdout: JSON.stringify({reason: 'compiler-artifact', executable: '/x/target/release/ch-shim'}) + '\n'}; };
+  assert.strictEqual(cargoBuild('/home/u/src/ch-local/shim', 'ch-shim', {runner, env: {...env, RUSTFLAGS: '-Cdebuginfo=0'}}), '/x/target/release/ch-shim');
+  assert.deepStrictEqual(seen[0].args.slice(0, 3), ['build', '--release', '--locked']);
+  assert.match(seen[0].opts.env.CARGO_ENCODED_RUSTFLAGS, /^-Cdebuginfo=0\x1f.*--remap-path-prefix=\/home\/u\/src\/ch-local=\/ch-local/);
+  assert.strictEqual(seen[0].opts.env.RUSTFLAGS, undefined);
 });
