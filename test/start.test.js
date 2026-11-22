@@ -999,6 +999,18 @@ test('A8: what the automatic upgrade check says reaches the client as a notice, 
   assert.ok(told.includes('upgraded ch-local 0.1.0 -> 0.1.1; a test line'), told.join(' | '));
 });
 
+test('A8: an upgrade line that comes after start ended is said on stderr alone, never as a notice no client gets', async (t) => {
+  let late = null;
+  t.mock.method(require('../lib/auto-upgrade'), 'autoCheck', ({say, signal}) => new Promise((r) => { late = () => { say('a late line'); r({checked: true}); }; signal.addEventListener('abort', () => setImmediate(late)); }));
+  const home = installedHome({other: true});
+  const f = io(home, {env: {GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: 'example-other'}});
+  const told = await toldBy(['start', '--stdio', '--home', home], f);
+  for (let i = 0; i < 100 && !/a late line/.test(f.err); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.match(f.err, /^ch-local: a late line$/m);
+  assert.ok(!told.includes('a late line'));
+  assert.doesNotMatch(f.err, /the client was not told: a late line/);
+});
+
 test('start without --own-runtime tells no such notice', async () => {
   const home = installedHome({other: true});
   const told = await toldBy(['start', '--stdio', '--home', home], io(home, {env: {GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: 'example-other'}}));
