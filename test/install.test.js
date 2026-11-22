@@ -461,6 +461,15 @@ test('--from with this platform\'s shim in the folder: placed by its pinned sha5
   const st = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
   await require('../lib/packs-command').status({}, st);
   assert.match(st.out, /^the shared runtime's shim, as recorded: 0\.5\.0$/m);
+  // (and where it logs: C-daemon-log)
+  const logAt = path.join(h, 'run', 'daemon', 'runtime.log');
+  assert.ok(st.out.includes(`the shared runtime's log: ${logAt} (none yet: it is made when the shared runtime first starts)\n`), st.out);
+  fs.mkdirSync(path.dirname(logAt), {recursive: true});
+  fs.writeFileSync(logAt, '');
+  const st2 = fakeIo({env: {COUNTINGHOUSE_HOME: h}});
+  await require('../lib/packs-command').status({}, st2);
+  assert.ok(st2.out.includes(`the shared runtime's log: ${logAt}\n`), st2.out);
+  fs.rmSync(logAt, {force: true});
   // (again: the same shim, checked again, moves nothing)
   const io2 = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()}), {node: process.execPath});
   assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, io2, withShim(r.allow, s)), 0, io2.err);

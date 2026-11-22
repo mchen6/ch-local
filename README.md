@@ -261,10 +261,19 @@ running. The daemon holds the runtime for every session of this user.
   - On Linux and macOS it's `<home>/run/daemon/sessions.sock`. When the home's path makes that too long for a socket (over 107 bytes on Linux, 103 on macOS), it's `$TMPDIR/ch-<uid>/sessions.sock` instead, a directory made 0700 and checked, where `TMPDIR` is `shim.json`'s (the one install recorded), else the system's temporary directory.
   - On Windows it's a named pipe, `\\.\pipe\countinghouse-<32 hex>`, with a new random name at each runtime start, recorded in `daemon.json`.
   - The secret always stays in `<home>/run/daemon`.
+- **Where the shared runtime logs.** The daemon writes its own lines and the
+  shared runtime's log to `<home>/run/daemon/runtime.log`, readable by this user
+  only; `ch-local status` names it. It's kept until it reaches about 5 MiB,
+  then moved to `runtime.log.1` (one older copy kept); a restart or a
+  hand-over to a new daemon goes on in the same file. One line is at most
+  8 KiB, and the runtime's own lines start with `[runtime]`. It may hold
+  what your modules print or report (repository names, your CI's log text,
+  file paths), so keep it as private as it is made. A session on a runtime of
+  its own logs to its client's MCP log, as before.
 - **On Windows its files are owner-only by DACL.**
   - `<home>\run` and `<home>\run\daemon` get a protected DACL: this user and SYSTEM only, inherited by what's made in them.
   - The daemon refuses to start, naming what's wrong, unless the home, `<home>\run` and `<home>\run\daemon` each pass the private-DACL rule the shim applies to `<home>\run\daemon`.
-  - `daemon.json` and `failed.json` are created with an owner-only DACL.
+  - `daemon.json`, `failed.json` and `runtime.log` are created with an owner-only DACL; a `runtime.log` whose DACL isn't is set aside, never written to.
 
 ### Publishing the shim
 

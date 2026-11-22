@@ -60,6 +60,9 @@ function daemonIo(home) {
   // the daemon's own SIGINT/SIGTERM trap: io.signal('SIGTERM') delivers one
   io.trapSignals = (handler, signals) => { io.trapped = signals; io.signal = handler; return () => { io.signal = null; }; };
   io.daemonReadyMs = 3000;
+  // (the runtime log is off unless a test turns it on: test/runtime-log.test.js,
+  // and the daemon's own cases there)
+  io.runtimeLog = false;
   return io;
 }
 const runDirOf = (home) => path.join(home, 'run', 'daemon');
