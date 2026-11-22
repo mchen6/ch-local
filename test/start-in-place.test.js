@@ -308,16 +308,13 @@ test('a change that cannot be applied in place is said, never fatal: start runs 
   assert.strictEqual(await s.done, 0);
 });
 
-test('a setting changed between start reading the home and watching it is still applied; one the client passes itself stands', async () => {
+test('a setting changed between start reading the home and watching it is still applied', async () => {
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');
-  const s = await running({passThrough: ['--locale', 'en'],
+  const s = await running({
     duringSpawn: (home) => setSetting(layout({COUNTINGHOUSE_HOME: home}), 'maxOutputBytes', '8MiB', {by: 'cli'})});
   await until(() => s.requests.some((m) => m.type === 'set'));
   assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['maxOutputBytes', 8 * 1024 * 1024]]);
-  setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'locale', 'zh', {by: 'cli'});
-  await until(() => /locale set to zh: your client passes --locale itself/.test(s.f.err));
-  assert.ok(!s.requests.some((m) => m.type === 'set' && m.name === 'locale'), 'never sent');
   s.end();
   await s.done;
 });
@@ -345,13 +342,13 @@ test('a live requestTimeout change is sent in the runtime\'s unit, seconds', asy
   await s.done;
 });
 
-test('a live locale change is sent as the runtime\'s locale', async () => {
+test('a live requestTimeout change is sent in the runtime\'s seconds', async () => {
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');
   const s = await running();
-  setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'locale', 'zh', {by: 'cli'});
-  await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
-  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['locale', 'zh-CN']]);
+  setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'requestTimeout', '20s', {by: 'cli'});
+  await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
+  assert.deepStrictEqual(s.requests.filter((m) => m.type === 'set').map((m) => [m.name, m.value]), [['requestTimeout', 20]]);
   s.end();
   await s.done;
 });
@@ -539,9 +536,9 @@ test('never silent: a loosening applied while running is told to the client; a t
     await until(() => notices(s).length > 1);
     assert.deepStrictEqual(notices(s).slice(1), [[null, 'autoUpgrade loosened from off to on, at the next start']]);
     // an outside edit while running, of any setting: told too (spec section 5)
-    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024, requestTimeout: 10000, autoUpgrade: true, locale: 'zh'}}));
-    await until(() => notices(s).some(([, t]) => /locale/.test(t)));
-    assert.deepStrictEqual(notices(s).filter(([, t]) => /locale/.test(t)), [[null, 'locale was changed outside ch-local: en -> zh']]);
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 32 * 1024 * 1024, requestTimeout: 10000, autoUpgrade: true, upgradeCheck: 'weekly'}}));
+    await until(() => notices(s).some(([, t]) => /upgradeCheck/.test(t)));
+    assert.deepStrictEqual(notices(s).filter(([, t]) => /upgradeCheck/.test(t)), [[null, 'upgradeCheck was changed outside ch-local: daily -> weekly']]);
   } finally {
     s.end();
     await s.done;
@@ -574,8 +571,8 @@ test('never silent: a runtime whose control request fails does not end start; wh
     setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
     await until(() => /the client was not told: maxOutputBytes loosened from 16MiB to 32MiB \(CONTROL_FAILED\)/.test(s.f.err));
     // start runs on: a later change is still applied
-    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'locale', 'zh', {by: 'cli'});
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'requestTimeout', '20s', {by: 'cli'});
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
   } finally {
     s.end();
     await s.done;
@@ -1049,8 +1046,8 @@ test('module-stopped: dropped, recorded in run.json, told once; not loaded again
     // told again: said once only
     s.ask({type: 'module-stopped', name: SCENARIO, code: 'MODULE_SUSPENDED', when: 'restart'});
     // another change: not loaded again at the same version
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === SCENARIO), 'not loaded again');
     assert.strictEqual(notices(s).filter(([, t]) => t === STOPPED).length, 1);
     // a new version of it: loaded again, and no longer stopped
@@ -1073,8 +1070,8 @@ test('module-stopped at start (its plan refused): never loaded in place; a fresh
   s.ask({type: 'module-stopped', name: SCENARIO, code: 'TOOL_NAME_TAKEN', when: 'start'});
   await until(() => notices(s).some(([, t]) => t === 'ch-pack-ci-failure-triage stopped (TOOL_NAME_TAKEN); restart your client'));
   assert.ok(s.history().some((h) => h.module === SCENARIO && h.change === 'stopped' && h.when === 'start'));
-  fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-  await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+  fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+  await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
   assert.ok(!s.requests.some((m) => m.type === 'load'), 'not loaded in place');
   s.end();
   await s.done;
@@ -1111,8 +1108,8 @@ test('another release\'s record: a module moved up is not reloaded, a new one no
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
     await until(() => s.f.err.includes(UPGRADED(s.home)));
     assert.strictEqual(await addPack({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.deepStrictEqual(s.requests.filter((m) => ['load', 'reload', 'unload'].includes(m.type)), [], 'nothing loaded or reloaded');
     assert.strictEqual(s.f.err.split(UPGRADED(s.home)).length - 1, 1, 'said once');
     assert.ok(s.history().some((h) => h.change === 'release changed' && h.notice === UPGRADED(s.home)));
@@ -1219,8 +1216,8 @@ test('a pack whose module has no credential stored is told once, in start\'s wor
   try {
     const line = `not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${said(s.home, 'credentials add ch-access-github')}\``;
     await until(() => notices(s).some(([, t]) => t === line));
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.strictEqual(notices(s).filter(([, t]) => /^not loading ch-pack-ci-failure-triage/.test(t)).length, 1, JSON.stringify(notices(s)));
   } finally {
     s.end();
@@ -1241,7 +1238,7 @@ test('module-stopped for a module never asked to run: kept out at the record\'s 
     s.ask({type: 'module-stopped', name: '@countinghouse/ch-pack-other', code: 'MODULE_SUSPENDED', when: 'restart'});
     await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.change === 'stopped'));
     // turned on: still out at 0.3.0
-    await settled(s, {locale: 'zh'});
+    await settled(s, {requestTimeout: 20000});
     assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'), 'kept out');
     // another version installed: loads
     const r2 = release({versions: {'@countinghouse/ch-pack-other': '0.3.1'}});
@@ -1291,8 +1288,8 @@ test('another release\'s record: a withdrawn module refused twice is told "resta
     editRecord(s.home, (r) => ({...r, release: {version: '9.9.9', security: null}}), {release: {packs: {}}});
     await until(() => s.requests.filter((m) => m.type === 'unload' && m.name === SCENARIO).length === 2);
     await until(() => notices(s).some(([, t]) => /could not be stopped in place: restart your client now/.test(t)));
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     await until(() => s.requests.filter((m) => m.type === 'unload' && m.name === SCENARIO).length >= 4);
     assert.strictEqual(notices(s).filter(([, t]) => /could not be stopped in place/.test(t)).length, 1);
     assert.ok(s.requests.some((m) => m.type === 'unload' && m.notice === 'module ch-pack-ci-failure-triage was withdrawn in the release just installed and is no longer served'));
@@ -1333,8 +1330,8 @@ test('module-stopped after a refused reload: kept out at the version it was aske
     await until(() => s.requests.some((m) => m.type === 'reload' && m.names.includes(SCENARIO)));
     s.ask({type: 'module-stopped', name: SCENARIO, code: 'MODULE_SUSPENDED', when: 'restart'});
     await until(() => notices(s).some(([, t]) => t === STOPPED));
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await settled(s, {locale: 'zh'});
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await settled(s, {requestTimeout: 20000});
     assert.ok(!s.requests.some((m) => m.type === 'load' && m.name === SCENARIO), 'not loaded again at 0.1.1');
   } finally {
     s.end();
@@ -1571,8 +1568,8 @@ test('a credential removed while running unloads the callers of its module, said
     const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or restart your client';
     await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
     // a later change sends no second unload
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.strictEqual(s.requests.filter((m) => m.type === 'unload').length, 1, JSON.stringify(s.requests));
     assert.strictEqual(s.history().filter((h) => h.notice === line).length, 1);
   } finally {
@@ -1595,8 +1592,8 @@ test('a credential removed while running: the held-back file names the pack and 
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules,
       [{name: '@countinghouse/ch-pack-ci-failure-triage', reason: 'calls', root: 'credential', via: '@countinghouse/ch-access-github'}]);
     // a later change that holds back nothing new sends no second reread
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.strictEqual(s.requests.filter((m) => m.type === 'reread' && m.what === 'held-back').length, 1, JSON.stringify(s.requests));
   } finally {
     s.end();
@@ -1739,8 +1736,8 @@ test('a pack whose load the runtime refused is not named restart in the held-bac
   try {
     assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
     await until(() => s.history().some((h) => h.module === '@countinghouse/ch-pack-other' && h.problem != null));
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).modules, []);
   } finally {
@@ -1780,8 +1777,8 @@ test('a credential store that cannot be read keeps what is loaded, says so once,
     const file = path.join(s.home, 'credentials', 'credentials.json');
     fs.chmodSync(file, 0o000);
     await until(() => /the stored credentials could not be read/.test(s.f.err));
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.ok(!s.requests.some((m) => m.type === 'unload'), JSON.stringify(s.requests));
     fs.chmodSync(file, 0o600);
     await new Promise((r) => setTimeout(r, 2500));
@@ -1800,8 +1797,8 @@ test('a gh binding gh gave no token for at start is not told to restart on a lat
   const s = await running({bound: 'gh'});
   try {
     await until(() => notices(s).some(([, t]) => /has no gh token: run `[^`]+credentials add ch-access-github`/.test(t)));
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     await new Promise((r) => setTimeout(r, 300));
     assert.ok(!notices(s).some(([, t]) => /was not started with/.test(t)), JSON.stringify(notices(s)));
     assert.ok(!/was not started with/.test(s.f.err), s.f.err);
@@ -1861,9 +1858,9 @@ test('an unreadable store: an unchanged declaration keeps its key, a changed one
     // ch-access-github now names another variable: its last good state no
     // longer stands; ch-step-other's declaration is untouched
     t.edit(ACCESS, (p) => { p.countinghouse.remotes[0].credential = {env: 'RENAMED_TOKEN', header: 'Authorization', scheme: 'Bearer'}; });
-    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
+    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
     await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === SCENARIO));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.ok(!s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-other'), JSON.stringify(s.requests));
     const why = s.requests.find((m) => m.type === 'unload' && named(m) === SCENARIO).notice;
     // (whole at a user's home; at a long temp home cut at the end, no command in it)
@@ -1892,8 +1889,8 @@ test('a module turned on while running says where its key goes, once, when it lo
     assert.deepStrictEqual(load.credentials, {[OTHER_STEP]: {[OTHER_ORIGIN]: {OTHER_TOKEN: 'COUNTINGHOUSE_CREDENTIAL_2'}}});
     await until(() => s.f.err.includes(line));
     // a later change says it no more
-    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true, locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(t.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true, requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.strictEqual(s.f.err.split(line).length - 1, 1, s.f.err);
   } finally {
     s.end();
@@ -1908,10 +1905,10 @@ test('a module setting changed while running sends the runtime one reread; anoth
   const s = await running();
   try {
     await until(() => s.args() != null);
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
-    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     assert.ok(!s.requests.some((m) => m.type === 'reread'), 'no module setting changed');
-    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh', 'module.@countinghouse/ch-pack-ci-failure-triage.units': 'imperial'}}));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000, 'module.@countinghouse/ch-pack-ci-failure-triage.units': 'imperial'}}));
     await until(() => s.requests.some((m) => m.type === 'reread'));
     assert.deepStrictEqual(s.requests.filter((m) => m.type === 'reread').map((m) => ({type: m.type, what: m.what})), [{type: 'reread', what: 'module-settings'}]);
     const problem = moduleMessageProblem(s.requests.find((m) => m.type === 'reread'));

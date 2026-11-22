@@ -162,11 +162,11 @@ test('the ceiling: a fixed value refuses every change; a ceiling confirm asks', 
 
 test('settings reset <m>.<setting> and reset <m>: back to the default, other names kept, recorded', async () => {
   const home = await installed();
-  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh', [STORED('units')]: 'imperial', [STORED('note')]: 'x', 'module.@acme/other.k': 'v'}}));
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {upgradeCheck: 'weekly', [STORED('units')]: 'imperial', [STORED('note')]: 'x', 'module.@acme/other.k': 'v'}}));
   assert.strictEqual((await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage.units'])).code, 0);
-  assert.deepStrictEqual(fileValues(home), {locale: 'zh', [STORED('note')]: 'x', 'module.@acme/other.k': 'v'});
+  assert.deepStrictEqual(fileValues(home), {upgradeCheck: 'weekly', [STORED('note')]: 'x', 'module.@acme/other.k': 'v'});
   assert.strictEqual((await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage'])).code, 0);
-  assert.deepStrictEqual(fileValues(home), {locale: 'zh', 'module.@acme/other.k': 'v'});
+  assert.deepStrictEqual(fileValues(home), {upgradeCheck: 'weekly', 'module.@acme/other.k': 'v'});
   assert.ok(historyOf(home).some((l) => l.setting === STORED('note') && l.change === 'reset'));
 });
 
@@ -204,7 +204,7 @@ test('outside edits: a module value the tools wrote, reset or kept is never repo
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'what the tools wrote, a long value by its hash');
   // a reset of one, and a bare reset (which keeps module.*): nothing reported
   assert.strictEqual((await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage.units'])).code, 0);
-  assert.strictEqual((await cli(home, ['settings', 'set', 'locale', 'zh'])).code, 0);
+  assert.strictEqual((await cli(home, ['settings', 'set', 'upgradeCheck', 'weekly'])).code, 0);
   assert.strictEqual((await cli(home, ['settings', 'reset'])).code, 0);
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
   // edited by hand: the long value changed, and a new one added

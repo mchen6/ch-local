@@ -37,14 +37,14 @@ test('settings get lists every setting with its default and bounds; set stays wi
   const got = await cli(home, 'settings', 'get');
   assert.strictEqual(got.code, 0, got.io.err);
   assert.match(got.io.out, /^maxOutputBytes = 16777216 {2}\(default 16777216; 1048576 to 268435456; guarding\)$/m);
-  assert.match(got.io.out, /^locale = en {2}\(default en; en, zh\)$/m);
-  for (const [name, value, stored] of [['maxOutputBytes', '128MiB', 128 * 1024 * 1024], ['requestTimeout', '20s', 20000], ['locale', 'zh', 'zh'], ['upgradeCheck', 'weekly', 'weekly']]) {
+  assert.match(got.io.out, /^upgradeCheck = daily {2}\(default daily; daily, weekly, never\)$/m);
+  for (const [name, value, stored] of [['maxOutputBytes', '128MiB', 128 * 1024 * 1024], ['requestTimeout', '20s', 20000], ['upgradeCheck', 'weekly', 'weekly']]) {
     const r = await cli(home, 'settings', 'set', name, value);
     assert.strictEqual(r.code, 0, r.io.err);
     assert.strictEqual(readSettings(layout({COUNTINGHOUSE_HOME: home})).values[name], stored);
   }
   const h = history(home);
-  assert.deepStrictEqual(h.map((e) => [e.by, e.setting]), [['cli', 'maxOutputBytes'], ['cli', 'requestTimeout'], ['cli', 'locale'], ['cli', 'upgradeCheck']]);
+  assert.deepStrictEqual(h.map((e) => [e.by, e.setting]), [['cli', 'maxOutputBytes'], ['cli', 'requestTimeout'], ['cli', 'upgradeCheck']]);
   for (const [name, value, code] of [['maxOutputBytes', '1024MiB', /outside the allowed range \(1048576 to 268435456\)/], ['requestTimeout', '1s', /outside/], ['nonsense', '1', /there is no setting named nonsense/]]) {
     const r = await cli(home, 'settings', 'set', name, value);
     assert.strictEqual(r.code, 2);
@@ -65,7 +65,7 @@ test('the CLI may loosen a guarding setting (the user at a terminal), and says s
 test('loosens: raising a cap or a timeout, audit, automatic upgrades on and a pack on loosen; the reverse never does', () => {
   const cases = [['maxOutputBytes', 8, 16, true], ['maxOutputBytes', 16, 8, false], ['requestTimeout', 30000, 60000, true]].concat(WIN
     ? [['moduleSandbox', 'audit', 'audit', false]] : [['moduleSandbox', 'enforce', 'audit', true], ['moduleSandbox', 'audit', 'enforce', false]], [['autoUpgrade', false, true, true], ['autoUpgrade', true, false, false], ['pack.other', false, true, true], ['pack.other', true, false, false],
-    ['locale', 'en', 'zh', false], ['upgradeCheck', 'never', 'daily', false]]);
+    ['upgradeCheck', 'never', 'daily', false]]);
   for (const [name, o, n, want] of cases) assert.strictEqual(loosens(name, o, n), want, `${name} ${o} -> ${n}`);
 });
 
@@ -98,12 +98,11 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
     return {kill: () => {}, exited: new Promise((resolve) => { end = resolve; }),
       send: (m) => { requests.push(m); setImmediate(() => listener({id: m.id, ok: true})); }, onMessage: (fn) => { listener = fn; setImmediate(() => fn({type: 'ready'})); }};
   };
-  const done = start({passThrough: ['--locale', 'zh']}, f);
+  const done = start({passThrough: []}, f);
   for (let i = 0; end == null && i < 500; i++) await new Promise((res) => setTimeout(res, 10));
   assert.ok(!args.some((a) => a.includes(`${path.sep}other${path.sep}`)), 'other is off: not loaded');
   assert.match(f.err, /not loading ch-pack-other: it is turned off/);
   assert.deepStrictEqual(args.slice(args.indexOf('--maxOutputBytes'), args.indexOf('--maxOutputBytes') + 2), ['--maxOutputBytes', String(32 * 1024 * 1024)]);
-  assert.strictEqual(args.filter((a) => a === '--locale').length, 1, 'the client\'s own --locale only');
   // none stored: the default, passed all the same (the two caps always are,
   // so the runtime's own default never governs: countinghouse #283)
   assert.deepStrictEqual(args.slice(args.indexOf('--requestTimeout'), args.indexOf('--requestTimeout') + 2), ['--requestTimeout', '30']);
@@ -137,7 +136,7 @@ test('start: a pack turned off is not loaded; the runtime\'s settings are passed
 test('settings set takes the settings lock: a change under way makes it wait, then say so; nothing is written', async () => {
   const home = tmp('ch-home-');
   fs.writeFileSync(path.join(home, 'settings.lock'), JSON.stringify({pid: process.pid, at: Date.now()}));
-  const r = await cli(home, 'settings', 'set', 'locale', 'zh');
+  const r = await cli(home, 'settings', 'set', 'upgradeCheck', 'weekly');
   assert.strictEqual(r.code, 1);
   assert.match(r.io.err, /another change to the settings is under way/);
   assert.ok(!fs.existsSync(path.join(home, 'settings.json')));
@@ -152,7 +151,7 @@ test('settings fail closed: a file that cannot be read, or holds a value not all
     const read = readSettings(where);
     assert.deepStrictEqual(read.values, {});
     assert.match(read.error, why);
-    const r = await cli(home, 'settings', 'set', 'locale', 'zh');
+    const r = await cli(home, 'settings', 'set', 'upgradeCheck', 'weekly');
     assert.strictEqual(r.code, 1);
     assert.match(r.io.err, /fix or remove it first/);
   }
@@ -162,11 +161,20 @@ test('a change is recorded before it is made: an unwritable history refuses it; 
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
   fs.mkdirSync(path.join(home, 'history.jsonl'));   // cannot be appended to
-  assert.throws(() => setSetting(where, 'locale', 'zh', {by: 'cli'}), {code: 'SETTING_NOT_RECORDED'});
+  assert.throws(() => setSetting(where, 'upgradeCheck', 'weekly', {by: 'cli'}), {code: 'SETTING_NOT_RECORDED'});
   assert.ok(!fs.existsSync(path.join(home, 'settings.json')));
   fs.rmdirSync(path.join(home, 'history.jsonl'));
   setSetting(where, LOOSEN[0], LOOSEN[1], {by: 'cli', mayLoosen: true});
   assert.deepStrictEqual((({setting, loosened, by}) => ({setting, loosened, by}))(history(home)[0]), {setting: LOOSEN[0], loosened: true, by: 'cli'});
+});
+
+// English-only product (Matt, 11-22): ch-local has no language to choose
+test('locale is no setting: get does not list it, and a set is refused and stores nothing', async () => {
+  const home = tmp('ch-home-');
+  assert.doesNotMatch((await cli(home, 'settings', 'get')).io.out, /^locale\b/m);
+  const set = await cli(home, 'settings', 'set', 'locale', 'en');
+  assert.notStrictEqual(set.code, 0);
+  assert.ok(!fs.existsSync(path.join(home, 'settings.json')), 'nothing stored');
 });
 
 test('settings get prints a bad file\'s problem, never defaults as current; reset removes it, recorded', async () => {
@@ -175,7 +183,7 @@ test('settings get prints a bad file\'s problem, never defaults as current; rese
   const got = await cli(home, 'settings', 'get');
   assert.strictEqual(got.code, 1);
   assert.match(got.io.err, /is not JSON; ch-local start refuses to start until it is fixed\n/);
-  assert.doesNotMatch(got.io.out, /locale/);
+  assert.doesNotMatch(got.io.out, /upgradeCheck/);
   const reset = await cli(home, 'settings', 'reset');
   assert.strictEqual(reset.code, 0, reset.io.err);
   assert.ok(!fs.existsSync(path.join(home, 'settings.json')));
@@ -186,9 +194,9 @@ test('settings get prints a bad file\'s problem, never defaults as current; rese
 test('a setting this ch-local does not know is ignored, with a warning; the file stays valid', () => {
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
-  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {fromTheFuture: true, locale: 'zh'}}));
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {fromTheFuture: true, upgradeCheck: 'weekly'}}));
   const read = readSettings(where);
-  assert.deepStrictEqual(read.values, {locale: 'zh'});
+  assert.deepStrictEqual(read.values, {upgradeCheck: 'weekly'});
   assert.match(read.warning, /fromTheFuture/);
   assert.strictEqual(read.error, undefined);
 });
@@ -204,18 +212,18 @@ const storedValues = (home) => JSON.parse(fs.readFileSync(settingsFile(home), 'u
 
 test('L0: settings set keeps every name this ch-local does not know, exactly as stored', async () => {
   const home = tmp('ch-home-');
-  writeSettings(home, {...KEPT, locale: 'zh'});
+  writeSettings(home, {...KEPT, upgradeCheck: 'weekly'});
   const got = await cli(home, 'settings', 'set', 'requestTimeout', '20s');
   assert.strictEqual(got.code, 0, got.io.err);
-  assert.deepStrictEqual(storedValues(home), {...KEPT, locale: 'zh', requestTimeout: 20000});
+  assert.deepStrictEqual(storedValues(home), {...KEPT, upgradeCheck: 'weekly', requestTimeout: 20000});
   // and again, through the library, as the start's applier and the tool's peers use it
-  setSetting(layout({COUNTINGHOUSE_HOME: home}), 'locale', 'en', {by: 'cli'});
-  assert.deepStrictEqual(storedValues(home), {...KEPT, locale: 'en', requestTimeout: 20000});
+  setSetting(layout({COUNTINGHOUSE_HOME: home}), 'upgradeCheck', 'daily', {by: 'cli'});
+  assert.deepStrictEqual(storedValues(home), {...KEPT, upgradeCheck: 'daily', requestTimeout: 20000});
 });
 
 test('L0: a bare settings reset removes every known name and keeps the rest; the reset is recorded as before', async () => {
   const home = tmp('ch-home-');
-  writeSettings(home, {...KEPT, locale: 'zh', requestTimeout: 20000});
+  writeSettings(home, {...KEPT, upgradeCheck: 'weekly', requestTimeout: 20000});
   const reset = await cli(home, 'settings', 'reset');
   assert.strictEqual(reset.code, 0, reset.io.err);
   assert.deepStrictEqual(storedValues(home), KEPT);
@@ -227,7 +235,7 @@ test('L0: a bare settings reset removes every known name and keeps the rest; the
 
 test('L0: a reset of a file with only names this ch-local knows removes it, as before', async () => {
   const home = tmp('ch-home-');
-  writeSettings(home, {locale: 'zh'});
+  writeSettings(home, {upgradeCheck: 'weekly'});
   const reset = await cli(home, 'settings', 'reset');
   assert.strictEqual(reset.code, 0, reset.io.err);
   assert.ok(!fs.existsSync(settingsFile(home)));
@@ -258,7 +266,7 @@ test('L0: names kept by a set or a reset are never reported as edits made outsid
   const {outsideEdits} = require('../lib/outside-edits');
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
-  writeSettings(home, {...KEPT, locale: 'zh'});
+  writeSettings(home, {...KEPT, upgradeCheck: 'weekly'});
   // the module values as the runtime's settings tool writes them: each with
   // its history line first (#413 section 4.2), so none is an outside edit
   fs.writeFileSync(path.join(home, 'history.jsonl'), Object.entries(KEPT).filter(([n]) => n.startsWith('module.')).map(([setting, v]) => JSON.stringify({by: 'settings tool', setting, new: v})).join('\n') + '\n');
@@ -269,11 +277,11 @@ test('L0: names kept by a set or a reset are never reported as edits made outsid
 
 test('L0: a set keeps the file\'s own order of names; a name new to the file goes last', async () => {
   const home = tmp('ch-home-');
-  writeSettings(home, {locale: 'zh', 'module.a.b': 1, requestTimeout: 20000});
-  assert.strictEqual((await cli(home, 'settings', 'set', 'locale', 'en')).code, 0);
-  assert.deepStrictEqual(Object.keys(storedValues(home)), ['locale', 'module.a.b', 'requestTimeout']);
+  writeSettings(home, {maxOutputBytes: 8388608, 'module.a.b': 1, requestTimeout: 20000});
+  assert.strictEqual((await cli(home, 'settings', 'set', 'maxOutputBytes', '4MiB')).code, 0);
+  assert.deepStrictEqual(Object.keys(storedValues(home)), ['maxOutputBytes', 'module.a.b', 'requestTimeout']);
   assert.strictEqual((await cli(home, 'settings', 'set', 'upgradeCheck', 'weekly')).code, 0);
-  assert.deepStrictEqual(Object.keys(storedValues(home)), ['locale', 'module.a.b', 'requestTimeout', 'upgradeCheck']);
+  assert.deepStrictEqual(Object.keys(storedValues(home)), ['maxOutputBytes', 'module.a.b', 'requestTimeout', 'upgradeCheck']);
 });
 
 test('L0: a settings file that is there but cannot be read is never removed by a reset; nothing is recorded', async () => {
@@ -316,7 +324,7 @@ test('L0: a reset whose write fails is recorded as not made: the values before i
 test('L0: module.* names are expected and not warned about; any other unknown name still is; every read returns kept', () => {
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
-  writeSettings(home, {'module.a.b': 1, locale: 'zh'});
+  writeSettings(home, {'module.a.b': 1, upgradeCheck: 'weekly'});
   assert.strictEqual(readSettings(where).warning, undefined);
   writeSettings(home, {'module.a.b': 1, someNewSetting: 2});
   assert.match(readSettings(where).warning, /someNewSetting/);
@@ -330,13 +338,13 @@ test('the settings lock: a fresh one, even empty, is waited for and never taken;
   const where = layout({COUNTINGHOUSE_HOME: home});
   const lock = path.join(home, 'settings.lock');
   fs.writeFileSync(lock, '');
-  assert.throws(() => setSetting(where, 'locale', 'zh', {by: 'cli'}), {code: 'SETTINGS_BUSY'});
+  assert.throws(() => setSetting(where, 'upgradeCheck', 'weekly', {by: 'cli'}), {code: 'SETTINGS_BUSY'});
   assert.ok(fs.existsSync(lock));
   const old = new Date(Date.now() - 60000);
   fs.utimesSync(lock, old, old);
-  setSetting(where, 'locale', 'zh', {by: 'cli'});
+  setSetting(where, 'upgradeCheck', 'weekly', {by: 'cli'});
   assert.ok(!fs.existsSync(lock), 'released');
-  assert.strictEqual(readSettings(where).values.locale, 'zh');
+  assert.strictEqual(readSettings(where).values.upgradeCheck, 'weekly');
 });
 
 test('the machine id: stable, and a hash (it names no host or id)', () => {
@@ -346,10 +354,9 @@ test('the machine id: stable, and a hash (it names no host or id)', () => {
   assert.ok(!machineId().includes(require('node:os').hostname()));
 });
 
-test('runtimeValue: requestTimeout in whole seconds rounded down, at least 1; locale as the runtime\'s', () => {
+test('runtimeValue: requestTimeout in whole seconds rounded down, at least 1', () => {
   const {runtimeValue} = require('../lib/settings');
   assert.deepStrictEqual([20999, 20000, 5000, 400].map((ms) => runtimeValue('requestTimeout', ms)), [20, 20, 5, 1]);
-  assert.deepStrictEqual(['en', 'zh'].map((l) => runtimeValue('locale', l)), ['en-US', 'zh-CN']);
 });
 
 test('the sandbox setting is enforce and audit, enforce the default, on every platform (countinghouse#195: enforce on Windows)', () => {

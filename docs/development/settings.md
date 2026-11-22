@@ -52,13 +52,11 @@ ch-local start passes the file to countinghouse as `--settingsFile`.
   characters is recorded in the history cut, with the SHA-256 of the whole.
   A running client has its runtime read the values again at once.
 
-Two settings are stored in a different unit from the one countinghouse's
-option and a live `set` over the control channel take:
-
-- `requestTimeout` is stored in milliseconds, and passed in whole seconds,
-  rounded down and at least 1: `Math.max(1, Math.floor(ms / 1000))`. A
-  tightened timeout never comes out looser than asked;
-- `locale` is stored as `en` or `zh`, and passed as `en-US` or `zh-CN`.
+`requestTimeout` is stored in a different unit from the one countinghouse's
+option and a live `set` over the control channel take: it is stored in
+milliseconds, and passed in whole seconds, rounded down and at least 1:
+`Math.max(1, Math.floor(ms / 1000))`. A tightened timeout never comes out
+looser than asked.
 
 ## The lock
 

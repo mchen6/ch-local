@@ -1162,13 +1162,13 @@ test('migration: pack.* settings become enabled.<module> in the same install, of
   fs.writeFileSync(path.join(h, 'packs.json'), JSON.stringify({runtime: {versions: Object.fromEntries(RUNTIME)}, unreleased: false, release: null,
     packs: {'ci-failure-triage': {packages, credentials: []}}}));
   fs.writeFileSync(path.join(h, 'settings.json'), JSON.stringify({version: 1, values: {
-    'pack.ci-failure-triage': false, 'enabled.@countinghouse/ch-pack-ci-failure-triage': true, 'pack.gone': false, locale: 'zh'}}));
+    'pack.ci-failure-triage': false, 'enabled.@countinghouse/ch-pack-ci-failure-triage': true, 'pack.gone': false, upgradeCheck: 'weekly'}}));
   // (pack.ci-failure-triage was recorded off: the move must clear that too)
   fs.writeFileSync(path.join(h, 'history.jsonl'), JSON.stringify({by: 'cli', setting: 'pack.ci-failure-triage', old: true, new: false}) + '\n');
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: h}, exec: npm()});
   assert.strictEqual(await run(r, io), 0, io.err);
   const values = JSON.parse(fs.readFileSync(path.join(h, 'settings.json'), 'utf8')).values;
-  assert.deepStrictEqual(values, {'enabled.@countinghouse/ch-pack-ci-failure-triage': false, 'pack.gone': false, locale: 'zh'});
+  assert.deepStrictEqual(values, {'enabled.@countinghouse/ch-pack-ci-failure-triage': false, 'pack.gone': false, upgradeCheck: 'weekly'});
   assert.match(io.out, /pack\.ci-failure-triage is now enabled\.@countinghouse\/ch-pack-ci-failure-triage/);
   const lines = fs.readFileSync(path.join(h, 'history.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.ok(lines.some((l) => l.by === 'migration' && l.setting === 'pack.ci-failure-triage' && l.was === false), JSON.stringify(lines));
