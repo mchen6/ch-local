@@ -469,6 +469,22 @@ test('A5: in shared mode no loosening is told with a restart command: a setting 
   }
 });
 
+// N3 (#147): in shared mode a setting applied in place is said, never told
+// to every session; only what needs action is a notice
+test('A5: in shared mode an applied tightening is said, not told', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true});
+  try {
+    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'maxOutputBytes', '8MiB', {by: 'cli'});
+    await until(() => /maxOutputBytes set to 8MiB/.test(s.f.err));
+    assert.ok(!notices(s).some(([, t]) => /maxOutputBytes/.test(t)), 'not a notice');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 test('never silent: a loosening applied while running is told to the client; a tightening is not', async () => {
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');

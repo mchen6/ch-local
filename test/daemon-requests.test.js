@@ -20,6 +20,9 @@ const home = () => {
 };
 const file = (h) => path.join(h, 'run', 'daemon', 'requests');
 
+// (the op and its time; `end` is checked on its own)
+const ops = (list) => list.map(({op, at}) => ({op, at}));
+
 test('an upgrade request is one JSON line, appended, at 0600, under start.lock', {skip: process.platform === 'win32'}, async () => {
   const h = home();
   try {
@@ -54,10 +57,12 @@ test('readRequests reads the lines after an offset, by the private-file checks; 
   try {
     await requestUpgrade(h, {now: () => 1});
     const a = readRequests(h, 0);
-    assert.deepStrictEqual(a.requests, [{op: 'upgrade', at: 1}]);
+    assert.deepStrictEqual(ops(a.requests), [{op: 'upgrade', at: 1}]);
+    // (each request with the offset its line ends at -- #147's R3)
+    assert.strictEqual(a.requests[0].end, a.offset);
     fs.appendFileSync(file(h), 'not json\n{"op":"other"}\n{"op":"upgrade","at":2}\n{"op":"upgr');
     const b = readRequests(h, a.offset);
-    assert.deepStrictEqual(b.requests, [{op: 'upgrade', at: 2}], 'unknown ops and bad lines skipped');
+    assert.deepStrictEqual(ops(b.requests), [{op: 'upgrade', at: 2}], 'unknown ops and bad lines skipped');
     assert.strictEqual(fs.readFileSync(file(h), 'utf8').slice(b.offset), '{"op":"upgr', 'a partial line waits');
     fs.chmodSync(file(h), 0o644);
     assert.deepStrictEqual(readRequests(h, 0).requests, [], 'not 0600: not read');
@@ -72,7 +77,7 @@ test('emptyRequests leaves a file that grew after the read: false, nothing lost 
     const a = readRequests(h, 0);
     await requestUpgrade(h, {now: () => 2});
     assert.strictEqual(emptyRequests(h, a.offset), false);
-    assert.deepStrictEqual(readRequests(h, a.offset).requests, [{op: 'upgrade', at: 2}], 'the later line still there');
+    assert.deepStrictEqual(ops(readRequests(h, a.offset).requests), [{op: 'upgrade', at: 2}], 'the later line still there');
     assert.strictEqual(emptyRequests(h, fs.statSync(file(h)).size), true);
     assert.strictEqual(fs.statSync(file(h)).size, 0);
   } finally { fs.rmSync(h, {recursive: true, force: true}); }
@@ -138,11 +143,11 @@ test('readRequests stats first: a file not there, at the offset, or at the size 
     const line = (at) => `${JSON.stringify({op: 'upgrade', at})}\n`;
     fs.appendFileSync(file(h), line(1));
     const a = readRequests(h, 0);
-    assert.deepStrictEqual([a.requests, reads], [[{op: 'upgrade', at: 1}], 1]);
+    assert.deepStrictEqual([ops(a.requests), reads], [[{op: 'upgrade', at: 1}], 1]);
     assert.deepStrictEqual(readRequests(h, a.offset).requests, []);
     assert.strictEqual(reads, 1, 'not grown: not read');
     fs.appendFileSync(file(h), line(2));
-    assert.deepStrictEqual(readRequests(h, a.offset).requests, [{op: 'upgrade', at: 2}]);
+    assert.deepStrictEqual(ops(readRequests(h, a.offset).requests), [{op: 'upgrade', at: 2}]);
     assert.strictEqual(reads, 2, 'grown: read, by the private-file checks');
     // (a read refused: at that size again, not read again; grown, read)
     refuse = true;
@@ -153,7 +158,7 @@ test('readRequests stats first: a file not there, at the offset, or at the size 
     assert.strictEqual(reads, 3, 'the refused size again: not read');
     refuse = false;
     fs.appendFileSync(file(h), line(4));
-    assert.deepStrictEqual(readRequests(h, a.offset + line(2).length, b.size).requests, [{op: 'upgrade', at: 3}, {op: 'upgrade', at: 4}]);
+    assert.deepStrictEqual(ops(readRequests(h, a.offset + line(2).length, b.size).requests), [{op: 'upgrade', at: 3}, {op: 'upgrade', at: 4}]);
     // (emptied, as emptyRequests leaves it: smaller than the offset, read)
     fs.truncateSync(file(h), 0);
     assert.strictEqual(readRequests(h, a.offset).offset, 0);

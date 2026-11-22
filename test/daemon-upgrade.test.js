@@ -41,6 +41,8 @@ function scripted(home) {
       call.requests.push(msg);
       if (msg.type === 'drain' && r.hangDrain) return new Promise(() => {});
       if (msg.type === 'drain' && r.drainReply != null) return Promise.resolve(r.drainReply);
+      // (r.drainHold: a drain answered once this promise settles)
+      if (msg.type === 'drain' && r.drainHold != null) return r.drainHold.then(() => ({ok: true}));
       return Promise.resolve({ok: true});
     });
     opts.signal.addEventListener('abort', () => { call.exit(143); });
@@ -773,8 +775,10 @@ test('A5: ch-local restart with no shared runtime, or one that does not restart 
     // (a restart asked for that never happens: never said as one)
     t.mock.method(require('../lib/daemon-requests'), 'requestRestart', async(h, o) => { o.underLock(); return true; });
     const r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: w.home}}), {restartWaitMs: 400});
-    assert.strictEqual(await restart({}, r), 1);
-    assert.match(r.err, /the shared runtime did not restart within 0\.4 s; its sessions go on as before/);
+    // (asked and written, not yet seen: said as standing, never "run it again" -- R1)
+    assert.strictEqual(await restart({}, r), 0);
+    assert.match(r.out, /^the restart is asked for and hasn't happened yet after 0\.4 s; it will once its calls finish$/m);
+    assert.doesNotMatch(r.out + r.err, /again in a minute|go on as before/);
     assert.doesNotMatch(r.out, /restarted/);
     t.mock.restoreAll();
     w.io.signal('SIGTERM');
@@ -818,28 +822,61 @@ test('A5: ch-local restart said only as seen: asked of an earlier ch-local\'s da
     serving = {serving: true, pid: process.pid, by: 'socket'};
     then = () => { plant({runtimeStarted: 'r2'}); serving = {serving: true, pid: process.pid, by: 'pid'}; };
     x = await run(500);
-    assert.strictEqual(x.code, 1);
-    assert.match(x.r.err, /did not restart within 0\.5 s; its sessions go on as before/);
+    assert.strictEqual(x.code, 0);
+    assert.match(x.r.out, /the restart is asked for and hasn't happened yet after 0\.5 s/);
+    assert.doesNotMatch(x.r.out, /restarted;/);
     // (still restarting at the bound: daemon.json names no socket -- never "as before")
     plant();
     serving = {serving: true, pid: process.pid, by: 'socket'};
     then = () => plant({socket: null});
     x = await run(500);
     assert.strictEqual(x.code, 1);
-    assert.match(x.r.err, /is still restarting after 0\.5 s \(it names no socket yet\)/);
+    assert.match(x.r.err, /is still restarting after 0\.5 s \(.*daemon\.json names no socket yet\); it serves again once its runtime listens$/m);
+    assert.doesNotMatch(x.r.err, /`[^`]*status`/, 'status reads neither file: not named -- R2');
     // (failed: daemon.json gone, failed.json there -- exit 1, never "stopped")
     plant();
     then = () => { fs.rmSync(file); fs.writeFileSync(path.join(dir, 'failed.json'), JSON.stringify({v: 1, at: Date.now(), exit: 1, signal: null, reason: 'restarts-exhausted'}), {mode: 0o600}); };
     x = await run(500);
     assert.strictEqual(x.code, 1);
-    assert.match(x.r.err, /could not start again \(restarts-exhausted\), so the sessions run their own runtimes for now/);
+    assert.match(x.r.err, /could not start again \(it failed 5 times in 10 minutes\), so the sessions run their own runtimes for now; .*failed\.json records it$/m);
+    // (a reason the daemon never writes: a fixed word, never printed -- N5)
+    plant();
+    then = () => { fs.rmSync(file); fs.writeFileSync(path.join(dir, 'failed.json'), JSON.stringify({v: 1, at: Date.now(), exit: 1, signal: null, reason: '\u001b[31mplanted'}), {mode: 0o600}); };
+    x = await run(500);
+    assert.match(x.r.err, /could not start again \(it failed\)/);
+    assert.doesNotMatch(x.r.err, /planted/);
     fs.rmSync(path.join(dir, 'failed.json'));
     // (stopped: gone, no failed.json, no successor within the bound)
     plant();
     then = () => fs.rmSync(file);
     x = await run(500);
     assert.strictEqual(x.code, 0);
+    assert.match(x.r.out, /the shared runtime stopped; waiting up to 35 s for its successor/);
     assert.match(x.r.out, /the shared runtime stopped and has not started again; the next session starts it, with what is stored/);
+    // (an idle stop waits only a daemon's start for a successor, not the
+    // whole bound -- N1; and a successor seen after "gone" is a restart -- L5)
+    plant();
+    then = () => { fs.rmSync(file); setTimeout(() => plant({runtimeStarted: 'r3'}), 150); };
+    let t0 = Date.now();
+    x = await (async() => { const r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 5000, successorWaitMs: 1000}); return {code: await restart({}, r), r}; })();
+    assert.strictEqual(x.code, 0, x.r.err);
+    assert.match(x.r.out, /^the shared runtime restarted; its sessions are asked to resume$/m);
+    plant();
+    then = () => fs.rmSync(file);
+    t0 = Date.now();
+    x = await (async() => { const r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 60000, successorWaitMs: 300}); return {code: await restart({}, r), r}; })();
+    assert.match(x.r.out, /stopped and has not started again/);
+    assert.ok(Date.now() - t0 < 30000, 'answered within the successor wait, not the bound');
+    // (a daemon.json that can't be read just after the request: asked, and
+    // said as what it is -- N2)
+    plant();
+    t.mock.method(d, 'readDaemonJson', () => null);
+    then = () => {};
+    x = await run();
+    assert.strictEqual(x.code, 0);
+    assert.match(x.r.out, /can't be seen here \(.*daemon\.json couldn't be read just now\)/);
+    assert.doesNotMatch(x.r.out, /earlier ch-local/);
+    d.readDaemonJson.mock.restore();
     // (a daemon.json that can't be read: nothing asked)
     serving = {serving: true, pid: null, by: 'unreadable'};
     let asked = 0;
@@ -858,6 +895,118 @@ test('A5: ch-local restart said only as seen: asked of an earlier ch-local\'s da
     assert.strictEqual(asked, 0);
   } finally {
     t.mock.restoreAll();
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// the reviewer's high on #147, R3: a restart asked during another's drain
+// is served by the start that follows (it reads what is stored after the
+// request), never repeated after "restarted" was said
+test('A5: a restart asked during another restart\'s drain is served by that restart, never a second one', async() => {
+  const {home, io} = setup();
+  try {
+    const s = scripted(home);
+    let release = null;
+    s.drainHold = new Promise((r) => { release = r; });
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    await requestRestart(home);
+    const until = Date.now() + ADOPT_MS;
+    while (!one.requests.some((m) => m.type === 'drain') && Date.now() < until) await tick();
+    assert.ok(one.requests.some((m) => m.type === 'drain'), 'draining');
+    await requestRestart(home);
+    s.drainHold = null;
+    release();
+    await s.nth(1);
+    // (a request after it, read once the second restart's has been handled)
+    await requestUpgrade(home);
+    const file = path.join(runDirOf(home), 'requests');
+    const until2 = Date.now() + ADOPT_MS;
+    while (fs.existsSync(file) && fs.statSync(file).size > 0 && Date.now() < until2) await tick();
+    assert.strictEqual(fs.statSync(file).size, 0, 'every request read');
+    await tick(300);
+    assert.strictEqual(s.calls.length, 2, 'one restart, never a second');
+    assert.strictEqual((io.err.match(/a restart was asked for/g) || []).length, 1);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// N4: a version that can't be read is never a change
+test('A5: an upgrade request while the runtime\'s version can\'t be read restarts nothing', async() => {
+  const {home, io, runtimePkg} = setup();
+  try {
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    fs.writeFileSync(runtimePkg, '{half');
+    await requestUpgrade(home);
+    await tick(300);
+    assert.strictEqual(s.calls.length, 1);
+    assert.deepStrictEqual(one.requests.filter((m) => m.type === 'drain'), []);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// L1 (L5's test): a restart op with ch-local changed hands over to the new
+// one, never restarts the runtime under the old ch-local
+test('A5: a restart request with ch-local changed hands over to the new ch-local', async() => {
+  const {home, io, self, set} = setup();
+  try {
+    const s = scripted(home);
+    let spawned = null;
+    io.spawnDaemon = (args) => {
+      spawned = args;
+      setTimeout(() => fs.writeFileSync(daemonJson(home), JSON.stringify({pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: '2.0.0', started: 'z'}), {mode: 0o600}), 100);
+      return true;
+    };
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    await adopted(home);
+    set(self, '2.0.0');
+    await requestRestart(home);
+    assert.strictEqual(await done, 0, io.err);
+    assert.deepStrictEqual(spawned, ['daemon', '--home', home, '--handoff']);
+    assert.strictEqual(s.calls.length, 1, 'no runtime restarted under the old ch-local');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// L5: the lock wait is bounded -- another start holding start.lock past the
+// bound refuses, nothing written
+test('A5: ch-local restart while another start holds start.lock past its bound: refused, nothing asked', async() => {
+  const {fakeIo} = require('./fake-io');
+  const {restart} = require('../lib/restart-command');
+  const {withLockFile} = require('../lib/lock');
+  const {home, io} = setup();
+  try {
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    await adopted(home);
+    const dir = runDirOf(home);
+    let free = null;
+    const held = new Promise((r) => { free = r; });
+    let inside = false;
+    const holding = withLockFile(path.join(dir, 'start.lock'), dir, io, async() => { inside = true; await held; });
+    while (!inside) await tick();
+    const r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 500});
+    assert.strictEqual(await restart({}, r), 1);
+    assert.match(r.err, /the restart could not be asked for \(.*another start held it past 0\.5 s\); nothing changed/);
+    free();
+    await holding;
+    assert.strictEqual(s.calls.length, 1);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
