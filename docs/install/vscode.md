@@ -5,7 +5,8 @@
 ## Add
 
 `ch-local snippet vscode` prints the entry for this machine, in the portable
-format of `~/.copilot/mcp-config.json`. Merge it under `mcpServers`:
+format of `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`
+when that is set). Merge it under `mcpServers`:
 
     {
       "mcpServers": {
@@ -70,4 +71,6 @@ and replace the entry). Run `ch-local install` once too, so the shared runtime s
 
 ## Remove
 
-Delete the `countinghouse` entry from `~/.copilot/mcp-config.json`.
+Delete the `countinghouse` entry from `~/.copilot/mcp-config.json` (or
+`$COPILOT_HOME/mcp-config.json`), or run `ch-local uninstall`, which takes back
+what `ch-local add vscode` wrote.

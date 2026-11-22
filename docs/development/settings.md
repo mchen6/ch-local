@@ -186,8 +186,9 @@ the next result of any tool and sends as an MCP `notifications/message`. An
 outside edit, and each change a running start applies, is also written to
 the history. At start, a value clamped, a loosening refused or kept back, and a module
 the ceiling keeps from loading are said on stderr and to the client only;
-a running start that applies a change records a module it doesn't load in
-the history too. Notices found before the runtime is up are sent once
+a running start that applies a change records in the history a module the
+change newly keeps out (one turned off excepted), under this release's
+record. Notices found before the runtime is up are sent once
 it says it is ready; one the runtime does not take is said on stderr. The notices reach the user through the model; stderr and the
 history are the record it cannot edit.
 

@@ -1910,7 +1910,7 @@ test('an own module the runtime refuses: held back as refused with its code, its
     assert.deepStrictEqual(held().find((m) => m.name === 'my-tool'), {name: 'my-tool', reason: 'refused', code: 'MODULE_INVALID'});
     assert.ok(s.history().some((h) => h.module === 'my-tool' && h.change === 'stopped' && h.notice === said));
     const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
-    assert.deepStrictEqual(run.refused, {'my-tool': 'MODULE_INVALID'});
+    assert.deepStrictEqual(run.refused, {'my-tool': {code: 'MODULE_INVALID', tree: b.tree}});
   } finally {
     s.end();
     await s.done;
