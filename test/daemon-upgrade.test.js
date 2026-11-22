@@ -1271,3 +1271,31 @@ test('L6: a stop signal while the daemon waits on start.lock for its first start
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// The closing pass on the lifecycle, L3: restart's wait reads daemon.json
+// privately only when its stat changed (on Windows each private read is two
+// blocking PowerShell runs, while shims wait inside their attach)
+test('L3: ch-local restart re-reads daemon.json only when it changed', async(t) => {
+  const {fakeIo} = require('./fake-io');
+  const {restart} = require('../lib/restart-command');
+  const d = require('../lib/daemon');
+  const rq = require('../lib/daemon-requests');
+  const {home} = setup();
+  try {
+    const dir = runDirOf(home);
+    fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+    fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({pid: process.pid, socket: path.join(dir, 'sessions.sock'), started: 's', runtimeStarted: 'r0'}), {mode: 0o600});
+    t.mock.method(d, 'daemonServing', async() => ({serving: true, pid: process.pid, by: 'socket'}));
+    t.mock.method(rq, 'requestRestart', async(h, o) => { o.underLock(); return true; });
+    const real = d.readDaemonJson;
+    let reads = 0;
+    t.mock.method(d, 'readDaemonJson', (...a) => { reads += 1; return real(...a); });
+    const r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 1500});
+    assert.strictEqual(await restart({}, r), 0, r.err);
+    assert.match(r.out, /hasn't happened yet/);
+    assert.ok(reads <= 3, `${reads} private reads of an unchanged daemon.json over 1.5 s`);
+  } finally {
+    t.mock.restoreAll();
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
