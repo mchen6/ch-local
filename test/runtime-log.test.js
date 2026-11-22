@@ -294,3 +294,34 @@ test('Windows: a rotation while running never goes through PowerShell (createPri
   assert.deepStrictEqual(acl.created, [log.file], 'createPrivate once, at the first open, never while running');
   assert.ok(fs.existsSync(`${log.file}.1`), 'rotated');
 });
+
+test('a stream that ends is let go of: a daemon that restarts its runtime often holds none of the old ones', async() => {
+  const dir = runDir();
+  const log = openRuntimeLog(dir, platformOpts());
+  let destroyed = 0;
+  for (let i = 0; i < 3; i++) {
+    const s = new EventEmitter();
+    s.destroy = () => { destroyed++; };
+    log.forward(s);
+    s.emit('end');
+    s.emit('close');
+  }
+  await log.close();
+  assert.strictEqual(destroyed, 0, 'the ended streams were forgotten before close');
+});
+
+test('a close that times out with a write still out never closes the fd under it: it goes once the write returns', async() => {
+  const dir = runDir();
+  let release = null;
+  const closed = [];
+  const fsx = Object.assign({}, fs, {closeSync(fd) { closed.push(fd); return fs.closeSync(fd); }});
+  const sink = (fd, buf, cb) => { release = () => fs.write(fd, buf, 0, buf.length, null, (e) => cb(e)); };
+  const log = openRuntimeLog(dir, {...platformOpts(), fsx, sink});
+  log.write('held');
+  await log.close(50);
+  assert.deepStrictEqual(closed, [], 'not closed while the write is out');
+  release();
+  await tick(50);
+  assert.strictEqual(closed.length, 1, 'closed once it returned');
+  assert.match(read(log.file), /held/);
+});
