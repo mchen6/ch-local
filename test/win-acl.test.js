@@ -99,3 +99,8 @@ test('A12, on Windows: a file createPrivate makes holds exactly the bytes given'
     require('node:fs').rmSync(dir, {recursive: true, force: true});
   }
 });
+
+test('A9 (L7): the private-directories script refuses a missing parent: CreateDirectory would make a removed home again', () => {
+  const {PRIVATE_DIRS_SCRIPT} = require('../lib/win-acl');
+  assert.match(PRIVATE_DIRS_SCRIPT, /elseif \(-not \[System\.IO\.Directory\]::Exists\(\[System\.IO\.Path\]::GetDirectoryName\(\$d\)\)\) \{ throw /);
+});

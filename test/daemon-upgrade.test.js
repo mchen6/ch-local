@@ -122,6 +122,7 @@ test('A9: a daemon whose run directory goes while it waits on start.lock starts 
     assert.strictEqual(await done, 0);
     assert.strictEqual(s.calls.length, 0, 'no runtime started');
     assert.match(io.err, /the home's run directory was removed \(an uninstall\): not starting/);
+    assert.ok(!fs.existsSync(path.join(home, 'run')), 'no run directory made again');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
