@@ -241,9 +241,9 @@ running. The daemon holds the runtime for every session of this user.
   asked with `gh auth token` at each start), goes to the runtime in a slot
   of its own, `COUNTINGHOUSE_CREDENTIAL_<n>`, for that module and its
   declared address only. A key added or removed while it runs restarts its
-  runtime once the calls in flight finish, waiting at most as long as a
-  call may take (the `requestTimeout` setting, 30 seconds by default) and
-  2 seconds more. A
+  runtime once the calls in flight finish, waiting for them at most 2
+  minutes and 2 seconds (the longest a call may take, and the answer's way
+  back). A
   module without one isn't loaded; the runtime still starts, with
   ch-local's own tools, and `countinghouse_overview` lists the module as
   held back for a missing credential, with the command that adds it. No session's environment gives a credential, so no
@@ -251,8 +251,8 @@ running. The daemon holds the runtime for every session of this user.
 - **Installs and rollbacks are picked up while it runs.** `ch-local install`
   and `ch-local rollback` leave an upgrade request in
   `<home>/run/daemon/requests`. A daemon that's running then drains its
-  runtime (waiting for the calls in flight, at most `requestTimeout` and
-  2 seconds) and restarts
+  runtime (waiting for the calls in flight, at most 2 minutes and 2
+  seconds) and restarts
   it on the release now in place. If ch-local itself
   changed, it hands over to a new daemon. Confirmed loosenings don't survive
   a hand-over (each session is told), and tightenings do.

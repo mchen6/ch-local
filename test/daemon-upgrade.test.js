@@ -35,7 +35,8 @@ function scripted(home) {
     const call = {opts, restore: opts.restore(), requests: [], ended: false};
     call.exit = async(code) => { if (call.ended) return; call.ended = true; await rt.close(); if (typeof r.onEnd === 'function') r.onEnd(call); end(code); };
     call.tell = (m) => opts.onTold(m);
-    opts.onControl((msg) => { call.requests.push(msg); return Promise.resolve({ok: true}); });
+    // (r.hangDrain: this runtime never answers a drain request)
+    opts.onControl((msg) => { call.requests.push(msg); return (r.hangDrain && msg.type === 'drain') ? new Promise(() => {}) : Promise.resolve({ok: true}); });
     opts.signal.addEventListener('abort', () => { call.exit(143); });
     r.calls.push(call);
     // r.delay: this runtime is slow to listen (ms)
@@ -421,61 +422,95 @@ test('(2b) a crash at the drain itself: still one restart, never a second runtim
 });
 
 // A13: a drain waits as long as a call may still be inside its own timeout --
-// the requestTimeout setting the runtime runs with (default 30 s, up to
-// 120 s), and 2 s for the answer's way back -- read when it drains; its timer
-// goes once the runtime says drained first; and a drain holds no start.lock
-// (the stop and the restart take it after).
+// the requestTimeout setting's largest value, 120 s, whatever is stored now,
+// and 2 s for the answer's way back; it ends once the runtime says drained
+// (its timer cleared), once the runtime ends, or at the bound even when the
+// drain request is never answered; and a drain holds no start.lock (the stop
+// and the restart take it after).
 const {drainBoundMs} = require('../lib/daemon');
 const storeTimeout = (home, ms) => fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: ms}}));
-// the drain's timers, counted: what was set (and for how long), what cleared
-const countedTimers = () => {
-  const c = {set: [], cleared: 0};
-  c.setTimeout = (fn, ms) => { const t = setTimeout(fn, Math.min(ms, 50)); c.set.push({ms, t}); return t; };
-  c.clearTimeout = (t) => { if (c.set.some((x) => x.t === t)) c.cleared++; clearTimeout(t); };
+// the drain's timers, counted, and never firing by themselves
+const heldTimers = () => {
+  const c = {set: [], cleared: 0, fired: 0};
+  c.setTimeout = (fn, ms) => { const t = {ms, fn}; c.set.push(t); return t; };
+  c.clearTimeout = (t) => { if (c.set.includes(t)) c.cleared++; };
   return c;
 };
+const drainSeen = async(call) => {
+  const until = Date.now() + 5000;
+  while (!call.requests.some((m) => m.type === 'drain') && Date.now() < until) await tick();
+  assert.ok(call.requests.some((m) => m.type === 'drain'), 'asked to drain');
+};
 
-test('A13: the drain bound is the stored requestTimeout and 2 s; the default 30 s when none or one out of its bounds is stored', () => {
-  const home = tmpHome();
+test('A13: the drain bound is the longest requestTimeout and 2 s, whatever is stored', () => {
+  assert.strictEqual(drainBoundMs(), 122000);
+});
+
+test('A13: a restart\'s drain waits up to the bound, with a low timeout stored; ends when the runtime says drained, its timer cleared', async() => {
+  const {home, io, runtimePkg, set} = setup();
   try {
-    assert.strictEqual(drainBoundMs(home), 32000, 'nothing stored');
-    storeTimeout(home, 120000);
-    assert.strictEqual(drainBoundMs(home), 122000);
-    storeTimeout(home, 60000);
-    assert.strictEqual(drainBoundMs(home), 62000);
-    for (const bad of [999999, 'x', -1, 4999]) {
-      storeTimeout(home, bad);
-      assert.strictEqual(drainBoundMs(home), 32000, `stored ${bad}`);
-    }
-    fs.writeFileSync(path.join(home, 'settings.json'), '{not json');
-    assert.strictEqual(drainBoundMs(home), 32000, 'unreadable');
+    delete io.daemonDrainMs;
+    const timers = heldTimers();
+    io.daemonDrainTimers = timers;
+    // (a stored value the runtime may not run with: not the bound)
+    storeTimeout(home, 5000);
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    await drainSeen(one);
+    await tick(100);
+    assert.strictEqual(s.calls.length, 1, 'still draining: its bound has not passed');
+    one.tell({type: 'drained'});
+    await s.nth(1);
+    assert.deepStrictEqual(timers.set.map((x) => x.ms), [122000], 'one drain timer, the bound');
+    assert.strictEqual(timers.cleared, 1, 'cleared: the restart came from drained, the timer never fired');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
 
-test('A13: a restart\'s drain waits for the stored requestTimeout, read when it drains; its timer is cleared when the runtime says drained first', async() => {
+test('A13: a runtime that ends during the drain ends the wait: the upgrade goes on at once', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
     delete io.daemonDrainMs;
-    const timers = countedTimers();
-    io.daemonDrainTimers = timers;
+    io.daemonDrainTimers = heldTimers();
     const s = scripted(home);
     const done = daemon({home}, io, {run: s.run});
     const one = await s.nth(0);
     await adopted(home);
-    // (stored after the daemon started: read at the drain, not at the start)
-    storeTimeout(home, 90000);
-    // the runtime says drained once asked, before the bound
-    const told = one.requests.length;
     set(runtimePkg, '8.1.0');
     await requestUpgrade(home);
-    const until = Date.now() + 3000;
-    while (one.requests.length === told && Date.now() < until) await tick();
-    one.tell({type: 'drained'});
+    await drainSeen(one);
+    await one.exit(1);
+    const until = Date.now() + 10000;
+    while (JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).runtimeVersion !== '8.1.0' && Date.now() < until) await tick();
+    assert.strictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).runtimeVersion, '8.1.0', 'the upgrade finished, not held to the bound');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('A13: a drain request never answered still ends at the bound', async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    io.daemonDrainMs = 300;
+    const s = scripted(home);
+    s.hangDrain = true;
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    await drainSeen(one);
     await s.nth(1);
-    assert.deepStrictEqual(timers.set.map((x) => x.ms), [92000], 'one drain timer, for the stored timeout and 2 s');
-    assert.strictEqual(timers.cleared, 1, 'cleared once the runtime said drained');
+    assert.strictEqual(one.ended, true);
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);
   } finally {
@@ -493,9 +528,7 @@ test('A13: a drain holds no start.lock: the lock is taken for the stop and the r
     await adopted(home);
     set(runtimePkg, '8.1.0');
     await requestUpgrade(home);
-    const until = Date.now() + 3000;
-    while (!one.requests.some((m) => m.type === 'drain') && Date.now() < until) await tick();
-    assert.ok(one.requests.some((m) => m.type === 'drain'), 'draining');
+    await drainSeen(one);
     // (inside the drain's 600 ms, the runtime not having said drained)
     await tick(100);
     assert.strictEqual(fs.existsSync(path.join(runDirOf(home), 'start.lock')), false, 'no start.lock while it drains');
