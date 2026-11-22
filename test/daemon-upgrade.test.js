@@ -860,7 +860,7 @@ test('A5: ch-local restart said only as seen: asked of an earlier ch-local\'s da
     then = () => fs.rmSync(file);
     x = await run(500);
     assert.strictEqual(x.code, 0);
-    assert.match(x.r.out, /the shared runtime stopped; waiting up to 45 s for its successor/);
+    assert.match(x.r.out, /the shared runtime stopped; waiting up to 49 s for its successor/);
     assert.match(x.r.out, /the shared runtime stopped and has not started again; the next session starts it, with what is stored/);
     // (an idle stop waits only a daemon's start for a successor, not the
     // whole bound -- N1; and a successor seen after "gone" is a restart -- L5)
@@ -1372,4 +1372,27 @@ test('M2: a refusal that lasts is said once and retried less often each time', a
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
+});
+
+// The cold start (the dry run, 11-22): the daemon may take 24 s for its
+// runtime to listen, inside the shim's 28 s for a first attach that started
+// it. What follows from READY_MS, pinned on purpose. And the session window:
+// a restored session waits at most READY_MS for the new runtime to listen,
+// then at most the shim's longest retry gap for its next attempt, then at
+// most one handshake, all inside the runtime's 60 s reconnect window
+test('cold start: READY_MS 24 s, the bounds that follow from it, and a restored session still inside its 60 s window', () => {
+  const d = require('../lib/daemon');
+  const {restartBoundMs, successorWaitMs} = require('../lib/restart-command');
+  const {uninstallLockBoundMs} = require('../lib/uninstall');
+  assert.strictEqual(d.READY_MS, 24000);
+  assert.strictEqual(restartBoundMs(), 99000);
+  assert.strictEqual(successorWaitMs(), 49000);
+  assert.strictEqual(uninstallLockBoundMs(), 89000);
+  const src = (f) => fs.readFileSync(path.join(__dirname, '..', 'shim', 'src', f), 'utf8');
+  const retries = /const RETRIES: \[u64; \d+\] = \[([\d, ]+)\];/.exec(src('relay.rs'))[1].split(',').map(Number);
+  const handshake = Number(/const HANDSHAKE_LIMIT: Duration = Duration::from_secs\((\d+)\);/.exec(src('attach.rs'))[1]);
+  const cold = Number(/pub const COLD_BUDGET: Duration = Duration::from_secs\((\d+)\);/.exec(src('attach.rs'))[1]);
+  assert.ok(d.READY_MS + Math.max(...retries) * 1000 + handshake * 1000 < d.SESSION_WINDOW_MS, 'a restored session reattaches inside its window');
+  assert.ok(d.READY_MS < cold * 1000, 'the daemon gives up before the shim that started it');
+  assert.ok(cold * 1000 < 30000, 'under Claude Code\'s 30 s for a stdio server');
 });
