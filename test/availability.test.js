@@ -1,5 +1,7 @@
 'use strict';
 require('./tmp-dirs');
+const {unhomed} = require('./unhomed');
+
 // What loads, by module (#413 section 5.2; L2a): lib/availability.js.
 const test = require('node:test');
 const assert = require('node:assert');
@@ -52,7 +54,7 @@ test('the first rule that fails is the reason: files, then the release, then the
     const {where, record} = home();
     fs.rmSync(path.join(where.moduleStore, '@t', 'ch-pack-a', '1.0.0.json'));
     const u = availability(where, record, {release: releaseOf(PACKS), seams: all}).unavailable.get(A);
-    assert.deepStrictEqual([u.kind, u.line], ['missing', 'not loading ch-pack-a: its files are missing; run `npx @countinghouse\/ch-local install` again']);
+    assert.deepStrictEqual([u.kind, unhomed(u.line)], ['missing', 'not loading ch-pack-a: its files are missing; run `npx @countinghouse\/ch-local install` again']);
   }
   // not listed by the release: withdrawn (section 9.7's sentence), before the ceiling
   {
@@ -60,7 +62,7 @@ test('the first rule that fails is the reason: files, then the release, then the
     const release = releaseOf({b: PACKS.b});
     const u = availability(where, record, {release, seams: all}).unavailable.get(A);
     assert.strictEqual(u.kind, 'withdrawn');
-    assert.strictEqual(u.line, 'module ch-pack-a was withdrawn in this release and was not started; `npx @countinghouse\/ch-local remove-pack a` removes it');
+    assert.strictEqual(unhomed(u.line), 'module ch-pack-a was withdrawn in this release and was not started; `npx @countinghouse\/ch-local remove-pack a` removes it');
   }
   // at another version than the release's pin
   {
@@ -68,7 +70,7 @@ test('the first rule that fails is the reason: files, then the release, then the
     const release = releaseOf(PACKS);
     release.pins[A] = {version: '1.1.0'};
     const u = availability(where, record, {release, seams: all}).unavailable.get(A);
-    assert.deepStrictEqual([u.kind, u.line], ['pin', 'not loading ch-pack-a: 1.0.0 is installed and this release pins 1.1.0; run `npx @countinghouse\/ch-local install` again']);
+    assert.deepStrictEqual([u.kind, unhomed(u.line)], ['pin', 'not loading ch-pack-a: 1.0.0 is installed and this release pins 1.1.0; run `npx @countinghouse\/ch-local install` again']);
   }
   // then the seams, in order
   const {where, record} = home();
@@ -86,7 +88,7 @@ test('a module whose part is not available is not either, its caller saying whic
   assert.deepStrictEqual(av.units.map((u) => u.name), [A]);
   const u = av.unavailable.get(B);
   assert.strictEqual(u.kind, 'calls');
-  assert.strictEqual(u.line, 'not loading ch-pack-b: it calls ch-step-y, which is missing from the module store; run `npx @countinghouse\/ch-local install` again');
+  assert.strictEqual(unhomed(u.line), 'not loading ch-pack-b: it calls ch-step-y, which is missing from the module store; run `npx @countinghouse\/ch-local install` again');
   // a part is never said on its own: its callers say it
   assert.ok(!av.unavailable.has(Y));
 });

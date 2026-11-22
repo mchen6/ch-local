@@ -105,7 +105,7 @@ test('add-pack before any install says to install first; an installed pack is le
   const r = release();
   const io = fakeIo({env: {COUNTINGHOUSE_HOME: tmp('ch-home-')}});
   assert.strictEqual(await addPack({pack: 'other', from: r.from}, io, r.allow), 1);
-  assert.match(io.err, /nothing is installed yet; run `npx @countinghouse\/ch-local install --pack other --from <dir>`/);
+  assert.match(io.err, /nothing is installed yet; run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local install --pack other --from <dir>`/);
   const s = await installed();
   const again = s.io();
   assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: s.r.from}, again, s.r.allow), 0);
