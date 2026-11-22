@@ -318,7 +318,8 @@ test('A9: a daemon whose socket answers nothing but whose pid lives (draining, o
     plantDaemon(s.home);
     const u = Object.assign(io(s, ['yes']), {alive: (pid) => pid === 4242});
     assert.strictEqual(await uninstall({}, u), 1);
-    assert.match(u.err, SERVING);
+    // (judged by the pid alone: the way out if that pid is another program's)
+    assert.match(u.err, /^ch-local uninstall: the shared runtime is still serving; nothing was removed\. Close the clients that use countinghouse; it stops 10 minutes after the last one closes\. Then run `[^`]+uninstall` again; if no client that uses countinghouse runs, pid 4242 \(named in .*daemon\.json\) is another program: remove that file, then run it again\.$/m);
     assert.ok(fs.existsSync(path.join(s.home, 'settings.json')), 'nothing removed');
   } finally {
     s.done();
@@ -345,8 +346,10 @@ test('A9: run/ (where start.lock is held) goes last, after everything else', asy
     t.mock.method(fs, 'rmSync', (p, o) => { if (path.dirname(String(p)) === s.home) order.push(path.basename(String(p))); return real(p, o); });
     const u = Object.assign(io(s, ['yes']), {alive: () => false});
     assert.strictEqual(await uninstall({}, u), 0, u.err);
-    const at = order.indexOf('run');
-    assert.ok(at >= 0 && order.slice(at + 1).every((n) => !['app', 'node', 'bin', 'modules', 'store', 'settings.json'].includes(n)), order.join(' '));
+    // (renamed aside in one step, then removed: last)
+    const at = order.findIndex((n) => /^run\.removing-[0-9a-f]{8}$/.test(n));
+    assert.ok(at >= 0 && at === order.length - 1 - order.slice(at + 1).filter((n) => !['app', 'node', 'bin', 'modules', 'store', 'settings.json'].includes(n)).length, order.join(' '));
+    assert.ok(!order.includes('run'), 'never removed in place');
   } finally {
     t.mock.restoreAll();
     s.done();
@@ -363,6 +366,29 @@ test('A9: a removal that fails is said with the way on, never thrown', async (t)
     assert.match(u.err, /ch-local uninstall: node could not be removed \(EBUSY\)\. Close what has .*node open and run `[^`]+uninstall` again/);
   } finally {
     t.mock.restoreAll();
+    s.done();
+  }
+});
+
+test('A9: packs.lock is waited for at most the bound while start.lock is held: then refused, nothing removed', async () => {
+  const s = setup();
+  try {
+    const {withLock} = require('../lib/lock');
+    const {layout} = require('../lib/home');
+    plantDaemon(s.home);
+    let release = null;
+    let held = null;
+    // (taken between the phases, as an install starting then would: from the
+    // serving check, which runs under start.lock once packs.lock is let go;
+    // the lock file is made before withLock's first await)
+    const alive = () => { held = withLock(layout({COUNTINGHOUSE_HOME: s.home}), fakeIo({}), () => new Promise((r) => { release = r; }), {wait: true}); return false; };
+    const u = Object.assign(io(s, ['yes']), {alive, uninstallLockMs: 400});
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, /another ch-local was still changing this home after 0\.4 s; nothing was removed\. Run `[^`]+uninstall` again when it is done\./);
+    assert.ok(fs.existsSync(path.join(s.home, 'settings.json')), 'nothing removed');
+    release(0);
+    await held;
+  } finally {
     s.done();
   }
 });
