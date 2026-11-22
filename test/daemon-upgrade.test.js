@@ -1420,7 +1420,7 @@ test('cold start: the longer wait only with provably nothing to restore; the bou
 // two bounds is served from an empty start, and not after a crash's leftover
 // daemon.json or a handoff
 test('cold start: a runtime listening between the two bounds is served only when there is nothing to restore', async() => {
-  const start = async(prepare, {handoff = null} = {}) => {
+  const start = async(prepare, {handoff = null, handedOver = false, uptime = null} = {}) => {
     const {home, io} = setup();
     try {
       io.daemonReadyMs = 250;
@@ -1429,7 +1429,8 @@ test('cold start: a runtime listening between the two bounds is served only when
       prepare(home);
       const s = scripted(home);
       s.delay = (n) => (n === 1 ? 700 : 60000);   // the first runtime listens at 700 ms
-      const done = daemon({home, handoff}, io, {run: s.run});
+      if (uptime != null) io.daemonUptimeMs = uptime;
+      const done = daemon({home, handoff, handedOver}, io, {run: s.run});
       const one = await s.nth(0);
       const until = Date.now() + 1400;
       while (one.listenedAt == null && Date.now() < until) await tick();
@@ -1450,6 +1451,8 @@ test('cold start: a runtime listening between the two bounds is served only when
   };
   assert.strictEqual(await start(leftover), false, 'a crashed daemon\'s daemon.json: READY_MS');
   assert.strictEqual(await start(() => {}, {handoff: encodeHandoff({sessions: [], declines: []})}), false, 'a handoff, even of an empty table: READY_MS');
+  assert.strictEqual(await start(() => {}, {handedOver: true}), false, 'a --handoff whose pipe could not be read: READY_MS');
+  assert.strictEqual(await start(() => {}, {uptime: () => 1400}), false, 'a process that has already used the time: READY_MS');
 });
 
 // the wait for the first runtime is on a monotonic clock: a wall-clock step

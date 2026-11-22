@@ -22,8 +22,8 @@
 //!   saying why;
 //! - 20 s gone: give up, saying the last reason. Only the first attach of a
 //!   shim that itself started the daemon may go on to COLD_BUDGET: that daemon
-//!   and its runtime are starting from nothing, and on a busy machine take
-//!   longer than 20 s (the dry run, 11-22).
+//!   and its runtime are starting from nothing, and on a busy machine can
+//!   outlast the plain 20 s budget.
 
 use std::fmt;
 use std::io;
@@ -657,11 +657,12 @@ mod tests {
     fn the_extension_ends_when_the_daemon_releases_the_lock() {
         let t = home();
         let lock = t.home.start_lock();
-        let spawned = stand_in(&t, "$$", &format!("sleep 0.3; rm -f '{}'; sleep 9", lock.display()));
+        let spawned = stand_in(&t, "$$", &format!("sleep 0.6; rm -f '{}'; sleep 9", lock.display()));
         let now = Instant::now();
-        let r = attach_first(&t.home, None, now + Duration::from_millis(300), now + Duration::from_secs(8));
+        let r = attach_first(&t.home, None, now + Duration::from_millis(600), now + Duration::from_secs(8));
         let waited = now.elapsed();
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
+        assert!(waited >= RELEASE_GRACE, "it saw the lock held, then released: {waited:?}");
         assert!(
             waited < RELEASE_GRACE + Duration::from_millis(1500),
             "not to the cold deadline: {waited:?}"
