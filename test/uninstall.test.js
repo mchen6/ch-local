@@ -377,7 +377,11 @@ test('A9: a removal that fails is said with the way on, never thrown', async (t)
     const u = io(s, ['yes']);
     assert.strictEqual(await uninstall({}, u), 1);
     // (the removal has begun, app/ may be gone: the npx form -- L2)
-    assert.match(u.err, /ch-local uninstall: node could not be removed \(EBUSY\)\. Close what has .*node open and run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local uninstall` again/);
+    // (on Windows the home in words after it, from homeNote itself: #140's
+    // Windows leg)
+    const {homeNote} = require('../lib/command-line');
+    const note = homeNote(require('../lib/home').layout({}, () => s.user), process.platform).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(u.err, new RegExp(`ch-local uninstall: node could not be removed \\(EBUSY\\)\\. Close what has .*node open and run \`(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse/ch-local uninstall\`${note} again`));
   } finally {
     t.mock.restoreAll();
     s.done();
