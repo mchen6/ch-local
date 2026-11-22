@@ -70,7 +70,7 @@ test('a link at runtime.log is never followed: set aside, its target untouched, 
   const target = path.join(path.dirname(dir), 'elsewhere.txt');
   fs.writeFileSync(target, 'theirs\n');
   fs.symlinkSync(target, path.join(dir, 'runtime.log'));
-  const log = openRuntimeLog(dir, {rotate: false});
+  const log = openRuntimeLog(dir);
   log.write('ours');
   await log.close();
   assert.strictEqual(fs.readFileSync(target, 'utf8'), 'theirs\n', 'the link\'s target untouched');
@@ -85,7 +85,7 @@ test('POSIX: an existing runtime.log with mode bits wider than 600 is never appe
   const f = path.join(dir, 'runtime.log');
   fs.writeFileSync(f, 'old\n', {mode: 0o644});
   fs.chmodSync(f, 0o644);
-  const log = openRuntimeLog(dir, {rotate: false});
+  const log = openRuntimeLog(dir);
   log.write('new');
   await log.close();
   assert.strictEqual(fs.statSync(f).mode & 0o777, 0o600);
@@ -101,7 +101,7 @@ test('Windows: an existing runtime.log whose DACL is loosened is never appended 
   const acl = fakeAcl(new Set([f]));
   // (the fake judges by name: the fresh file at the same path is private)
   acl.createPrivate = function(file, data) { this.created.push(file); acl.privateProblem = () => null; fs.writeFileSync(file, data); };
-  const log = openRuntimeLog(dir, {platform: 'win32', acl, rotate: false});
+  const log = openRuntimeLog(dir, {platform: 'win32', acl});
   log.write('new');
   await log.close();
   assert.deepStrictEqual(acl.created, [f], 'made private');
@@ -141,7 +141,7 @@ test('a rename that fails (Windows: a file another process holds) is not fatal: 
   let fail = 3;
   let tried = 0;
   const fsx = Object.assign({}, fs, {renameSync(a, b) { tried++; if (fail > 0) { fail--; throw Object.assign(new Error('busy'), {code: 'EBUSY'}); } return fs.renameSync(a, b); }});
-  const log = openRuntimeLog(dir, {...platformOpts(), fsx, cap: 120, rotate: false});
+  const log = openRuntimeLog(dir, {...platformOpts(), fsx, cap: 150});
   // (two lines fill the cap; the next three find the rename failing and go on
   // into the same file; the sixth finds it working)
   for (let i = 0; i < 6; i++) log.write(`line ${i} ${'y'.repeat(20)}`);
@@ -151,16 +151,17 @@ test('a rename that fails (Windows: a file another process holds) is not fatal: 
   assert.match(read(path.join(dir, 'runtime.log')), /^[^\n]* line 5 y+\n$/, 'a fresh file once it worked');
 });
 
-test('a daemon\'s own start makes the last log runtime.log.1; a hand-over\'s goes on in the same file', async() => {
+test('opened, a log goes on in the same file (a hand-over, a second daemon); fresh() makes the last one runtime.log.1', async() => {
   const dir = runDir();
   const first = openRuntimeLog(dir, platformOpts());
   first.write('first daemon');
   await first.close();
-  const handedOver = openRuntimeLog(dir, {...platformOpts(), rotate: false});
+  const handedOver = openRuntimeLog(dir, platformOpts());
   handedOver.write('the new daemon, handed over');
   await handedOver.close();
   assert.match(read(path.join(dir, 'runtime.log')), /first daemon[\s\S]*the new daemon, handed over/);
   const fresh = openRuntimeLog(dir, platformOpts());
+  fresh.fresh();
   fresh.write('a new start');
   await fresh.close();
   assert.match(read(path.join(dir, 'runtime.log.1')), /the new daemon, handed over/);
@@ -220,7 +221,7 @@ test('a writer that stalls, then recovers: what queued past the bound is dropped
 test('a log that can\'t be opened: problem said, lines taken and dropped', async() => {
   const dir = runDir();
   const fsx = Object.assign({}, fs, {openSync() { throw Object.assign(new Error('no'), {code: 'EACCES'}); }, lstatSync() { throw Object.assign(new Error('gone'), {code: 'ENOENT'}); }});
-  const log = openRuntimeLog(dir, {fsx, acl: fakeAcl(), rotate: false});
+  const log = openRuntimeLog(dir, {fsx, acl: fakeAcl()});
   assert.match(log.problem, /runtime\.log is not used: it could not be opened \(EACCES\)/);
   log.write('nowhere');
   await log.close();
@@ -238,4 +239,58 @@ test('through bin\'s real spawn: a shared runtime\'s stdout and stderr, piped, l
   const text = read(log.file);
   assert.match(text, /^bin out$/m);
   assert.match(text, /^bin err$/m);
+});
+
+test('POSIX: a hard link at runtime.log (one 0600 file of this user\'s, with another name) is never appended to', {skip: WIN && 'POSIX'}, async() => {
+  const dir = runDir();
+  const other = path.join(path.dirname(dir), 'precious');
+  fs.writeFileSync(other, 'mine\n', {mode: 0o600});
+  fs.linkSync(other, path.join(dir, 'runtime.log'));
+  const log = openRuntimeLog(dir);
+  log.write('a log line');
+  await log.close();
+  assert.strictEqual(fs.readFileSync(other, 'utf8'), 'mine\n', 'the other name\'s file untouched');
+  assert.match(read(log.file), /set aside as runtime\.log\.1, unread: it has another name \(a hard link\)/);
+});
+
+test('a rename that keeps failing: past twice the cap, lines are dropped and counted, never appended', async() => {
+  const dir = runDir();
+  const fsx = Object.assign({}, fs, {renameSync() { throw Object.assign(new Error('busy'), {code: 'EBUSY'}); }});
+  const log = openRuntimeLog(dir, {...platformOpts(), fsx, cap: 200});
+  for (let i = 0; i < 40; i++) log.write(`line ${i} ${'q'.repeat(20)}`);
+  await log.close();
+  assert.ok(fs.statSync(log.file).size <= 400, `bounded: ${fs.statSync(log.file).size}`);
+});
+
+test('a reopen that fails after the rename keeps writing (into .1) and makes the fresh file at a later line', async() => {
+  const dir = runDir();
+  let failOpen = 1;
+  const fsx = Object.assign({}, fs, {openSync(f, flags, mode) { if (flags === 'ax' || (typeof flags === 'number' && (flags & fs.constants.O_EXCL))) { if (failOpen-- > 0) throw Object.assign(new Error('no'), {code: 'EMFILE'}); } return fs.openSync(f, flags, mode); }});
+  const log = openRuntimeLog(dir, {...platformOpts(), fsx, cap: 120});
+  for (let i = 0; i < 4; i++) log.write(`line ${i} ${'r'.repeat(20)}`);
+  await log.close();
+  const all = read(`${log.file}.1`) + read(log.file);
+  for (let i = 0; i < 4; i++) assert.match(all, new RegExp(`line ${i} `), `line ${i} kept`);
+  assert.ok(fs.existsSync(log.file), 'a fresh file made at a later line');
+});
+
+test('close destroys the streams it read, so none keeps the daemon up', async() => {
+  const dir = runDir();
+  const log = openRuntimeLog(dir, platformOpts());
+  let destroyed = 0;
+  const s = new EventEmitter();
+  s.destroy = () => { destroyed++; };
+  log.forward(s);
+  await log.close();
+  assert.strictEqual(destroyed, 1);
+});
+
+test('Windows: a rotation while running never goes through PowerShell (createPrivate): the fresh file is created exclusively', async() => {
+  const dir = runDir();
+  const acl = fakeAcl();
+  const log = openRuntimeLog(dir, {platform: 'win32', acl, cap: 200});
+  for (let i = 0; i < 20; i++) log.write(`line ${i} ${'w'.repeat(20)}`);
+  await log.close();
+  assert.deepStrictEqual(acl.created, [log.file], 'createPrivate once, at the first open, never while running');
+  assert.ok(fs.existsSync(`${log.file}.1`), 'rotated');
 });

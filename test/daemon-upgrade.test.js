@@ -767,3 +767,34 @@ test('C-daemon-log: the daemon\'s own lines land in runtime.log; a handed-over d
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+test('C-daemon-log: a second daemon that finds one serving leaves its log as it is; the daemon\'s run is handed the log', async() => {
+  const {home, io} = setup();
+  try {
+    io.runtimeLog = true;
+    const fakeWin = () => Object.assign({}, require('../lib/win-acl'), {createPrivate: (f, d) => fs.writeFileSync(f, d), fileAcl: () => ({}), privateProblem: () => null});
+    if (process.platform === 'win32') io.winAcl = fakeWin();
+    const s = scripted(home);
+    let handed = null;
+    const done = daemon({home}, io, {run: (opts, runIo) => { handed = runIo.runtimeOutput; return s.run(opts, runIo); }});
+    const one = await s.nth(0);
+    await adopted(home);
+    assert.ok(handed != null && typeof handed.forward === 'function' && handed.file === path.join(runDirOf(home), 'runtime.log'), 'the run gets the log');
+    await one.exit(1);   // a line in the serving daemon's log
+    await s.nth(1);
+    const file = path.join(runDirOf(home), 'runtime.log');
+    const before = fs.readFileSync(file, 'utf8');
+    // a second daemon on the same home: another one serves, it goes
+    const io2 = daemonIo(home);
+    io2.runtimeLog = true;
+    if (process.platform === 'win32') io2.winAcl = fakeWin();
+    assert.strictEqual(await daemon({home}, io2, {run: scripted(home).run}), 0);
+    assert.match(io2.err, /another daemon \(pid \d+\) is running/);
+    assert.strictEqual(fs.existsSync(`${file}.1`), false, 'not rotated by the second daemon');
+    assert.ok(fs.readFileSync(file, 'utf8').startsWith(before), 'the serving daemon\'s log as it was');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
