@@ -345,3 +345,14 @@ test('cargoBuild: remapped home, cargo, rustup and checkout, shortest first, --l
   assert.match(seen[0].opts.env.CARGO_ENCODED_RUSTFLAGS, /^-Cdebuginfo=0\x1f.*--remap-path-prefix=\/home\/u\/src\/ch-local=\/ch-local/);
   assert.strictEqual(seen[0].opts.env.RUSTFLAGS, undefined);
 });
+
+// the medium on the closing pass, 5: the cause named as the remap was
+// passed; through the env, no cargo config can override it
+test('remapLost: a config\'s target rustflags only when the remap went through --config; through the env, another cause', () => {
+  assert.match(dogfood.remapLost({}), /target\.<triple>\.rustflags/);
+  for (const env of [{RUSTFLAGS: '-C opt-level=3'}, {CARGO_ENCODED_RUSTFLAGS: '-Cdebuginfo=0'}]) {
+    const said = dogfood.remapLost(env);
+    assert.doesNotMatch(said, /target\.<triple>/, JSON.stringify(env));
+    assert.match(said, /a build script or a dependency that embeds an absolute path/);
+  }
+});

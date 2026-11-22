@@ -161,7 +161,13 @@ function main() {
   if (launcher == null) fail(`COUNTINGHOUSE_HOME must be an absolute path, not "${process.env.COUNTINGHOUSE_HOME}"`);
   // (COUNTINGHOUSE_HOME set: the home in words, on every platform, or the
   // install goes to the default home -- the closing pass on release 1, L3)
-  const named = process.env.COUNTINGHOUSE_HOME != null && process.env.COUNTINGHOUSE_HOME !== '' ? ` (with COUNTINGHOUSE_HOME set to ${process.env.COUNTINGHOUSE_HOME})` : '';
+  // (normalized; not said for the default home; one a terminal would
+  // misshow -- a control, bidi or invisible character -- said as the folder
+  // it names, never printed: the medium on the closing pass, 4)
+  const set = process.env.COUNTINGHOUSE_HOME != null && process.env.COUNTINGHOUSE_HOME !== '' ? path.normalize(process.env.COUNTINGHOUSE_HOME) : null;
+  const isDefault = set != null && path.resolve(set) === path.resolve(path.join(os.homedir(), '.countinghouse'));
+  const shown = set == null || isDefault ? null : /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/.test(set) ? 'the folder it names now' : set;
+  const named = shown != null ? ` (with COUNTINGHOUSE_HOME set to ${shown})` : '';
   if (!fs.existsSync(launcher)) fail(`the launcher is not installed at ${launcher}; install it with: npx @countinghouse/ch-local install --pack ci-failure-triage${named}`);
   // (nothing runs from a home another user could change: exit 2)
   const checked = homeProblem(path.dirname(path.dirname(launcher)), launcher);

@@ -41,11 +41,6 @@ const RELEASE_PINS = path.join(root, 'lib', 'release-pins.json');
 class StepError extends Error {}
 const refuse = (why) => { throw new StepError(why); };
 
-// -> {<package>: {version, manifest, api}} from every .tgz in dir, or with
-// only ({package: version}) from those packages' tarballs alone, by npm
-// pack's file name, before any is opened: a directory install's --from
-// holds also has the runtime's and ch-local's, which bundles what the strict
-// reader refuses (the Reviewer's high review of #98, 1)
 // the packages a release ships that are no pack's modules: its runtime's
 // and its shims' (lib/release-pins.json runtime.packages, shim.packages).
 // Their tarballs beside the release's are never described (the closing
@@ -57,6 +52,11 @@ function releaseOwnPackages(release) {
   return [...runtime, ...shims];
 }
 
+// -> {<package>: {version, manifest, api}} from every .tgz in dir, or with
+// only ({package: version}) from those packages' tarballs alone, by npm
+// pack's file name, before any is opened: a directory install's --from
+// holds also has the runtime's and ch-local's, which bundles what the strict
+// reader refuses (the Reviewer's high review of #98, 1)
 // skip: package names whose tarballs, any version, are left unopened (the
 // release's runtime packages: never described, and ch-local's bundles what
 // the strict reader refuses; --check reads the runtime's on its own)
