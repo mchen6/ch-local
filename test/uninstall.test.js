@@ -330,7 +330,7 @@ test('A9: a daemon whose socket answers nothing but whose pid lives (draining, o
     const u = Object.assign(io(s, ['yes']), {alive: (pid) => pid === 4242});
     assert.strictEqual(await uninstall({}, u), 1);
     // (judged by the pid alone: the way out if that pid is another program's)
-    assert.match(u.err, /^ch-local uninstall: the shared runtime is still serving; nothing was removed\. Close the clients that use countinghouse; it stops 10 minutes after the last one closes\. Then run `[^`]+uninstall` again; if pid 4242's command line \((?:`ps -o args= -p 4242`|Task Manager's Details tab, Command line column)\) does not contain `daemon --home [^`]+`, it is not this home's daemon: remove .*daemon\.json and run it again\.$/m);
+    assert.match(u.err, /^ch-local uninstall: the shared runtime is still serving; nothing was removed\. Close the clients that use countinghouse; it stops 10 minutes after the last one closes\. Then run `[^`]+uninstall` again; if pid 4242's command line \((?:`ps -ww -o args= -p 4242`|Task Manager's Details tab, Command line column)\) does not contain `ch-local\.js daemon`, it is not a countinghouse daemon: remove .*daemon\.json and run it again\.$/m);
     untouched(s.home, before);
   } finally {
     s.done();
@@ -344,7 +344,7 @@ test('A9: no clock is read: a daemon.json older than this boot whose pid lives s
     plantDaemon(s.home, {started: '2000-01-01T00:00:00.000Z'});
     const u = Object.assign(io(s, ['yes']), {alive: () => true});
     assert.strictEqual(await uninstall({}, u), 1);
-    assert.match(u.err, /if pid 4242's command line .* does not contain `daemon --home /);
+    assert.match(u.err, /if pid 4242's command line .* does not contain `ch-local\.js daemon`/);
     untouched(s.home, before);
   } finally {
     s.done();
