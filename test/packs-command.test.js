@@ -444,3 +444,10 @@ test('status says the last automatic upgrade check\'s outcome, as it was told, w
   }
   assert.match(fs.readFileSync(path.join(s.home, 'history.jsonl'), 'utf8'), /"at":"2026-11-21T10:00:00\.000Z"/, 'history stays UTC');
 });
+
+test('status with nothing installed, as Windows prints it: the npx line names a non-default home in words', async () => {
+  const h = tmp('ch-pc-win-');
+  const io = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: h}}), {platform: 'win32'});
+  assert.strictEqual(await status({}, io), 1);
+  assert.match(io.out, new RegExp(`nothing is installed; run \`npx @countinghouse/ch-local install --pack <name>\` \\(with COUNTINGHOUSE_HOME set to "${h.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}"\\)`));
+});

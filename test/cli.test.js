@@ -119,7 +119,7 @@ test('add-module over a pipe is refused, naming the command; without a folder, u
     fs.chmodSync(home, 0o700);
     const r = spawnSync(process.execPath, [BIN, 'add-module', path.join(base, 'mine')], {encoding: 'utf8', input: 'y\n', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 2, r.stdout + r.stderr);
-    assert.match(r.stderr, /add-module asks you, in your own terminal: run `.*add-module ".+mine"` there\./);
+    assert.match(r.stderr, /add-module asks you, in your own terminal: run `.*add-module ".+mine"`(?: \(with COUNTINGHOUSE_HOME set to "[^"]+"\))? there\./);
     assert.ok(!fs.existsSync(path.join(home, 'own.json')));
     const u = run(['add-module'], {COUNTINGHOUSE_HOME: home});
     assert.strictEqual(u.status, 2);
@@ -179,7 +179,7 @@ test('add-module run with no terminal (pipes both ways) is refused, naming the c
   try {
     const r = spawnSync(process.execPath, [BIN, 'add-module', path.join(home, 'mine')], {encoding: 'utf8', input: 'y\n', env: {...process.env, COUNTINGHOUSE_HOME: home}});
     assert.strictEqual(r.status, 2, `${r.stdout}\n${r.stderr}`);
-    assert.match(r.stderr, /add-module asks you, in your own terminal: run `.*add-module .*mine.*` there\./);
+    assert.match(r.stderr, /add-module asks you, in your own terminal: run `.*add-module .*mine.*`(?: \(with COUNTINGHOUSE_HOME set to "[^"]+"\))? there\./);
     assert.ok(!/Add it\?/.test(r.stdout + r.stderr), 'nothing asked');
     assert.ok(!fs.existsSync(path.join(home, 'own.json')));
   } finally {
