@@ -60,9 +60,9 @@ test('a runtime\'s line can\'t pass for the daemon\'s, nor move a terminal\'s cu
   const log = openRuntimeLog(dir, platformOpts());
   const s = new EventEmitter();
   log.forward(s);
-  s.emit('data', '2026-11-22T00:00:00.000Z ch-local daemon: forged\n\u001b[2J\tcleared\u0007 x\n');
+  s.emit('data', '2026-11-22T00:00:00.000Z ch-local daemon: forged\n\u001b[2J\tcleared\u0007\u2028x\n\u202erev\u2066\n');
   await log.close();
-  assert.deepStrictEqual(read(log.file).trim().split('\n'), ['[runtime] 2026-11-22T00:00:00.000Z ch-local daemon: forged', '[runtime] ?[2J\tcleared??x']);
+  assert.deepStrictEqual(read(log.file).trim().split('\n'), ['[runtime] 2026-11-22T00:00:00.000Z ch-local daemon: forged', '[runtime] ?[2J\tcleared??x', '[runtime] ?rev?']);
 });
 
 test('a real child\'s stdout and stderr, read through pipes', async() => {
@@ -389,8 +389,9 @@ test('a writer that stalls, then recovers: what queued past the bound is dropped
   const s = new EventEmitter();
   log.forward(s);
   for (let i = 0; i < 5000; i++) s.emit('data', `line ${i} ${'z'.repeat(50)}\n`);
-  s.emit('data', 'after the stall\n');
   held();   // the stalled write returns
+  await until('the queue drained', () => read(log.file).split('\n').length > 10);
+  s.emit('data', 'after the stall\n');
   await log.close();
   const lines = read(log.file).trim().split('\n');
   assert.ok(lines.length < 40, `bounded: ${lines.length} lines written of 5000`);
@@ -450,4 +451,55 @@ test('through bin\'s real spawn: a runtime that can\'t be started is said in the
   assert.strictEqual(await child.exited, 1);
   await log.close();
   assert.match(read(log.file), /ch-local: could not start the runtime \(ENOENT\)/);
+});
+
+test('Windows: on the running path, a file found at the name (a recheck, a rotation meeting one) is set aside and made anew, never through PowerShell', async() => {
+  const dir = runDir();
+  const acl = fakeAcl();
+  let t = 0;
+  const log = openRuntimeLog(dir, {platform: 'win32', acl, clock: () => t, checkMs: 1000, cap: 300});
+  log.own();
+  log.write('first');
+  await until('written', () => /first/.test(read(log.file)));
+  // the name now names another file (an editor's save by rename)
+  fs.rmSync(log.file);
+  fs.writeFileSync(log.file, 'theirs\n');
+  t = 2000;
+  log.write('after the swap');
+  await until('written after the swap', () => /after the swap/.test(read(log.file)));
+  assert.strictEqual(read(`${log.file}.1`), 'theirs\n', 'the file found set aside, unread');
+  // and rotations past the cap
+  for (let i = 0; i < 12; i++) log.write(`line ${i} ${'v'.repeat(20)}`);
+  await log.close();
+  assert.deepStrictEqual([acl.created, acl.read], [[], []], 'no createPrivate, no fileAcl while running');
+});
+
+test('a rotation whose fresh file could not be made renames nothing again: only the fresh file is tried next', async() => {
+  const dir = runDir();
+  let failMake = 1;
+  let renames = 0;
+  const excl = (flags) => flags === 'ax' || (typeof flags === 'number' && (flags & fs.constants.O_EXCL) !== 0);
+  const fsx = Object.assign({}, fs, {
+    renameSync(a, b) { renames++; return fs.renameSync(a, b); },
+    openSync(p, flags, mode) { if (excl(flags) && failMake-- > 0) throw Object.assign(new Error('no'), {code: 'EMFILE'}); return fs.openSync(p, flags, mode); }
+  });
+  const log = openRuntimeLog(dir, {...platformOpts(), fsx, cap: 120});
+  log.own();
+  for (let i = 0; i < 4; i++) log.write(`line ${i} ${'r'.repeat(20)}`);
+  await log.close();
+  assert.strictEqual(renames, 1, 'renamed once, then the fresh file made');
+  const all = read(`${log.file}.1`) + read(log.file);
+  for (let i = 0; i < 4; i++) assert.match(all, new RegExp(`line ${i} `), `line ${i} kept`);
+});
+
+test('drops not yet said are said at close (under the hard cap; past it nothing more is written)', async() => {
+  const dir = runDir();
+  let n = 0;
+  const sink = (fd, buf, cb) => { if (++n === 2) throw new Error('disk full'); fs.write(fd, buf, 0, buf.length, null, (e) => cb(e)); };
+  const log = openRuntimeLog(dir, {...platformOpts(), sink});
+  log.write('kept');
+  log.write('lost at the end');
+  await until('both tried', () => n >= 2);
+  await log.close();
+  assert.match(read(log.file), / kept\n.*\[runtime log\] 1 lines dropped\n$/);
 });
