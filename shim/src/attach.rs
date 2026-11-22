@@ -663,10 +663,7 @@ mod tests {
         let waited = now.elapsed();
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
         assert!(waited >= RELEASE_GRACE, "it saw the lock held, then released: {waited:?}");
-        assert!(
-            waited < RELEASE_GRACE + Duration::from_millis(1500),
-            "not to the cold deadline: {waited:?}"
-        );
+        assert!(waited < RELEASE_GRACE + Duration::from_millis(1500), "not to the cold deadline: {waited:?}");
         assert!(spawned.exists());
         // the line says the time it waited, not the budget it no longer had
         let text = r.err().unwrap().to_string();
