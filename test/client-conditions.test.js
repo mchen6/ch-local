@@ -336,13 +336,16 @@ const pluginEnv = (w, {root = cached(w), hook = false} = {}) => {
   if (hook) w.write(path.join(root, 'hooks', 'hooks.json'), HOOK('Elicitation'));
   const data = path.join(w.home, '.claude', 'plugins', 'data', 'ch-packs-ch-packs');
   fs.mkdirSync(data, {recursive: true});
-  return {root, data, env: Object.assign({}, w.env, {CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: data, CLAUDE_PLUGIN_OPTION_REGION: 'eu'})};
+  return {root, data, env: Object.assign({}, w.env, {CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: data})};
 };
 const UNREADABLE = {mayElicit: false, why: 'client settings unreadable'};
 
-test('the plugin route: a cached plugin\'s CLAUDE_PLUGIN_ROOT and its CLAUDE_PLUGIN_DATA, no hook anywhere: yes', () => {
+test('the plugin route: a cached plugin\'s CLAUDE_PLUGIN_ROOT, its CLAUDE_PLUGIN_DATA, each alone and both, no hook anywhere: yes', () => {
   const w = world();
-  assert.deepStrictEqual(w.ask({env: pluginEnv(w).env}), {mayElicit: true, why: null});
+  const p = pluginEnv(w);
+  assert.deepStrictEqual(w.ask({env: p.env}), {mayElicit: true, why: null}, 'both');
+  assert.deepStrictEqual(w.ask({env: Object.assign({}, w.env, {CLAUDE_PLUGIN_ROOT: p.root})}), {mayElicit: true, why: null}, 'ROOT alone');
+  assert.deepStrictEqual(w.ask({env: Object.assign({}, w.env, {CLAUDE_PLUGIN_DATA: p.data})}), {mayElicit: true, why: null}, 'DATA alone');
   // (and without the variables, the same: they add nothing but are known)
   assert.deepStrictEqual(w.ask(), {mayElicit: true, why: null});
 });
@@ -362,11 +365,12 @@ test('the plugin route: a root the scan does not read (outside every plugin sour
   }
 });
 
-test('the plugin route: a root named through a link, even to a cached plugin, is unreadable (its relative hook paths resolve from the link)', {skip: process.platform === 'win32' && 'symlinks need privilege'}, () => {
+test('the plugin route: a root named through a link, even to a cached plugin, is unreadable (its relative hook paths resolve from the link)', () => {
   const w = world();
   const p = pluginEnv(w);
   const link = path.join(w.root, 'link-to-plugin');
-  fs.symlinkSync(p.root, link, 'dir');
+  // (Windows: a junction, which needs no privilege)
+  fs.symlinkSync(p.root, link, process.platform === 'win32' ? 'junction' : 'dir');
   assert.deepStrictEqual(w.ask({env: Object.assign({}, p.env, {CLAUDE_PLUGIN_ROOT: link})}), UNREADABLE);
 });
 
@@ -374,7 +378,9 @@ test('the plugin route: a root relative or missing; DATA relative; another CLAUD
   const w = world();
   const p = pluginEnv(w);
   for (const extra of [{CLAUDE_PLUGIN_ROOT: 'relative/plugin'}, {CLAUDE_PLUGIN_ROOT: path.join(w.root, 'nowhere')},
-    {CLAUDE_PLUGIN_DATA: 'relative/data'}, {CLAUDE_PLUGIN_SOURCES: p.root}, {Claude_Plugin_Root: p.root}]) {
+    {CLAUDE_PLUGIN_DATA: 'relative/data'}, {CLAUDE_PLUGIN_SOURCES: p.root}, {Claude_Plugin_Root: p.root},
+    // (a hook's: this process descends from a hook)
+    {CLAUDE_PLUGIN_OPTION_REGION: 'eu'}, {CLAUDE_PLUGIN_OPTIONS: 'x'}, {CLAUDE_PLUGIN_OPTION_: 'x'}]) {
     assert.deepStrictEqual(w.ask({env: Object.assign({}, p.env, extra)}), UNREADABLE, JSON.stringify(extra));
   }
 });
@@ -422,15 +428,16 @@ test('the plugin route: a root that differs from its real path only by case is k
   }
 });
 
-test('the plugin route: a name that matches without case is known only when it is the same directory (a case-sensitive volume\'s two directories are not)', {skip: process.platform === 'win32' && 'a case-insensitive file system here'}, () => {
+test('the plugin route: two directories whose names differ only by case are two, as each platform compares (a case-sensitive volume\'s twin refused)', () => {
   const {pluginRootScanned} = require('../lib/client-conditions');
   const w = world();
   const p = pluginEnv(w);
-  // (on this file system the two cases may be two directories, as on a
-  // case-sensitive APFS volume; compared as macOS compares names)
-  const other = p.root.replace(/cache/, 'Cache');
+  const twin = p.root.replace(/cache/, 'Cache');
   let twoDirs = false;
-  try { fs.mkdirSync(other, {recursive: true}); twoDirs = fs.statSync(other).ino !== fs.statSync(p.root).ino; } catch (err) { twoDirs = false; }
-  if (twoDirs) assert.strictEqual(pluginRootScanned(other, [p.root], 'darwin'), false, 'another directory, though its name matches without case');
-  assert.strictEqual(pluginRootScanned(p.root, [p.root], 'darwin'), true, 'the same directory');
+  try { fs.mkdirSync(twin, {recursive: true}); twoDirs = fs.statSync(twin, {bigint: true}).ino !== fs.statSync(p.root, {bigint: true}).ino; } catch (err) { twoDirs = false; }
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    // (only where this file system keeps both: a case-insensitive one has one)
+    if (twoDirs) assert.strictEqual(pluginRootScanned(twin, [p.root], platform), false, `${platform}: the twin, a directory the scan did not read`);
+    assert.strictEqual(pluginRootScanned(p.root, [p.root], platform), true, `${platform}: the same directory`);
+  }
 });

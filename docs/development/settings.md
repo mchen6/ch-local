@@ -220,7 +220,15 @@ the answer is yes only when:
 - every flag on the client's command line is one known not to touch hooks
   or plugins (`SAFE_FLAGS`), and no `CLAUDE_*` variable names a plugin,
   settings, hook, managed, policy, skill, marketplace, mods or config-dir
-  source the scan does not read;
+  source the scan does not read. Two plugin variables Claude Code sets for
+  a plugin's own MCP server are known: `CLAUDE_PLUGIN_ROOT`, only when it is
+  one of the plugins the scan reads (by its real path, named by it, the same
+  directory), and `CLAUDE_PLUGIN_DATA` (absolute), the plugin's data
+  directory, which nothing is loaded from. Any other `CLAUDE_PLUGIN_*`
+  (`CLAUDE_PLUGIN_OPTION_<KEY>`, a hook's) is not. A root whose path crosses
+  a link (a linked `~/.claude` or home, a `CLAUDE_CONFIG_DIR` through one, a
+  Windows short-name profile) is not known either, so a session there gets
+  no form;
 - everything it reads could be read. A file that is not JSON or is over
   1 MiB, a relative `--settings`, `--plugin-dir` or `--add-dir`, a client
   not found among start's ancestors, or a managed source it cannot read
