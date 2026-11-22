@@ -1,5 +1,7 @@
 # Claude Code
 
+`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"`.
+
 ## Add
 
 The plugin is the simplest route:
@@ -136,8 +138,8 @@ reads one line from standard input.
 ## Node
 
 The hand-added entry names the absolute path of your Node. An nvm or system
-Node upgrade changes that path: run `ch-local snippet claude-code` again,
-then `claude mcp remove --scope user countinghouse` and add the new line.
+Node upgrade changes that path: run `ch-local snippet claude-code` again, then
+`claude mcp remove --scope user countinghouse` and add the new line. Run `ch-local install` once too, so the shared runtime starts with the new Node.
 The plugin runs `node` from the `PATH` Claude Code sees, which must be Node
 22.16 or later; below that it stops with one line saying so.
 

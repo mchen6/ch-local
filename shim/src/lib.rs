@@ -2,10 +2,9 @@
 //!
 //! The wire contract is countinghouse's
 //! `docs/superpowers/specs/2026-11-15-shared-runtime-design.md`, section 1
-//! (contract 2), with its conformance vectors in
-//! `shared-runtime-wire/vectors.json`. SCAFFOLD: the parts of the contract
-//! that need no I/O; the I/O (the trust checks, the handshake, the relay)
-//! comes next, under its own security review.
+//! (contract 2), with its conformance vectors copied into
+//! `shim/tests/vectors/contract-2.json`: the wire, the trust checks, the
+//! handshake, the attach and the relay.
 
 // unsafe is denied everywhere; the two exceptions (reviewer, 2026-11-14)
 // are win_ffi (Windows) and unix_ffi (POSIX), which allow it block by block.

@@ -92,6 +92,9 @@ test('on yes everything under the home goes, and the credentials to revoke are n
     // (the variables the pack's modules are described with: pins version 2)
     assert.match(u.out, /revoke the credentials you gave it: COUNTINGHOUSE_GITHUB_TOKEN, OTHER_TOKEN\n/i, 'every installed pack\'s, once each');
     assert.ok(!(u.out + u.err).includes('secret-value-123'));
+    // (F14, the feature audit: the Claude Code plugin is Claude Code's to
+    // remove, said last)
+    assert.match(u.out, /If you added the Claude Code plugin, remove it in Claude Code too: `claude plugin uninstall ch-packs@ch-packs`\n$/);
   } finally {
     s.done();
   }

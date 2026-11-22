@@ -164,3 +164,30 @@ test('a tarball below its floor is refused whole', () => {
   fs.writeFileSync(path.join(dir, 'countinghouse-ch-access-x-0.2.1-rc.1.tgz'), packageTgz({...manifest, version: '0.2.1-rc.1'}, files));
   assert.match(refusal(() => describeRelease(pre, {}, readTarballs(dir))) || '', /ch-access-x 0\.2\.1-rc\.1 is below its floor 0\.2\.1/);
 });
+
+// K3 (the feature audit): the release's change notes, from the maintainer's
+// notes file (one change per line), or none.
+test('--notes <file> writes the release\'s change notes, one per line; --notes none writes null; a file the format refuses writes nothing', () => {
+  const dir = dirOf();
+  const at = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-describe-notes-'));
+  const file = path.join(at, 'release-pins.json');
+  const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
+  delete shipped.floors;
+  const quiet = {write: () => {}};
+  fs.writeFileSync(file, JSON.stringify({...shipped, packs: release().packs}));
+  const notes = path.join(at, 'notes.txt');
+  fs.writeFileSync(notes, 'the triage tool says which test failed\n\n  owner hints name later commits too  \n');
+  const said = {text: "", write(x) { this.text += x; }};
+  assert.strictEqual(main([dir, "--notes", notes], {stdout: said, stderr: said, releasePins: file}), 0, said.text);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).release.notes, ['the triage tool says which test failed', 'owner hints name later commits too']);
+  // (no --notes: the notes stay as they are)
+  assert.strictEqual(main([dir], {stdout: quiet, stderr: quiet, releasePins: file}), 0);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).release.notes.length, 2);
+  assert.strictEqual(main([dir, '--notes', 'none'], {stdout: quiet, stderr: quiet, releasePins: file}), 0);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).release.notes, null);
+  fs.writeFileSync(notes, Array.from({length: 9}, (_, i) => `change ${i}`).join('\n'));
+  const err = {text: '', write(x) { this.text += x; }};
+  assert.strictEqual(main([dir, '--notes', notes], {stdout: quiet, stderr: err, releasePins: file}), 1);
+  assert.match(err.text, /release\.notes[\s\S]*nothing was written/);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).release.notes, null);
+});

@@ -279,3 +279,13 @@ test('belowFloor: semver precedence, pre-releases below their version, a non-ver
   for (const v of ['0.2.3-rc.1', '0.2.2-rc.1', '0.2', 'x', '', undefined]) assert.strictEqual(belowFloor(v, '0.2.3'), true, String(v));
   assert.deepStrictEqual(require('../lib/allowlist').ALLOWLIST.floors, shipped().floors, 'the allowlist carries the floors');
 });
+
+// (the medium on the docs PR: a key of release this ch-local doesn't read
+// marks a later format, as a top-level one does)
+test('an unknown key in release is a later format', () => {
+  const {parseReleasePins} = require('../lib/release-pins');
+  const base = JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8'));
+  const r = parseReleasePins({...base, release: {...base.release, later: 1}});
+  assert.ok(r.problem != null);
+  assert.strictEqual(r.later, true);
+});

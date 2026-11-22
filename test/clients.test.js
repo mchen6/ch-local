@@ -225,3 +225,18 @@ test('add needs an install, and sends Claude Code and Desktop elsewhere', async 
     s.done();
   }
 });
+
+// (the medium on the docs PR: Copilot reads $COPILOT_HOME/mcp-config.json
+// when that is set, and add writes it there, as it honours CODEX_HOME)
+test('add vscode writes under $COPILOT_HOME when it is set', async () => {
+  const s = setup();
+  try {
+    const copilotHome = path.join(s.user, 'elsewhere-copilot');
+    const f = fakeIo({env: {COPILOT_HOME: copilotHome}, homedir: s.user});
+    assert.strictEqual(await add('vscode', f), 0, f.err);
+    assert.ok(fs.existsSync(path.join(copilotHome, 'mcp-config.json')));
+    assert.ok(!fs.existsSync(path.join(s.user, '.copilot', 'mcp-config.json')));
+  } finally {
+    s.done();
+  }
+});
