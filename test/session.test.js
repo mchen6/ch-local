@@ -478,6 +478,8 @@ test('A2: the session\'s ACL object carries win-acl\'s checks whatever io gives;
   const before = read;
   require('../lib/shim-binary').installedShim(h, {platform: 'win32', acl});
   assert.strictEqual(read, before, 'read once per path');
+  // (a field given as undefined never removes win-acl's check)
+  assert.strictEqual(typeof sessionAcl({platform: 'win32', winAcl: {fileAcl: () => PRIVATE, privateProblem: undefined}}, layout({COUNTINGHOUSE_HOME: h}, os.homedir)).privateProblem, 'function');
   // (and a real io, with no winAcl at all, still gets win-acl's checks)
   assert.strictEqual(typeof sessionAcl({platform: 'win32'}, layout({COUNTINGHOUSE_HOME: h}, os.homedir)).privateProblem, 'function');
 });
