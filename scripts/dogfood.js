@@ -185,7 +185,11 @@ async function shimInto(npmIo, release, work, pins, say, {build = cargoBuild, pl
   // folder hands out)
   const bytes = fs.readFileSync(bin);
   for (const [p] of buildPaths(process.env, ROOT)) {
-    for (const sep of ['/', '\\']) if (bytes.includes(Buffer.from(p + sep))) throw new Error(`the built shim names this machine's ${p} (a build path): not packed`);
+    // (cargo takes its rustflags from one source only: CARGO_ENCODED_RUSTFLAGS,
+    // RUSTFLAGS, target.<triple>/<cfg>.rustflags, then build.rustflags. A
+    // config's target rustflags silently win over the --config build.rustflags
+    // the remap goes in, so the refusal says so -- the closing pass, L6)
+    for (const sep of ['/', '\\']) if (bytes.includes(Buffer.from(p + sep))) throw new Error(`the built shim names this machine's ${p} (a build path): not packed. The likely cause: a cargo config's target.<triple>.rustflags (or target.<cfg>.rustflags) is used in place of build.rustflags, where the remap is passed; set RUSTFLAGS to those flags instead, and dogfood adds the remap to them`);
   }
   const version = `${cargo}-dev.${require('node:crypto').createHash('sha512').update(fs.readFileSync(bin)).digest('hex').slice(0, 12)}`;
   // (a host-target build, not publish's static musl one: its description
