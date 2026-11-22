@@ -245,10 +245,18 @@ test('shared mode: each credential line, as a notice carries it, fits in 200 cha
     lines.push(`ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which ${st.which}`);
   }
   lines.push(`not loading ch-pack-other: ${added.reason}`);
-  lines.push(require('../lib/packs').staleLine('0.2.0', 'upgraded', where, true));
-  for (const l of lines) {
-    assert.ok(l.length <= NOTICE_MAX, `${l.length}: ${l}`);
-    assert.doesNotMatch(l, /restart your client/, 'one way only, in shared mode');
+  lines.push(`ch-pack-other-caller unloaded: it calls ch-pack-other, which ${added.which}`);
+  // (gh's three real reasons, lib/github-token.js, inside start in either mode)
+  bind(h, ACCESS, VAR, {origin: GH, source: 'gh'});
+  for (const why of ['gh did not answer within 10 s', 'gh, the GitHub CLI, was not found or did not answer (a client started from the dock or the Start menu may not see the PATH your shell sets)', 'gh is not logged in to github.com']) {
+    for (const shared of [true, false]) {
+      const st = (await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why}), shared})).states.get(ACCESS);
+      lines.push(`not loading ch-access-github: ${st.reason}`);
+      lines.push(`ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which ${st.which}`);
+      assert.match(st.reason, /credentials add ch-access-github`/, 'the command is kept whole');
+    }
   }
+  lines.push(require('../lib/packs').staleLine('0.2.0', 'upgraded', where, true));
+  for (const l of lines) assert.ok(l.length <= NOTICE_MAX, `${l.length}: ${l}`);
   assert.ok(gh != null);
 });

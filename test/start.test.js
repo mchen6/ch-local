@@ -594,13 +594,13 @@ test('a binding whose source is gh: start asks gh once, gives its token in the s
   assert.deepStrictEqual(stored.execs.filter((e) => e.cmd === 'gh'), []);
 });
 
-test('a gh binding with gh not installed: its module is not loaded, and the message names gh auth login and credentials add', async () => {
+test('a gh binding with gh not installed: its module is not loaded, and the message names credentials add, whole within a notice (#147, M3)', async () => {
   const home = installedHome({bound: null});
   bindGh(home);
   const f = withExec(io(home, {env: {}}), ghAnswers({status: null, stdout: '', stderr: 'spawn gh ENOENT'}));
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.ok(!f.spawned[0].args.includes('--loadModule'), 'the runtime starts with no module');
-  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which has no token from your gh login: run `gh auth login`, or `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
+  assert.match(f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which has no gh token: run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
 });
 
 test('a gh binding with gh not logged in: gh\'s own output is never repeated', async () => {
@@ -609,7 +609,7 @@ test('a gh binding with gh not logged in: gh\'s own output is never repeated', a
   bindGh(home);
   const f = withExec(io(home, {env: {}}), ghAnswers({status: 1, stdout: '', stderr: `no oauth token found for github.com ${leaked}`}));
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.match(f.err, /has no token from your gh login/);
+  assert.match(f.err, /has no gh token: run `/);
   assert.ok(!f.err.includes(leaked) && !f.err.includes('no oauth token'), f.err);
 });
 

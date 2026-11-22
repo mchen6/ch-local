@@ -53,9 +53,11 @@ const until = async (cond, ms = 10000) => {
 // the tests here are given it read already (ch-local's intermittent
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null,
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null, deep = false,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null, heldRetryMs = null} = {}) {
-  const home = reuse != null ? reuse : tmp('ch-home-');
+  // (deep: a home whose launcher path is as long as a user's, or longer:
+  // the notices' 200 characters are measured with it -- #147's M3)
+  const home = reuse != null ? reuse : deep ? (() => { const d = path.join(tmp('ch-home-'), 'alexandra'); fs.mkdirSync(d, {mode: 0o700}); return path.join(d, '.countinghouse'); })() : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
@@ -426,7 +428,7 @@ test('A5: in shared mode, what applies at the next start names `ch-local restart
 test('A5: in shared mode a setting the runtime could not take in place is told, naming `ch-local restart`', async () => {
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');
-  const s = await running({shared: true, answer: (m) => (m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
+  const s = await running({shared: true, deep: true, answer: (m) => (m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
   try {
     setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'requestTimeout', '10s', {by: 'cli'});
     await until(() => notices(s).some(([, t]) => /requestTimeout set to/.test(t)));
@@ -446,7 +448,7 @@ test('A5: in shared mode a setting the runtime could not take in place is told, 
 test('A5: in shared mode no loosening is told with a restart command: a setting loosened, a sandbox loosened, a pack added and refused', async () => {
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');
-  const s = await running({shared: true, answer: (m) => (m.name === '@countinghouse/ch-pack-other' || m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
+  const s = await running({shared: true, deep: true, answer: (m) => (m.name === '@countinghouse/ch-pack-other' || m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
   try {
     const where = layout({COUNTINGHOUSE_HOME: s.home});
     setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
@@ -458,6 +460,9 @@ test('A5: in shared mode no loosening is told with a restart command: a setting 
     assert.ok(told.some((t) => /^moduleSandbox loosened from enforce to audit, when the shared runtime restarts$/.test(t)), told.join(' | '));
     assert.ok(told.some((t) => /^ch-pack-other added 0\.3\.0: not applied in place \(NOT_NOW\); it applies when the shared runtime restarts$/.test(t)), told.join(' | '));
     for (const t of told.filter((x) => /loosened|added/.test(x))) assert.doesNotMatch(t, / restart`/, t);
+    // (every notice within the runtime's 200, with a launcher path as long as a user's)
+    assert.ok(require('../lib/command-line').chLocal(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}), 'restart').length >= 'node "/home/alexandra/.countinghouse/bin/ch-local.js" restart'.length);
+    for (const t of told) assert.ok(t.length <= 200, `${t.length}: ${t}`);
   } finally {
     s.end();
     await s.done;
@@ -1686,7 +1691,7 @@ test('a credential store that cannot be read keeps what is loaded, says so once,
 test('a gh binding gh gave no token for at start is not told to restart on a later change; it says how to provide it', async () => {
   const s = await running({bound: 'gh'});
   try {
-    await until(() => notices(s).some(([, t]) => /has no token from your gh login/.test(t)));
+    await until(() => notices(s).some(([, t]) => /has no gh token: run `[^`]+credentials add ch-access-github`/.test(t)));
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     await new Promise((r) => setTimeout(r, 300));
