@@ -8,9 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {fakeIo} = require('./fake-io');
 
-// (with app/, as an installed home has: a daemon makes no run directory in a
-// home with none -- A9)
-const tmpHome = () => { const h = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-d-'))); fs.mkdirSync(path.join(h, 'app')); return h; };
+const tmpHome = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-d-')));
 const hmac = (secret, ...parts) => crypto.createHmac('sha256', secret).update(Buffer.concat(parts.map((p) => Buffer.from(p)))).digest();
 const frame = (kind, obj) => { const b = Buffer.from(JSON.stringify(obj)); const h = Buffer.alloc(5); h.write(kind, 0, 'ascii'); h.writeUInt32BE(b.length, 1); return Buffer.concat([h, b]); };
 

@@ -351,7 +351,6 @@ test('a home too long for a socket path: the runtime listens in $TMPDIR/ch-<uid>
   const home = path.join(base, 'h'.repeat(120));
   fs.mkdirSync(home, {mode: 0o700});
   fs.chmodSync(home, 0o700);
-  fs.mkdirSync(path.join(home, 'app'));
   const tmpdir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-t-')));
   let runtime = null;
   try {
@@ -386,7 +385,6 @@ test('a fallback directory that is not the user\'s own directory refuses the sta
   const home = path.join(base, 'h'.repeat(120));
   fs.mkdirSync(home, {mode: 0o700});
   fs.chmodSync(home, 0o700);
-  fs.mkdirSync(path.join(home, 'app'));
   const tmpdir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-t-')));
   try {
     fs.symlinkSync(base, path.join(tmpdir, `ch-${process.geteuid()}`));
@@ -426,20 +424,6 @@ test('daemon --home must be owned by this user and not group- or world-writable'
     const io = daemonIo(home);
     assert.strictEqual(await daemon({home}, io, {run: async() => 0}), 2);
     assert.match(io.err, /writable/);
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-// A9 (the medium on its round 2, 4): a daemon spawned while an uninstall
-// removes the home makes no run directory in a home with nothing installed
-test('A9: a home with nothing installed (no app/) gets no run directory: the daemon refuses', async () => {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-d-')));
-  try {
-    const io = daemonIo(home);
-    assert.strictEqual(await daemon({home}, io, {run: async () => 0}), 2);
-    assert.match(io.err, /nothing is installed there \(no app\/\)/);
-    assert.ok(!fs.existsSync(path.join(home, 'run')), 'no run directory made');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }

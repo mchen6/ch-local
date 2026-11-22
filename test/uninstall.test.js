@@ -319,7 +319,7 @@ test('A9: a daemon whose socket answers nothing but whose pid lives (draining, o
     const u = Object.assign(io(s, ['yes']), {alive: (pid) => pid === 4242});
     assert.strictEqual(await uninstall({}, u), 1);
     // (judged by the pid alone: the way out if that pid is another program's)
-    assert.match(u.err, /^ch-local uninstall: the shared runtime is still serving; nothing was removed\. Close the clients that use countinghouse; it stops 10 minutes after the last one closes\. Then run `[^`]+uninstall` again; if no client that uses countinghouse runs, pid 4242 \(named in .*daemon\.json\) is another program: remove that file, then run it again\.$/m);
+    assert.match(u.err, /^ch-local uninstall: the shared runtime is still serving; nothing was removed\. Close the clients that use countinghouse; it stops 10 minutes after the last one closes\. Then run `[^`]+uninstall` again; if pid 4242 is not a countinghouse daemon \(check with (?:`ps -p 4242`|Task Manager)\), remove .*daemon\.json and run it again\.$/m);
     assert.ok(fs.existsSync(path.join(s.home, 'settings.json')), 'nothing removed');
   } finally {
     s.done();
@@ -390,5 +390,28 @@ test('A9: packs.lock is waited for at most the bound while start.lock is held: t
     await held;
   } finally {
     s.done();
+  }
+});
+
+test('A9: a check that threw refuses with no advice to remove anything; a run/ aside a failed removal left is removed by the next run', async (t) => {
+  const s = setup();
+  try {
+    t.mock.method(require('../lib/daemon'), 'daemonServing', async () => { throw Object.assign(new Error('pipe'), {code: 'EPIPE'}); });
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, /still serving; nothing was removed\..* again \(whether it serves could not be checked: EPIPE\)\.$/m);
+    assert.doesNotMatch(u.err, /remove /);
+  } finally {
+    t.mock.restoreAll();
+    s.done();
+  }
+  const s2 = setup();
+  try {
+    fs.mkdirSync(path.join(s2.home, 'run.removing-0123abcd', 'daemon'), {recursive: true});
+    const u = Object.assign(io(s2, ['yes']), {alive: () => false});
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    assert.ok(!fs.existsSync(s2.home), 'the aside went too');
+  } finally {
+    s2.done();
   }
 });

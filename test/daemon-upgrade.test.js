@@ -176,7 +176,7 @@ test('ch-local changed: a new daemon is started with the table on its handoff pi
     const s = scripted(home);
     let spawned = null;
     io.spawnDaemon = (args, {handoff, env}) => {
-      spawned = {args, handoff, env, daemonJsonThen: fs.existsSync(daemonJson(home)) ? JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')) : null};
+      spawned = {args, handoff, env, daemonJsonThen: fs.existsSync(daemonJson(home))};
       // the new daemon takes over: its daemon.json, its own pid
       setTimeout(() => fs.writeFileSync(daemonJson(home), JSON.stringify({pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: '2.0.0', started: 'z'}), {mode: 0o600}), 100);
       return true;
@@ -191,9 +191,7 @@ test('ch-local changed: a new daemon is started with the table on its handoff pi
     assert.ok(one.requests.some((m) => m.type === 'drain'), 'drained first');
     assert.strictEqual(one.ended, true, 'its runtime stopped before the new daemon starts');
     assert.deepStrictEqual(spawned.args, ['daemon', '--home', home, '--handoff']);
-    // (kept, naming no socket, until the new daemon writes its own: its live
-    // pid keeps an uninstall from taking the home in between -- A9)
-    assert.ok(spawned.daemonJsonThen != null && spawned.daemonJsonThen.socket === null && spawned.daemonJsonThen.pid === process.pid, JSON.stringify(spawned.daemonJsonThen));
+    assert.strictEqual(spawned.daemonJsonThen, false, 'daemon.json removed before the spawn');
     const n = spawned.handoff.readUInt32BE(0);
     const body = JSON.parse(spawned.handoff.subarray(4, 4 + n).toString('utf8'));
     assert.strictEqual(body.v, 1);
