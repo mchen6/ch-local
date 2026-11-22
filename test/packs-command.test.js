@@ -421,3 +421,21 @@ test('add-pack with no --from names install --pack; status with nothing installe
   assert.match(io2.out + io2.err, /nothing is installed; run `[^`]*install --pack <name>`/);
   assert.doesNotMatch(io2.out + io2.err, /--from <dir>/);
 });
+
+// the reviewer on #136: a notice reaches only the sessions open when it is
+// told, so status says the last automatic upgrade check's outcome, as it was
+// told, from history.jsonl
+test('status says the last automatic upgrade check\'s outcome, as it was told, with when', async () => {
+  const {appendHistory} = require('../lib/history');
+  const s = await installed();
+  const where = layout({COUNTINGHOUSE_HOME: s.home});
+  const io0 = s.io();
+  assert.strictEqual(await status({}, io0), 0, io0.err);
+  assert.doesNotMatch(io0.out, /the last automatic upgrade check/, 'none yet: nothing said');
+  appendHistory(where, {by: 'auto-upgrade', change: 'upgrade check', notice: 'automatic upgrade check failed (exit 1: no network); nothing changed'}, {now: Date.parse('2026-11-20T10:00:00Z')});
+  appendHistory(where, {by: 'settings', change: 'x', notice: 'not an upgrade'});
+  appendHistory(where, {by: 'auto-upgrade', change: 'upgrade check', notice: 'upgraded ch-local 0.1.0 -> 0.1.1; rollback undoes it‮'}, {now: Date.parse('2026-11-21T10:00:00Z')});
+  const io = s.io();
+  assert.strictEqual(await status({}, io), 0, io.err);
+  assert.match(io.out, /^the last automatic upgrade check \(2026-11-21T10:00:00\.000Z\): upgraded ch-local 0\.1\.0 -> 0\.1\.1; rollback undoes it\?$/m, 'the newest, its terminal text cleaned');
+});
