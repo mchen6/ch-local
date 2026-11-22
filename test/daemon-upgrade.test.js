@@ -16,7 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {daemon, encodeHandoff} = require('../lib/daemon');
 const {requestUpgrade, requestRestart} = require('../lib/daemon-requests');
-const {fakeRuntime, daemonIo, tmpHome, runDirOf, stopLeftDaemons} = require('./daemon-fakes');
+const {ADOPT_MS, fakeRuntime, daemonIo, tmpHome, runDirOf, stopLeftDaemons} = require('./daemon-fakes');
 // a test that fails before it stops its daemon leaves none running
 test.afterEach(() => stopLeftDaemons());
 
@@ -45,7 +45,7 @@ function scripted(home) {
     else listen();
     return exited;
   };
-  r.nth = async(n, ms = 5000) => {
+  r.nth = async(n, ms = ADOPT_MS) => {
     const until = Date.now() + ms;
     while (r.calls.length <= n && Date.now() < until) await tick();
     assert.ok(r.calls.length > n, `runtime ${n + 1} never started`);
@@ -55,9 +55,9 @@ function scripted(home) {
 }
 const daemonJson = (home) => path.join(runDirOf(home), 'daemon.json');
 const adopted = async(home) => {
-  const until = Date.now() + 5000;
+  const until = Date.now() + ADOPT_MS;
   while (!fs.existsSync(daemonJson(home)) && Date.now() < until) await tick();
-  assert.ok(fs.existsSync(daemonJson(home)), 'adopted');
+  assert.ok(fs.existsSync(daemonJson(home)), `adopted: daemon.json never appeared in ${runDirOf(home)} within ${ADOPT_MS / 1000} s`);
 };
 // a home with an installed runtime and a ch-local package.json of known versions
 function setup() {
@@ -272,7 +272,7 @@ test('(1) a runtime upgrade holds start.lock from the stop until the new runtime
     };
     await requestUpgrade(home);
     const two = await s.nth(1);
-    const until2 = Date.now() + 5000;
+    const until2 = Date.now() + ADOPT_MS;
     while (second == null && Date.now() < until2) await tick();
     const got = await second;
     assert.strictEqual(got.code, 0, 'it waited on the lock, then found this daemon');
