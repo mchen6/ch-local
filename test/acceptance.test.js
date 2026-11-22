@@ -459,21 +459,29 @@ test('the shared runtime through the native shim', {timeout: 2400000, skip: SRC 
 // pass, and what each wrong answer fails on.
 test('shared: (b-latched) a latched session is refused as the latch, with the handed-over reason; never as a decline', async () => {
   const why = {reason: 'client hook present', at: '~/x/.claude/settings.json'};
+  // (the launcher form at the run's own home, as the runtime names it since
+  // countinghouse #536; on Windows its backslashes are escaped in the JSON too)
+  const LAUNCHER = process.platform === 'win32' ? 'C:\\t\\home\\bin\\ch-local.js' : '/t/home/bin/ch-local.js';
+  const COMMAND = `node "${LAUNCHER}" settings set requestTimeout 60s`;
   const run = async (loosening, {firstValue = 10000, handed = why} = {}) => {
     const checks = [];
     const check = (name, ok, detail) => { checks.push({name, ok: ok === true, detail}); return ok === true; };
     const second = async (a) => (a.action === 'set' && a.value === '60s' ? loosening
       : {result: {structuredContent: {new: 20000, applies: 'this session'}}});
     const first = async () => ({result: {structuredContent: {settings: [{name: 'requestTimeout', value: firstValue}]}}});
-    await shared.latchedChecks({second, first, why: handed, reason: 'client hook present', check});
+    await shared.latchedChecks({second, first, why: handed, reason: 'client hook present', launcher: LAUNCHER, check});
     return checks;
   };
   const refusal = (code, text) => ({result: {isError: true, _meta: {'countinghouse/code': code}, content: [{type: 'text', text}]}});
-  const good = refusal('SETTING_CLIENT_NOT_CONFIRMED', 'Loosening requestTimeout is not asked in this session: this client\'s configuration could answer forms by itself (client hook present: ~/x/.claude/settings.json); nothing was changed. To allow it, run `ch-local settings set requestTimeout 60s` in a terminal yourself.');
+  const good = refusal('SETTING_CLIENT_NOT_CONFIRMED', 'Loosening requestTimeout is not asked in this session: this client\'s configuration could answer forms by itself (client hook present: ~/x/.claude/settings.json); nothing was changed. To allow it, run `' + COMMAND + '` in a terminal yourself.');
   assert.ok((await run(good)).every((c) => c.ok), JSON.stringify(await run(good)));
   const failed = async (...a) => (await run(...a)).filter((c) => !c.ok).map((c) => c.name);
   assert.strictEqual((await failed(refusal('SETTING_DECLINED_THIS_SESSION', good.result.content[0].text))).length, 1, 'a decline is not the latch');
   assert.strictEqual((await failed(refusal('SETTING_CLIENT_NOT_CONFIRMED', 'this client could not be confirmed; run `ch-local settings set requestTimeout 60s`'))).length, 1, 'the reason must be the handed-over one');
+  // (the bare command is on no PATH, and another home's launcher is not this run's)
+  const other = (form) => refusal('SETTING_CLIENT_NOT_CONFIRMED', good.result.content[0].text.replace(COMMAND, form));
+  assert.strictEqual((await failed(other('ch-local settings set requestTimeout 60s'))).length, 1, 'the bare command');
+  assert.strictEqual((await failed(other('node "/elsewhere/bin/ch-local.js" settings set requestTimeout 60s'))).length, 1, 'another home\'s launcher');
   assert.strictEqual((await failed(good, {firstValue: 20000})).length, 1, 'the first session\'s own value');
   assert.strictEqual((await failed(good, {handed: {reason: 'plugin hook present'}})).length, 2, 'a hand-over with another reason fails both');
 });
