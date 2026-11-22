@@ -185,7 +185,11 @@ async function shimInto(npmIo, release, work, pins, say, {build = cargoBuild, pl
   // folder hands out)
   const bytes = fs.readFileSync(bin);
   for (const [p] of buildPaths(process.env, ROOT)) {
-    for (const sep of ['/', '\\']) if (bytes.includes(Buffer.from(p + sep))) throw new Error(`the built shim names this machine's ${p} (a build path): not packed`);
+    // (cargo takes its rustflags from one source only: CARGO_ENCODED_RUSTFLAGS,
+    // RUSTFLAGS, target.<triple>/<cfg>.rustflags, then build.rustflags. A
+    // config's target rustflags silently win over the --config build.rustflags
+    // the remap goes in, so the refusal says so -- the closing pass, L6)
+    for (const sep of ['/', '\\']) if (bytes.includes(Buffer.from(p + sep))) throw new Error(`the built shim names this machine's ${p} (a build path): not packed. ${remapLost(process.env)}`);
   }
   const version = `${cargo}-dev.${require('node:crypto').createHash('sha512').update(fs.readFileSync(bin)).digest('hex').slice(0, 12)}`;
   // (a host-target build, not publish's static musl one: its description
@@ -226,6 +230,17 @@ function rustflagsFor(env, flags) {
   }
   return {env: out, args: ['--config', `build.rustflags=${JSON.stringify(flags)}`]};
 }
+// why a remapped build may still name a build path, as the remap was passed
+// (rustflagsFor): through --config build.rustflags, a cargo config's target
+// rustflags win over it; through the env, none does, so the path came from
+// elsewhere -- the medium on the closing pass, 5. (env) -> the sentence
+function remapLost(env) {
+  const viaEnv = (env.CARGO_ENCODED_RUSTFLAGS != null && env.CARGO_ENCODED_RUSTFLAGS !== '') || (env.RUSTFLAGS != null && env.RUSTFLAGS.trim() !== '');
+  return viaEnv
+    ? 'The remap went in through the rustflags environment, which no cargo config overrides, so the path came from elsewhere: likely a build script or a dependency that embeds an absolute path'
+    : 'The likely cause: a cargo config\'s target.<triple>.rustflags (or target.<cfg>.rustflags) is used in place of build.rustflags, where the remap is passed; set RUSTFLAGS to those flags instead, and dogfood adds the remap to them';
+}
+
 // run: dogfood's own (a test's stands in). -> the built executable's path
 function cargoBuild(shimDir, exeName, {runner = run, env = process.env} = {}) {
   const r0 = rustflagsFor(env, remapFlags(env, path.dirname(shimDir)));
@@ -486,4 +501,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, releaseShim, builtExecutable, remapFlags, rustflagsFor, cargoBuild, resolveRefs, run, PACK};
+module.exports = {main, remapLost, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, releaseShim, builtExecutable, remapFlags, rustflagsFor, cargoBuild, resolveRefs, run, PACK};
