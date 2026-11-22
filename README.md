@@ -126,7 +126,7 @@ npm test
 ```
 
 Pure JavaScript, no native module. Node 22.16 or later, as countinghouse; CI
-tests Node 24, on Linux, macOS and Windows. The one native program is the shim (below), and
+tests Node 24 on Linux, macOS and Windows, and the 22.16 floor on Linux. The one native program is the shim (below), and
 it is never part of `<home>/app`: that tree is built with `npm ci
 --omit=optional --ignore-scripts`, so no optional or native package enters
 it.
