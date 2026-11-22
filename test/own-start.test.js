@@ -135,7 +135,7 @@ test('an own.json that cannot be read: no own module loads, said; the packs load
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(after(f.spawned[0].args, '--loadModule').length, 1);
-  assert.match(f.err, /your own modules are not loaded this start: .*own\.json/);
+  assert.match(f.err, /your own modules are not loaded: .*own\.json/);
 });
 
 test('a home with own modules and no pack starts, loading them; with neither, start says to install', {skip: !enforceHere && 'enforce on Windows: countinghouse#195'}, async () => {

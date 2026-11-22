@@ -273,3 +273,31 @@ test('hintCommand: the npx form names a non-default home on every platform; the 
   const withLauncher = hintCommand(layout({COUNTINGHOUSE_HOME: h}), 'status', 'win32');
   assert.ok(withLauncher.startsWith('`node "') && withLauncher.endsWith(' status`'), withLauncher);
 });
+
+// the closing pass: a notice within the runtime's 200-character cut, its
+// last command whole (fitAny), plain text cut at the end
+test('fitAny: within 200 code points; the last command in backticks kept whole; plain text cut', () => {
+  const {fitAny, NOTICE_MAX} = require('../lib/command-line');
+  const cmd = '`node "/home/alexandra/.countinghouse/bin/ch-local.js" settings set enabled.@countinghouse/ch-pack-other on`';
+  const long = `ch-pack-ci-failure-triage unloaded: it calls ch-pack-other, which is not available (it is turned off (${cmd}))`;
+  const fitted = fitAny(long);
+  assert.ok([...fitted].length <= NOTICE_MAX, fitted);
+  assert.ok(fitted.endsWith(`${cmd}))`), fitted);
+  assert.strictEqual(fitAny('short'), 'short');
+  const plain = fitAny('x'.repeat(300));
+  assert.ok([...plain].length <= NOTICE_MAX);
+});
+
+test('fitNotice: a cut explanation carries no backtick, so no half command; the one at the end is whole', () => {
+  const {fitNotice} = require('../lib/command-line');
+  const first = '`node "/home/alexandra/.countinghouse/bin/ch-local.js" install --pack ci-failure-triage`';
+  const tail = '; `node "/home/alexandra/.countinghouse/bin/ch-local.js" restart` applies it';
+  // (the room before the tail ends inside the first command)
+  const head = `${'a module unloaded, its pack missing: '.padEnd(60, '.')}${first} again, then add it back`;
+  const room = 200 - [...tail].length;
+  assert.ok(head.indexOf(first) < room && room < head.indexOf(first) + first.length, 'the cut lands inside the first command');
+  const out = fitNotice(head, tail);
+  assert.ok([...out].length <= 200, out);
+  assert.ok(out.endsWith(tail), out);
+  assert.ok(!out.slice(0, out.length - tail.length).includes('`'), `a backtick left in the cut explanation: ${out}`);
+});

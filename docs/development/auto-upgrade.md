@@ -305,10 +305,11 @@ A pin without all five is refused.
 
 ## Announcements: every outcome
 
-Each outcome is one line on stderr, and one `history.jsonl` record. The
-line is start's own stderr, never a client notice: in a session's own
-runtime it reaches the client's log, and under the shared runtime, whose
-daemon's stderr goes nowhere, the history alone has it. The record is:
+Each outcome is one line, and one `history.jsonl` record. The line is a
+notice to the client (a session's own runtime, or each session of the
+shared runtime), and is in start's stderr: a session's own runtime's
+reaches the client's log, the shared runtime's the daemon's
+`<home>/run/daemon/runtime.log`. The record is:
 `{kind: "upgrade", how: "auto" | "cli", outcome, from, to, reason}`. A
 failure changes nothing that's installed.
 

@@ -372,7 +372,7 @@ test('the review of P4: an outside loosening the ceiling forbids is not applied 
     const done = start({passThrough: []}, f);
     for (let k = 0; !spawned && k < 300; k++) await new Promise((res) => setTimeout(res, 10));
     await done;
-    assert.match(f.err, /autoUpgrade was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: autoUpgrade cannot be changed to on on this machine: its operator's ceiling forbids it/);
+    assert.match(f.err, /autoUpgrade was changed outside ch-local: off -> on \(this loosens a guarding setting\); not applied: its operator's ceiling forbids it/);
     assert.ok(spawned);
   }
   assert.deepStrictEqual(history(home).filter((h) => h.by === 'start').map((h) => h.change), ['changed outside ch-local, refused by the ceiling', 'changed outside ch-local, refused by the ceiling']);

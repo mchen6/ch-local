@@ -187,9 +187,12 @@ test('--notes <file> writes the release\'s change notes, one per line; --notes n
   const said = {text: "", write(x) { this.text += x; }};
   assert.strictEqual(main([dir, "--notes", notes], {stdout: said, stderr: said, releasePins: file}), 0, said.text);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).release.notes, ['the triage tool says which test failed', 'owner hints name later commits too']);
-  // (no --notes: the notes stay as they are)
-  assert.strictEqual(main([dir], {stdout: quiet, stderr: quiet, releasePins: file}), 0);
+  // (no --notes: the notes stay as they are, said, so a new release never
+  // ships the last one's unasked -- the final pass, L7)
+  const kept = {text: '', write(x) { this.text += x; }};
+  assert.strictEqual(main([dir], {stdout: quiet, stderr: kept, releasePins: file}), 0);
   assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).release.notes.length, 2);
+  assert.match(kept.text, /release\.notes kept as they were \(2 lines\); for a new release pass --notes <file> or --notes none/);
   assert.strictEqual(main([dir, '--notes', 'none'], {stdout: quiet, stderr: quiet, releasePins: file}), 0);
   assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).release.notes, null);
   fs.writeFileSync(notes, Array.from({length: 9}, (_, i) => `change ${i}`).join('\n'));

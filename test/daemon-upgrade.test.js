@@ -450,8 +450,14 @@ const drainSeen = async(call) => {
   assert.ok(call.requests.some((m) => m.type === 'drain'), 'asked to drain');
 };
 
-test('A13: the drain bound is the longest requestTimeout and 2 s, whatever is stored', () => {
-  assert.strictEqual(drainBoundMs(), 122000);
+test('A13: the drain bound is the longest requestTimeout and 2 s, under the sessions\' reconnect window (40 s, with the stop after it), whatever is stored', () => {
+  // (with the stop and the restart after it, under the sessions' 60 s
+  // reconnect window: the final pass on #148)
+  assert.strictEqual(drainBoundMs(), 40000);
+  // (the sessions' window is the runtime's 60 s, and the stop after the drain
+  // ch-local's: both read from here, so a longer stop fails this)
+  assert.ok(drainBoundMs() + require('../lib/daemon').STOP_MS + 5000 <= 60000, 'the drain and the stop after it inside the 60 s window');
+  assert.strictEqual(require('../lib/daemon').STOP_MS, 15000);
 });
 
 test('A13: an upgrade waiting on its drain when the loop gives up restarts nothing', async() => {
@@ -500,7 +506,7 @@ test('A13: a restart\'s drain waits up to the bound, with a low timeout stored; 
     assert.strictEqual(s.calls.length, 1, 'still draining: its bound has not passed');
     one.tell({type: 'drained'});
     await s.nth(1);
-    assert.deepStrictEqual(timers.set.map((x) => x.ms), [122000], 'one drain timer, the bound');
+    assert.deepStrictEqual(timers.set.map((x) => x.ms), [40000], 'one drain timer, the bound');
     assert.strictEqual(timers.cleared, 1, 'cleared: the restart came from drained, the timer never fired');
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);
@@ -599,7 +605,7 @@ test('A13: a drain the runtime answers refused waits the bound, never cut short:
     await drainSeen(one);
     await tick(300);
     assert.strictEqual(s.calls.length, 1, 'still waiting after the refusal');
-    assert.deepStrictEqual(timers.set.map((x) => x.ms), [122000], 'the bound, and no other timer');
+    assert.deepStrictEqual(timers.set.map((x) => x.ms), [40000], 'the bound, and no other timer');
     timers.set[0].fn();   // the bound passes
     await s.nth(1);
     io.signal('SIGTERM');

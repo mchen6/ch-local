@@ -211,6 +211,9 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
       next = {...doc, v: 2, packs: described.packs, modules: described.modules};
       delete next.allowedOrigins;
       if (notesArg !== undefined) next.release = {...doc.release, notes: notesOf(notesArg)};
+      // (notes kept from the last run are the last release's: said, so a new
+      // release never ships them unasked -- the final pass, L7)
+      else if (!check && doc.release != null && Array.isArray(doc.release.notes) && doc.release.notes.length > 0) stderr.write(`${target}: release.notes kept as they were (${doc.release.notes.length} lines); for a new release pass --notes <file> or --notes none\n`);
     }
     if (check) {
       // the release's own document is also checked as every command reads
