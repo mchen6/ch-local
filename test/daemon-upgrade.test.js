@@ -162,7 +162,7 @@ test('a restart request (a credential changed): drained and started again, also 
       await s.nth(1);
       assert.ok(one.requests.some((m) => m.type === 'drain'), 'drained first');
       assert.strictEqual(s.calls.length, 2, `withUpgrade ${withUpgrade}`);
-      assert.match(io.err, /a stored credential changed: draining, then restarting the runtime/);
+      assert.match(io.err, /a restart was asked for \(a stored credential changed, or ch-local restart\): draining, then restarting the runtime/);
       io.signal('SIGTERM');
       assert.strictEqual(await done, 0);
     } finally {
@@ -474,5 +474,43 @@ test('A5: ch-local restart with no shared runtime, or one that does not restart 
     assert.strictEqual(await done, 0);
   } finally {
     fs.rmSync(w.home, {recursive: true, force: true});
+  }
+});
+
+test('A5: ch-local restart said honestly: an earlier ch-local\'s daemon (no runtimeStarted) asked, never "restarted"; an idle stop said as a stop; an unreadable daemon.json changes nothing', async(t) => {
+  const {fakeIo} = require('./fake-io');
+  const {restart} = require('../lib/restart-command');
+  const d = require('../lib/daemon');
+  const rq = require('../lib/daemon-requests');
+  const {home} = setup();
+  try {
+    const dir = runDirOf(home);
+    fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+    const plant = (body) => fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify(body), {mode: 0o600});
+    // (an earlier ch-local's daemon: no runtimeStarted)
+    plant({pid: process.pid, socket: path.join(dir, 'sessions.sock'), started: new Date().toISOString()});
+    t.mock.method(d, 'daemonServing', async() => ({serving: true, pid: process.pid, by: 'socket'}));
+    t.mock.method(rq, 'requestRestart', async() => true);
+    const old = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
+    assert.strictEqual(await restart({}, old), 0, old.err);
+    assert.match(old.out, /the restart is asked for; this shared runtime was started by an earlier ch-local, so whether it has restarted can't be seen here/);
+    assert.doesNotMatch(old.out, /restarted;/);
+    // (an idle stop takes the request: daemon.json goes)
+    plant({pid: process.pid, socket: path.join(dir, 'sessions.sock'), started: new Date().toISOString(), runtimeStarted: new Date().toISOString()});
+    rq.requestRestart.mock.mockImplementation(async() => { fs.rmSync(path.join(dir, 'daemon.json')); return true; });
+    const idle = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}}), {restartWaitMs: 2000});
+    assert.strictEqual(await restart({}, idle), 0, idle.err);
+    assert.match(idle.out, /the shared runtime stopped instead \(it was idle\); the next session starts it again, with what is stored/);
+    // (daemon.json there but not readable: nothing asked)
+    d.daemonServing.mock.mockImplementation(async() => ({serving: true, pid: null, by: 'unreadable'}));
+    let asked = 0;
+    rq.requestRestart.mock.mockImplementation(async() => { asked += 1; return true; });
+    const bad = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
+    assert.strictEqual(await restart({}, bad), 1);
+    assert.match(bad.err, /whether the shared runtime runs can't be told .*; nothing changed/);
+    assert.strictEqual(asked, 0);
+  } finally {
+    t.mock.restoreAll();
+    fs.rmSync(home, {recursive: true, force: true});
   }
 });
