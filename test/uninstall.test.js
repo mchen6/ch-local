@@ -504,3 +504,24 @@ test('A9: the packs.lock bound elapsing while the removal runs is never said as 
     s.done();
   }
 });
+
+test('A-140-nits: a start.lock of this host with no pid, or with no host, gets the way out, never "on undefined"', async () => {
+  const {lockHost} = require('../lib/lock');
+  for (const [body, there] of [[JSON.stringify({host: lockHost(), at: new Date().toISOString()}), /if nothing is running on /], [JSON.stringify({}), /if nothing is running there\./]]) {
+    const s = setup();
+    try {
+      fs.mkdirSync(runDaemon(s.home), {recursive: true, mode: 0o700});
+      fs.chmodSync(path.join(s.home, 'run'), 0o700);
+      fs.writeFileSync(path.join(runDaemon(s.home), 'start.lock'), body);
+      const before = listing(s.home);
+      const u = Object.assign(io(s, ['yes']), {alive: () => false, uninstallLockMs: 300});
+      assert.strictEqual(await uninstall({}, u), 1);
+      assert.match(u.err, /again in a minute, or remove .*start\.lock if nothing is running/, body);
+      assert.match(u.err, there, body);
+      assert.doesNotMatch(u.err, /undefined/, body);
+      untouched(s.home, before);
+    } finally {
+      s.done();
+    }
+  }
+});
