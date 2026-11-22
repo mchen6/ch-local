@@ -143,6 +143,9 @@ test('a home with own modules and no pack starts, loading them; with neither, st
   const empty = io(home);
   assert.strictEqual(await start({passThrough: []}, empty), 1);
   assert.match(empty.err, /no pack is installed/);
+  // (the hint as every pre-install hint: the Windows home note too -- the
+  // closing pass, L3)
+  assert.ok(empty.err.includes(`no pack is installed; run ${require('../lib/command-line').hintCommand(where, 'install --pack <name>')}`), empty.err);
   const tree = addOwn('my-tool');
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);

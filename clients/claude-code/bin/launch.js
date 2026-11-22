@@ -159,7 +159,10 @@ function main() {
   if (!nodeOk(process.version)) fail(`needs Node 22.16 or later; this is ${process.version} (the \`node\` on the PATH Claude Code sees)`);
   const launcher = whereIs(process.env);
   if (launcher == null) fail(`COUNTINGHOUSE_HOME must be an absolute path, not "${process.env.COUNTINGHOUSE_HOME}"`);
-  if (!fs.existsSync(launcher)) fail(`the launcher is not installed at ${launcher}; install it with: npx @countinghouse/ch-local install --pack ci-failure-triage`);
+  // (COUNTINGHOUSE_HOME set: the home in words, on every platform, or the
+  // install goes to the default home -- the closing pass on release 1, L3)
+  const named = process.env.COUNTINGHOUSE_HOME != null && process.env.COUNTINGHOUSE_HOME !== '' ? ` (with COUNTINGHOUSE_HOME set to ${process.env.COUNTINGHOUSE_HOME})` : '';
+  if (!fs.existsSync(launcher)) fail(`the launcher is not installed at ${launcher}; install it with: npx @countinghouse/ch-local install --pack ci-failure-triage${named}`);
   // (nothing runs from a home another user could change: exit 2)
   const checked = homeProblem(path.dirname(path.dirname(launcher)), launcher);
   if (checked.problem != null) fail(`${checked.problem}; nothing was started`, 2);

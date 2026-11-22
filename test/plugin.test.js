@@ -125,6 +125,9 @@ test('launch.js without an installed launcher exits non-zero with one line namin
     assert.strictEqual(r.stdout, '', 'stdout is the MCP channel: nothing on it');
     assert.strictEqual(r.stderr.trim().split('\n').length, 1);
     assert.match(r.stderr, new RegExp(esc(`npx ${SCOPE}/ch-local install --pack ci-failure-triage`)));
+    // (COUNTINGHOUSE_HOME set: the home named in words, on every platform,
+    // or the install goes to the default home -- the closing pass, L3)
+    assert.match(r.stderr, new RegExp(esc(`install --pack ci-failure-triage (with COUNTINGHOUSE_HOME set to ${home})`)));
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
