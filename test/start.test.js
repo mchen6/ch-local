@@ -989,6 +989,16 @@ test('--own-runtime-reason and --own-runtime-why only after --own-runtime, and n
   }
 });
 
+// A8 (the final pass): the automatic upgrade check's lines went to start's
+// stderr only, which in shared mode is the daemon's, so no client heard that
+// an upgrade was applied, paused or failed. They are notices.
+test('A8: what the automatic upgrade check says reaches the client as a notice, not stderr alone', async (t) => {
+  t.mock.method(require('../lib/auto-upgrade'), 'autoCheck', async ({say}) => { say('upgraded ch-local 0.1.0 -> 0.1.1; a test line'); return {checked: true}; });
+  const home = installedHome({other: true});
+  const told = await toldBy(['start', '--stdio', '--home', home], io(home, {env: {GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: 'example-other'}}));
+  assert.ok(told.includes('upgraded ch-local 0.1.0 -> 0.1.1; a test line'), told.join(' | '));
+});
+
 test('start without --own-runtime tells no such notice', async () => {
   const home = installedHome({other: true});
   const told = await toldBy(['start', '--stdio', '--home', home], io(home, {env: {GITHUB_TOKEN: 'example-shell-token', OTHER_TOKEN: 'example-other'}}));
