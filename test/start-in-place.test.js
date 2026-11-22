@@ -408,6 +408,20 @@ test('while running, under a ceiling that cannot be trusted: a change that loose
 // countinghouse part 3, section 5 (P5): never silent. What start and the
 // in-place applier say about the settings reaches the client as notices.
 const notices = (s) => s.requests.filter((m) => m.type === 'notice').map((m) => [m.module, m.text]);
+// A notice expected whole, as sent at this test's home: whole, or -- where
+// the test's home is long enough (a macOS or Windows runner's temp
+// directory) that the notice is fitted to the runtime's cut -- its
+// explanation cut ("…") before its last command, which arrives whole, within
+// 200. At a user's home (test/notice-length.js) the whole text fits, so
+// there it is always sent whole. The closing pass's CI on #155.
+const sentAs = (got, full) => {
+  if (typeof got !== 'string') return false;
+  if (got === full) return true;
+  const {atRealisticHome} = require('./notice-length');
+  if (atRealisticHome(full) > 200 || !/…/.test(got) || [...got].length > 200) return false;
+  const last = full.match(/`[^`]*`[^`]*$/);
+  return last != null ? got.endsWith(last[0]) : full.startsWith(got.slice(0, got.indexOf('…')));
+};
 
 test('never silent: an outside edit found at start reaches the client once the runtime is up', async () => {
   const {setSetting} = require('../lib/settings');
@@ -826,7 +840,7 @@ test('a running start stops serving a pack an upgrade withdraws: unloaded, and t
     withdrawHeld(s.home, 'ci-failure-triage');
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-ci-failure-triage'));
     const now = `module ch-pack-ci-failure-triage was withdrawn in this release and is no longer served; \`${said(s.home, 'remove-pack ci-failure-triage')}\` removes it`;
-    await until(() => s.requests.some((m) => (m.type === 'unload' && m.notice === now) || (m.type === 'notice' && m.text === now)));
+    await until(() => s.requests.some((m) => (m.type === 'unload' && sentAs(m.notice, now)) || (m.type === 'notice' && sentAs(m.text, now))));
   } finally {
     s.end();
     await s.done;
@@ -1852,7 +1866,9 @@ test('an unreadable store: an unchanged declaration keeps its key, a changed one
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.ok(!s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-other'), JSON.stringify(s.requests));
     const why = s.requests.find((m) => m.type === 'unload' && named(m) === SCENARIO).notice;
-    assert.match(why, /the stored credentials are not used \(.*could not be read/);
+    // (whole at a user's home; at a long temp home cut at the end, no command in it)
+    if (/…/.test(why)) assert.ok(/^ch-pack-ci-failure-triage unloaded: /.test(why) && [...why].length <= 200, why);
+    else assert.match(why, /the stored credentials are not used \(.*could not be read/);
   } finally {
     fs.chmodSync(path.join(t.home, 'credentials', 'credentials.json'), 0o600);
     s.end();
@@ -1949,8 +1965,8 @@ test('a caller of a module turned off: its unload carries reason calls and becau
     assert.strictEqual(caller.because, '@countinghouse/ch-pack-other');
     // (said directly, its way back whole at the end; the explanation cut
     // first at a deep test home: the closing pass's second medium)
-    assert.match(caller.notice, /^ch-pack-ci-failure-triage unloaded: it calls ch-pack-other/);
-    assert.match(caller.notice, /: `[^`]+ settings set enabled\.@countinghouse\/ch-pack-other on`$/);
+    const full = `ch-pack-ci-failure-triage unloaded: it calls ch-pack-other, which is turned off: \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'settings set enabled.@countinghouse/ch-pack-other on')}\``;
+    assert.ok(sentAs(caller.notice, full), caller.notice);
     assert.ok([...caller.notice].length <= 200);
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
     assert.strictEqual(s.requests.find((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other').reason, 'off');
@@ -2075,10 +2091,10 @@ test('an own module the runtime refuses: held back as refused with its code, its
     await until(() => ownAsks(s).filter((m) => m.type === 'load').length === 2);
     s.ask({type: 'module-stopped', name: 'my-tool', code: 'MODULE_INVALID', when: 'start'});
     const said = `my-tool, your own module, is not loaded: this release's runtime refuses it (MODULE_INVALID); \`${chLocal(layout({COUNTINGHOUSE_HOME: s.home}), 'status')}\` says why and how to remove it`;
-    await until(() => notices(s).some(([, t]) => t === said));
+    await until(() => notices(s).some(([, t]) => sentAs(t, said)));
     await until(() => held().some((m) => m.name === 'my-tool'));
     assert.deepStrictEqual(held().find((m) => m.name === 'my-tool'), {name: 'my-tool', reason: 'refused', code: 'MODULE_INVALID'});
-    assert.ok(s.history().some((h) => h.module === 'my-tool' && h.change === 'stopped' && h.notice === said));
+    assert.ok(s.history().some((h) => h.module === 'my-tool' && h.change === 'stopped' && sentAs(h.notice, said)));
     const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
     assert.deepStrictEqual(run.refused, {'my-tool': {code: 'MODULE_INVALID', tree: b.tree}});
   } finally {
