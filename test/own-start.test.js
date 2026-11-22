@@ -113,6 +113,22 @@ test('a copy changed since the yes: held back (changed); a pack module\'s device
   assert.ok(f.err.includes('not loading my-changed: its files changed since you added it: run `'), f.err);
 });
 
+// E10 (A-own-gone): a copy whose directory is not there at all reaches the
+// held-back file as gone, apart from changed, and is said as the overview
+// says it (countinghouse #534)
+test('a copy gone from the home: held back (gone) in the file the runtime reads, said with add-module on its folder', {skip: !enforceHere && 'enforce on Windows: countinghouse#195'}, async () => {
+  const {home, where, addOwn} = ownHome();
+  const tree = addOwn('my-gone');
+  const dir = ownTree.copyDir(where, 'my-gone', tree);
+  ownTree.unlockTree(dir);
+  fs.rmSync(dir, {recursive: true});
+  const f = io(home);
+  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+  const {heldBack} = f.spawned[0];
+  assert.deepStrictEqual(heldBack.modules, [{name: 'my-gone', reason: 'gone'}]);
+  assert.ok(f.err.includes('not loading my-gone: its copy is gone: run `'), f.err);
+});
+
 test('an own.json that cannot be read: no own module loads, said; the packs load', async () => {
   const {home, where} = ownHome();
   fs.writeFileSync(where.ownRecord, '{');
