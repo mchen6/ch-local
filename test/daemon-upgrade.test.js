@@ -419,3 +419,91 @@ test('(2b) a crash at the drain itself: still one restart, never a second runtim
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// A13: a drain waits as long as a call may still be inside its own timeout --
+// the requestTimeout setting the runtime runs with (default 30 s, up to
+// 120 s), and 2 s for the answer's way back -- read when it drains; its timer
+// goes once the runtime says drained first; and a drain holds no start.lock
+// (the stop and the restart take it after).
+const {drainBoundMs} = require('../lib/daemon');
+const storeTimeout = (home, ms) => fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: ms}}));
+// the drain's timers, counted: what was set (and for how long), what cleared
+const countedTimers = () => {
+  const c = {set: [], cleared: 0};
+  c.setTimeout = (fn, ms) => { const t = setTimeout(fn, Math.min(ms, 50)); c.set.push({ms, t}); return t; };
+  c.clearTimeout = (t) => { if (c.set.some((x) => x.t === t)) c.cleared++; clearTimeout(t); };
+  return c;
+};
+
+test('A13: the drain bound is the stored requestTimeout and 2 s; the default 30 s when none or one out of its bounds is stored', () => {
+  const home = tmpHome();
+  try {
+    assert.strictEqual(drainBoundMs(home), 32000, 'nothing stored');
+    storeTimeout(home, 120000);
+    assert.strictEqual(drainBoundMs(home), 122000);
+    storeTimeout(home, 60000);
+    assert.strictEqual(drainBoundMs(home), 62000);
+    for (const bad of [999999, 'x', -1, 4999]) {
+      storeTimeout(home, bad);
+      assert.strictEqual(drainBoundMs(home), 32000, `stored ${bad}`);
+    }
+    fs.writeFileSync(path.join(home, 'settings.json'), '{not json');
+    assert.strictEqual(drainBoundMs(home), 32000, 'unreadable');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('A13: a restart\'s drain waits for the stored requestTimeout, read when it drains; its timer is cleared when the runtime says drained first', async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    delete io.daemonDrainMs;
+    const timers = countedTimers();
+    io.daemonDrainTimers = timers;
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    // (stored after the daemon started: read at the drain, not at the start)
+    storeTimeout(home, 90000);
+    // the runtime says drained once asked, before the bound
+    const told = one.requests.length;
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    const until = Date.now() + 3000;
+    while (one.requests.length === told && Date.now() < until) await tick();
+    one.tell({type: 'drained'});
+    await s.nth(1);
+    assert.deepStrictEqual(timers.set.map((x) => x.ms), [92000], 'one drain timer, for the stored timeout and 2 s');
+    assert.strictEqual(timers.cleared, 1, 'cleared once the runtime said drained');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('A13: a drain holds no start.lock: the lock is taken for the stop and the restart after it', async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    io.daemonDrainMs = 600;
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    const until = Date.now() + 3000;
+    while (!one.requests.some((m) => m.type === 'drain') && Date.now() < until) await tick();
+    assert.ok(one.requests.some((m) => m.type === 'drain'), 'draining');
+    // (inside the drain's 600 ms, the runtime not having said drained)
+    await tick(100);
+    assert.strictEqual(fs.existsSync(path.join(runDirOf(home), 'start.lock')), false, 'no start.lock while it drains');
+    assert.strictEqual(s.calls.length, 1, 'still draining');
+    await s.nth(1);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
