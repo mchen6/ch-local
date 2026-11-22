@@ -546,6 +546,41 @@ test('A13: a runtime that ends during the drain ends the wait; that end counted 
   }
 });
 
+test('A13: a loop that does not take a runtime\'s end during the drain: the wait for it is bounded, said, and one runtime follows', async() => {
+  const {home, io, runtimePkg, set} = setup();
+  try {
+    delete io.daemonDrainMs;
+    const timers = heldTimers();
+    io.daemonDrainTimers = timers;
+    // (the loop holds start.lock through a long backoff before it replaces
+    // the ended runtime: it has not taken the end when the bound fires)
+    io.daemonBackoffMs = [3000, 3000, 3000, 3000];
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    set(runtimePkg, '8.1.0');
+    await requestUpgrade(home);
+    await drainSeen(one);
+    await one.exit(1);
+    const by = Date.now() + 3000;
+    while (timers.set.length < 2 && Date.now() < by) await tick();
+    assert.strictEqual(timers.set.length, 2, 'the wait for the loop is bounded');
+    assert.strictEqual(timers.set[1].ms, 15000 + 3000, 'a stop and the longest backoff');
+    timers.set[1].fn();   // the bound passes, the loop still in its backoff
+    const said = Date.now() + 3000;
+    while (!/the supervisor has not taken that end/.test(io.err) && Date.now() < said) await tick();
+    assert.match(io.err, /the runtime ended during the drain and the supervisor has not taken that end; going on without it/);
+    await s.nth(1, 10000);
+    await tick(500);
+    assert.strictEqual(s.calls.length, 2, 'one runtime after the end, never two');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 test('A13: a drain the runtime answers refused waits the bound, never cut short: how long its calls run is not known', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
