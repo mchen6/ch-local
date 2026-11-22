@@ -288,12 +288,16 @@ test('fitAny: within 200 code points; the last command in backticks kept whole; 
   assert.ok([...plain].length <= NOTICE_MAX);
 });
 
-test('fitNotice: a cut never splits an earlier command in the explanation; the one at the end is whole', () => {
+test('fitNotice: a cut explanation carries no backtick, so no half command; the one at the end is whole', () => {
   const {fitNotice} = require('../lib/command-line');
   const first = '`node "/home/alexandra/.countinghouse/bin/ch-local.js" install --pack ci-failure-triage`';
   const tail = '; `node "/home/alexandra/.countinghouse/bin/ch-local.js" restart` applies it';
-  const out = fitNotice(`a module unloaded: its pack is missing (run ${first} again, then add it back)`, tail);
+  // (the room before the tail ends inside the first command)
+  const head = `${'a module unloaded, its pack missing: '.padEnd(60, '.')}${first} again, then add it back`;
+  const room = 200 - [...tail].length;
+  assert.ok(head.indexOf(first) < room && room < head.indexOf(first) + first.length, 'the cut lands inside the first command');
+  const out = fitNotice(head, tail);
   assert.ok([...out].length <= 200, out);
   assert.ok(out.endsWith(tail), out);
-  assert.strictEqual((out.match(/`/g) || []).length % 2, 0, `a command split: ${out}`);
+  assert.ok(!out.slice(0, out.length - tail.length).includes('`'), `a backtick left in the cut explanation: ${out}`);
 });
