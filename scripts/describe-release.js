@@ -49,11 +49,14 @@ const refuse = (why) => { throw new StepError(why); };
 // skip: package names whose tarballs, any version, are left unopened (the
 // release's runtime packages: never described, and ch-local's bundles what
 // the strict reader refuses; --check reads the runtime's on its own)
+const VERSION_TGZ = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\.tgz$/;
 function readTarballs(dir, {only = null, skip = []} = {}) {
   let files;
   try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.tgz')).sort(); } catch (err) { refuse(`cannot read ${dir} (${err.code})`); }
+  // (by the exact <name>-<version>.tgz form, so a pack module whose name
+  // starts as a skipped one's, then a digit, is still read)
   const prefixes = skip.map((n) => `${n.replace(/^@/, '').replace('/', '-')}-`);
-  files = files.filter((f) => !prefixes.some((p) => f.startsWith(p) && /^\d/.test(f.slice(p.length))));
+  files = files.filter((f) => !prefixes.some((p) => f.startsWith(p) && VERSION_TGZ.test(f.slice(p.length))));
   if (only != null) {
     const wanted = new Set(Object.entries(only).map(([name, version]) => require('../lib/unpack').tarballName(name, version)));
     files = files.filter((f) => wanted.has(f));
@@ -80,12 +83,15 @@ function readTarballs(dir, {only = null, skip = []} = {}) {
 // the held-back reasons the runtime in `dir` knows: its tarball (the
 // version pinned, else the only countinghouse-<version>.tgz there), its
 // lib/held-back.js's one `const REASONS = ['a', 'b', ...];` line, read
-// strictly -> {version, reasons} | {problem} (names a file, never its text)
+// strictly -> {version, reasons} | {problem} (names a file, never its text).
+// Reasons only: every root and field ch-local writes came with the reason
+// it rides on (roots and via with calls, #490; code with refused, #525; via
+// with collision), so a runtime that knows the reason reads them
 function runtimeReasons(dir, version) {
   let files;
   try { files = fs.readdirSync(dir); } catch (err) { return {problem: `cannot read ${dir} (${err.code})`}; }
   const named = version != null ? [require('../lib/unpack').tarballName('countinghouse', version)] : null;
-  const found = files.filter((f) => (named != null ? named.includes(f) : /^countinghouse-\d[^/\\]*\.tgz$/.test(f)));
+  const found = files.filter((f) => (named != null ? named.includes(f) : f.startsWith('countinghouse-') && VERSION_TGZ.test(f.slice('countinghouse-'.length))));
   if (found.length !== 1) return {problem: named != null ? `no ${named[0]} in ${dir}` : `no single countinghouse tarball in ${dir}: ${found.length}`};
   const f = found[0];
   let members;
@@ -93,7 +99,11 @@ function runtimeReasons(dir, version) {
   let manifest = null;
   try { manifest = JSON.parse(String(members['package.json'])); } catch (e) { manifest = null; }
   if (manifest == null || manifest.name !== 'countinghouse' || typeof manifest.version !== 'string') return {problem: `${f}: it is no countinghouse package`};
-  const lines = members['lib/held-back.js'] == null ? [] : String(members['lib/held-back.js']).split('\n').filter((l) => l.startsWith('const REASONS'));
+  // (the file named for the pin holds that version, or the verdict is not
+  // the pinned runtime's)
+  if (version != null && manifest.version !== version) return {problem: `${f}: it holds countinghouse ${manifest.version}, not the pinned ${version}`};
+  if (members['lib/held-back.js'] == null) return {problem: `${f}: it has no lib/held-back.js (a runtime older than the held-back file)`};
+  const lines = String(members['lib/held-back.js']).split(/\r?\n/).filter((l) => l.startsWith('const REASONS'));
   const m = lines.length === 1 ? /^const REASONS = \[('[a-z][a-z-]*'(?:, '[a-z][a-z-]*')*)\];$/.exec(lines[0]) : null;
   if (m == null) return {problem: `${f}: its lib/held-back.js has no one-line REASONS list`};
   return {version: manifest.version, reasons: m[1].split(', ').map((w) => w.slice(1, -1))};

@@ -227,7 +227,12 @@ The checks are grouped. Within a group, the order doesn't matter.
       the pinned version, else its only `countinghouse-<version>.tgz`.
       From it the step reads `lib/held-back.js`'s one-line REASONS. It fails
       naming each reason the runtime lacks, and it also fails when there is
-      no such tarball or the line can't be read so.
+      no such tarball, the tarball holds another version than the pin's, or
+      the line can't be read so. It checks reasons only. Every root and
+      field ch-local writes came in the runtime with the reason it rides on
+      (roots and `via` with `calls`, #490; `code` with `refused`, #525;
+      `via` with `collision`). A new root or field needs this check widened
+      with it.
     - Check: the step exits 0 on the release's tarballs with the runtime's
       beside them.
     - Evidence: the step's output, saved with the checklist.
