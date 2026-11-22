@@ -75,7 +75,7 @@ test('forStart: gh is asked once, and only when a binding\'s source is gh; its t
   assert.strictEqual(s.identities.get(ACCESS).source, 'gh');
   const none = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'gh is not logged in'})});
   assert.strictEqual(none.states.get(ACCESS).state, 'gh-gave-none');
-  assert.match(none.states.get(ACCESS).reason, /your gh login gave no token at this start \(gh is not logged in\): run `gh auth login` and restart your client, or `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
+  assert.match(none.states.get(ACCESS).reason, /your gh login gave no token at this start \(gh is not logged in\): run `gh auth login` and restart your client, or with the shared runtime run `[^`]+ restart`; or `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/);
   assert.ok(!('COUNTINGHOUSE_CREDENTIAL_1' in none.env));
 });
 
@@ -118,7 +118,7 @@ test('slotMatches and applyStates: a removed binding, a changed value, and one a
   bind(h, OTHER, 'OTHER_TOKEN', stored(OTHER_ORIGIN, 'test-value-other'));
   const other = mc.applyStates(where, record(), s.identities).get(OTHER);
   assert.strictEqual(other.state, 'new');
-  assert.match(other.reason, /restart your client to load it/);
+  assert.match(other.reason, /restart your client, or with the shared runtime run `[^`]+ restart` to load it/);
 });
 
 test('migrateV1: a version 1 entry reads as a binding to GitHub\'s origin under the name the module declares', () => {

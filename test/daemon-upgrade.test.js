@@ -419,3 +419,60 @@ test('(2b) a crash at the drain itself: still one restart, never a second runtim
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// A5 (the final pass): `ch-local restart` makes the shared runtime take what
+// is stored, its sessions resuming. Said only once seen: daemon.json's
+// runtimeStarted changed AND its socket proving the secret
+test('A5: ch-local restart restarts the shared runtime over its requests, and says so only once the new one answers', async() => {
+  const {home, io} = setup();
+  try {
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    const {fakeIo} = require('./fake-io');
+    const {restart} = require('../lib/restart-command');
+    const r = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
+    const code = restart({}, r);
+    const two = await s.nth(1);
+    assert.strictEqual(await code, 0, r.err);
+    assert.match(r.out, /^the shared runtime restarted; its sessions resume$/m);
+    assert.ok(one.requests.some((m) => m.type === 'drain'), 'drained first');
+    assert.ok(two != null, 'a new runtime');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('A5: ch-local restart with no shared runtime, or one that does not restart in time, says so and exits 1', async(t) => {
+  const {fakeIo} = require('./fake-io');
+  const {restart} = require('../lib/restart-command');
+  const {home} = setup();
+  try {
+    const none = fakeIo({env: {COUNTINGHOUSE_HOME: home}});
+    assert.strictEqual(await restart({}, none), 1);
+    assert.match(none.out, /^no shared runtime runs here: restart your client, whose own runtime takes the change at its start$/m);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+  const w = setup();
+  try {
+    const s = scripted(w.home);
+    const done = daemon({home: w.home}, w.io, {run: s.run});
+    await s.nth(0);
+    await adopted(w.home);
+    // (a restart asked for that never happens: never said as one)
+    t.mock.method(require('../lib/daemon-requests'), 'requestRestart', async() => true);
+    const r = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: w.home}}), {restartWaitMs: 400});
+    assert.strictEqual(await restart({}, r), 1);
+    assert.match(r.err, /the shared runtime did not restart within 0\.4 s; its sessions go on as before/);
+    assert.doesNotMatch(r.out, /restarted/);
+    t.mock.restoreAll();
+    w.io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(w.home, {recursive: true, force: true});
+  }
+});

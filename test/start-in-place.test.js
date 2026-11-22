@@ -400,6 +400,26 @@ test('never silent: an outside edit found at start reaches the client once the r
   }
 });
 
+// A5 (the final pass): in shared mode a client's restart only attaches to
+// the same runtime again, so what "applies at the next start" says the way
+// that restarts it: `ch-local restart`, the sessions resuming
+test('A5: in shared mode, what applies at the next start names `ch-local restart`, never a client\'s restart', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true});
+  try {
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+    await until(() => notices(s).some(([, t]) => /autoUpgrade loosened/.test(t)));
+    const line = notices(s).find(([, t]) => /autoUpgrade loosened/.test(t))[1];
+    assert.match(line, /^autoUpgrade loosened from off to on, when the shared runtime restarts \(`[^`]+ restart`\)$/);
+    assert.doesNotMatch(line, /next start|restart your client/);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 test('never silent: a loosening applied while running is told to the client; a tightening is not', async () => {
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');
@@ -922,20 +942,23 @@ test('module-stopped at start (its plan refused): never loaded in place; a fresh
 // the home's ch-local (0.2.0), and the record is the new release's
 const otherRelease = (opts) => { const r = release(opts); r.allow = {...r.allow, release: {version: '9.9.9', security: null}}; return r; };
 const stale = (s) => { s.f.selfVersion = '0.1.9'; };
-const UPGRADED = 'ch-local in this home is now 0.2.0 (upgraded); restart your client to use it';
+const {restartEither: either} = require('../lib/command-line');
+const eitherIn = (h) => either(require('../lib/home').layout({COUNTINGHOUSE_HOME: h}));
+// (a running runtime takes it at a restart: the client's, or the shared one's: A5)
+const UPGRADED = (h) => `ch-local in this home is now 0.2.0 (upgraded); ${eitherIn(h)} to use it`;
 test('another release\'s record: a module moved up is not reloaded, a new one not loaded; said once', async () => {
   const s = await running();
   try {
     stale(s);
     const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
-    await until(() => s.f.err.includes(UPGRADED));
+    await until(() => s.f.err.includes(UPGRADED(s.home)));
     assert.strictEqual(await addPack({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.deepStrictEqual(s.requests.filter((m) => ['load', 'reload', 'unload'].includes(m.type)), [], 'nothing loaded or reloaded');
-    assert.strictEqual(s.f.err.split(UPGRADED).length - 1, 1, 'said once');
-    assert.ok(s.history().some((h) => h.change === 'release changed' && h.notice === UPGRADED));
+    assert.strictEqual(s.f.err.split(UPGRADED(s.home)).length - 1, 1, 'said once');
+    assert.ok(s.history().some((h) => h.change === 'release changed' && h.notice === UPGRADED(s.home)));
   } finally {
     s.end();
     await s.done;
@@ -978,7 +1001,7 @@ test('another release\'s record: a pack turned off is unloaded, and the held-bac
     stale(s);
     const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
-    await until(() => s.f.err.includes(UPGRADED));
+    await until(() => s.f.err.includes(UPGRADED(s.home)));
     const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
@@ -1019,7 +1042,7 @@ test('another release\'s record: a pack added is not loaded in place, and the he
     stale(s);
     const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
-    await until(() => s.f.err.includes(UPGRADED));
+    await until(() => s.f.err.includes(UPGRADED(s.home)));
     assert.strictEqual(await addPack({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
     await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
     const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
@@ -1352,7 +1375,7 @@ test('a home rolled back under a running start: "ch-local in this home is now <v
     // this process is the later release; the home's ch-local is the earlier
     s.f.selfVersion = '0.2.1';
     editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
-    const line = 'ch-local in this home is now 0.2.0 (rolled back); restart your client to use it';
+    const line = `ch-local in this home is now 0.2.0 (rolled back); ${eitherIn(s.home)} to use it`;
     await until(() => notices(s).some(([, t]) => t === line));
     await settled(s);
     assert.strictEqual(notices(s).filter(([, t]) => t === line).length, 1);
@@ -1388,7 +1411,7 @@ test('a credential removed while running unloads the callers of its module, said
   try {
     await until(() => s.args() != null);
     require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
-    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or restart your client';
+    const line = `ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or ${eitherIn(s.home)}`;
     await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
     // a later change sends no second unload
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));

@@ -450,7 +450,8 @@ test('a start the home was upgraded under is started by the record, not by its o
   const args = f.spawned[0].args;
   assert.strictEqual(args.filter((a) => a === '--loadModule').length, 1, f.err);
   assert.ok(!/this release pins/.test(f.err), f.err);
-  assert.match(f.err, /ch-local in this home is now 9\.9\.9 \(upgraded\); restart your client to use it/);
+  // (a running runtime takes it at a restart: the client's, or the shared one's: A5)
+  assert.match(f.err, /ch-local in this home is now 9\.9\.9 \(upgraded\); restart your client, or with the shared runtime run `[^`]+ restart` to use it/);
 });
 
 // the medium review of the high round, 1: a record older than this
