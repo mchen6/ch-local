@@ -77,7 +77,10 @@ test('A12: createPrivate hands PowerShell its data as base64 of the bytes, decod
   assert.doesNotMatch(winAcl.CREATE_SCRIPT, /ASCII/);
   const data = '{"home":"C:\\\\Users\\\\José","token":"x€y"}';
   assert.strictEqual(Buffer.from(winAcl.createInput(data), 'base64').toString('utf8'), data);
-  assert.ok(Buffer.from(winAcl.createInput(Buffer.from([0, 255, 128]))).equals(Buffer.from(Buffer.from([0, 255, 128]).toString('base64'))), 'a Buffer as its bytes');
+  const bytes = Buffer.from([0, 255, 128, 0xc3]);
+  assert.strictEqual(winAcl.createInput(bytes), bytes.toString('base64'), 'a Buffer as its bytes, never through text');
+  assert.strictEqual(winAcl.createInput(new Uint8Array([0, 255])), Buffer.from([0, 255]).toString('base64'), 'any view as its bytes');
+  for (const bad of [undefined, null, 5]) assert.throws(() => winAcl.createInput(bad), /not a string or bytes/);
 });
 
 test('A12, on Windows: a file createPrivate makes holds exactly the bytes given', {skip: process.platform !== 'win32' && 'PowerShell'}, () => {
@@ -88,6 +91,10 @@ test('A12, on Windows: a file createPrivate makes holds exactly the bytes given'
     const data = '{"home":"C:\\\\Users\\\\José","token":"x€y"}';
     createPrivate(file, data);
     assert.strictEqual(require('node:fs').readFileSync(file, 'utf8'), data);
+    // (bytes that aren't UTF-8 text, as they are)
+    const raw = Buffer.from([0, 255, 128, 0xc3]);
+    createPrivate(`${file}.bin`, raw);
+    assert.ok(require('node:fs').readFileSync(`${file}.bin`).equals(raw));
   } finally {
     require('node:fs').rmSync(dir, {recursive: true, force: true});
   }
