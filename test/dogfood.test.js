@@ -316,7 +316,7 @@ test('shimInto: a built binary that names this machine\'s home is refused, never
     fs.writeFileSync(leaky, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0]), Buffer.from(`${require('node:os').homedir()}/.cargo/registry/src/x.rs`), Buffer.from([0])]));
     const pins = {};
     await assert.rejects(dogfood.shimInto({}, path.join(work, 'release'), work, pins, () => {}, {build: () => leaky, platform: 'linux', arch: 'x64'}),
-      /the built shim names this machine's \/.* \(a build path\): not packed/);
+      /the built shim names this machine's .+ \(a build path\): not packed/);
     assert.deepStrictEqual(pins, {}, 'nothing pinned');
     assert.deepStrictEqual(fs.readdirSync(path.join(work, 'release')), [], 'nothing packed');
   } finally {
