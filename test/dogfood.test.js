@@ -303,3 +303,30 @@ test('releaseShim: a shim build that fails is the folder\'s problem, said with w
     fs.rmSync(work, {recursive: true, force: true});
   }
 });
+
+// the reviewer (11-21): the walk folder's shim binary named the build
+// account (cargo's registry paths in panic messages). The build remaps them,
+// and shimInto refuses a binary that still holds this machine's home, read as
+// bytes, never as text a grep without -a skips
+test('shimInto: a built binary that names this machine\'s home is refused, never packed', async () => {
+  const work = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'ch-dogfood-shim-')));
+  try {
+    fs.mkdirSync(path.join(work, 'release'));
+    const leaky = path.join(work, 'built');
+    fs.writeFileSync(leaky, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0]), Buffer.from(`${require('node:os').homedir()}/.cargo/registry/src/x.rs`), Buffer.from([0])]));
+    const pins = {};
+    await assert.rejects(dogfood.shimInto({}, path.join(work, 'release'), work, pins, () => {}, {build: () => leaky, platform: 'linux', arch: 'x64'}),
+      /the built shim names this machine's home .* \(a build path\): not packed/);
+    assert.deepStrictEqual(pins, {}, 'nothing pinned');
+    assert.deepStrictEqual(fs.readdirSync(path.join(work, 'release')), [], 'nothing packed');
+  } finally {
+    fs.rmSync(work, {recursive: true, force: true});
+  }
+});
+
+test('cargoBuild remaps cargo\'s home, rustup\'s home and the checkout out of the binary, keeping --locked', () => {
+  const {remapFlags} = dogfood;
+  const flags = remapFlags({HOME: '/home/u', CARGO_HOME: '/home/u/.cargo', RUSTUP_HOME: '/home/u/.rustup'}, '/home/u/src/ch-local');
+  // (rustc tries them last first: the home, then what is inside it)
+  assert.deepStrictEqual(flags, ['--remap-path-prefix=/home/u=/home', '--remap-path-prefix=/home/u/.cargo=/cargo', '--remap-path-prefix=/home/u/.rustup=/rustup', '--remap-path-prefix=/home/u/src/ch-local=/ch-local']);
+});
