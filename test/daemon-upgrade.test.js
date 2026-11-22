@@ -1158,3 +1158,34 @@ test('C-daemon-log: an error that ends the daemon reaches its log before it goes
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// The closing pass on the lifecycle, M2: a private read of the requests file
+// refused once (on Windows, a PowerShell timeout just after an install) is
+// tried again, never skipped until the file's size changes -- a request
+// written once is never silently ignored
+test('M2: a refused read of the requests file is tried again, and its request is acted on', async(t) => {
+  const {home, io} = setup();
+  try {
+    io.daemonRefusedRetryMs = 150;
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    await adopted(home);
+    const pf = require('../lib/private-file');
+    const real = pf.readPrivateIn;
+    let refusals = 0;
+    t.mock.method(pf, 'readPrivateIn', (dir, name, ...rest) => {
+      if (name === 'requests' && refusals === 0) { refusals += 1; throw Object.assign(new Error('refused once'), {code: 'EPERM'}); }
+      return real(dir, name, ...rest);
+    });
+    await requestRestart(home);
+    await s.nth(1);
+    assert.strictEqual(refusals, 1, 'the first read was refused');
+    assert.match(io.err, /a restart was asked for/);
+    t.mock.restoreAll();
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

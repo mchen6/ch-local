@@ -66,6 +66,7 @@ test('readRequests reads the lines after an offset, by the private-file checks; 
     assert.strictEqual(fs.readFileSync(file(h), 'utf8').slice(b.offset), '{"op":"upgr', 'a partial line waits');
     fs.chmodSync(file(h), 0o644);
     assert.deepStrictEqual(readRequests(h, 0).requests, [], 'not 0600: not read');
+    assert.strictEqual(readRequests(h, 0).refused, true, 'said as refused, so the daemon tries it again (M2)');
   } finally { fs.rmSync(h, {recursive: true, force: true}); }
 });
 
