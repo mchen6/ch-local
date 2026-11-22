@@ -8,6 +8,8 @@ const {unhomed} = require('./unhomed');
 // credentials as the union of the loaded packs' remotes, and no device config
 // (the scenario's defaultRepo is its own setting: #413 rev 3, P1 and P3).
 const test = require('node:test');
+// (Node 22.16's runner: see test/keep-alive.js)
+require('./keep-alive');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');

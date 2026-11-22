@@ -9,6 +9,8 @@ require('./tmp-dirs');
 // interactive CLI session, and when its project directory is known. Anything
 // it cannot read is no.
 const test = require('node:test');
+// (Node 22.16's runner: see test/keep-alive.js)
+require('./keep-alive');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');

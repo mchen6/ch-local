@@ -6,6 +6,8 @@ require('./tmp-dirs');
 // stderr and tells it to the client, buffered until the channel is there,
 // and says on stderr a notice the runtime did not take.
 const test = require('node:test');
+// (Node 22.16's runner: see test/keep-alive.js)
+require('./keep-alive');
 const assert = require('node:assert');
 const {controlClient, teller} = require('../lib/control');
 
