@@ -179,6 +179,14 @@ async function shimInto(npmIo, release, work, pins, say, {build = cargoBuild, pl
   const cargo = cargoVersion(path.join(ROOT, 'shim', 'Cargo.toml'));
   if (cargo == null) throw new Error('shim/Cargo.toml names no [package] version');
   const bin = build(path.join(ROOT, 'shim'), exe(t));
+  // (a binary that still names a build path -- the home, cargo's, rustup's,
+  // the checkout's, each also by its real path -- is refused, read as bytes,
+  // each path with a separator after it: the build account in a binary the
+  // folder hands out)
+  const bytes = fs.readFileSync(bin);
+  for (const [p] of buildPaths(process.env, ROOT)) {
+    for (const sep of ['/', '\\']) if (bytes.includes(Buffer.from(p + sep))) throw new Error(`the built shim names this machine's ${p} (a build path): not packed`);
+  }
   const version = `${cargo}-dev.${require('node:crypto').createHash('sha512').update(fs.readFileSync(bin)).digest('hex').slice(0, 12)}`;
   // (a host-target build, not publish's static musl one: its description
   // says so -- the reviewer's high, F7)
@@ -190,8 +198,38 @@ async function shimInto(npmIo, release, work, pins, say, {build = cargoBuild, pl
 }
 // (the binary where cargo says it put it: a CARGO_TARGET_DIR or a configured
 // target moves it -- the medium on A-shim-from, 6)
-function cargoBuild(shimDir, exeName) {
-  const r = run('cargo', ['build', '--release', '--locked', '--message-format=json-render-diagnostics'], {cwd: shimDir});
+// The build machine's paths a binary would carry (cargo's registry and
+// rustup's in panic messages, the checkout's, the home's), each with the name
+// it is remapped to: never the filesystem root or a path too short to be one
+// (a container's HOME=/), shortest first, since rustc tries the flags last
+// first and the most specific must win (the reviewer, 11-21, and the medium
+// on the remap fix). (env, the checkout) -> [[path, name]]
+function buildPaths(env, checkout, home = require('node:os').homedir()) {
+  const pairs = [[home, '/build-home'], [env.CARGO_HOME || path.join(home, '.cargo'), '/cargo'],
+    [env.RUSTUP_HOME || path.join(home, '.rustup'), '/rustup'], [checkout, '/ch-local']];
+  const real = (p) => { try { return fs.realpathSync.native(p); } catch (e) { return p; } };
+  const all = [];
+  for (const [p, name] of pairs) for (const q of new Set([p, real(p)])) if (typeof q === 'string' && path.isAbsolute(q) && q !== path.parse(q).root && q.length > 3) all.push([q, name]);
+  return all.sort((a, b) => a[0].length - b[0].length);
+}
+const remapFlags = (env, checkout, home) => buildPaths(env, checkout, home).map(([from, to]) => `--remap-path-prefix=${from}=${to}`);
+// The flags cargo is given: the operator's own (CARGO_ENCODED_RUSTFLAGS, else
+// RUSTFLAGS), then the remap, so no flag of theirs is dropped. With neither
+// set, through --config build.rustflags, which cargo merges with its config
+// files' (an env var would replace them). (env, flags) -> {env, args}
+function rustflagsFor(env, flags) {
+  const out = Object.assign({}, env);
+  if (env.CARGO_ENCODED_RUSTFLAGS != null && env.CARGO_ENCODED_RUSTFLAGS !== '') return {env: Object.assign(out, {CARGO_ENCODED_RUSTFLAGS: [env.CARGO_ENCODED_RUSTFLAGS, ...flags].join('\x1f')}), args: []};
+  if (env.RUSTFLAGS != null && env.RUSTFLAGS.trim() !== '') {
+    delete out.RUSTFLAGS;
+    return {env: Object.assign(out, {CARGO_ENCODED_RUSTFLAGS: [...env.RUSTFLAGS.trim().split(/\s+/), ...flags].join('\x1f')}), args: []};
+  }
+  return {env: out, args: ['--config', `build.rustflags=${JSON.stringify(flags)}`]};
+}
+// run: dogfood's own (a test's stands in). -> the built executable's path
+function cargoBuild(shimDir, exeName, {runner = run, env = process.env} = {}) {
+  const r0 = rustflagsFor(env, remapFlags(env, path.dirname(shimDir)));
+  const r = runner('cargo', ['build', '--release', '--locked', ...r0.args, '--message-format=json-render-diagnostics'], {cwd: shimDir, env: r0.env});
   if (r.error != null || r.status !== 0) throw new Error(`cargo build of the shim failed (${r.error != null ? r.error.code : `exit ${r.status}`}): ${String(r.stderr || '').split('\n').slice(-6).join('\n')}`);
   const bin = builtExecutable(r.stdout, exeName);
   if (bin == null) throw new Error(`cargo built no ${exeName} it named`);
@@ -448,4 +486,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`dogfood: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, releaseShim, builtExecutable, resolveRefs, run, PACK};
+module.exports = {main, instructions, releaseLine, placeRelease, bundledProblem, parseArgs, sources, planSources, homeFor, buildRelease, shimInto, releaseShim, builtExecutable, remapFlags, rustflagsFor, cargoBuild, resolveRefs, run, PACK};

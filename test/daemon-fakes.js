@@ -74,4 +74,11 @@ const makeRunDir = (home) => {
   return runDir;
 };
 
-module.exports = {fakeRuntime, daemonIo, stopLeftDaemons, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame};
+// How long a test waits on something a daemon makes observable (daemon.json
+// written, a runtime started): on Windows adoption runs PowerShell ACL checks
+// first (the home, run/, run/daemon, daemon.json's own), 1 to 10 s each on a
+// runner, so 5 s is not enough there (#142's Windows leg). A bound on an
+// observable wait, never a sleep.
+const ADOPT_MS = process.platform === 'win32' ? 60000 : 5000;
+
+module.exports = {ADOPT_MS, fakeRuntime, daemonIo, stopLeftDaemons, tmpHome, runDirOf, socketIn, makeRunDir, hmac, frame};

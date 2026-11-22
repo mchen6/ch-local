@@ -12,7 +12,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {daemon} = require('../lib/daemon');
-const {fakeRuntime, daemonIo, tmpHome, runDirOf, stopLeftDaemons} = require('./daemon-fakes');
+const {ADOPT_MS, fakeRuntime, daemonIo, tmpHome, runDirOf, stopLeftDaemons} = require('./daemon-fakes');
 // a test that fails before it stops its daemon leaves none running
 test.afterEach(() => stopLeftDaemons());
 
@@ -42,7 +42,7 @@ function scripted(home) {
     if (r.listens !== false) opts.onListening({type: 'listening', socket: opts.socket});
     return exited;
   };
-  r.nth = async(n, ms = 5000) => {
+  r.nth = async(n, ms = ADOPT_MS) => {
     const until = Date.now() + ms;
     while (r.calls.length <= n && Date.now() < until) await tick();
     assert.ok(r.calls.length > n, `runtime ${n + 1} never started: ${r.io != null ? r.io.err : ''}`);

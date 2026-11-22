@@ -114,6 +114,7 @@ The checks are grouped. Within a group, the order doesn't matter.
       or `shim.yml` for the shim's six), with "require two-factor
       authentication and disallow tokens" on.
     - Evidence: each package's settings on npmjs.com.
+    - Also: a published shim names no local home path (byte check); shim.yml remap in 1.1.
 14. **No tag and no publish has happened before.**
     - How: `git ls-remote --tags` on each repository, and `npm view <name>
       versions` for each package.
@@ -135,13 +136,16 @@ The checks are grouped. Within a group, the order doesn't matter.
       `{"source": "git-subdir", "url": "mchen6/ch-local", "path":
       "clients/claude-code", "ref": "v<version>", "sha": "<the tag's
       commit>"}`, on the default branch, after the tag exists. The tag is
-      protected by the ruleset (item 12).
+      protected by the ruleset (item 12). `test/plugin.test.js` pins the
+      entry's source: change it in the same commit as the entry.
     - Check: the docs do not say whether `git-subdir` may point into the
       marketplace's own repository. Before the first release, add the
       marketplace on a test machine, install the plugin and confirm the
       files are the tag's (the installed directory's commit). If it isn't
-      supported, say so in docs/install/claude-code.md's Updates and keep
-      the relative path.
+      supported, keep the relative path, and docs/install/claude-code.md's
+      Updates already says the plugin follows the default branch. If it is,
+      change that sentence with the entry: the plugin then follows the
+      release tag.
     - Evidence: the marketplace.json commit, and the test install's
       `claude plugin list --json` entry.
 
