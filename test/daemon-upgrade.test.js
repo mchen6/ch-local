@@ -454,7 +454,10 @@ test('A13: the drain bound is the longest requestTimeout and 2 s, under the sess
   // (with the stop and the restart after it, under the sessions' 60 s
   // reconnect window: the final pass on #148)
   assert.strictEqual(drainBoundMs(), 40000);
-  assert.ok(drainBoundMs() + require('../lib/daemon').STOP_MS + 5000 <= 60000);
+  // (the sessions' window is the runtime's 60 s, and the stop after the drain
+  // ch-local's: both read from here, so a longer stop fails this)
+  assert.ok(drainBoundMs() + require('../lib/daemon').STOP_MS + 5000 <= 60000, 'the drain and the stop after it inside the 60 s window');
+  assert.strictEqual(require('../lib/daemon').STOP_MS, 15000);
 });
 
 test('A13: an upgrade waiting on its drain when the loop gives up restarts nothing', async() => {

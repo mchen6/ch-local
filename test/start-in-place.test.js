@@ -68,7 +68,7 @@ test.afterEach(() => {
     // other at a user's home)
     // (a notice told, and one carried by a load or an unload)
     for (const m of requests) {
-      const text = m.type === 'notice' ? m.text : typeof m.notice === 'string' ? m.notice : (m.notice != null && typeof m.notice.text === 'string') ? m.notice.text : null;
+      const text = m.type === 'notice' ? m.text : typeof m.notice === 'string' ? m.notice : null;
       if (text == null) continue;
       const len = /…/.test(text) ? [...text].length : atRealisticHome(text);
       if (len > NOTICE_MAX) long.push(`${len}: ${text}`);
@@ -1947,7 +1947,11 @@ test('a caller of a module turned off: its unload carries reason calls and becau
     const caller = s.requests.find((m) => m.type === 'unload' && m.name === SCENARIO);
     assert.strictEqual(caller.reason, 'calls');
     assert.strictEqual(caller.because, '@countinghouse/ch-pack-other');
-    assert.match(caller.notice, /^ch-pack-ci-failure-triage unloaded: it calls ch-pack-other, which is not available \(it is turned off/);
+    // (said directly, its way back whole at the end; the explanation cut
+    // first at a deep test home: the closing pass's second medium)
+    assert.match(caller.notice, /^ch-pack-ci-failure-triage unloaded: it calls ch-pack-other/);
+    assert.match(caller.notice, /: `[^`]+ settings set enabled\.@countinghouse\/ch-pack-other on`$/);
+    assert.ok([...caller.notice].length <= 200);
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
     assert.strictEqual(s.requests.find((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other').reason, 'off');
     holdsToTheVectors(s.requests);

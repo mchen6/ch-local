@@ -287,3 +287,13 @@ test('fitAny: within 200 code points; the last command in backticks kept whole; 
   const plain = fitAny('x'.repeat(300));
   assert.ok([...plain].length <= NOTICE_MAX);
 });
+
+test('fitNotice: a cut never splits an earlier command in the explanation; the one at the end is whole', () => {
+  const {fitNotice} = require('../lib/command-line');
+  const first = '`node "/home/alexandra/.countinghouse/bin/ch-local.js" install --pack ci-failure-triage`';
+  const tail = '; `node "/home/alexandra/.countinghouse/bin/ch-local.js" restart` applies it';
+  const out = fitNotice(`a module unloaded: its pack is missing (run ${first} again, then add it back)`, tail);
+  assert.ok([...out].length <= 200, out);
+  assert.ok(out.endsWith(tail), out);
+  assert.strictEqual((out.match(/`/g) || []).length % 2, 0, `a command split: ${out}`);
+});
