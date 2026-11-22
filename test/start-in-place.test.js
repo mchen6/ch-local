@@ -53,9 +53,11 @@ const until = async (cond, ms = 10000) => {
 // the tests here are given it read already (ch-local's intermittent
 // may-elicit failure on main ed73a358); lib/client-conditions' own tests
 // cover the read and the wait.
-async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null,
+async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null, deep = false,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null, heldRetryMs = null} = {}) {
-  const home = reuse != null ? reuse : tmp('ch-home-');
+  // (deep: a home whose launcher path is as long as a user's, or longer:
+  // the notices' 200 characters are measured with it -- #147's M3)
+  const home = reuse != null ? reuse : deep ? (() => { const d = path.join(tmp('ch-home-'), 'alexandra'); fs.mkdirSync(d, {mode: 0o700}); return path.join(d, '.countinghouse'); })() : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
@@ -394,6 +396,89 @@ test('never silent: an outside edit found at start reaches the client once the r
     await until(() => notices(s).length > 0);
     assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes was changed outside ch-local: 8MiB -> 64MiB (this loosens a guarding setting)']]);
     assert.match(s.f.err, /maxOutputBytes was changed outside ch-local: 8MiB -> 64MiB/, 'and on stderr');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// A5 (the final pass): in shared mode a client's restart only attaches to
+// the same runtime again, so what "applies at the next start" says the way
+// that restarts it: `ch-local restart`, the sessions resuming
+test('A5: in shared mode, what applies at the next start names `ch-local restart`, never a client\'s restart', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true});
+  try {
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    setSetting(where, 'autoUpgrade', 'on', {by: 'cli', mayLoosen: true});
+    await until(() => notices(s).some(([, t]) => /autoUpgrade loosened/.test(t)));
+    const line = notices(s).find(([, t]) => /autoUpgrade loosened/.test(t))[1];
+    // (a loosening hands the model no command: applying it stays the
+    // user's own act -- the reviewer's high on #147, M5)
+    assert.strictEqual(line, 'autoUpgrade loosened from off to on, when the shared runtime restarts');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (and a line the user must act on goes out as a notice in shared mode,
+// whose stderr is the daemon's: the reviewer's high on #147, L2, L5)
+test('A5: in shared mode a setting the runtime could not take in place is told, naming `ch-local restart`', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true, deep: true, answer: (m) => (m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
+  try {
+    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'requestTimeout', '10s', {by: 'cli'});
+    await until(() => notices(s).some(([, t]) => /requestTimeout set to/.test(t)));
+    const line = notices(s).find(([, t]) => /requestTimeout set to/.test(t))[1];
+    assert.match(line, /^requestTimeout set to 10s: applies when the shared runtime restarts \(`[^`]+ restart`\) \(NOT_NOW\)$/);
+    assert.ok(require('./notice-length').atRealisticHome(line) <= 200, line);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// business's condition on #147: a loosening is never told with the restart
+// that applies it. A setting loosened is line 14 (no command); a change not
+// applied in place -- which may carry one, a pack turned on -- names no
+// command in shared mode either
+test('A5: in shared mode no loosening is told with a restart command: a setting loosened, a sandbox loosened, a pack added and refused', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true, deep: true, answer: (m) => (m.name === '@countinghouse/ch-pack-other' || m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
+  try {
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
+    setSetting(where, 'moduleSandbox', 'audit', {by: 'cli', mayLoosen: true});
+    assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
+    await until(() => notices(s).some(([, t]) => /maxOutputBytes loosened/.test(t)) && notices(s).some(([, t]) => /moduleSandbox loosened/.test(t)) && notices(s).some(([, t]) => /ch-pack-other added/.test(t)));
+    const told = notices(s).map(([, t]) => t);
+    assert.ok(told.some((t) => /^maxOutputBytes loosened from 16MiB to 32MiB, when the shared runtime restarts \(NOT_NOW\)$/.test(t)), told.join(' | '));
+    assert.ok(told.some((t) => /^moduleSandbox loosened from enforce to audit, when the shared runtime restarts$/.test(t)), told.join(' | '));
+    assert.ok(told.some((t) => /^ch-pack-other added 0\.3\.0: not applied in place \(NOT_NOW\); it applies when the shared runtime restarts$/.test(t)), told.join(' | '));
+    for (const t of told.filter((x) => /loosened|added/.test(x))) assert.doesNotMatch(t, / restart`/, t);
+    // (every notice within the runtime's 200, with a launcher path as long as a user's)
+    assert.ok(require('../lib/command-line').chLocal(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}), 'restart').length >= 'node "/home/alexandra/.countinghouse/bin/ch-local.js" restart'.length);
+    for (const t of told) assert.ok(require('./notice-length').atRealisticHome(t) <= 200, `${t.length}: ${t}`);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// N3 (#147): in shared mode a setting applied in place is said, never told
+// to every session; only what needs action is a notice
+test('A5: in shared mode an applied tightening is said, not told', async () => {
+  const {setSetting} = require('../lib/settings');
+  const {layout} = require('../lib/home');
+  const s = await running({shared: true});
+  try {
+    setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'maxOutputBytes', '8MiB', {by: 'cli'});
+    await until(() => /maxOutputBytes set to 8MiB/.test(s.f.err));
+    assert.ok(!notices(s).some(([, t]) => /maxOutputBytes/.test(t)), 'not a notice');
   } finally {
     s.end();
     await s.done;
@@ -839,6 +924,59 @@ test('a new pack taking a module at a version a refused reload could not move is
   await s.done;
 });
 
+// the medium on #147's last round, 1 and 3: in shared mode a clash names no
+// command (a pack turned on may be a loosening), and one that clears and
+// comes back is told again
+test('A5: in shared mode a clash is told with no command, and told again when it comes back', async () => {
+  const s = await running({shared: true, deep: true, answer: (m) => (m.type === 'reload' ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  try {
+    const r2 = release({versions: {'@countinghouse/ch-access-github': '0.1.1'}, extra: {'@countinghouse/ch-pack-other': {countinghouse: {role: 'scenario', calls: ['ch-step-redact/redactService.redact', 'ch-step-other/otherService.go', 'ch-access-github/githubService.listRuns']}}}});
+    r2.allow.packs.other = {...r2.allow.packs.other, modules: [...r2.allow.packs.other.modules, '@countinghouse/ch-access-github']};
+    assert.strictEqual(await install({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
+    const clash = () => notices(s).map(([, t]) => t).filter((t) => /^ch-pack-other not loaded in place: /.test(t));
+    await until(() => clash().length === 1);
+    assert.match(clash()[0], /^ch-pack-other not loaded in place: @countinghouse\/ch-access-github 0\.1\.1 is kept at 0\.1\.0 by ch-pack-ci-failure-triage; it applies when the shared runtime restarts$/);
+    assert.doesNotMatch(clash()[0], /`/);
+    const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
+    await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).modules.some((e) => e.name === '@countinghouse/ch-pack-other' && e.reason === 'off'));
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': true}}));
+    await until(() => clash().length === 2);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// the medium on #147's last round, 2: a moved-back unload refused in shared
+// mode at a deep home never cuts a command in half
+test('A5: in shared mode a refused moved-back unload is told whole, its command never cut', async () => {
+  // (a short code: the failure line's tail is shorter than the command's,
+  // where a second cut of a notice that ends in a command split it)
+  const s = await running({shared: true, deep: true, answer: (m) => (m.type === 'unload' ? {ok: false, code: 'NO'} : {ok: true})});
+  try {
+    s.f.selfVersion = '0.2.1';
+    editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null},
+      packs: {...r.packs, 'ci-failure-triage': {...r.packs['ci-failure-triage'], modules: {...r.packs['ci-failure-triage'].modules, '@countinghouse/ch-step-redact': '0.0.9'}}}}));
+    await until(() => notices(s).some(([, t]) => /was moved back to 0\.0\.9 .*not applied in place \(NO\)/.test(t)));
+    for (const [, t] of notices(s)) {
+      assert.ok(require('./notice-length').atRealisticHome(t) <= 200, `${[...t].length}: ${t}`);
+      assert.strictEqual((t.match(/`/g) || []).length % 2, 0, `a command cut: ${t}`);
+      if (/not applied in place/.test(t)) assert.doesNotMatch(t, /stopped until|\?node/, `a command cut: ${t}`);
+    }
+    // (the failure line is built on the explanation alone, never on the
+    // notice that already ends in a command)
+    assert.ok(notices(s).some(([, t]) => /^ch-step-redact was moved back to 0\.0\.9 by the rollback just made; [^`]*: not applied in place \(NO\); it applies when the shared runtime restarts$/.test(t)), JSON.stringify(notices(s)));
+    // (found by its command: at a home so long the command leaves no room,
+    // the command goes alone)
+    const sent = s.requests.find((m) => m.type === 'unload' && /stopped until `/.test(m.notice || ''));
+    assert.match(sent.notice, /(?:^|; )stopped until `[^`]+ restart` is run$/, 'the unload\'s own notice keeps its command whole');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // module-stopped (#413 section 7.3; L2a): the runtime stopped a top-level
 // module for good. Out of what is loaded and of run.json's loaded, recorded
 // as stopped, told once, never loaded again in this start unless its active
@@ -922,20 +1060,23 @@ test('module-stopped at start (its plan refused): never loaded in place; a fresh
 // the home's ch-local (0.2.0), and the record is the new release's
 const otherRelease = (opts) => { const r = release(opts); r.allow = {...r.allow, release: {version: '9.9.9', security: null}}; return r; };
 const stale = (s) => { s.f.selfVersion = '0.1.9'; };
-const UPGRADED = 'ch-local in this home is now 0.2.0 (upgraded); restart your client to use it';
+const {restartEither: either} = require('../lib/command-line');
+const eitherIn = (h) => either(require('../lib/home').layout({COUNTINGHOUSE_HOME: h}));
+// (a running runtime takes it at a restart: the client's, or the shared one's: A5)
+const UPGRADED = () => 'ch-local in this home is now 0.2.0 (upgraded); restart your client to use it';
 test('another release\'s record: a module moved up is not reloaded, a new one not loaded; said once', async () => {
   const s = await running();
   try {
     stale(s);
     const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
-    await until(() => s.f.err.includes(UPGRADED));
+    await until(() => s.f.err.includes(UPGRADED(s.home)));
     assert.strictEqual(await addPack({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     assert.deepStrictEqual(s.requests.filter((m) => ['load', 'reload', 'unload'].includes(m.type)), [], 'nothing loaded or reloaded');
-    assert.strictEqual(s.f.err.split(UPGRADED).length - 1, 1, 'said once');
-    assert.ok(s.history().some((h) => h.change === 'release changed' && h.notice === UPGRADED));
+    assert.strictEqual(s.f.err.split(UPGRADED(s.home)).length - 1, 1, 'said once');
+    assert.ok(s.history().some((h) => h.change === 'release changed' && h.notice === UPGRADED(s.home)));
   } finally {
     s.end();
     await s.done;
@@ -978,7 +1119,7 @@ test('another release\'s record: a pack turned off is unloaded, and the held-bac
     stale(s);
     const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
-    await until(() => s.f.err.includes(UPGRADED));
+    await until(() => s.f.err.includes(UPGRADED(s.home)));
     const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {'pack.other': false}}));
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === '@countinghouse/ch-pack-other'));
@@ -1019,7 +1160,7 @@ test('another release\'s record: a pack added is not loaded in place, and the he
     stale(s);
     const r2 = otherRelease({versions: {'@countinghouse/ch-step-redact': '0.2.0'}});
     assert.strictEqual(await install({pack: 'ci-failure-triage', from: r2.from}, s.cmd(), r2.allow), 0);
-    await until(() => s.f.err.includes(UPGRADED));
+    await until(() => s.f.err.includes(UPGRADED(s.home)));
     assert.strictEqual(await addPack({pack: 'other', from: r2.from}, s.cmd(), r2.allow), 0);
     await until(() => s.requests.some((m) => m.type === 'reread' && m.what === 'held-back'));
     const file = s.args()[s.args().indexOf('--heldBackFile') + 1];
@@ -1619,7 +1760,7 @@ test('a credential store that cannot be read keeps what is loaded, says so once,
 test('a gh binding gh gave no token for at start is not told to restart on a later change; it says how to provide it', async () => {
   const s = await running({bound: 'gh'});
   try {
-    await until(() => notices(s).some(([, t]) => /has no token from your gh login/.test(t)));
+    await until(() => notices(s).some(([, t]) => /has no gh token: run `[^`]+credentials add ch-access-github`/.test(t)));
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     await new Promise((r) => setTimeout(r, 300));
