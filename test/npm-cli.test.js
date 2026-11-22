@@ -36,6 +36,8 @@ test('A10: beside node.exe (<bin>/node_modules/npm, Windows\'s layout), first', 
 test('A10: an npm_execpath that is not npm-cli.js, or not there: the layout', () => {
   const t = prefix((p, cliAt) => cliAt(path.join(p, 'lib', 'node_modules', 'npm')));
   try {
+    // (one there but not npm-cli.js: only the name refuses it)
+    fs.writeFileSync(path.join(t.p, 'npx-cli.js'), '');
     for (const bogus of [path.join(t.p, 'npx-cli.js'), path.join(t.p, 'gone', 'npm-cli.js')]) {
       assert.strictEqual(fs.realpathSync(npmCli({execPath: t.execPath, env: {npm_execpath: bogus}})), t.cli, bogus);
     }
@@ -71,11 +73,16 @@ test('A10: none there: the error names the npx way out', () => {
   const t = prefix(() => null);
   try {
     const v = require('../package.json').version;
-    const home = path.join(t.p, 'home');
-    assert.throws(() => npmCli({execPath: t.execPath, env: {HOME: t.p}}), (e) => e.message === `npm was not found beside ${t.execPath}; run the same ch-local command through npx instead: \`npx @countinghouse/ch-local@${v} …\``);
-    // (a home that isn't the default: named, as every npx hint names it)
-    const err = (() => { try { npmCli({execPath: t.execPath, env: {HOME: t.p, COUNTINGHOUSE_HOME: home}}); } catch (e) { return e.message; } return null; })();
-    if (WIN) assert.ok(err.includes(`(with COUNTINGHOUSE_HOME set to "${home}")`), err);
-    else assert.ok(err.endsWith(`\`COUNTINGHOUSE_HOME="${home}" npx @countinghouse/ch-local@${v} …\``), err);
+    const {homePrefix, homeNote} = require('../lib/command-line');
+    const {layout} = require('../lib/home');
+    const said = (homeEnv) => { try { npmCli({execPath: t.execPath, env: {}, homeEnv}); } catch (e) { return e.message; } return null; };
+    const lead = `npm was not found beside ${t.execPath}; run the same ch-local command through npx instead: `;
+    assert.strictEqual(said({}), `${lead}\`npx @countinghouse/ch-local@${v} …\``, 'the default home');
+    // (a home that isn't the default, from the env the io acts on: named, as every npx hint names it)
+    const where = layout({COUNTINGHOUSE_HOME: path.join(t.p, 'home')});
+    assert.strictEqual(said({COUNTINGHOUSE_HOME: where.home}), `${lead}\`${homePrefix(where)}npx @countinghouse/ch-local@${v} …\`${homeNote(where)}`);
+    assert.ok(WIN ? homeNote(where) !== '' : homePrefix(where) !== '', 'the home named');
+    // (one that can't be read: said in words, never the default home's command alone)
+    assert.strictEqual(said({COUNTINGHOUSE_HOME: 'rel/home'}), `${lead}\`npx @countinghouse/ch-local@${v} …\` (with COUNTINGHOUSE_HOME set to the full path of its home)`);
   } finally { t.done(); }
 });
