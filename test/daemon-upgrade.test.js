@@ -715,15 +715,16 @@ test('A7: a running daemon meeting another daemon\'s daemon.json never rewrites 
     await adopted(home);
     const theirs = {pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: '9.9.9', started: 'z'};
     fs.writeFileSync(daemonJson(home), JSON.stringify(theirs), {mode: 0o600});
-    // (a restart's writeVersion, from a daemon that is not stopping)
+    // (a restart's clearSocket, from a daemon that is not stopping: since the
+    // closing pass's L2 it stops there, starting no runtime after it)
     await requestRestart(home);
-    await s.nth(1);
     for (let i = 0; i < 100 && !/another daemon's now/.test(io.err); i++) await tick();
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')), theirs, 'never rewritten');
     assert.strictEqual(io.err.split("daemon.json is another daemon's now: not rewritten; this daemon stops").length - 1, 1, 'said once');
     // (and it stops: it can no longer be found -- the medium, 2)
     assert.strictEqual(await done, 0);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')), theirs, 'and its own stop leaves the other\'s file');
+    assert.strictEqual(s.calls.length, 1, 'no runtime started after it decided to stop (L2)');
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
