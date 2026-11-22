@@ -479,15 +479,17 @@ impl Relay {
     }
 
     fn answer_unreachable(&mut self, line: &[u8], why: &str) {
+        // (the home's own status command, a line that runs: the reviewer)
+        let status = answer::status_command(self.setup.home.root());
         match message::classify(line) {
-            Line::Request { id, .. } => self.say(&answer::unreachable(&id, why)),
+            Line::Request { id, .. } => self.say(&answer::unreachable_with(&id, why, &status)),
             Line::Batch { ids } if !ids.is_empty() => {
                 let mut all = vec![b'['];
                 for (i, id) in ids.iter().enumerate() {
                     if i > 0 {
                         all.push(b',');
                     }
-                    all.extend_from_slice(&answer::unreachable(id, why));
+                    all.extend_from_slice(&answer::unreachable_with(id, why, &status));
                 }
                 all.push(b']');
                 self.say(&all);

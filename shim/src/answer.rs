@@ -82,13 +82,35 @@ pub fn too_long_for(id: &[u8], limit: usize) -> Vec<u8> {
 /// "If it still can't attach"). The reason is the shim's own text, its
 /// control characters removed and its length capped.
 pub fn unreachable(id: &[u8], reason: &str) -> Vec<u8> {
+    unreachable_with(id, reason, &None)
+}
+
+/// The home's own status command for a line (the reviewer, 11-21: a command
+/// that runs): `node "<root>/bin/ch-local.js" status`, as ch-local's launcher
+/// form says it. None for a path a terminal would not read plainly (a quote,
+/// a backtick, a dollar, a control character): the line keeps its words.
+pub fn status_command(root: &std::path::Path) -> Option<String> {
+    let launcher = root.join("bin").join("ch-local.js");
+    let s = launcher.to_str()?;
+    if s.chars()
+        .any(|c| c.is_control() || matches!(c, '"' | '`' | '$' | '%' | '!' | '\\') && !(cfg!(windows) && c == '\\'))
+    {
+        return None;
+    }
+    Some(format!("node \"{s}\" status"))
+}
+
+/// unreachable, naming `status` (status_command) when it is given.
+pub fn unreachable_with(id: &[u8], reason: &str, status: &Option<String>) -> Vec<u8> {
     let reason: String = reason.chars().filter(|c| !c.is_control()).take(300).collect();
+    let then = match status {
+        Some(cmd) => format!("run `{cmd}` in your own terminal to see why"),
+        None => "countinghouse's status in your own terminal says why".to_string(),
+    };
     error(
         id,
         -32603,
-        &format!(
-            "countinghouse could not reach its shared runtime ({reason}); try again; if it keeps failing, countinghouse's status in your own terminal says why"
-        ),
+        &format!("countinghouse could not reach its shared runtime ({reason}); try again; if it keeps failing, {then}"),
     )
 }
 
@@ -116,5 +138,24 @@ mod tests {
         assert_eq!(v["id"], "x");
         assert_eq!(v["error"]["code"], -32603);
         assert!(v["error"]["message"].as_str().unwrap().contains("(a[2Jbc)"));
+    }
+
+    /// The reviewer, 11-21: the line names a command that runs, the home's
+    /// own launcher's status; a home no terminal reads plainly keeps the words
+    #[test]
+    fn the_unreachable_answer_names_the_homes_status_command() {
+        let line = |root: &str| {
+            let a = unreachable_with(b"1", "no answer", &status_command(std::path::Path::new(root)));
+            let v: serde_json::Value = serde_json::from_slice(&a).unwrap();
+            v["error"]["message"].as_str().unwrap().to_string()
+        };
+        let plain = line("/home/u/.countinghouse");
+        let want = format!(
+            "if it keeps failing, run `node \"{}\" status` in your own terminal to see why",
+            std::path::Path::new("/home/u/.countinghouse").join("bin").join("ch-local.js").display()
+        );
+        assert!(plain.ends_with(&want), "{plain}");
+        let odd = line("/home/a\"b/.countinghouse");
+        assert!(odd.ends_with("if it keeps failing, countinghouse's status in your own terminal says why"), "{odd}");
     }
 }
