@@ -205,3 +205,123 @@ test('uninstall removes a leftover packs.lock with the program, and waits for no
     t.done();
   }
 });
+
+// A9 (the final pass): uninstall removed the home under a running shared
+// runtime. Under start.lock (where no daemon is starting, restarting or in
+// its backoff), one that serves, judged as a starting daemon judges it (the
+// socket daemon.json names proves the secret), refuses the removal; anything
+// else is stale. Then start.lock, packs.lock: the daemon's own order.
+const runDaemon = (h) => path.join(h, 'run', 'daemon');
+function plantDaemon(h, {socket = path.join(runDaemon(h), 'sessions.sock'), secret = true} = {}) {
+  fs.mkdirSync(runDaemon(h), {recursive: true, mode: 0o700});
+  fs.chmodSync(path.join(h, 'run'), 0o700);
+  fs.chmodSync(runDaemon(h), 0o700);
+  fs.writeFileSync(path.join(runDaemon(h), 'daemon.json'), JSON.stringify({pid: 4242, socket}), {mode: 0o600});
+  if (secret) fs.writeFileSync(path.join(runDaemon(h), 'secret'), require('node:crypto').randomBytes(32).toString('hex'), {mode: 0o600});
+}
+const SERVING = /^ch-local uninstall: the shared runtime is still serving; nothing was removed\. Close the clients that use countinghouse; it stops 10 minutes after the last one closes\. Then run `[^`]+uninstall` again\.$/m;
+
+test('A9: a serving shared runtime refuses the removal: nothing removed, how to make it stop said, exit 1', async (t) => {
+  const s = setup();
+  try {
+    plantDaemon(s.home);
+    t.mock.method(require('../lib/daemon'), 'daemonServing', async () => true);
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, SERVING);
+    assert.ok(fs.existsSync(path.join(s.home, 'settings.json')) && fs.existsSync(path.join(s.home, 'store', 'kv.json')), 'nothing removed');
+  } finally {
+    s.done();
+  }
+});
+
+test('A9: a daemon started while the prompt waits is judged after the yes: refused', async (t) => {
+  const s = setup();
+  try {
+    let up = false;
+    t.mock.method(require('../lib/daemon'), 'daemonServing', async () => up);
+    const u = io(s, ['yes']);
+    const ask = u.ask;
+    u.ask = async (q) => { plantDaemon(s.home); up = true; return ask(q); };
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, SERVING);
+    assert.ok(fs.existsSync(path.join(s.home, 'settings.json')), 'nothing removed');
+  } finally {
+    s.done();
+  }
+});
+
+test('A9: a daemon.json a crash left (a secret, nothing serving at its socket) is stale: removed as today', async () => {
+  const s = setup();
+  try {
+    plantDaemon(s.home);
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 0, u.err);
+    assert.ok(!fs.existsSync(s.home));
+  } finally {
+    s.done();
+  }
+});
+
+test('A9: a daemon restarting (start.lock held, daemon.json\'s socket null) is waited for, bounded: refused at the bound, nothing removed', async () => {
+  const s = setup();
+  try {
+    plantDaemon(s.home, {socket: null});
+    const {withLockFile} = require('../lib/lock');
+    let release = null;
+    const held = withLockFile(path.join(runDaemon(s.home), 'start.lock'), runDaemon(s.home), fakeIo({}), () => new Promise((r) => { release = r; }), {wait: true});
+    while (release == null) await new Promise((r) => setTimeout(r, 10));
+    const u = Object.assign(io(s, ['yes']), {uninstallLockMs: 300});
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, /the shared runtime has been starting or restarting for 0\.3 s; nothing was removed\. Run `[^`]+uninstall` again in a minute\./);
+    assert.ok(fs.existsSync(path.join(s.home, 'settings.json')), 'nothing removed');
+    release(0);
+    await held;
+  } finally {
+    s.done();
+  }
+});
+
+test('A9: the daemon\'s order, start.lock then packs.lock: a runtime starting under start.lock takes packs.lock while uninstall waits', async () => {
+  const s = setup();
+  try {
+    plantDaemon(s.home, {socket: null});
+    const {withLockFile, withLock} = require('../lib/lock');
+    const {layout} = require('../lib/home');
+    let release = null;
+    const order = [];
+    // (as the daemon restarts: start.lock held, then its runtime's start
+    // takes packs.lock; it would wait forever on an uninstall holding it)
+    const held = withLockFile(path.join(runDaemon(s.home), 'start.lock'), runDaemon(s.home), fakeIo({}), async () => {
+      await new Promise((r) => { release = r; });
+      await withLock(layout({COUNTINGHOUSE_HOME: s.home}), fakeIo({}), async () => { order.push('the runtime took packs.lock'); return 0; }, {wait: true});
+      fs.rmSync(path.join(runDaemon(s.home), 'daemon.json'));
+      return 0;
+    }, {wait: true});
+    while (release == null) await new Promise((r) => setTimeout(r, 10));
+    const u = Object.assign(io(s, ['yes']), {uninstallLockMs: 20000});
+    const done = uninstall({}, u);
+    await new Promise((r) => setTimeout(r, 200));
+    release();
+    assert.strictEqual(await held, 0);
+    assert.strictEqual(await done, 0, u.err);
+    assert.deepStrictEqual(order, ['the runtime took packs.lock']);
+    assert.ok(!fs.existsSync(s.home));
+  } finally {
+    s.done();
+  }
+});
+
+test('A9: a removal that fails is said with the way on, never thrown', async (t) => {
+  const s = setup();
+  try {
+    const real = fs.rmSync;
+    t.mock.method(fs, 'rmSync', (p, o) => { if (String(p) === path.join(s.home, 'node')) throw Object.assign(new Error('busy'), {code: 'EBUSY'}); return real(p, o); });
+    const u = io(s, ['yes']);
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, /ch-local uninstall: node could not be removed \(EBUSY\)\. Close what has .*node open and run `[^`]+uninstall` again/);
+  } finally {
+    t.mock.restoreAll();
+    s.done();
+  }
+});
