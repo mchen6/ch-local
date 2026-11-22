@@ -1452,6 +1452,35 @@ test('cold start: a runtime listening between the two bounds is served only when
   assert.strictEqual(await start(() => {}, {handoff: encodeHandoff({sessions: [], declines: []})}), false, 'a handoff, even of an empty table: READY_MS');
 });
 
+// the wait for the first runtime is on a monotonic clock: a wall-clock step
+// forward (an NTP correction, a VM resumed) doesn't end it
+test('cold start: a wall-clock step does not end the wait for the first runtime', async() => {
+  const {home, io} = setup();
+  const realNow = Date.now;
+  try {
+    io.daemonReadyMs = 1500;
+    io.daemonColdReadyMs = 1500;
+    io.daemonBackoffMs = [0, 0, 0, 0];
+    const s = scripted(home);
+    s.delay = (n) => (n === 1 ? 400 : 60000);
+    const done = daemon({home, handoff: null}, io, {run: s.run});
+    const one = await s.nth(0);
+    Date.now = () => realNow() + 3600000;
+    const until = performance.now() + 1400;
+    while (one.listenedAt == null && performance.now() < until) await tick();
+    await tick(200);
+    const stayed = !one.ended && one.listenedAt != null;
+    Date.now = realNow;
+    io.signal('SIGTERM');
+    for (const c of s.calls) await c.exit(0);
+    await done;
+    assert.strictEqual(stayed, true, 'it waited for the runtime through the step');
+  } finally {
+    Date.now = realNow;
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
 // the bound of a first start is a remainder (cold - this process's uptime), so
 // the line that names it says whole seconds
 test('cold start: the give-up line says the bound in whole seconds', async() => {
