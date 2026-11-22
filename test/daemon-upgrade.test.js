@@ -452,24 +452,6 @@ test('A13: the drain bound is the longest requestTimeout and 2 s, whatever is st
   assert.strictEqual(drainBoundMs(), 122000);
 });
 
-test('A13: a drain refused or unanswered waits the stored requestTimeout (at least the default 30 s) and 2 s', () => {
-  const {drainUnansweredMs} = require('../lib/daemon');
-  const home = tmpHome();
-  try {
-    assert.strictEqual(drainUnansweredMs(home), 32000, 'nothing stored');
-    storeTimeout(home, 90000);
-    assert.strictEqual(drainUnansweredMs(home), 92000);
-    storeTimeout(home, 120000);
-    assert.strictEqual(drainUnansweredMs(home), 122000);
-    storeTimeout(home, 10000);
-    assert.strictEqual(drainUnansweredMs(home), 32000, 'a lower one: the default, as the runtime may run with it');
-    fs.writeFileSync(path.join(home, 'settings.json'), '{not json');
-    assert.strictEqual(drainUnansweredMs(home), 32000, 'unreadable');
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
 test('A13: an upgrade waiting on its drain when the loop gives up restarts nothing', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
@@ -564,11 +546,12 @@ test('A13: a runtime that ends during the drain ends the wait; that end counted 
   }
 });
 
-test('A13: a drain the runtime answers refused waits only the unanswered bound, not the whole one', async() => {
+test('A13: a drain the runtime answers refused waits the bound, never cut short: how long its calls run is not known', async() => {
   const {home, io, runtimePkg, set} = setup();
   try {
-    io.daemonDrainMs = 60000;
-    io.daemonDrainUnansweredMs = 300;
+    delete io.daemonDrainMs;
+    const timers = heldTimers();
+    io.daemonDrainTimers = timers;
     const s = scripted(home);
     s.drainReply = {ok: false, code: 'CONTROL_NO_ANSWER'};
     const done = daemon({home}, io, {run: s.run});
@@ -577,9 +560,11 @@ test('A13: a drain the runtime answers refused waits only the unanswered bound, 
     set(runtimePkg, '8.1.0');
     await requestUpgrade(home);
     await drainSeen(one);
-    const at = Date.now();
-    await s.nth(1, 5000);
-    assert.ok(Date.now() - at >= 250, 'it waited the unanswered bound, not none');
+    await tick(300);
+    assert.strictEqual(s.calls.length, 1, 'still waiting after the refusal');
+    assert.deepStrictEqual(timers.set.map((x) => x.ms), [122000], 'the bound, and no other timer');
+    timers.set[0].fn();   // the bound passes
+    await s.nth(1);
     io.signal('SIGTERM');
     assert.strictEqual(await done, 0);
   } finally {
