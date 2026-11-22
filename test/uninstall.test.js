@@ -326,13 +326,14 @@ test('A9: a daemon whose socket answers nothing but whose pid lives (draining, o
   }
 });
 
-test('A9: a daemon.json from before this boot is stale, its pid since reused', {skip: process.platform !== 'linux' && 'the boot time is read on Linux'}, async () => {
+test('A9: no clock is read: a daemon.json older than this boot whose pid lives still refuses, with the way out', async () => {
   const s = setup();
   try {
     plantDaemon(s.home, {started: '2000-01-01T00:00:00.000Z'});
     const u = Object.assign(io(s, ['yes']), {alive: () => true});
-    assert.strictEqual(await uninstall({}, u), 0, u.err);
-    assert.ok(!fs.existsSync(s.home));
+    assert.strictEqual(await uninstall({}, u), 1);
+    assert.match(u.err, /if pid 4242 is not a countinghouse daemon/);
+    assert.ok(fs.existsSync(path.join(s.home, 'settings.json')), 'nothing removed');
   } finally {
     s.done();
   }
