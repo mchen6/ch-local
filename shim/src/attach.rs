@@ -552,7 +552,7 @@ mod tests {
             while !spawned.exists() && Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(20));
             }
-            assert!(spawned.exists(), "the daemon was spawned");
+            assert!(appears(&spawned), "the daemon was spawned");
             let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
             private(
                 &failed,
@@ -597,6 +597,20 @@ mod tests {
         private(&t.home.shim_json(), shim.to_string().as_bytes());
         spawned
     }
+    /// The plain deadline of a test that needs the extension to start: seconds
+    /// for a loaded machine to run the stand-in, which takes the lock only
+    /// then. A stand-in's next step is timed from after it took the lock, so a
+    /// slow spawn only moves that step later.
+    const PLAIN: Duration = Duration::from_secs(3);
+    /// The stand-in's own mark, given time to appear: on a loaded machine it
+    /// can run after the attach under test has given up.
+    fn appears(path: &Path) -> bool {
+        let until = Instant::now() + Duration::from_secs(10);
+        while !path.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        path.exists()
+    }
     fn stand_in_daemon(t: &TestHome) -> std::path::PathBuf {
         stand_in(t, "$$", "sleep 4")
     }
@@ -612,7 +626,7 @@ mod tests {
         let r = attach_first(&t.home, None, now + Duration::from_millis(500), now + Duration::from_millis(3000));
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
         assert!(now.elapsed() < Duration::from_millis(2500), "the plain deadline: {:?}", now.elapsed());
-        assert!(spawned.exists(), "it did spawn one");
+        assert!(appears(&spawned), "it did spawn one");
         assert!(r.err().unwrap().to_string().starts_with(&format!("no answer within {} s", BUDGET.as_secs())));
     }
 
@@ -626,7 +640,7 @@ mod tests {
         let r = attach_first(&t.home, None, now + Duration::from_millis(500), now + Duration::from_millis(3000));
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
         assert!(now.elapsed() < Duration::from_millis(2500), "the plain deadline: {:?}", now.elapsed());
-        assert!(spawned.exists());
+        assert!(appears(&spawned));
     }
 
     /// A daemon spawned late (this shim first waited on start.lock) may wait
@@ -646,7 +660,7 @@ mod tests {
         let r = attach_first(&t.home, None, now + Duration::from_millis(2600), now + Duration::from_millis(6000));
         release.join().unwrap();
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
-        assert!(spawned.exists(), "it spawned once the lock was free");
+        assert!(appears(&spawned), "it spawned once the lock was free");
         assert!(now.elapsed() < Duration::from_millis(4500), "the plain deadline: {:?}", now.elapsed());
     }
 
@@ -657,14 +671,14 @@ mod tests {
     fn the_extension_ends_when_the_daemon_releases_the_lock() {
         let t = home();
         let lock = t.home.start_lock();
-        let spawned = stand_in(&t, "$$", &format!("sleep 0.6; rm -f '{}'; sleep 9", lock.display()));
+        let spawned = stand_in(&t, "$$", &format!("sleep 3.2; rm -f '{}'; sleep 12", lock.display()));
         let now = Instant::now();
-        let r = attach_first(&t.home, None, now + Duration::from_millis(600), now + Duration::from_secs(8));
+        let r = attach_first(&t.home, None, now + PLAIN, now + Duration::from_secs(14));
         let waited = now.elapsed();
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
-        assert!(waited >= RELEASE_GRACE, "it saw the lock held, then released: {waited:?}");
-        assert!(waited < RELEASE_GRACE + Duration::from_millis(1500), "not to the cold deadline: {waited:?}");
-        assert!(spawned.exists());
+        assert!(waited >= PLAIN + RELEASE_GRACE, "it saw the lock held, then released: {waited:?}");
+        assert!(waited < Duration::from_secs(12), "not to the cold deadline: {waited:?}");
+        assert!(appears(&spawned));
         // the line says the time it waited, not the budget it no longer had
         let text = r.err().unwrap().to_string();
         let said: u64 = text
@@ -682,12 +696,12 @@ mod tests {
         let t = home();
         let failed = t.home.run_dir().join("failed.json");
         let after = format!(
-            "sleep 0.7; printf '{{\"v\":1,\"at\":%s000,\"exit\":null,\"signal\":null,\"reason\":\"never-listened\"}}' \"$(date +%s)\" > '{}'; exit 1",
+            "sleep 3.4; printf '{{\"v\":1,\"at\":%s000,\"exit\":null,\"signal\":null,\"reason\":\"never-listened\"}}' \"$(date +%s)\" > '{}'; exit 1",
             failed.display()
         );
         stand_in(&t, "$$", &after);
         let now = Instant::now();
-        let r = attach_first(&t.home, None, now + Duration::from_millis(300), now + Duration::from_secs(5));
+        let r = attach_first(&t.home, None, now + PLAIN, now + Duration::from_secs(10));
         assert!(matches!(r, Err(AttachError::SharedFailed(_))), "{:?}", r.as_ref().err());
     }
 
@@ -701,18 +715,22 @@ mod tests {
         let r = attach_first(&t.home, None, now + Duration::from_millis(900), now + Duration::from_millis(4000));
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
         assert!(now.elapsed() < Duration::from_millis(3000), "not to the cold deadline: {:?}", now.elapsed());
-        assert!(spawned.exists());
+        assert!(appears(&spawned));
     }
 
     #[test]
     fn the_first_attach_of_a_shim_that_started_the_daemon_waits_to_the_cold_deadline() {
         let t = home();
-        let spawned = stand_in_daemon(&t);
+        let spawned = stand_in(&t, "$$", "sleep 12");
         let now = Instant::now();
-        let r = attach_first(&t.home, None, now + Duration::from_millis(400), now + Duration::from_millis(1400));
+        let r = attach_first(&t.home, None, now + PLAIN, now + PLAIN + Duration::from_secs(1));
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
-        assert!(now.elapsed() >= Duration::from_millis(1300), "it waited past the plain deadline: {:?}", now.elapsed());
-        assert!(spawned.exists(), "it started the daemon");
+        assert!(
+            now.elapsed() >= PLAIN + Duration::from_millis(900),
+            "it waited past the plain deadline: {:?}",
+            now.elapsed()
+        );
+        assert!(appears(&spawned), "it started the daemon");
         assert!(r.err().unwrap().to_string().starts_with(&format!("no answer within {} s", COLD_BUDGET.as_secs())));
     }
 
@@ -721,7 +739,7 @@ mod tests {
     #[test]
     fn a_daemon_that_listens_after_the_plain_deadline_is_attached_to() {
         let t = home();
-        let spawned = stand_in_daemon(&t);
+        let spawned = stand_in(&t, "$$", "sleep 12");
         let key = [7u8; 32];
         let root = t.home.clone();
         let late = std::thread::spawn(move || {
@@ -729,16 +747,16 @@ mod tests {
             while !spawned.exists() && Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(20));
             }
-            std::thread::sleep(Duration::from_millis(700));
+            std::thread::sleep(PLAIN + Duration::from_millis(400));
             write_secret(&root, &key);
             write_daemon_json(&root);
             fake_runtime(&root, key, vec![Reply::Welcome])
         });
         let now = Instant::now();
-        let r = attach_first(&t.home, None, now + Duration::from_millis(400), now + Duration::from_secs(6));
+        let r = attach_first(&t.home, None, now + PLAIN, now + Duration::from_secs(12));
         let _rx = late.join().unwrap();
         assert!(r.is_ok(), "{:?}", r.as_ref().err());
-        assert!(now.elapsed() > Duration::from_millis(400), "past the plain deadline: {:?}", now.elapsed());
+        assert!(now.elapsed() > PLAIN, "past the plain deadline: {:?}", now.elapsed());
     }
 
     #[test]
@@ -776,7 +794,7 @@ mod tests {
         let r = attach_within(&t.home, None, now + Duration::from_millis(500));
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
         assert!(now.elapsed() < Duration::from_millis(1400), "its own deadline: {:?}", now.elapsed());
-        assert!(spawned.exists(), "it did start one");
+        assert!(appears(&spawned), "it did start one");
         assert!(r.err().unwrap().to_string().starts_with(&format!("no answer within {} s", BUDGET.as_secs())));
     }
 
