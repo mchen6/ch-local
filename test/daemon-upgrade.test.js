@@ -726,3 +726,44 @@ test('A7: a running daemon meeting another daemon\'s daemon.json never rewrites 
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// C-daemon-log: the daemon's own lines go to <run>/runtime.log as well as
+// where they went; a hand-over's daemon appends to the same file, a fresh
+// start makes the last one runtime.log.1
+test('C-daemon-log: the daemon\'s own lines land in runtime.log; a handed-over daemon goes on in it, a fresh one starts it anew', async() => {
+  const {home, io} = setup();
+  try {
+    io.runtimeLog = true;
+    if (process.platform === 'win32') io.winAcl = Object.assign({}, require('../lib/win-acl'), {createPrivate: (f, d) => fs.writeFileSync(f, d), fileAcl: () => ({}), privateProblem: () => null});
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    await adopted(home);
+    await one.exit(1);   // a crash: the daemon says so
+    await s.nth(1);
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+    const file = path.join(runDirOf(home), 'runtime.log');
+    const first = fs.readFileSync(file, 'utf8');
+    assert.match(first, /^\d{4}-[^ ]+ ch-local daemon: the shared runtime ended \(exit 1\)/m, 'its own lines, stamped');
+    assert.ok(io.err.includes('ch-local daemon: '), 'and still where they went');
+    if (process.platform !== 'win32') assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+    // a hand-over's daemon: the same file
+    const s2 = scripted(home);
+    const two = daemon({home, handoff: encodeHandoff([])}, io, {run: s2.run});
+    await s2.nth(0);
+    io.signal('SIGTERM');
+    assert.strictEqual(await two, 0);
+    assert.ok(fs.readFileSync(file, 'utf8').startsWith(first), 'appended to, not started anew');
+    assert.strictEqual(fs.existsSync(`${file}.1`), false);
+    // a fresh start: the last log set aside as .1
+    const s3 = scripted(home);
+    const three = daemon({home}, io, {run: s3.run});
+    await s3.nth(0);
+    io.signal('SIGTERM');
+    assert.strictEqual(await three, 0);
+    assert.ok(fs.readFileSync(`${file}.1`, 'utf8').startsWith(first));
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});

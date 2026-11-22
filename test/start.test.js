@@ -87,8 +87,9 @@ function io(home, {env = {GITHUB_TOKEN: 'secret'}, origin = 'https://github.com/
   void path;
   // What the runtime would see when it starts: its args, its environment, the
   // config directory's files (by relative path) and the remote credentials.
-  f.spawn = (cmd, args, {env: childEnv, detached} = {}) => {
+  f.spawn = (cmd, args, {env: childEnv, detached, output = null} = {}) => {
     f.detached = detached;
+    f.output = output;
     const dir = args[args.indexOf('--deviceConfigPath') + 1];
     const config = {};
     const walk = (d, rel) => { for (const e of fs.readdirSync(d, {withFileTypes: true})) { const r = rel ? `${rel}/${e.name}` : e.name; if (e.isDirectory()) walk(path.join(d, e.name), r); else config[r] = JSON.parse(fs.readFileSync(path.join(d, e.name), 'utf8')); } };
@@ -815,6 +816,46 @@ test('start in session mode refuses a path it would pass that resolves outside t
   assert.notStrictEqual(code, 0);
   assert.strictEqual(f.spawned.length, 0);
   assert.match(f.err, /outside the home/);
+});
+
+// C-daemon-log: a shared runtime's stdout and stderr go to the daemon's
+// log; a client's own runtime keeps the client's
+test('C-daemon-log: start in session mode hands the runtime\'s output to the daemon\'s log; a client\'s start never does', async () => {
+  const home = installedHome();
+  const runDir = path.join(home, 'run', 'daemon');
+  const log = {forward() {}, write() { return true; }};
+  const f = io(home);
+  f.runtimeOutput = log;
+  assert.strictEqual(await start({passThrough: [], session: {socket: path.join(runDir, 'sessions.sock'), sessionDir: runDir, home}}, ghLoggedIn(f)), 0, f.err);
+  assert.strictEqual(f.output, log, 'the shared runtime\'s output: the log');
+  const g = io(home);
+  g.runtimeOutput = log;
+  assert.strictEqual(await start({passThrough: []}, ghLoggedIn(g)), 0, g.err);
+  assert.strictEqual(g.output, null, 'a client\'s own runtime: its client\'s stdio');
+});
+
+// C-daemon-log: what ch-local itself writes to the shared runtime's log
+// never carries a stored credential: it reaches the runtime in its slot, and
+// the log has every line start wrote (the runtime's own lines name keys by
+// fingerprint only: countinghouse test/auth/29-no-keys-in-logs.js)
+test('C-daemon-log: a stored credential reaches the shared runtime in its slot, and never the log', async () => {
+  const home = installedHome();
+  const runDir = path.join(home, 'run', 'daemon');
+  fs.mkdirSync(runDir, {recursive: true, mode: 0o700});
+  const log = require('../lib/runtime-log').openRuntimeLog(runDir, process.platform === 'win32'
+    ? {platform: 'win32', acl: {createPrivate: (f, d) => fs.writeFileSync(f, d), fileAcl: () => ({}), privateProblem: () => null}} : {});
+  const f = io(home);
+  f.runtimeOutput = log;
+  const plain = f.stderr;
+  f.stderr = {write: (t) => { plain.write(t); log.write(t); return true; }};
+  assert.strictEqual(await start({passThrough: [], session: {socket: path.join(runDir, 'sessions.sock'), sessionDir: runDir, home}}, ghLoggedIn(f)), 0, f.err);
+  log.write('ch-local daemon: the end of the run');
+  await log.close();
+  assert.strictEqual(f.spawned[0].env.COUNTINGHOUSE_CREDENTIAL_1, STORED, 'it reached the runtime');
+  const text = fs.readFileSync(log.file, 'utf8');
+  assert.match(text, /the end of the run/, 'the log was written');
+  assert.ok(!text.includes(STORED), 'never in the log');
+  assert.ok(!f.err.includes(STORED));
 });
 
 // C4c: --sessionDir, and the one socket that may be outside the home

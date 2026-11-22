@@ -430,8 +430,12 @@ function realIo() {
     // control: an IPC fd for the runtime's control channel (packs in place)
     // detached: in its own process group (a session runtime: a terminal's
     // hang-up never reaches it)
-    spawn: (cmd, args, {env, control = false, detached = false} = {}) => {
-      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env, detached, windowsHide: true});
+    // output: a shared runtime's log (lib/runtime-log.js), which takes its
+    // stdout and stderr through pipes, always read
+    spawn: (cmd, args, {env, control = false, detached = false, output = null} = {}) => {
+      const out = output != null ? 'pipe' : 'inherit';
+      const child = require('child_process').spawn(cmd, args, {stdio: control ? ['inherit', out, out, 'ipc'] : 'inherit', env, detached, windowsHide: true});
+      if (output != null && control) { output.forward(child.stdout); output.forward(child.stderr); }
       const exited = new Promise((resolve) => {
         child.on('error', (err) => { process.stderr.write(`ch-local: could not start the runtime (${err.code || err.message})\n`); resolve(1); });
         child.on('exit', (code, signal) => resolve(code != null ? code : (signal != null ? 1 : 0)));
