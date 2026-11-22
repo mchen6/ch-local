@@ -419,3 +419,56 @@ test('(2b) a crash at the drain itself: still one restart, never a second runtim
     fs.rmSync(home, {recursive: true, force: true});
   }
 });
+
+// A6 (the final pass): the daemon's version is the code it runs, read once at
+// its start, never the disk's later. An install that swaps app/ between the
+// daemon's start and its adoption recorded the NEW version for OLD code, so
+// it never handed over
+test('A6: daemon.json names the version the daemon runs, not one installed after it started; it hands over on the next upgrade', async() => {
+  const {home, io, self, set} = setup();
+  try {
+    const s = scripted(home);
+    // (slow to listen: the install lands while it starts)
+    s.delay = (n) => (n === 1 ? 400 : 0);
+    let spawned = null;
+    io.spawnDaemon = (args) => {
+      spawned = args;
+      setTimeout(() => fs.writeFileSync(daemonJson(home), JSON.stringify({pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: '2.0.0', started: 'z'}), {mode: 0o600}), 100);
+      return true;
+    };
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    set(self, '2.0.0');
+    await adopted(home);
+    assert.strictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')).daemonVersion, '1.0.0', 'the version it runs');
+    await requestUpgrade(home);
+    assert.strictEqual(await done, 0, io.err);
+    assert.deepStrictEqual(spawned && spawned.slice(0, 1), ['daemon'], 'handed over to the new ch-local');
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// A7 (the final pass): a daemon never rewrites another daemon's daemon.json
+// -- a successor's, or a second one's -- whatever its own state
+test('A7: a running daemon meeting another daemon\'s daemon.json never rewrites it, and says so once', async() => {
+  const {home, io} = setup();
+  try {
+    const s = scripted(home);
+    const done = daemon({home}, io, {run: s.run});
+    await s.nth(0);
+    await adopted(home);
+    const theirs = {pid: 999999, socket: 'x', runtimeVersion: 'y', daemonVersion: '9.9.9', started: 'z'};
+    fs.writeFileSync(daemonJson(home), JSON.stringify(theirs), {mode: 0o600});
+    // (a restart's writeVersion, from a daemon that is not stopping)
+    await requestRestart(home);
+    await s.nth(1);
+    for (let i = 0; i < 100 && !/another daemon's now/.test(io.err); i++) await tick();
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(daemonJson(home), 'utf8')), theirs, 'never rewritten');
+    assert.strictEqual(io.err.split("daemon.json is another daemon's now: not rewritten").length - 1, 1, 'said once');
+    io.signal('SIGTERM');
+    assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
