@@ -176,6 +176,12 @@ pub fn attach_within(home: &Home, resume: Option<&str>, deadline: Instant) -> Re
 /// No reachable daemon: start one, once per attach.
 fn start(home: &Home, deadline: Instant, spawned: &mut bool) -> Next {
     if *spawned {
+        // (a daemon that gave up says so in failed.json: read at every poll,
+        // so the session falls back at once, never only at the budget's
+        // end -- A4, the final pass)
+        if let Some(r) = crate::failed::read(home) {
+            return Next::Failed(r);
+        }
         return Next::Poll("waiting for the daemon this shim started".into());
     }
     // the daemon.json check failed: a daemon that gave up says so here
@@ -448,6 +454,44 @@ mod tests {
         let (t, _rx) = ready(vec![]);
         fs::set_permissions(t.home.secret(), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(matches!(attach(&t.home, None), Err(AttachError::Stop(w)) if w.contains("0644")));
+    }
+
+    /// A4 (the final pass): once this shim has started a daemon, a failed.json
+    /// that daemon writes (it gave up) is seen at the next poll, never only
+    /// at the budget's end: the session falls back at once, with its reason.
+    #[test]
+    fn a_daemon_this_shim_started_that_gives_up_is_seen_at_the_next_poll() {
+        let t = home();
+        let script = t.home.root().join("fake-ch-local.sh");
+        let spawned = t.home.root().join("spawned");
+        // (the stand-in daemon marks that it ran: failed.json is written only
+        // after the spawn, so the read after it is the path that runs)
+        fs::write(&script, format!("touch '{}'\n", spawned.display())).unwrap();
+        let shim = serde_json::json!({"node": "/bin/sh", "chLocal": script, "env": {"PATH": "/usr/bin:/bin", "HOME": t.home.root()}});
+        private(&t.home.shim_json(), shim.to_string().as_bytes());
+        let failed = t.home.run_dir().join("failed.json");
+        // (written after the spawn, as a daemon that never listened writes it)
+        let writer = std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(10);
+            while !spawned.exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(spawned.exists(), "the daemon was spawned");
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+            private(
+                &failed,
+                format!(r#"{{"v":1,"at":{at},"exit":null,"signal":null,"reason":"never-listened"}}"#).as_bytes(),
+            );
+        });
+        let started = Instant::now();
+        let r = attach_within(&t.home, None, Instant::now() + Duration::from_secs(15));
+        writer.join().unwrap();
+        assert!(matches!(r, Err(AttachError::SharedFailed(_))), "{:?}", r.as_ref().err());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "seen at the next poll, not the budget's end: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
