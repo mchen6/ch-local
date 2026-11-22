@@ -254,3 +254,14 @@ test('a home a shell would not read plainly is named by the placeholder, never l
   assert.strictEqual(homePrefix({home: '/home/dev/ch'}, 'linux'), 'COUNTINGHOUSE_HOME="/home/dev/ch" ');
   assert.strictEqual(homePrefix({home: '/home/dev/ch'}, 'win32'), '', 'Windows: not yet (A-chlocal-func)');
 });
+
+// the reviewer, 11-21: on Windows a printed npx hint (before any install)
+// names a home that isn't the default, in words after the backticks; POSIX
+// before the command; the launcher's form names its home already
+test('hintCommand: the npx form names a non-default home on every platform; the default home and the launcher form need nothing', () => {
+  const {hintCommand} = require('../lib/command-line');
+  const w = {home: 'D:\\ch'};
+  assert.strictEqual(hintCommand(w, 'install --pack <name>', 'win32'), '`npx @countinghouse/ch-local install --pack <name>` (with COUNTINGHOUSE_HOME set to "D:\\ch")');
+  assert.strictEqual(hintCommand({home: '/home/dev/ch'}, 'status', 'linux'), '`COUNTINGHOUSE_HOME="/home/dev/ch" npx @countinghouse/ch-local status`');
+  assert.strictEqual(hintCommand(layout({}, require('node:os').homedir), 'status', 'linux'), '`npx @countinghouse/ch-local status`', 'the default home');
+});
