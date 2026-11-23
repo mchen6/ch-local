@@ -246,11 +246,14 @@ test('locale is no option of start: refused by name, nothing started; a stored o
     assert.match(f.err, /--locale cannot be passed to ch-local start/);
     assert.strictEqual(f.spawned.length, 0);
   }
-  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'en'}}));
-  const f = io(home);
-  assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-  assert.match(f.err, /does not know, ignored: locale/);
-  assert.ok(!f.spawned[0].args.some((a) => a.startsWith('--locale')), 'never passed');
+  // (both values an older runtime's settings tool can have written)
+  for (const value of ['en', 'zh']) {
+    fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: value}}));
+    const f = io(home);
+    assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+    assert.match(f.err, /does not know, ignored: locale/);
+    assert.ok(!f.spawned[0].args.some((a) => a.startsWith('--locale')), `${value}: never passed`);
+  }
 });
 
 test('start refuses every pass-through option not known safe, naming it, and starts nothing', async () => {
