@@ -27,7 +27,7 @@ test('a request waits for the runtime to say ready; then it goes, in order', asy
   const rt = fakeRuntime();
   const c = controlClient(rt.child, {readyMs: 5000});
   const first = c.request({type: 'notice', text: 'a'});
-  const second = c.request({type: 'set', name: 'locale'});
+  const second = c.request({type: 'set', name: 'requestTimeout'});
   await tick();
   assert.deepStrictEqual(rt.sent, [], 'nothing before ready');
   rt.ready();

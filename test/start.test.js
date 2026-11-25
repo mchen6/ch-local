@@ -175,13 +175,13 @@ test('start refuses a pass-through --moduleSandbox other than audit or enforce, 
   }
 });
 
-test('start passes through only the options known safe: --moduleSandbox audit|enforce and --locale, after its own', async () => {
+test('start passes through only the option known safe, --moduleSandbox audit|enforce, after its own', async () => {
   const f = io(installedHome());
-  assert.strictEqual(await start({passThrough: ['--locale', 'zh-CN']}, f), 0, f.err);
-  assert.deepStrictEqual(f.spawned[0].args.slice(-2), ['--locale', 'zh-CN']);
+  assert.strictEqual(await start({passThrough: ['--moduleSandbox', 'audit']}, f), 0, f.err);
+  assert.deepStrictEqual(f.spawned[0].args.slice(-2), ['--moduleSandbox', 'audit']);
   const g = io(installedHome());
-  assert.strictEqual(await start({passThrough: ['--locale=en-US']}, g), 0, g.err);
-  assert.deepStrictEqual(g.spawned[0].args.slice(-1), ['--locale=en-US']);
+  assert.strictEqual(await start({passThrough: ['--moduleSandbox=audit']}, g), 0, g.err);
+  assert.deepStrictEqual(g.spawned[0].args.slice(-1), ['--moduleSandbox=audit']);
 });
 
 // #413 section 6.4 (L5a): each usable binding gets a slot; the runtime's
@@ -237,9 +237,28 @@ test('start removes its run directory when it fails after creating it', async ()
   assert.deepStrictEqual(fs.readdirSync(path.join(home, 'run')), []);
 });
 
+// English-only product (Matt, 11-22): ch-local has no language to choose
+test('locale is no option of start: refused by name, nothing started; a stored one is ignored and never passed', async () => {
+  const home = installedHome();
+  for (const passThrough of [['--locale', 'en-US'], ['--locale=en-US']]) {
+    const f = io(home);
+    assert.strictEqual(await start({passThrough}, f), 2, passThrough.join(' '));
+    assert.match(f.err, /--locale cannot be passed to ch-local start/);
+    assert.strictEqual(f.spawned.length, 0);
+  }
+  // (both values an older runtime's settings tool can have written)
+  for (const value of ['en', 'zh']) {
+    fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: value}}));
+    const f = io(home);
+    assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
+    assert.match(f.err, /does not know, ignored: locale/);
+    assert.ok(!f.spawned[0].args.some((a) => a.startsWith('--locale')), `${value}: never passed`);
+  }
+});
+
 test('start refuses every pass-through option not known safe, naming it, and starts nothing', async () => {
   const home = installedHome();
-  for (const passThrough of [['--authProvider', 'file'], ['--authoringTools'], ['--hardened=false'], ['--allowedOrigins', '*'], ['--logStream'], ['--redisUrl', 'x'], ['--locale', '../../x'], ['positional'],
+  for (const passThrough of [['--authProvider', 'file'], ['--authoringTools'], ['--hardened=false'], ['--allowedOrigins', '*'], ['--logStream'], ['--redisUrl', 'x'], ['positional'],
     ['--storePath', '/tmp/x'], ['--store=redis'], ['--loadModule', '/some/dir'], ['--remoteCredentials', 'o.json'], ['--deviceConfigPath', 'd'],
     ['--moduleDataPath', 'm'], ['--authConfigPath', 'a.json'], ['--usageDir', 'u'], ['--port', '1'], ['--no-workerThread'], ['--debug'], ['--modulePath', 'p']]) {
     const f = io(home);
@@ -361,8 +380,8 @@ test('start with nothing installed says to install, and starts nothing', async (
 test('the CLI takes `start --stdio [options]` and nothing else', async () => {
   const home = installedHome();
   const f = io(home);
-  assert.strictEqual(await main(['start', '--stdio', '--locale', 'en-US'], f), 0, f.err);
-  assert.deepStrictEqual(f.spawned[0].args.slice(-2), ['--locale', 'en-US']);
+  assert.strictEqual(await main(['start', '--stdio', '--moduleSandbox', 'audit'], f), 0, f.err);
+  assert.deepStrictEqual(f.spawned[0].args.slice(-2), ['--moduleSandbox', 'audit']);
   const g = io(home);
   assert.strictEqual(await main(['start'], g), 2);
   assert.strictEqual(g.spawned.length, 0);
@@ -620,7 +639,7 @@ test('a gh binding with gh not logged in: gh\'s own output is never repeated', a
 // The review of ch-local #13's re-check.
 test('a settings file that is not valid stops start, saying why and how to fix it; nothing is spawned', async () => {
   const home = installedHome();
-  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh', maxOutputBytes: 1}}));
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {upgradeCheck: 'weekly', maxOutputBytes: 1}}));
   const f = io(home);
   assert.notStrictEqual(await start({passThrough: []}, f), 0);
   assert.match(f.err, /maxOutputBytes = 1, which is not allowed: not starting; fix it \(`(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local settings reset` replaces every setting with its default, asking first if that loosens one\)/);
@@ -629,11 +648,11 @@ test('a settings file that is not valid stops start, saying why and how to fix i
 
 test('a setting this ch-local does not know is ignored with a warning, and start runs', async () => {
   const home = installedHome();
-  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {fromTheFuture: 3, locale: 'zh'}}));
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {fromTheFuture: 3, requestTimeout: 20000}}));
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.match(f.err, /does not know, ignored: fromTheFuture/);
-  assert.strictEqual(valueOf(f.spawned[0].args, '--locale'), 'zh-CN', 'the runtime\'s locale');
+  assert.strictEqual(valueOf(f.spawned[0].args, '--requestTimeout'), '20', 'a setting it knows still applies');
 });
 
 test('start waits for an install for as long as it takes, saying so, and never says to remove the lock', async () => {
@@ -695,16 +714,6 @@ test('start gives the runtime the settings file countinghouse_settings changes',
   const f = io(home);
   assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
   assert.strictEqual(valueOf(f.spawned[0].args, '--settingsFile'), path.join(home, 'settings.json'));
-});
-
-test('the locale setting reaches the runtime as its own locale: en-US or zh-CN', async () => {
-  for (const [stored, passed] of [['zh', 'zh-CN'], ['en', 'en-US']]) {
-    const home = installedHome();
-    fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {locale: stored}}));
-    const f = io(home);
-    assert.strictEqual(await start({passThrough: []}, f), 0, f.err);
-    assert.strictEqual(valueOf(f.spawned[0].args, '--locale'), passed);
-  }
 });
 
 // On Windows enforce needs a countinghouse with #195 (lib/sandbox-support.js:
@@ -983,12 +992,12 @@ test('start --home names the home, over COUNTINGHOUSE_HOME; --own-runtime is tak
   const home = installedHome();
   const other = installedHome();
   const f = io(other);   // COUNTINGHOUSE_HOME names another home
-  assert.strictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home, '--locale', 'en'], f), 0, f.err);
+  assert.strictEqual(await main(['start', '--stdio', '--own-runtime', '--home', home, '--moduleSandbox', 'audit'], f), 0, f.err);
   const {args} = f.spawned[0];
   // --home is taken by its real path (macOS: /var is a link to /private/var)
   assert.strictEqual(valueOf(args, '--storePath'), path.join(fs.realpathSync(home), 'store'), 'the --home given, not COUNTINGHOUSE_HOME');
   assert.ok(!args.includes('--own-runtime') && !args.includes('--home'), 'neither reaches the runtime');
-  assert.ok(args.includes('--locale'), 'the pass-through still does');
+  assert.strictEqual(valueOf(args, '--moduleSandbox'), 'audit', 'the pass-through still does');
 });
 
 // what a start tells the client (notices over the control channel, which the
