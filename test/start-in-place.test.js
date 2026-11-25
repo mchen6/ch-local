@@ -2452,6 +2452,145 @@ test('an own module whose own callee\'s code changed is unloaded around the call
   await s.done;
 });
 
+// An entry added again (its addedAt) is what the user confirmed now: what runs
+// is loaded again from its copy, though its code is the same. The copy may have
+// changed since it was loaded, and a worker that started again ran that.
+const asksOf = (s, at = 0) => s.requests.slice(at).filter((m) => ['load', 'unload', 'reload'].includes(m.type)).map((m) => `${m.type} ${named(m)}`);
+const again = (m, n) => ({...m.entry, addedAt: new Date(n).toISOString()});
+for (const shared of [false, true]) {
+  test(`an own module added again at the same code is unloaded and loaded again${shared ? ', in shared mode' : ''}; own.json written with the same entry is not`, {skip: OWN_SKIP}, async () => {
+    const s = await running({shared});
+    try {
+      const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+      const a = placeOwn(s.home, 'my-tool');
+      writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+      await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+      // the copy changed where it is, then the folder added again: the same tree
+      const copy = path.join(ownTree.copyDir(a.where, 'my-tool', a.tree), 'handlers', 'toolService', 'run.js');
+      fs.chmodSync(copy, 0o644);
+      fs.appendFileSync(copy, '// not confirmed\n');
+      const b = placeOwn(s.home, 'my-tool');
+      assert.strictEqual(b.tree, a.tree);
+      assert.doesNotMatch(fs.readFileSync(copy, 'utf8'), /not confirmed/, 'add-module restores the copy');
+      const at = s.requests.length;
+      writeOwnRecord(a.where, {v: 1, modules: {'my-tool': again(b, 1000)}});
+      await until(() => run().ownSeen['my-tool'].addedAt === new Date(1000).toISOString());
+      assert.deepStrictEqual(asksOf(s, at), ['unload my-tool', 'load my-tool']);
+      assert.deepStrictEqual([run().ownSeen['my-tool'].state, run().loaded['my-tool']], ['loaded', a.tree]);
+      assert.strictEqual(s.requests.slice(at).find((m) => m.type === 'unload').notice, 'my-tool unloaded: you added it again; loading it again');
+      // the same entry, the file written again: nothing sent
+      const then = s.requests.length;
+      const c = placeOwn(s.home, 'my-other');
+      writeOwnRecord(a.where, {v: 1, modules: {'my-tool': again(b, 1000), 'my-other': c.entry}});
+      await until(() => run().ownSeen['my-other'] != null);
+      assert.deepStrictEqual(asksOf(s, then), ['load my-other']);
+    } finally {
+      s.end();
+      await s.done;
+    }
+  });
+}
+
+test('an own module of the start\'s plan added again at the same code is loaded again; its own caller around it', {skip: OWN_SKIP}, async () => {
+  let a = null;
+  let b = null;
+  const s = await running({beforeStart: (home) => {
+    b = placeOwn(home, 'my-b');
+    a = placeOwn(home, 'my-a', {calls: ['my-b/toolService.run']});
+    writeOwnRecord(b.where, {v: 1, modules: {'my-b': b.entry, 'my-a': a.entry}});
+  }});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    await until(() => run().ownSeen != null);
+    const at = s.requests.length;
+    writeOwnRecord(b.where, {v: 1, modules: {'my-b': again(b, 1000), 'my-a': a.entry}});
+    await until(() => run().ownSeen['my-b'].addedAt === new Date(1000).toISOString());
+    assert.deepStrictEqual(asksOf(s, at), ['unload my-a', 'unload my-b', 'load my-b', 'load my-a']);
+    assert.strictEqual(s.requests.slice(at).find((m) => m.type === 'unload').notice, 'my-a unloaded: my-b, which it calls, was added again; loading it again');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('an own module added again whose unload is refused: a restart, though its code is loaded', {skip: OWN_SKIP}, async () => {
+  let refuse = false;
+  const s = await running({answer: (m) => (m.type === 'unload' && refuse ? {ok: false, code: 'CONTROL_BUSY'} : {ok: true})});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    refuse = true;
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': again(a, 1000)}});
+    await until(() => run().ownSeen['my-tool'].addedAt === new Date(1000).toISOString());
+    assert.deepStrictEqual(run().ownSeen['my-tool'], {addedAt: new Date(1000).toISOString(), state: 'restart', again: true});
+    // (tried again at the next apply)
+    refuse = false;
+    const b = placeOwn(s.home, 'my-other');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': again(a, 1000), 'my-other': b.entry}});
+    await until(() => run().ownSeen['my-other'] != null);
+    assert.strictEqual(run().ownSeen['my-tool'].state, 'loaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+for (const gone of [false, true]) {
+  test(`an own module whose copy ${gone ? 'went' : 'changed'} while it was being unloaded is not loaded, and said so, to the overview too`, {skip: OWN_SKIP}, async () => {
+    let copy = null;
+    const s = await running({answer: (m) => {
+      if (m.type === 'unload' && copy != null && fs.existsSync(copy)) {
+        if (gone) { fs.chmodSync(path.dirname(copy), 0o755); fs.renameSync(copy, `${copy}-away`); } else { fs.chmodSync(path.join(copy, 'api.json'), 0o644); fs.appendFileSync(path.join(copy, 'api.json'), '// not confirmed\n'); }
+      }
+      return {ok: true};
+    }});
+    try {
+      const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+      const held = () => JSON.parse(fs.readFileSync(s.args()[s.args().indexOf('--heldBackFile') + 1], 'utf8')).modules.filter((m) => m.name === 'my-tool').map((m) => m.reason);
+      const a = placeOwn(s.home, 'my-tool');
+      writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+      await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+      const at = s.requests.length;
+      // (each state the overview was given, and each the line waits on, from here)
+      const seen = [];
+      const told = setInterval(() => { try { const x = `${JSON.stringify(held())} ${run().ownSeen['my-tool'].state}`; if (seen.at(-1) !== x) seen.push(x); } catch (e) { /* being written */ } }, 1);
+      copy = ownTree.copyDir(a.where, 'my-tool', a.tree);
+      writeOwnRecord(a.where, {v: 1, modules: {'my-tool': again(a, 1000)}});
+      const line = `not loading my-tool: ${gone ? 'its copy is gone' : 'its files changed since you added it'}: run \`${said(s.home, `add-module "${a.entry.from}"`)}\` again`;
+      await until(() => notices(s).some(([, t]) => t === toldAs(line)));
+      clearInterval(told);
+      assert.deepStrictEqual(asksOf(s, at), ['unload my-tool']);
+      assert.deepStrictEqual([run().ownSeen['my-tool'].addedAt, run().ownSeen['my-tool'].state, run().ownSeen['my-tool'].kind, run().loaded['my-tool']], [new Date(1000).toISOString(), 'kept', gone ? 'gone' : 'changed', undefined]);
+      assert.ok(!seen.some((x) => /restart/.test(x)), seen.join(' | '));
+    } finally {
+      s.end();
+      await s.done;
+    }
+  });
+}
+
+test('an own module stopped for good is loaded again once it is added again', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    s.ask({type: 'module-stopped', name: 'my-tool', code: 'MODULE_CRASHED', when: 'restart'});
+    await until(() => run().stopped['my-tool'] != null);
+    const at = s.requests.length;
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': again(a, 1000)}});
+    await until(() => run().ownSeen['my-tool'].addedAt === new Date(1000).toISOString());
+    assert.deepStrictEqual(asksOf(s, at), ['load my-tool']);
+    assert.deepStrictEqual([run().ownSeen['my-tool'].state, run().stopped['my-tool']], ['loaded', undefined]);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // the medium on #113's round 1: a callee that moves between own and a pack
 // is a code change on either side
 test('ownCodeChanged: a callee whose version is a tree on either side, and differs', () => {

@@ -63,8 +63,9 @@ Only a yes there adds it: "Added csv-summary (own, ba385218dcf1): your
 clients see it now." Claude Code never runs this command for you and never
 answers its question. `countinghouse_load_module` tells the agent the same:
 in this setup it never loads a module itself. Running it again on unchanged
-files changes nothing ("csv-summary ba385218dcf1 is already added: nothing
-changed.").
+files asks again while a runtime runs on this machine, and a yes loads the
+module again. With no runtime running, or a no, it changes nothing
+("csv-summary ba385218dcf1 is already added: nothing changed.").
 
 What a module needs to be added:
 
@@ -81,8 +82,12 @@ What a module needs to be added:
 
 What is added is the copy you confirmed, by the hash of its files. If the
 folder changes afterwards, nothing changes in countinghouse until you run
-`add-module` again and confirm again. A copy that no longer matches what you
-confirmed is held back, never loaded.
+`add-module` again and confirm again. ch-local checks each copy against what
+you confirmed when a runtime starts (with the shared runtime, not each time a
+client opens) and whenever your settings, keys or modules change, and holds
+back one that no longer matches. Between those times, a
+runtime's copies are not checked again: one that is already running stays on,
+and if its worker restarts it runs the changed files.
 
 ## A key for it
 
@@ -98,8 +103,9 @@ It is sent only to the address your module declares.
 ## Seeing and removing it
 
 `ch-local status` lists each module you added under "own modules", with the
-short hash of what you confirmed, and either its tools or why a start would
-not load it:
+short hash of what you confirmed, and its tools; or that only a restart takes
+it up (with how to restart); or why a start would not load it (and that it is
+still on in the running runtime, when it is):
 
 ```text
 own modules:
