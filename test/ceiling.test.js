@@ -123,8 +123,8 @@ test('a runtime without the reader, and a ceiling file present, refuses every lo
 test('start, under the ceiling: values clamped and said; a forbidden audit runs under enforce; one that cannot be trusted refuses a loosening start', () => {
   const s = (values) => ({values});
   const c = trusted({maxOutputBytes: 8 * MiB, requestTimeout: 30000, forbid: ['moduleSandbox', 'autoUpgrade']});
-  const r = startUnderCeiling(s({maxOutputBytes: 32 * MiB, requestTimeout: 60000, moduleSandbox: 'audit', autoUpgrade: true, locale: 'zh'}), c, {});
-  assert.deepStrictEqual(r.values, {maxOutputBytes: 8 * MiB, requestTimeout: 30000, moduleSandbox: 'enforce', autoUpgrade: false, locale: 'zh'});
+  const r = startUnderCeiling(s({maxOutputBytes: 32 * MiB, requestTimeout: 60000, moduleSandbox: 'audit', autoUpgrade: true, upgradeCheck: 'weekly'}), c, {});
+  assert.deepStrictEqual(r.values, {maxOutputBytes: 8 * MiB, requestTimeout: 30000, moduleSandbox: 'enforce', autoUpgrade: false, upgradeCheck: 'weekly'});
   assert.deepStrictEqual(r.notes, [
     'maxOutputBytes 32MiB is above the operator\'s ceiling: the runtime gets 8MiB',
     'requestTimeout 60s is above the operator\'s ceiling: the runtime gets 30s',
@@ -134,7 +134,7 @@ test('start, under the ceiling: values clamped and said; a forbidden audit runs 
   assert.match(startUnderCeiling(s({}), c, {passedAudit: true}).problem, /--moduleSandbox audit is forbidden by this machine's operator ceiling: not starting/);
   assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 4 * MiB}), c, {}), {values: {maxOutputBytes: 4 * MiB}, notes: []});
   // untrusted: defaults or tighter start; anything looser does not
-  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 4 * MiB, locale: 'zh'}), UNTRUSTED, {}).notes, []);
+  assert.deepStrictEqual(startUnderCeiling(s({maxOutputBytes: 4 * MiB, upgradeCheck: 'weekly'}), UNTRUSTED, {}).notes, []);
   assert.match(startUnderCeiling(s({maxOutputBytes: 32 * MiB}), UNTRUSTED, {}).problem, /cannot be trusted .*, and this start would loosen maxOutputBytes: not starting/);
   assert.match(startUnderCeiling(s({}), UNTRUSTED, {passedAudit: true}).problem, /would loosen --moduleSandbox audit/);
   // audit forced by an older runtime (Windows before countinghouse#195): not a loosening made
@@ -155,14 +155,14 @@ test('outside edits: a setting changed outside the tools is reported once, and r
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
   setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
-  setSetting(where, 'locale', 'zh', {by: 'settings tool'});
+  setSetting(where, 'upgradeCheck', 'weekly', {by: 'settings tool'});
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
   // a request not confirmed and a this-start change set nothing
   fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'settings tool', setting: 'requestTimeout', asked: 120000, change: 'not confirmed'}) + '\n' +
     JSON.stringify({by: 'settings tool', setting: 'requestTimeout', old: 30000, new: 120000, change: 'this start'}) + '\n');
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
   // edited by hand: a raise, and a pack turned on that was never recorded
-  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 64 * MiB, locale: 'zh', 'pack.other': false}}));
+  fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {maxOutputBytes: 64 * MiB, upgradeCheck: 'weekly', 'pack.other': false}}));
   const said = [];
   const edits = reportOutsideEdits(where, readSettings(where), {say: (s) => said.push(s), host: 'box', pid: 1});
   assert.deepStrictEqual(edits.map((e) => [e.setting, e.old, e.new, e.loosened]), [['maxOutputBytes', 32 * MiB, 64 * MiB, true], ['pack.other', true, false, false]]);
@@ -172,7 +172,7 @@ test('outside edits: a setting changed outside the tools is reported once, and r
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'reported once');
   // a reset clears what was recorded; a change "not made" is undone
   fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'cli', setting: '*', change: 'reset'}) + '\n' +
-    JSON.stringify({by: 'cli', setting: 'locale', old: 'en', new: 'zh'}) + '\n' + JSON.stringify({by: 'cli', setting: 'locale', change: 'not made', problem: 'EIO'}) + '\n');
+    JSON.stringify({by: 'cli', setting: 'upgradeCheck', old: 'daily', new: 'weekly'}) + '\n' + JSON.stringify({by: 'cli', setting: 'upgradeCheck', change: 'not made', problem: 'EIO'}) + '\n');
   fs.rmSync(where.settings);
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
 });

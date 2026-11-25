@@ -70,10 +70,10 @@ test('a part has no switch: set enabled.<part> is refused, naming the modules th
 
 test('an enabled.<part> written into the file by hand is ignored with a warning, and the file still reads', async () => {
   const h = await installed();
-  writeValues(h.home, {[`enabled.${PART}`]: false, locale: 'zh'});
+  writeValues(h.home, {[`enabled.${PART}`]: false, upgradeCheck: 'weekly'});
   const s = readSettings(h.where);
   assert.strictEqual(s.error, undefined, s.error);
-  assert.strictEqual(s.values.locale, 'zh');
+  assert.strictEqual(s.values.upgradeCheck, 'weekly');
   assert.ok(!(`enabled.${PART}` in s.values), 'not applied');
   assert.match(s.warning, /enabled\.@countinghouse\/ch-access-github names a part, which has no switch: ignored/);
   assert.strictEqual(isOn(s, h.record(), PART), true);
@@ -93,10 +93,10 @@ test('pack.<name> is still read as its scenario module\'s entry, and off wins ov
 
 test('a terminal "on" removes the leftover pack.* off in the same write, so the module is on', async () => {
   const h = await installed();
-  writeValues(h.home, {'pack.ci-failure-triage': false, [`enabled.${SCENARIO}`]: false, locale: 'zh'});
+  writeValues(h.home, {'pack.ci-failure-triage': false, [`enabled.${SCENARIO}`]: false, upgradeCheck: 'weekly'});
   const on = await cli(h.home, 'settings', 'set', `enabled.${SCENARIO}`, 'on');
   assert.strictEqual(on.code, 0, on.io.err);
-  assert.deepStrictEqual(fileValues(h.home), {[`enabled.${SCENARIO}`]: true, locale: 'zh'});
+  assert.deepStrictEqual(fileValues(h.home), {[`enabled.${SCENARIO}`]: true, upgradeCheck: 'weekly'});
   assert.strictEqual(isOn(readSettings(h.where), h.record(), SCENARIO), true);
   assert.ok(historyOf(h.home).some((l) => l.setting === 'pack.ci-failure-triage' && l.old === false && l.change === 'removed with enabled.@countinghouse/ch-pack-ci-failure-triage on'), JSON.stringify(historyOf(h.home)));
 });
