@@ -497,41 +497,55 @@ test('the shared runtime through the native shim', {timeout: 2400000, skip: SRC 
 });
 
 // (b-latched), the checks the gated run makes against two sessions
-// (countinghouse #337), here against stand-ins: what a refusal must say to
+// (countinghouse #337, #545), here against stand-ins: what a refusal must say to
 // pass, and what each wrong answer fails on.
-test('shared: (b-latched) a latched session is refused as the latch, with the handed-over reason; never as a decline', async () => {
+test('shared: (b-latched) with no tested client a latched session is refused as any session is, with the terminal command; never as a decline', async () => {
   const why = {reason: 'client hook present', at: '~/x/.claude/settings.json'};
   // (the launcher form at the run's own home, as the runtime names it since
   // countinghouse #536; on Windows its backslashes are escaped in the JSON too)
   const LAUNCHER = process.platform === 'win32' ? 'C:\\t\\home\\bin\\ch-local.js' : '/t/home/bin/ch-local.js';
   const COMMAND = `node "${LAUNCHER}" settings set requestTimeout 60s`;
-  const run = async (loosening, {firstValue = 10000, handed = why} = {}) => {
+  const refusal = (code, text) => ({result: {isError: true, _meta: {'countinghouse/code': code}, content: [{type: 'text', text}]}});
+  const TEXT = 'Changing requestTimeout to 60s loosens a guarding setting, so it needs your own confirmation; nothing was changed. To allow this, run `' + COMMAND + '` in a terminal yourself. That change is kept, not just for this session, and a value above what this runtime started with takes effect when it next starts.';
+  const good = refusal('SETTING_NEEDS_CONFIRMATION', TEXT);
+  const LOCKED = 'not confirmed (locked in this session)';
+  const history = (...changes) => changes.map((change) => ({setting: 'requestTimeout', change}));
+  const failed = async (loosening, {firstValue = 10000, handed = why, unlatched = loosening, second: mine = history(LOCKED), first: theirs = history('not confirmed (not tested yet)'), tightened = 20000} = {}) => {
     const checks = [];
     const check = (name, ok, detail) => { checks.push({name, ok: ok === true, detail}); return ok === true; };
-    const second = async (a) => (a.action === 'set' && a.value === '60s' ? loosening
-      : {result: {structuredContent: {new: 20000, applies: 'this session'}}});
-    const first = async () => ({result: {structuredContent: {settings: [{name: 'requestTimeout', value: firstValue}]}}});
+    const session = (loosen, settings, lines) => async (a) => (a.action === 'get' ? {result: {structuredContent: {settings, history: lines}}}
+      : a.value === '60s' ? loosen : {result: {structuredContent: {new: tightened, applies: 'this session'}}});
+    const second = session(loosening, [], mine);
+    const first = session(unlatched, [{name: 'requestTimeout', value: firstValue}], theirs);
     await shared.latchedChecks({second, first, why: handed, reason: 'client hook present', launcher: LAUNCHER, check});
-    return checks;
+    assert.strictEqual(checks.length, 7);
+    return checks.filter((c) => !c.ok).map((c) => c.name.replace('(b-latched) ', ''));
   };
-  const refusal = (code, text) => ({result: {isError: true, _meta: {'countinghouse/code': code}, content: [{type: 'text', text}]}});
-  const good = refusal('SETTING_CLIENT_NOT_CONFIRMED', 'Loosening requestTimeout is not asked in this session: this client\'s configuration could answer forms by itself (client hook present: ~/x/.claude/settings.json); nothing was changed. To allow it, run `' + COMMAND + '` in a terminal yourself.');
-  assert.ok((await run(good)).every((c) => c.ok), JSON.stringify(await run(good)));
-  const failed = async (...a) => (await run(...a)).filter((c) => !c.ok).map((c) => c.name);
-  assert.strictEqual((await failed(refusal('SETTING_DECLINED_THIS_SESSION', good.result.content[0].text))).length, 1, 'a decline is not the latch');
-  assert.strictEqual((await failed(refusal('SETTING_CLIENT_NOT_CONFIRMED', 'this client could not be confirmed; run `ch-local settings set requestTimeout 60s`'))).length, 1, 'the reason must be the handed-over one');
+  const REFUSED = 'a loosening is refused with the terminal command; never as a decline';
+  const SAME = 'word for word as the first session\'s, which is not latched';
+  assert.deepStrictEqual(await failed(good), []);
+  assert.deepStrictEqual(await failed(refusal('SETTING_DECLINED_THIS_SESSION', TEXT)), [REFUSED]);
+  assert.deepStrictEqual(await failed(refusal('SETTING_CLIENT_NOT_CONFIRMED', TEXT)), [REFUSED], 'the latch\'s own refusal, while no client is tested');
+  // (any word of its client's configuration, anywhere in the answer)
+  const leaks = [`${TEXT} (client hook present: ~/x/.claude/settings.json)`, `${TEXT} This client's configuration could answer forms by itself.`, `${TEXT} (~/x/.claude/settings.json)`];
+  for (const text of leaks) assert.deepStrictEqual(await failed(refusal('SETTING_NEEDS_CONFIRMATION', text), {unlatched: good}), [SAME], text);
+  assert.deepStrictEqual(await failed({result: {...good.result, structuredContent: {why}}}, {unlatched: good}), [SAME]);
   // (the bare command is on no PATH, and another home's launcher is not this run's)
-  const other = (form) => refusal('SETTING_CLIENT_NOT_CONFIRMED', good.result.content[0].text.replace(COMMAND, form));
-  assert.strictEqual((await failed(other('ch-local settings set requestTimeout 60s'))).length, 1, 'the bare command');
-  assert.strictEqual((await failed(other('node "/elsewhere/bin/ch-local.js" settings set requestTimeout 60s'))).length, 1, 'another home\'s launcher');
-  assert.strictEqual((await failed(good, {firstValue: 20000})).length, 1, 'the first session\'s own value');
-  assert.strictEqual((await failed(good, {handed: {reason: 'plugin hook present'}})).length, 2, 'a hand-over with another reason fails both');
+  const other = (form) => refusal('SETTING_NEEDS_CONFIRMATION', TEXT.replace(COMMAND, form));
+  assert.deepStrictEqual(await failed(other('ch-local settings set requestTimeout 60s')), [REFUSED], 'the bare command');
+  assert.deepStrictEqual(await failed(other('node "/elsewhere/bin/ch-local.js" settings set requestTimeout 60s')), [REFUSED], 'another home\'s launcher');
+  assert.deepStrictEqual(await failed(good, {second: history('not confirmed (not tested yet)')}), ['the second session\'s history says it is locked'], 'a second session that never latched');
+  assert.deepStrictEqual(await failed(good, {first: history(LOCKED)}), ['the first session\'s does not'], 'a first session that latched');
+  assert.deepStrictEqual(await failed(good, {first: []}), ['the first session\'s does not'], 'a first session that was never asked');
+  assert.deepStrictEqual(await failed(good, {tightened: 60000}), ['a tightening still applies to that session']);
+  assert.deepStrictEqual(await failed(good, {firstValue: 20000}), ['the first session\'s settings are its own (its 10 s kept)']);
+  assert.deepStrictEqual(await failed(good, {handed: {reason: 'plugin hook present'}}), ['the conditions handed over for the second client say no, with the fixture\'s reason']);
 });
 
 // Not yet through the real shim (scripts/shared-acceptance.js says where it
 // is covered meanwhile): a todo, never a skip, so the acceptance workflow's
 // "skipped 0" still holds.
-test('shared: (b1) the settings confirmation form round trip, through the shim', {todo: 'once a tested Claude Code range is in countinghouse lib/elicitation-clients.json (the maintainer\'s hand test before release)'});
+test('shared: (b1) the settings confirmation form round trip, through the shim', {todo: 'once a tested Claude Code range is in countinghouse lib/elicitation-clients.json (the maintainer\'s hand test); (b-latched)\'s refusal is then the latch\'s own, with its reason'});
 
 // (a), (c) and (b2): the checks the gated run makes through the shim, with
 // the acceptance fixture pack turned on from the terminal, here against
