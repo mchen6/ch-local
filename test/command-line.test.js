@@ -284,6 +284,13 @@ test('fitAny: within 200 code points; the last command in backticks kept whole; 
   assert.ok([...fitted].length <= NOTICE_MAX, fitted);
   assert.ok(fitted.endsWith(`${cmd}))`), fitted);
   assert.strictEqual(fitAny('short'), 'short');
+  // (the words that join the explanation to its command stay with it)
+  const c = `\`node "/home/${'u'.repeat(100)}/ch-local.js" restart\``;
+  const why = `x unloaded, since ${'w'.repeat(90)} was changed`;
+  for (const tail of [`: ${c}`, `; ${c} shows them`, `: run ${c} now to stop it`, `; stopped until ${c} is run`, ` (${c}) (NOT_NOW)`]) {
+    const t = fitAny(`${why}${tail}`);
+    assert.ok([...t].length <= NOTICE_MAX && t.startsWith('x unloaded') && t.endsWith(`…${tail}`), t);
+  }
   const plain = fitAny('x'.repeat(300));
   assert.ok([...plain].length <= NOTICE_MAX);
 });
@@ -306,6 +313,8 @@ test('fitHeld: the command whole; a folder that passes the cut named in words; a
   assert.strictEqual(fitHeld(`not loading x: it calls y, which is not available (its copy is gone: run ${far} again)`), 'not loading x: it calls y, which is not available (its copy is gone)');
   assert.strictEqual(fitHeld(`not loading x: "y" changed and is not loaded, until you run ${far}`), 'not loading x: "y" changed and is not loaded');
   assert.strictEqual(fitHeld(`not loading x: ${far}`), 'not loading x');
+  // (never nothing: the runtime would drop it and answer ok; never half a command)
+  assert.strictEqual(fitHeld(`${far} shows them`, 'ch-x'), 'ch-x');
   assert.strictEqual(fitHeld(`not loading x: it calls y, which is not available (it is turned off (${far}))`), 'not loading x: it calls y, which is not available (it is turned off)');
   assert.strictEqual(fitHeld(`not loading x: it is turned off (${far})`), 'not loading x: it is turned off');
   // (an earlier command is whole or not there)
@@ -313,6 +322,55 @@ test('fitHeld: the command whole; a folder that passes the cut named in words; a
   assert.strictEqual(long, `not loading x: first, run \`node "${'a'.repeat(100)}" one\``);
   assert.strictEqual(fitHeld(`not loading x: first, run \`node "${'a'.repeat(190)}" one\`; then: run ${far}`), 'not loading x: first');
   for (const t of [cut, words, reason]) assert.ok([...t].length <= NOTICE_MAX, t);
+});
+
+// what a notice drops, whatever the command's length: the explanation first,
+// then the module's name, never the command
+test('fitHeld: the module\'s name stays whenever it fits beside the command; the command is never dropped for it', () => {
+  const {fitHeld, NOTICE_MAX} = require('../lib/command-line');
+  const n = (x) => [...x].length;
+  for (const about of ['x1', 'ch-pack-ci-failure-triage']) for (let len = 40; len <= 199; len++) {
+    const c = `\`${'c'.repeat(len - 2)}\``;
+    const line = `module ${about} could not be stopped in place after a credential was removed or changed and what goes on: run ${c}`;
+    const t = fitHeld(line, about);
+    const said = `${len}: ${t}`;
+    if (n(line) <= NOTICE_MAX) { assert.strictEqual(t, line); continue; }
+    assert.ok(n(t) <= NOTICE_MAX, said);
+    assert.ok(t.endsWith(c), said);
+    // (the words that join it, while they fit with the name)
+    if (n(`${about}: run ${c}`) <= NOTICE_MAX) assert.ok(t.endsWith(`run ${c}`), said);
+    if (n(`${about}: ${c}`) <= NOTICE_MAX) assert.ok(t.includes(about), said);
+    // (the explanation as long as any of it fits with the name)
+    if (n(`: run ${c}`) + n(`module ${about} `) + 20 <= NOTICE_MAX) assert.ok(t.startsWith(`module ${about} `), said);
+  }
+});
+
+test('fitHeld: a name late in the line is put first, the explanation kept; what a head opened is closed; the trailing words go before the command', () => {
+  const {fitHeld, beforeCommand, NOTICE_MAX} = require('../lib/command-line');
+  const c = `\`${'c'.repeat(100)}\``;
+  const t = fitHeld(`ch-step-redact was moved back to 0.0.9 by the rollback just made; ch-pack-ci-failure-triage calls it and is stopped with it; stopped until ${c} is run`, 'ch-pack-ci-failure-triage');
+  assert.ok([...t].length <= NOTICE_MAX && t.startsWith('ch-pack-ci-failure-triage: ch-step-redact was') && t.endsWith(`; stopped until ${c} is run`), t);
+  assert.strictEqual(beforeCommand(`x unloaded: it calls y, which is not available (it is turned off (${c}))`), 'x unloaded: it calls y, which is not available (it is turned off)');
+  const long = `\`${'c'.repeat(180)}\``;
+  assert.strictEqual(fitHeld(`x gets no key, and is not loaded, until you run ${long} again`, 'x'), `x: ${long} again`);
+  const longer = `\`${'c'.repeat(197)}\``;
+  assert.strictEqual(fitHeld(`x gets no key, and is not loaded, until you run ${longer} again`, 'x'), longer);
+});
+
+// a loosening is told with no restart command, which would apply it unasked;
+// a settings command, which asks first, may stand in it
+test('fitHeld, fitNotice, beforeCommand: a loosening\'s line gets no restart command, at any length; a settings command stays', () => {
+  const {fitHeld, fitNotice, beforeCommand, NOTICE_MAX} = require('../lib/command-line');
+  for (const len of [20, 190, 199, 200, 201, 400]) {
+    const line = `maxOutputBytes loosened from 16MiB to 32MiB, ${'w'.repeat(len)} when the shared runtime restarts (NOT_NOW)`;
+    for (const t of [fitHeld(line), fitHeld(line, 'ch-x'), fitNotice(line, ' when the shared runtime restarts', NOTICE_MAX, 'ch-x'), beforeCommand(line)]) assert.doesNotMatch(t, / restart(?:[`?]|$)/, t);
+    const set = '`node "/home/alexandra/.countinghouse/bin/ch-local.js" settings set maxOutputBytes 32MiB`';
+    const asked = `maxOutputBytes is not loosened ${'w'.repeat(len)}: ${set} asks first`;
+    assert.ok(fitHeld(asked, 'ch-x').endsWith(`${set} asks first`), fitHeld(asked, 'ch-x'));
+  }
+  const c = '`node "/home/u/.countinghouse/bin/ch-local.js" restart`';
+  assert.strictEqual(beforeCommand(`ch-x added 0.3.0: run ${c} now to apply it`), 'ch-x added 0.3.0');
+  assert.strictEqual(beforeCommand('ch-x added 0.3.0'), 'ch-x added 0.3.0');
 });
 
 test('fitNotice: a cut explanation carries no backtick, so no half command; the one at the end is whole', () => {

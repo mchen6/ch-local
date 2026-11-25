@@ -118,3 +118,42 @@ test('close() settles every pending request at once, CONTROL_GONE, and refuses l
   assert.ok(Date.now() - t0 < 1000, 'at once, not at the 30 s timeout');
   assert.strictEqual((await c.request({type: 'x'})).code, 'CONTROL_GONE');
 });
+
+// (the runtime cuts a notice at 200 characters: what the client is told is
+// fitted around its command; what is said here is whole)
+test('the teller: a line past a notice\'s cut is told fitted, its command whole, and said whole; so is one told before the channel is there', async () => {
+  const said = [];
+  const n = teller((s) => said.push(s));
+  const cmd = `node "/home/${'u'.repeat(90)}/bin/ch-local.js" restart`;
+  const line = (w) => `${w} could not be stopped in place after a credential was removed or changed: run \`${cmd}\` now to stop it`;
+  assert.ok([...line('before')].length > 200);
+  n.tell(line('before'));
+  const rt = fakeRuntime();
+  n.attach(controlClient(rt.child, {readyMs: 0}));
+  n.tell(line('after'));
+  n.tell('short');
+  await tick(50);
+  const sent = rt.sent.filter((m) => m.type === 'notice').map((m) => m.text);
+  assert.deepStrictEqual(said, [line('before'), line('after'), 'short']);
+  assert.ok(n.told.has(line('before')));
+  assert.strictEqual(sent.length, 3);
+  for (const [i, w] of [[0, 'before'], [1, 'after']]) {
+    assert.ok([...sent[i]].length <= 200, sent[i]);
+    assert.ok(sent[i].startsWith(w) && sent[i].endsWith(`\`${cmd}\` now to stop it`), sent[i]);
+  }
+  assert.strictEqual(sent[2], 'short');
+});
+
+// (the runtime cuts a line with no command itself, and cleans it: quotes and
+// paths are not rewritten here)
+test('the teller: a line past the cut with no command, or told as it is, reaches the runtime as it is', async () => {
+  const n = teller(() => {});
+  const rt = fakeRuntime();
+  n.attach(controlClient(rt.child, {readyMs: 0}));
+  const plain = `could not do it (EPERM, rename "C:\\Users\\me\\${'d'.repeat(200)}" -> "x")`;
+  const upgraded = `upgraded ch-local 0.1.0 -> 0.1.1; node "/home/alexandra/.countinghouse/bin/ch-local.js" rollback undoes it; pack foo was withdrawn in this release and was not started; \`node "/home/alexandra/.countinghouse/bin/ch-local.js" remove-pack foo\` removes it`;
+  n.tell(plain);
+  n.tell(upgraded, {fit: false});
+  await tick(50);
+  assert.deepStrictEqual(rt.sent.filter((m) => m.type === 'notice').map((m) => m.text), [plain, upgraded]);
+});
