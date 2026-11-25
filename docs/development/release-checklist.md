@@ -22,13 +22,12 @@ The checks are grouped. Within a group, the order doesn't matter.
      the per-session mode, measured by the gate harness on a quiet machine.
    - Evidence: the gate report that closes the register row, with its
      numbers and its verdict.
-3. **The P2 hand test passed for the Claude Code version the release
-   supports.**
-   - How: the settings tool's confirmation dialog, by hand: a loosening asked
-     for in conversation gets the dialog, a decline locks it, an expiry
-     counts, and a confirmed change applies.
-   - Evidence: the countinghouse pull request that adds that version's range
-     to `lib/elicitation-clients.json` (`tested`), which names the hand test.
+3. **No client is on the tested-client list.**
+   - How: `lib/elicitation-clients.json` in the countinghouse release holds
+     `"tested": []` for every client, and by hand, a loosening asked for in
+     conversation is answered with the terminal command and no dialog.
+   - Evidence: the file at the release commit, and the record of that by-hand
+     check.
 4. **The shared runtime serves two or more Claude Code sessions at once.**
    - How: install, then open two sessions in different repositories. In
      each, list the tools and call `ci_failure_triage`.
