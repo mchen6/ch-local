@@ -80,8 +80,9 @@ test.afterEach(() => {
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null, deep = false,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null, heldRetryMs = null} = {}) {
   // (deep: a home whose launcher path is as long as a user's, or longer:
-  // the notices' 200 characters are measured with it -- #147's M3)
-  const home = reuse != null ? reuse : deep ? (() => { const d = path.join(tmp('ch-home-'), 'alexandra'); fs.mkdirSync(d, {mode: 0o700}); return path.join(d, '.countinghouse'); })() : tmp('ch-home-');
+  // the notices' 200 characters are measured with it -- #147's M3; 'long':
+  // one far longer, where a line is cut before its command)
+  const home = reuse != null ? reuse : deep ? (() => { const d = path.join(tmp('ch-home-'), deep === 'long' ? 'alexandra'.repeat(7) : 'alexandra'); fs.mkdirSync(d, {mode: 0o700}); return path.join(d, '.countinghouse'); })() : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
@@ -1556,6 +1557,27 @@ test('a home rolled back under a running start: a module moved back is stopped "
       packs: {...r.packs, 'ci-failure-triage': {...r.packs['ci-failure-triage'], modules: {...r.packs['ci-failure-triage'].modules, '@countinghouse/ch-step-redact': '0.0.9'}}}}));
     const back = 'ch-step-redact was moved back to 0.0.9 by the rollback just made; it is stopped here until this client restarts; ch-pack-ci-failure-triage calls it and is stopped with it';
     await until(() => s.requests.some((m) => m.type === 'unload' && m.name === SCENARIO && m.notice === back));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (its key changed, so it is unloaded, and then removed before a restart: the
+// line that says it is not loaded names the command, which is never cut)
+test('shared mode: a held-back module\'s line keeps its command whole, with a long launcher path', async () => {
+  const s = await running({shared: true, deep: 'long'});
+  try {
+    await until(() => s.args() != null);
+    require('../lib/credential-store').bind(s.home, ACCESS, 'GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: `${STORED}-another`}, {held: require('./store-helpers').FIXTURE_HELD});
+    await until(() => s.requests.some((m) => m.type === 'unload'));
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    const line = () => notices(s).map(([, t]) => t).find((t) => /^not loading .*credential removed|credentials add ch-access-github/.test(t));
+    await until(() => line() != null);
+    // (a runner's temp home can make the command alone longer than the cut: the
+    // line then names none, never part of one)
+    assert.ok([...line()].length <= NOTICE_MAX, `${[...line()].length}: ${line()}`);
+    assert.ok(/`node "[^"]+ch-local\.js" credentials add ch-access-github`$/.test(line()) || !line().includes('`'), line());
   } finally {
     s.end();
     await s.done;
