@@ -143,6 +143,21 @@ test('add-module: refused, kept out, not in time: each its own line', opt, async
     `${waits.own()}. The running runtime has not taken it up yet: your clients see it once it has.\n`);
 });
 
+test('add-module: taken up only by a restart: the shared runtime\'s, or the client\'s; a shared one named first', opt, async () => {
+  const shared = setup();
+  shared.write(11, {ownSeen: {}});
+  assert.strictEqual(await shared.add(async () => shared.write(11, shared.seen('restart'))),
+    `${shared.own()}. The running runtime takes it up when it restarts: \`${shared.restart}\` asks for that.\n`);
+  const own = setup();
+  own.write(11, {ownSeen: {}, shared: false});
+  assert.strictEqual(await own.add(async () => own.write(11, {shared: false, ...own.seen('restart')})),
+    `${own.own()}. The running runtime takes it up when your client restarts.\n`);
+  const both = setup();
+  both.write(11, {ownSeen: {}, shared: false});
+  both.write(12, {ownSeen: {}});
+  assert.match(await both.add(async () => { both.write(11, {shared: false, ...both.seen('restart')}); both.write(12, both.seen('restart')); }), /asks for that/);
+});
+
 test('add-module: a code of another form, or an entry of another shape, is never printed nor taken for loaded', opt, async () => {
   for (const bad of ['rm -rf', 'A'.repeat(65), 'lower', 'MODULE_INVALID\u001b[2J', 7, null]) {
     const h = setup();
@@ -172,8 +187,8 @@ test('add-module: a start of an older ch-local tells nothing: not in time, at on
   assert.ok(Date.now() - began < 10000, 'not waited for');
 });
 
-test('add-module: several runtimes: the worst is said (refused, kept out, not in time, loaded)', opt, async () => {
-  const ADD = [['refused', /refused it \(MODULE_INVALID\)/], ['kept', /has not loaded it/], ['waits', /has not taken it up yet/], ['loaded', /see it now/]];
+test('add-module: several runtimes: the worst is said (refused, kept out, a restart, not in time, loaded)', opt, async () => {
+  const ADD = [['refused', /refused it \(MODULE_INVALID\)/], ['kept', /has not loaded it/], ['restart', /takes it up when it restarts/], ['waits', /has not taken it up yet/], ['loaded', /see it now/]];
   for (let i = 0; i < ADD.length; i++) {
     for (let j = i; j < ADD.length; j++) {
       for (const [a, b] of [[i, j], [j, i]]) {

@@ -2100,7 +2100,7 @@ test('ownSeen: null at the start; an own module\'s entry only once its load is a
   }
 });
 
-test('ownSeen: refused with the runtime\'s code; one it never answered waits; one kept out (its copy changed) is kept; a code of another form, or the channel\'s own, waits', {skip: OWN_SKIP}, async () => {
+test('ownSeen: refused with the runtime\'s code; one kept out (its copy changed) is kept; a code of another form, or the channel\'s own, is loaded by a restart', {skip: OWN_SKIP}, async () => {
   const codes = {'my-refused': {ok: false, code: 'MODULE_INVALID'}, 'my-busy': {ok: false, code: 'CONTROL_BUSY'}, 'my-odd': {ok: false, code: 'not a code'}, 'my-passing': {ok: false, code: 'CONTROL_FAILED'}};
   const s = await running({answer: (m) => (m.type === 'load' && codes[named(m)]) || {ok: true}});
   try {
@@ -2113,8 +2113,31 @@ test('ownSeen: refused with the runtime\'s code; one it never answered waits; on
     writeOwnRecord(modules['my-tool'].where, {v: 1, modules: Object.fromEntries(Object.entries(modules).map(([n, m]) => [n, m.entry]))});
     await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
     const at = new Date(0).toISOString();
-    assert.deepStrictEqual(run().ownSeen, {'my-refused': {addedAt: at, state: 'refused', code: 'MODULE_INVALID'}, 'my-busy': {addedAt: at, state: 'waits'},
-      'my-odd': {addedAt: at, state: 'waits'}, 'my-passing': {addedAt: at, state: 'waits'}, 'my-changed': {addedAt: at, state: 'kept', kind: 'changed'}, 'my-tool': {addedAt: at, state: 'loaded'}});
+    assert.deepStrictEqual(run().ownSeen, {'my-refused': {addedAt: at, state: 'refused', code: 'MODULE_INVALID'}, 'my-busy': {addedAt: at, state: 'restart'},
+      'my-odd': {addedAt: at, state: 'restart'}, 'my-passing': {addedAt: at, state: 'restart'}, 'my-changed': {addedAt: at, state: 'kept', kind: 'changed'}, 'my-tool': {addedAt: at, state: 'loaded'}});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (nothing in place tries them again but another change)
+test('ownSeen: a load not answered may yet be done: waits; new code whose old could not be unloaded: a restart', {skip: OWN_SKIP}, async () => {
+  let refuse = false;
+  const s = await running({timeoutMs: 300, answer: (m) => (m.type === 'load' && named(m) === 'my-slow' ? null : m.type === 'unload' && refuse ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const slow = placeOwn(s.home, 'my-slow');
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-slow': slow.entry, 'my-tool': a.entry}});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    assert.deepStrictEqual([run().ownSeen['my-slow'].state, run().ownSeen['my-tool'].state], ['waits', 'loaded']);
+    refuse = true;
+    const b = placeOwn(s.home, 'my-tool', {body: '// edited\n'});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': {...b.entry, addedAt: new Date(1000).toISOString()}}});
+    await until(() => run().ownSeen['my-tool'].addedAt === new Date(1000).toISOString());
+    assert.strictEqual(run().ownSeen['my-tool'].state, 'restart');
+    assert.strictEqual(run().loaded['my-tool'], a.tree, 'the old code still served');
   } finally {
     s.end();
     await s.done;
