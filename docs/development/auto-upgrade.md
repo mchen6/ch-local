@@ -406,9 +406,12 @@ included (as the acceptance run's security review showed). So:
 
 - `ch-local install --pack <name>` asks once, after a successful install,
   with the setting unset, at a terminal only (stdin a TTY). It says on
-  stdout: `Automatic upgrades install new versions of ch-local and its
-  packs, each checked by its pin and its provenance, 72 hours after each is
-  published; <rollback> undoes one.` It then asks, on stderr, as every
+  stdout: `Automatic upgrades install a new version of ch-local and
+  its packs, checked by its pin and its provenance, at the first check 72
+  hours or more after it was published and first seen here; a major or
+  breaking version, or one that adds to what you have or changes its
+  identity, always waits for your own <upgrade>. <rollback> returns to the
+  version before, while it is kept.` It then asks, on stderr, as every
   loosening is asked: `Loosen autoUpgrade from off to on? This is kept until
   you change it back. [y/N]`.
   - `y` or `yes` turns them on, through `cliSet`, under the operator's

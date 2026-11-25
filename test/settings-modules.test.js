@@ -165,8 +165,12 @@ test('settings reset <m>.<setting> and reset <m>: back to the default, other nam
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {upgradeCheck: 'weekly', [STORED('units')]: 'imperial', [STORED('note')]: 'x', 'module.@acme/other.k': 'v'}}));
   assert.strictEqual((await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage.units'])).code, 0);
   assert.deepStrictEqual(fileValues(home), {upgradeCheck: 'weekly', [STORED('note')]: 'x', 'module.@acme/other.k': 'v'});
-  assert.strictEqual((await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage'])).code, 0);
+  const reset = await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage']);
+  assert.strictEqual(reset.code, 0);
+  assert.strictEqual(reset.io.out, '1 setting of ch-pack-ci-failure-triage back to the default; a running client applies it now, and the next load otherwise\n');
   assert.deepStrictEqual(fileValues(home), {upgradeCheck: 'weekly', 'module.@acme/other.k': 'v'});
+  const again = await cli(home, ['settings', 'reset', 'ch-pack-ci-failure-triage']);
+  assert.deepStrictEqual([again.code, again.io.out], [0, 'nothing to reset\n'], 'nothing changed: nothing is applied');
   assert.ok(historyOf(home).some((l) => l.setting === STORED('note') && l.change === 'reset'));
 });
 

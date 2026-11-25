@@ -11,7 +11,7 @@ const {fakeIo: rawIo, tmp} = require('./fake-io');
 // (each with a home folder of its own: a command acting on a home checks it first)
 const fakeIo = (o = {}) => rawIo({homedir: tmp('ch-next-'), ...o});
 
-const READY = 'Ready: in Claude Code, ask what countinghouse can do for you.';
+const READY = 'Next: add any credential still missing and connect your client; then ask it what countinghouse can do for you.';
 const stub = (rel, exports) => { const p = require.resolve(rel); require.cache[p] = {id: p, filename: p, loaded: true, exports}; };
 
 function cli({installCode = 0, addCode = 0, added = true} = {}) {

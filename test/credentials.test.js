@@ -284,7 +284,8 @@ test('add and remove ask a running daemon to restart its runtime (it drains firs
   assert.match(f.out, /The shared runtime restarts once its calls finish \(it drains first\)\.\nA session on a runtime of its own takes it at its client's next start/);
   const r = io(h);
   await credentials({action: 'remove', name: 'ch-access-github'}, r);
-  assert.match(r.out, /A session on a runtime of its own unloads the module at once, until its client restarts\./);
+  assert.match(r.out, /A session on a runtime of its own unloads the module at once; adding the key it started with loads it again there, another one at its client's next start\./);
+  assert.doesNotMatch(r.out, /until its client restarts/);
   assert.deepStrictEqual(readRequests(h, 0).requests.map((x) => x.op), ['restart', 'restart', 'restart'], 'each add and remove asks, a daemon there or not');
 });
 
@@ -435,8 +436,12 @@ test('the hidden reader: input that ends mid-prompt aborts and restores the term
 test('remove: a key whose module is no longer installed is still removed, by its full or short name', async () => {
   const h = home();
   store.bind(h, '@countinghouse/ch-gone', VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
-  assert.strictEqual(await credentials({action: 'remove', name: 'ch-gone'}, io(h)), 0);
+  const first = io(h);
+  assert.strictEqual(await credentials({action: 'remove', name: 'ch-gone'}, first), 0);
   assert.strictEqual(store.readStore(h).modules.get('@countinghouse/ch-gone'), undefined);
+  // (no session has it to unload, and no key added would load it)
+  assert.match(first.out, /the stored credential for ch-gone is removed/);
+  assert.doesNotMatch(first.out, /A session on a runtime of its own/);
   // nothing installed at all
   fs.rmSync(path.join(h, 'modules.json'));
   store.bind(h, '@countinghouse/ch-gone', VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});

@@ -56,10 +56,9 @@ test('the triage skill: every reason the tool is missing, and the launcher\'s co
   assert.ok(skill.includes('`node "<home>/bin/ch-local.js" credentials add ch-access-github`'));
 });
 
-// A-firstrun d2: the setup skill, in the words business checked
-// (ch-business tech/plans/2026-11-20-a-firstrun-ownuse-plan.md, Fixed text 3
-// and 4, amended after the claim check). A change to any word is a change to
-// checked text: business reads it again, and this hash moves with it.
+// A-firstrun d2: the setup skill, in the words that were checked. A change to
+// any word is a change to checked text: it is read again, and this hash moves
+// with it.
 test('the setup skill: its frontmatter, the checked sentences verbatim, nothing it does not offer yet', () => {
   const skill = fs.readFileSync(path.join(PLUGIN, 'skills', 'countinghouse-setup', 'SKILL.md'), 'utf8');
   assert.match(skill, /^---\nname: countinghouse-setup\ndescription: Use when the user asks to install or set up countinghouse or a countinghouse pack, asks what countinghouse can do, or asks how to design a composite scenario\.\n---\n/);
