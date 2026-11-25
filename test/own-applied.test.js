@@ -349,6 +349,10 @@ test('a hand-over to a runtime whose run.json can\'t be read yet: waited for, th
   const p = setup();
   p.write(11, {ownSeen: {}});
   assert.match(await p.add(async () => { p.write(12, {}); await tick(60); p.end(11); }, {appliedWaitMs: 150, appliedPollMs: 400}), /has not taken it up yet/);
+  // (and where the new one's run.json already says how it ended, that)
+  const q = setup();
+  q.write(11, {ownSeen: {}});
+  assert.strictEqual(await q.add(async () => { q.write(12, q.seen('loaded')); await tick(60); q.end(11); }, {appliedWaitMs: 150, appliedPollMs: 400}), `${q.own()}: your clients see it now.\n`);
 });
 
 test('own.json\'s stamp is read again, after a pause, where Windows refuses it while it is replaced', opt, async () => {

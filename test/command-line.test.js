@@ -306,6 +306,12 @@ test('fitHeld: the command whole; a folder that passes the cut named in words; a
   assert.strictEqual(fitHeld(`not loading x: it calls y, which is not available (its copy is gone: run ${far} again)`), 'not loading x: it calls y, which is not available (its copy is gone)');
   assert.strictEqual(fitHeld(`not loading x: "y" changed and is not loaded, until you run ${far}`), 'not loading x: "y" changed and is not loaded');
   assert.strictEqual(fitHeld(`not loading x: ${far}`), 'not loading x');
+  assert.strictEqual(fitHeld(`not loading x: it calls y, which is not available (it is turned off (${far}))`), 'not loading x: it calls y, which is not available (it is turned off)');
+  assert.strictEqual(fitHeld(`not loading x: it is turned off (${far})`), 'not loading x: it is turned off');
+  // (an earlier command is whole or not there)
+  const long = fitHeld(`not loading x: first, run \`node "${'a'.repeat(100)}" one\`; then ${'b'.repeat(60)}: run ${far}`);
+  assert.strictEqual(long, `not loading x: first, run \`node "${'a'.repeat(100)}" one\``);
+  assert.strictEqual(fitHeld(`not loading x: first, run \`node "${'a'.repeat(190)}" one\`; then: run ${far}`), 'not loading x: first');
   for (const t of [cut, words, reason]) assert.ok([...t].length <= NOTICE_MAX, t);
 });
 
