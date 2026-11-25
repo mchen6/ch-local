@@ -103,7 +103,15 @@ pub fn ensure_started(home: &Home, deadline: Instant) -> Result<Option<Started>,
         // takes the lock itself
         return spawn(home).map(Some);
     }
-    let held = lock::acquire(&home.start_lock(), deadline).map_err(StartError::Lock)?;
+    // (a daemon whose first runtime hung says so in failed.json and holds the
+    // lock while it stops it: read at each turn of the wait. It helps a wait
+    // that began some seconds after that daemon: one begun with it ends at
+    // its own plain budget, before the daemon gives up)
+    let held = match lock::acquire_unless(&home.start_lock(), deadline, || crate::failed::read(home)) {
+        Ok(lock::Waited::Held(h)) => h,
+        Ok(lock::Waited::Stopped(r)) => return Err(StartError::Failed(r)),
+        Err(e) => return Err(StartError::Lock(e)),
+    };
     let running = config::read_daemon(home).map_err(StartError::Config)?.is_some_and(|d| running(home, &d));
     // read again under the lock, just before a spawn (#236 section 6): a
     // daemon that gave up since the first look never gets one behind it

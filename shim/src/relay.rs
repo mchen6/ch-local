@@ -33,6 +33,7 @@ use crate::{answer, child};
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
 /// Sent after a replayed initialize.
 const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+const LIST_CHANGED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
 /// After the per-session runtime exits, its output is waited for while it
 /// keeps coming (a process it started may hold the pipe, writing or not):
 /// until PUMP_DRAIN passes with nothing read, or PUMP_MAX in all.
@@ -158,6 +159,8 @@ pub struct Relay {
     /// The legacy `initialize` line, for the replay after a reconnect.
     initialize: Option<Vec<u8>>,
     replays: u64,
+    /// The sequence number the kept initialize went under.
+    initialize_seq: Option<u64>,
     reconnecting: bool,
     retries: usize,
     /// No attach made yet: the next is the one a cold start may extend.
@@ -289,6 +292,7 @@ impl Relay {
             resume: None,
             initialize: None,
             replays: 0,
+            initialize_seq: None,
             reconnecting: false,
             retries: 0,
             first_attach: true,
@@ -572,11 +576,7 @@ impl Relay {
     fn forward(&mut self, line: Vec<u8>) {
         let class = message::classify(&line);
         let numbered = matches!(class, Line::Request { .. } | Line::Batch { .. });
-        if let Line::Request { method: Some(m), .. } = &class {
-            if m == "initialize" {
-                self.initialize = Some(line.clone());
-            }
-        }
+        let initialize = matches!(&class, Line::Request { method: Some(m), .. } if m == "initialize");
         let seq = if numbered {
             match self.seq.take() {
                 Some(n) => Some(n),
@@ -605,8 +605,23 @@ impl Relay {
                 return;
             }
         }
+        // (kept once it is tracked: one the shim answered itself is the
+        // client's to send again)
+        if initialize {
+            self.initialize = Some(line);
+            self.initialize_seq = seq;
+        }
         if let Some(w) = self.writer.as_mut() {
             let _ = frame::write_frame(w, Kind::Message, &payload, self.to_runtime);
+        }
+    }
+
+    /// An initialize not answered yet, about to be crash-answered: the client
+    /// sends it again, so it is never replayed for it.
+    fn forget_unanswered_initialize(&mut self, t: &InFlight) {
+        if self.initialize_seq.is_some_and(|n| t.holds(n)) {
+            self.initialize = None;
+            self.initialize_seq = None;
         }
     }
 
@@ -768,9 +783,13 @@ impl Relay {
                 // the shim's own words only for its own failed first frame
                 let code = reason_token(op.get("reason").and_then(Value::as_str));
                 let why = if code == "conditions-failed" { self.first_client_why.clone() } else { None };
+                // (a reattach: the session's initialize went to the shared
+                // runtime, and its own hears it too; on a first attach it is
+                // still held)
+                let replay = self.replay_for_own();
                 return Some(self.hand_over(
                     format!("ch-shim: this session can't share the runtime ({reason}); it runs its own"),
-                    None,
+                    replay,
                     Some(code),
                     why,
                 ));
@@ -808,7 +827,7 @@ impl Relay {
         {
             let _ = frame::write_frame(w, Kind::Message, &p, self.to_runtime);
         }
-        self.say(br#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#);
+        self.say(LIST_CHANGED);
     }
 
     /// Crash answers for everything still in flight, taken under the
@@ -816,8 +835,10 @@ impl Relay {
     /// discards any later answer for them instead of writing a second one.
     fn close_and_crash_answer(&mut self) {
         let answers = {
-            let mut t = self.inflight.lock().expect("in-flight lock");
+            let inflight = self.inflight.clone();
+            let mut t = inflight.lock().expect("in-flight lock");
             self.closed.store(true, Ordering::SeqCst);
+            self.forget_unanswered_initialize(&t);
             t.crash_answers()
         };
         // a bounded barrier: an answer the reader is still streaming ends
@@ -859,7 +880,12 @@ impl Relay {
         // runtime should have answered all of it; if it crashed instead,
         // these are its crash answers); the reader is gone, so nothing more
         // can come for them
-        let answers = self.inflight.lock().expect("in-flight lock").crash_answers();
+        let answers = {
+            let inflight = self.inflight.clone();
+            let mut t = inflight.lock().expect("in-flight lock");
+            self.forget_unanswered_initialize(&t);
+            t.crash_answers()
+        };
         for a in answers {
             self.say(&a);
         }
@@ -961,19 +987,25 @@ impl Relay {
         if self.records.holds_any() {
             return self.refuse_session(&crate::failed::refusal_line(r));
         }
-        let replay = if self.initialize.is_some() {
-            let built = self.next_replay();
-            if built.is_none() {
-                let _ = writeln!(
-                    io::stderr(),
-                    "ch-shim: this session's initialize could not be replayed; its own runtime starts uninitialized"
-                );
-            }
-            built
-        } else {
-            None
-        };
+        let replay = self.replay_for_own();
         Some(self.hand_over(crate::failed::startup_line(r), replay, None, None))
+    }
+
+    /// The replay its own runtime starts with: the initialize this session
+    /// sent to the shared one, if it did.
+    fn replay_for_own(&mut self) -> Option<(Vec<u8>, String)> {
+        // (still in flight: crash-answered at the hand-over)
+        let inflight = self.inflight.clone();
+        self.forget_unanswered_initialize(&inflight.lock().expect("in-flight lock"));
+        self.initialize.as_ref()?;
+        let built = self.next_replay();
+        if built.is_none() {
+            let _ = writeln!(
+                io::stderr(),
+                "ch-shim: this session's initialize could not be replayed; its own runtime starts uninitialized"
+            );
+        }
+        built
     }
 
     /// The session can't go on (never looser): stderr says why; whatever is
@@ -1302,11 +1334,22 @@ pub fn own_runtime_to(
                     let _ = done_tx.send(());
                     return;
                 }
-                let is_it = whole
-                    && serde_json::from_slice::<Value>(start.trim_ascii_end())
+                let answer = if whole {
+                    serde_json::from_slice::<Value>(start.trim_ascii_end())
                         .ok()
-                        .is_some_and(|v| v.get("id").and_then(Value::as_str) == Some(id.as_str()));
-                if is_it {
+                        .filter(|v| v.get("id").and_then(Value::as_str) == Some(id.as_str()))
+                } else {
+                    None
+                };
+                if let Some(v) = answer {
+                    // it serves now, and its tools may be others than the
+                    // shared runtime's the client listed
+                    if v.get("result").is_some()
+                        && p.wrote(|| out.message(LIST_CHANGED), LIST_CHANGED.len() + 1).is_err()
+                    {
+                        let _ = done_tx.send(());
+                        return;
+                    }
                     break;
                 }
                 if !matches!(relay_line(&mut r, &out, &start, &p), Ok(true)) {
@@ -1674,6 +1717,40 @@ mod tests {
             ],
             "the replay's answer is dropped; the client hears list_changed"
         );
+    }
+
+    /// A session that was live and reconnects to a runtime that now says it
+    /// runs its own: that runtime hears the client's initialize too.
+    #[test]
+    fn own_runtime_on_a_reattach_replays_the_sessions_initialize() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"c\"}}}\n")
+            .unwrap();
+        let (seq, _) = read_m(&mut s);
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":0,"result":{"v":1}}"#);
+        thread::sleep(Duration::from_millis(100));
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        welcome(&mut s2, "rt2");
+        until_op(&mut s2, "client");
+        frame::write_frame(&mut s2, Kind::Control, br#"{"op":"own-runtime","reason":"token"}"#, BIG).unwrap();
+        let Exit::OwnRuntime { code, replay, .. } = done.join().unwrap() else { panic!("not handed over") };
+        assert_eq!(code.as_deref(), Some("token"));
+        let (line, id) = replay.expect("its initialize is replayed");
+        let line: Value = serde_json::from_slice(&line).unwrap();
+        assert_eq!((id.as_str(), line["id"].as_str()), ("ch-shim-replay-1", Some("ch-shim-replay-1")));
+        assert_eq!(
+            (line["method"].as_str(), line["params"]["clientInfo"]["name"].as_str()),
+            (Some("initialize"), Some("c"))
+        );
+        drop(client_in);
     }
 
     /// AUTH answered with REFUSED RESUME_REFUSED, after a proven PROVE.
@@ -2571,9 +2648,97 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(
             sink.lines(),
-            [r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#],
-            "only the client's own answer"
+            [
+                r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#,
+                r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#
+            ],
+            "once this runtime serves, the client hears its tools may be others; then only its own answer"
         );
+    }
+
+    /// A client whose initialize was crash-answered sends it again, to the
+    /// runtime it is handed to: that one hears no replay of it.
+    #[test]
+    fn an_initialize_never_answered_is_not_replayed_to_the_sessions_own_runtime() {
+        for live in [false, true] {
+            let (home, sock) = home();
+            let listener = UnixListener::bind(&sock).unwrap();
+            let (mut client_in, sink, done) = start(home);
+            let (mut s, _) = listener.accept().unwrap();
+            welcome(&mut s, "rt1");
+            until_op(&mut s, "client");
+            settled(&mut s);
+            client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}\n").unwrap();
+            read_m(&mut s);
+            let mut on = s;
+            if !live {
+                drop(on);
+                on = listener.accept().unwrap().0;
+                welcome(&mut on, "rt2");
+                until_op(&mut on, "client");
+            }
+            frame::write_frame(&mut on, Kind::Control, br#"{"op":"own-runtime","reason":"token"}"#, BIG).unwrap();
+            let Exit::OwnRuntime { replay, .. } = done.join().unwrap() else { panic!("not handed over") };
+            assert!(replay.is_none(), "live: {live}");
+            let lines = sink.lines();
+            assert_eq!(lines.len(), 1, "its crash answer only: {lines:?}");
+            drop(client_in);
+        }
+    }
+
+    /// A client slow to read what it is told first: the runtime's answers,
+    /// written before it ended, still reach it.
+    #[test]
+    fn a_client_slow_to_take_the_notice_still_gets_the_answers_behind_it() {
+        struct Slow(Sink);
+        impl Write for Slow {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                if self.0.0.lock().unwrap().is_empty() {
+                    thread::sleep(PUMP_DRAIN + PUMP_DRAIN + Duration::from_millis(500));
+                }
+                self.0.write(b)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let (home, _sock) = home();
+        if !echo_runtime(&home, "") {
+            return eprintln!("no node on PATH: skipped");
+        }
+        let sink = Sink::default();
+        let init = br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","method":"initialize"}"#.to_vec();
+        let held = vec![br#"{"jsonrpc":"2.0","id":5,"method":"tools/list"}"#.to_vec()];
+        own_runtime_to(
+            &home,
+            &[],
+            held,
+            std::iter::empty(),
+            Some((init, "ch-shim-replay-1".into())),
+            Out::new(Box::new(Slow(sink.clone()))),
+        )
+        .unwrap();
+        assert_eq!(sink.lines().len(), 2, "{:?}", sink.lines());
+    }
+
+    /// The replayed initialize refused: the runtime serves no tools, and the
+    /// client is told of none.
+    #[test]
+    fn a_replayed_initialize_answered_with_an_error_announces_nothing() {
+        let Some(node) = node() else { return eprintln!("no node on PATH: skipped") };
+        let (home, _sock) = home();
+        let echo = home.root().join("echo.js");
+        fs::write(&echo, "require('readline').createInterface({input: process.stdin}).on('line', (l) => { const m = JSON.parse(l); if (m.id !== undefined) process.stdout.write(JSON.stringify(m.method === 'initialize' ? {jsonrpc: '2.0', id: m.id, error: {code: -32602, message: 'no'}} : {jsonrpc: '2.0', id: m.id, result: {method: m.method}}) + '\\n'); });\n").unwrap();
+        let shim = serde_json::json!({"node": node, "chLocal": echo, "env": {"PATH": "/usr/bin:/bin"}});
+        private(&home.root().join("shim.json"), shim.to_string().as_bytes());
+        let sink = Sink::default();
+        let init = br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","method":"initialize","params":{}}"#.to_vec();
+        let held = vec![br#"{"jsonrpc":"2.0","id":5,"method":"tools/list"}"#.to_vec()];
+        let out = Out::new(Box::new(sink.clone()));
+        let code =
+            own_runtime_to(&home, &[], held, std::iter::empty(), Some((init, "ch-shim-replay-1".into())), out).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(sink.lines(), [r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#]);
     }
 
     #[test]
@@ -2764,10 +2929,11 @@ mod tests {
         )
         .unwrap();
         let lines = sink.lines();
-        assert_eq!(lines.len(), 2, "{} lines", lines.len());
+        assert_eq!(lines.len(), 3, "{} lines", lines.len());
         let big: Value = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(big["params"]["x"].as_str().map(str::len), Some(3 << 20), "the big line, whole");
-        assert_eq!(lines[1], r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#);
+        assert_eq!(lines[1], r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#);
+        assert_eq!(lines[2], r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#);
     }
 
     #[test]

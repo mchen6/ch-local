@@ -88,6 +88,11 @@ impl InFlight {
         self.take(seq).is_some()
     }
 
+    /// Whether `seq` still waits for its answer.
+    pub fn holds(&self, seq: u64) -> bool {
+        self.entries.contains_key(&seq)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
