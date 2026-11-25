@@ -242,9 +242,10 @@ test('the review of #48: a first pin for a name this install uses (the runtime, 
 // a fix a release must hold, and no pin may go below it.
 test('floors: optional; each a strict version of a module some pack lists; a pin below its floor refused', () => {
   const d = shipped();
-  // the shipped floors: the redaction and GitHub fixes (A-redact), and the
-  // credential-leak fixes of 11-21 (report's userinfo, pack 1's step names)
-  assert.deepStrictEqual(d.floors, {'@countinghouse/ch-access-github': '0.2.2', '@countinghouse/ch-pack-ci-failure-triage': '0.7.1', '@countinghouse/ch-step-log-clean': '0.2.3',
+  // the shipped floors: the redaction and GitHub fixes (A-redact), the
+  // credential-leak fixes of 11-21 (report's userinfo, pack 1's step names),
+  // the runs list that was lost (access-github) and pack 1's fixes of 0.7.2
+  assert.deepStrictEqual(d.floors, {'@countinghouse/ch-access-github': '0.3.0', '@countinghouse/ch-pack-ci-failure-triage': '0.7.2', '@countinghouse/ch-step-log-clean': '0.2.3',
     '@countinghouse/ch-step-redact': '0.2.4', '@countinghouse/ch-step-report': '0.4.4'});
   assert.strictEqual(problemOf(d), undefined);
   const without = shipped();
@@ -255,8 +256,8 @@ test('floors: optional; each a strict version of a module some pack lists; a pin
     [(x) => { x.floors['@countinghouse/ch-step-nope'] = '1.0.0'; }, /floor for @countinghouse\/ch-step-nope names no module/],
     [(x) => { x.floors['@countinghouse/ch-step-redact'] = '0.2'; }, /floor for @countinghouse\/ch-step-redact is no strict/],
     [(x) => { x.pins['@countinghouse/ch-step-redact'] = Object.assign(pin('0.2.3'), {repository: 'mchen6/ch-step-redact'}); }, /ch-step-redact 0\.2\.3 is below its floor 0\.2\.4/],
-    // (a pack's own module has a floor too: pack 1's step-name fix)
-    [(x) => { x.pins['@countinghouse/ch-pack-ci-failure-triage'] = Object.assign(pin('0.7.0'), {repository: 'mchen6/ch-pack-ci-failure-triage'}); }, /ch-pack-ci-failure-triage 0\.7\.0 is below its floor 0\.7\.1/]
+    // (a pack's own module has a floor too: pack 1's fixes of 0.7.2)
+    [(x) => { x.pins['@countinghouse/ch-pack-ci-failure-triage'] = Object.assign(pin('0.7.1'), {repository: 'mchen6/ch-pack-ci-failure-triage'}); }, /ch-pack-ci-failure-triage 0\.7\.1 is below its floor 0\.7\.2/]
   ]) {
     const x = shipped();
     mutate(x);

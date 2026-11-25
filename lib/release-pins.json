@@ -115,8 +115,8 @@
   },
   "pins": {},
   "floors": {
-    "@countinghouse/ch-access-github": "0.2.2",
-    "@countinghouse/ch-pack-ci-failure-triage": "0.7.1",
+    "@countinghouse/ch-access-github": "0.3.0",
+    "@countinghouse/ch-pack-ci-failure-triage": "0.7.2",
     "@countinghouse/ch-step-log-clean": "0.2.3",
     "@countinghouse/ch-step-redact": "0.2.4",
     "@countinghouse/ch-step-report": "0.4.4"
