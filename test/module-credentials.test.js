@@ -122,11 +122,47 @@ test('slotMatches and applyStates: a removed binding, a changed value, and one a
   store.unbind(h, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
   assert.deepStrictEqual(mc.slotMatches(where, record(), ACCESS, id), {ok: false, why: 'removed'});
   assert.strictEqual(mc.applyStates(where, record(), s.identities).get(ACCESS).state, 'removed');
+  // (what brings it back is a credential, never a restart alone: with none a
+  // start holds the module back)
+  const said = (shared) => mc.applyStates(where, record(), s.identities, {shared}).get(ACCESS);
+  const add = require('../lib/command-line').chLocal(where, 'credentials add ch-access-github');
+  const restart = require('../lib/command-line').chLocal(where, 'restart');
+  assert.strictEqual(said(true).reason, `its credential was removed; it is unloaded until you add one: run \`${add}\``);
+  assert.strictEqual(said(false).reason, 'its credential was removed; it is unloaded here until you add the key it started with again, or add another and restart this client');
+  assert.strictEqual(said(null).reason, `its credential was removed; it is unloaded here until you add the key it started with again, or add another and restart your client, or with the shared runtime run \`${restart}\``);
+  assert.strictEqual(said(true).which, `has had its credential removed: run \`${add}\``);
+  assert.strictEqual(said(false).which, 'has had its credential removed: add the key it started with again, or another and restart your client');
+  assert.strictEqual(said(null).which, `has had its credential removed: add the key it started with again, or another and restart your client, or with the shared runtime run \`${restart}\``);
+  const next = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'x'})});
+  assert.strictEqual(next.states.get(ACCESS).state, 'none', 'a restart: still held back');
   // added while running: usable in the store, no slot in this runtime
   bind(h, OTHER, 'OTHER_TOKEN', stored(OTHER_ORIGIN, 'test-value-other'));
   const other = mc.applyStates(where, record(), s.identities).get(OTHER);
   assert.strictEqual(other.state, 'new');
   assert.match(other.reason, /restart your client, or with the shared runtime run `[^`]+ restart` to load it/);
+});
+
+// (a home whose launcher path is far longer than a user's: the notice is cut
+// before its command, never in it)
+test('shared mode: a removed credential\'s line keeps its command whole under the notice cut, with a long launcher path', async () => {
+  const {where, h, record} = home({deep: true});
+  bind(h, ACCESS, VAR, stored(GH, 'test-value-access'));
+  const s = await mc.forStart(where, record(), {env: {}, ghToken: async () => ({why: 'x'}), shared: true});
+  store.unbind(h, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+  const {chLocal, fitAny, NOTICE_MAX} = require('../lib/command-line');
+  const bin = path.join(h, 'b'.repeat(60), 'bin');
+  fs.mkdirSync(bin, {recursive: true});
+  const long = {...where, launcher: path.join(bin, 'ch-local.js')};
+  fs.writeFileSync(long.launcher, '');
+  const command = chLocal(long, 'credentials add ch-access-github');
+  const removed = mc.applyStates(long, record(), s.identities, {shared: true}).get(ACCESS);
+  for (const text of [`ch-access-github unloaded: ${removed.reason}`, `ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which ${removed.which}`]) {
+    assert.ok(text.endsWith(`\`${command}\``), text);
+    assert.ok([...text].length > NOTICE_MAX, `a path long enough to be cut: ${text.length}`);
+    const notice = fitAny(text);
+    if ([...command].length + 2 <= NOTICE_MAX) assert.ok([...notice].length <= NOTICE_MAX, notice);
+    assert.ok(notice.endsWith(`\`${command}\``), notice);
+  }
 });
 
 test('migrateV1: a version 1 entry reads as a binding to GitHub\'s origin under the name the module declares', () => {

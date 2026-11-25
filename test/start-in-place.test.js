@@ -1570,7 +1570,7 @@ test('a credential removed while running unloads the callers of its module, said
   try {
     await until(() => s.args() != null);
     require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
-    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or restart your client';
+    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add the key it started with again, or another and restart your client';
     await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
     // a later change sends no second unload
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
