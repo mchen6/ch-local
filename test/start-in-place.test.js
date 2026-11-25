@@ -2224,6 +2224,60 @@ test('ownSeen: a module whose stored key this runtime was not started with is lo
   }
 });
 
+// (said to load on a restart only where the restart would load it)
+test('ownSeen: a changed key is a restart only where the next start is given one; a caller only where nothing else keeps it out', {skip: OWN_SKIP}, async () => {
+  const remote = (origin) => [{name: 'mine', transport: 'streamable-http', url: `${origin}/mcp/`, credential: {env: 'MY_TOKEN', header: 'Authorization', scheme: 'Bearer'}}];
+  const held = {held: require('./store-helpers').FIXTURE_HELD};
+  const store = require('../lib/credential-store');
+  let a = null;
+  const s = await running({bound: null, beforeStart: (home) => {
+    a = placeOwn(home, 'my-tool', {remotes: remote('https://api.a.example')});
+    store.bind(home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.a.example', source: 'stored', value: STORED}, held);
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+  }});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const put = async (modules) => { writeOwnRecord(a.where, {v: 1, modules}); await until(() => run().ownSeen != null && Object.entries(modules).every(([n, e]) => run().ownSeen[n] != null && run().ownSeen[n].addedAt === e.addedAt)); return run().ownSeen; };
+    const added = (m, n) => ({...m.entry, addedAt: new Date(n).toISOString()});
+    await until(() => run().ownSeen != null);
+    // its declared address changed: the stored key is the old address's
+    const b = placeOwn(s.home, 'my-tool', {remotes: remote('https://api.b.example')});
+    const bySelf = await put({'my-tool': added(b, 1000)});
+    assert.deepStrictEqual([bySelf['my-tool'].state, bySelf['my-tool'].kind], ['kept', 'credential']);
+    // the same declaration, another key stored: the next start is given it
+    store.bind(s.home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.b.example', source: 'stored', value: `${STORED}-2`}, held);
+    assert.strictEqual((await put({'my-tool': added(b, 2000)}))['my-tool'].state, 'restart');
+    // a caller whose own key is missing: the new key of what it calls is not enough
+    store.bind(s.home, ACCESS, 'GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: STORED}, held);
+    const c = placeOwn(s.home, 'my-caller', {calls: ['ch-access-github/githubService.listRuns'], remotes: [{...remote('https://api.c.example')[0], credential: {env: 'C_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]});
+    const d = placeOwn(s.home, 'my-plain', {calls: ['ch-access-github/githubService.listRuns']});
+    const callers = await put({'my-caller': added(c, 3000), 'my-plain': added(d, 3000)});
+    assert.strictEqual(callers['my-caller'].state, 'kept', JSON.stringify(callers));
+    assert.strictEqual(callers['my-plain'].state, 'restart', JSON.stringify(callers));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('ownSeen: a load not answered, then refused: no longer one that may yet be done', {skip: OWN_SKIP}, async () => {
+  let answer = null;
+  const s = await running({timeoutMs: 300, answer: (m) => (m.type === 'load' && named(m) === 'my-slow' ? answer : {ok: true})});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const slow = placeOwn(s.home, 'my-slow');
+    const again = async (n) => { writeOwnRecord(slow.where, {v: 1, modules: {'my-slow': {...slow.entry, addedAt: new Date(n).toISOString()}}}); await until(() => run().ownSeen != null && run().ownSeen['my-slow'] != null && run().ownSeen['my-slow'].addedAt === new Date(n).toISOString()); return run().ownSeen['my-slow'].state; };
+    assert.strictEqual(await again(1000), 'waits');
+    answer = {ok: false, code: 'MODULE_INVALID'};
+    assert.strictEqual(await again(2000), 'refused');
+    answer = {ok: false, code: 'CONTROL_BUSY'};
+    assert.strictEqual(await again(3000), 'restart');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // (the runtime says nothing of when its start's plan has loaded, and may yet
 // refuse one of it: never said to be loaded by this)
 test('ownSeen: an own module of the start\'s own plan is not said loaded until a request of it is answered', {skip: OWN_SKIP}, async () => {

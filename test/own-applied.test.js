@@ -321,6 +321,47 @@ test('remove-module: added again meanwhile by another command: this removal was 
   }), 'Removed my-tool.\n');
 });
 
+test('remove-module: the same code added again meanwhile, of the start\'s own plan: not said to be stopped by a restart', opt, async () => {
+  const h = setup();
+  await h.added();
+  const tree = readOwnRecord(h.where).modules['my-tool'].tree;
+  h.write(11, h.seen('waits'));
+  assert.strictEqual(await h.remove(async () => {
+    const later = h.at();
+    later.at = String(BigInt(later.at) + 1000000n);
+    h.write(11, {ownSeen: {'my-tool': {addedAt: '2026-11-24T00:00:00.000Z', state: 'waits'}}, ownAt: later, loaded: {'my-tool': tree}});
+  }), 'Removed my-tool.\n');
+});
+
+test('a hand-over to a runtime whose run.json can\'t be read yet: waited for, then judged; and one past the bound is late, never "none"', opt, async () => {
+  const h = setup();
+  h.write(11, {ownSeen: {}});
+  const file = path.join(h.where.run, 'box-1-12-0a1b2c3d', 'run.json');
+  assert.strictEqual(await h.add(async (f) => {
+    h.write(12, {});
+    fs.writeFileSync(file, '');
+    h.end(11);
+    await tick(100);
+    assert.ok(!f.out.includes('Added '), f.out);
+    h.write(12, h.seen('loaded'));
+  }), `${h.own()}: your clients see it now.\n`);
+  // (the old one ends as the bound passes, the new one live)
+  const p = setup();
+  p.write(11, {ownSeen: {}});
+  assert.match(await p.add(async () => { p.write(12, {}); await tick(60); p.end(11); }, {appliedWaitMs: 150, appliedPollMs: 400}), /has not taken it up yet/);
+});
+
+test('own.json\'s stamp is read again, after a pause, where Windows refuses it while it is replaced', opt, async () => {
+  const h = setup();
+  await h.added();
+  const stat = fs.statSync;
+  const until = performance.now() + 12;
+  fs.statSync = (f, ...o) => { if (f === h.where.ownRecord && performance.now() < until) throw Object.assign(new Error('EBUSY'), {code: 'EBUSY'}); return stat(f, ...o); };
+  let got;
+  try { got = h.at(); } finally { fs.statSync = stat; }
+  assert.ok(got != null);
+});
+
 test('a run.json that can\'t be read: a dead start\'s is nothing; a live one\'s is waited for', opt, async () => {
   const dead = setup();
   const d = path.join(dead.where.run, 'box-1-77-0a1b2c3d');
