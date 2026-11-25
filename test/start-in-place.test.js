@@ -151,10 +151,10 @@ test('no pack has its credential: the runtime starts with no pack, and the clien
   const s = await running({bound: null});
   try {
     assert.ok(!s.args().includes('--loadModule'), `no pack loaded: ${s.args().join(' ')}`);
-    await until(() => [/not loading ch-pack-ci-failure-triage/, /no module is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
+    await until(() => [/credentials add ch-access-github/, /no module is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
     const told = notices(s).map(([, t]) => t);
-    const why = told.find((t) => /not loading ch-pack-ci-failure-triage/.test(t));
-    assert.match(why, new RegExp(`it calls ch-access-github, which needs a credential: run \`${cmd(s.home, 'credentials add ch-access-github')}\``));
+    const why = told.find((t) => /credentials add/.test(t));
+    assert.strictEqual(why, toldAs(`not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${said(s.home, 'credentials add ch-access-github')}\``));
     assert.doesNotMatch(why, /\(above\)/, 'self-contained: the client never saw a line above');
     assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   } finally {
@@ -750,6 +750,8 @@ test('B3: a load and an unload from the settings are in the module form; the unl
 // record is marked only by --unreleased-pins, which needs CH_LOCAL_DEV=1),
 // and says so at every start; a released one never is, whatever its env.
 const withdrawnRelease = () => ({...require('../lib/allowlist').ALLOWLIST, packs: {}});
+// (as a client is told it: a runner's long temp path is fitted to the cut)
+const toldAs = (line) => require('../lib/command-line').fitHeld(line);
 const LINE = (home) => `module ch-pack-ci-failure-triage was withdrawn in this release and was not started; \`${said(home, 'remove-pack ci-failure-triage')}\` removes it`;
 // every file of the home a start must leave as it was: the record, and the pack's tree and data
 function packFiles(home) {
@@ -780,7 +782,7 @@ test('a withdrawn pack is not started: told once (stderr and the client), its re
   try {
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false, JSON.stringify(s.args()));
-    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, LINE(s.home)]], 'once, to the client');
+    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, toldAs(LINE(s.home))]], 'once, to the client');
     assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(LINE(s.home))).length, 1, s.f.err);
     assert.ok(!/\/|\\\\/.test(LINE(s.home).replace(/`[^`]*`/g, '')), 'no path in the notice');
   } finally {
@@ -795,7 +797,7 @@ test('a released install started with CH_LOCAL_DEV=1 is still refused its withdr
   try {
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false);
-    assert.ok(notices(s).some(([, t]) => t === LINE(s.home)));
+    assert.ok(notices(s).some(([, t]) => t === toldAs(LINE(s.home))));
   } finally {
     s.end();
     await s.done;
@@ -1218,10 +1220,10 @@ test('a pack whose module has no credential stored is told once, in start\'s wor
   const s = await running({bound: null});
   try {
     const line = `not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${said(s.home, 'credentials add ch-access-github')}\``;
-    await until(() => notices(s).some(([, t]) => t === line));
+    await until(() => notices(s).some(([, t]) => t === toldAs(line)));
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
-    assert.strictEqual(notices(s).filter(([, t]) => /^not loading ch-pack-ci-failure-triage/.test(t)).length, 1, JSON.stringify(notices(s)));
+    assert.strictEqual(notices(s).filter(([, t]) => t.startsWith(toldAs(line).slice(0, 20))).length, 1, JSON.stringify(notices(s)));
   } finally {
     s.end();
     await s.done;
@@ -1799,7 +1801,8 @@ test('a credential store that cannot be read keeps what is loaded, says so once,
 test('a gh binding gh gave no token for at start is not told to restart on a later change; it says how to provide it', async () => {
   const s = await running({bound: 'gh'});
   try {
-    await until(() => notices(s).some(([, t]) => /has no gh token: run `[^`]+credentials add ch-access-github`/.test(t)));
+    await until(() => notices(s).some(([, t]) => /`[^`]+credentials add ch-access-github`/.test(t)));
+    assert.match(s.f.err, /has no gh token: run `[^`]+credentials add ch-access-github`/);
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {locale: 'zh'}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'locale'));
     await new Promise((r) => setTimeout(r, 300));
@@ -2151,6 +2154,29 @@ for (const [what, commandLength] of [['room for its name', 160], ['room for the 
     }
   });
 }
+
+test('an own module unloaded as its copy changed: the unload\'s notice keeps its command whole', {skip: OWN_SKIP}, async () => {
+  const {chLocal} = require('../lib/command-line');
+  const s = await running({});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const own = placeOwn(s.home, 'my-changed');
+    const from = path.join(path.parse(s.home).root, 'w', 'x'.repeat(240));
+    writeOwnRecord(own.where, {v: 1, modules: {'my-changed': {...own.entry, from}}});
+    await until(() => run().loaded['my-changed'] != null);
+    const changed = path.join(ownTree.copyDir(own.where, 'my-changed', own.tree), 'api.json');
+    fs.chmodSync(changed, 0o644);
+    fs.appendFileSync(changed, ' ');
+    writeOwnRecord(own.where, {v: 1, modules: {'my-changed': {...own.entry, from, addedAt: new Date(1000).toISOString()}}});
+    const unload = () => s.requests.find((m) => m.type === 'unload');
+    await until(() => unload() != null);
+    assert.ok([...unload().notice].length <= NOTICE_MAX, unload().notice);
+    assert.ok(unload().notice.endsWith(`\`${chLocal(own.where, 'add-module "<its folder>"')}\` again`), unload().notice);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
 
 test('a module held back at the start: its notice keeps its command whole too', {skip: OWN_SKIP}, async () => {
   const {chLocal} = require('../lib/command-line');

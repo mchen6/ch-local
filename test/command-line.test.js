@@ -300,6 +300,12 @@ test('fitHeld: the command whole; a folder that passes the cut named in words; a
   const reason = fitHeld(line(`/${'h'.repeat(200)}/ch-local.js`, '/w/a'));
   assert.strictEqual(reason, 'not loading my-tool: its files changed since you added it');
   assert.strictEqual(fitHeld(`not loading x: its files are missing; run \`node "/${'h'.repeat(200)}/ch-local.js" install\` again`), 'not loading x: its files are missing');
+  // (cut back to a whole clause, whatever the words around the command; a quote kept)
+  const far = `\`node "/${'h'.repeat(200)}/ch-local.js" restart\``;
+  assert.strictEqual(fitHeld(`not loading x: its credential changed; unloaded until ${far} is run, or the earlier key is back`), 'not loading x: its credential changed');
+  assert.strictEqual(fitHeld(`not loading x: it calls y, which is not available (its copy is gone: run ${far} again)`), 'not loading x: it calls y, which is not available (its copy is gone)');
+  assert.strictEqual(fitHeld(`not loading x: "y" changed and is not loaded, until you run ${far}`), 'not loading x: "y" changed and is not loaded');
+  assert.strictEqual(fitHeld(`not loading x: ${far}`), 'not loading x');
   for (const t of [cut, words, reason]) assert.ok([...t].length <= NOTICE_MAX, t);
 });
 
