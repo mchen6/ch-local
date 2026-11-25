@@ -288,6 +288,33 @@ test('fitAny: within 200 code points; the last command in backticks kept whole; 
   assert.ok([...plain].length <= NOTICE_MAX);
 });
 
+test('fitHeld: the command whole; a folder that passes the cut named in words; a launcher that does, the reason alone', () => {
+  const {fitHeld, NOTICE_MAX} = require('../lib/command-line');
+  const line = (launcher, folder) => `not loading my-tool: its files changed since you added it: run \`node "${launcher}" add-module "${folder}"\` again`;
+  const launcher = '/home/alexandra/.countinghouse/bin/ch-local.js';
+  assert.strictEqual(fitHeld(line(launcher, '/w/a')), line(launcher, '/w/a'));
+  const cut = fitHeld(line(launcher, `/w/${'a'.repeat(80)}`));
+  assert.ok(cut.startsWith('not loading my-') && cut.endsWith(`\`node "${launcher}" add-module "/w/${'a'.repeat(80)}"\` again`), cut);
+  const words = fitHeld(line(launcher, `/w/${'a'.repeat(200)}`));
+  assert.ok(words.endsWith(`\`node "${launcher}" add-module "<its folder>"\` again`), words);
+  const reason = fitHeld(line(`/${'h'.repeat(200)}/ch-local.js`, '/w/a'));
+  assert.strictEqual(reason, 'not loading my-tool: its files changed since you added it');
+  assert.strictEqual(fitHeld(`not loading x: its files are missing; run \`node "/${'h'.repeat(200)}/ch-local.js" install\` again`), 'not loading x: its files are missing');
+  // (cut back to a whole clause, whatever the words around the command; a quote kept)
+  const far = `\`node "/${'h'.repeat(200)}/ch-local.js" restart\``;
+  assert.strictEqual(fitHeld(`not loading x: its credential changed; unloaded until ${far} is run, or the earlier key is back`), 'not loading x: its credential changed');
+  assert.strictEqual(fitHeld(`not loading x: it calls y, which is not available (its copy is gone: run ${far} again)`), 'not loading x: it calls y, which is not available (its copy is gone)');
+  assert.strictEqual(fitHeld(`not loading x: "y" changed and is not loaded, until you run ${far}`), 'not loading x: "y" changed and is not loaded');
+  assert.strictEqual(fitHeld(`not loading x: ${far}`), 'not loading x');
+  assert.strictEqual(fitHeld(`not loading x: it calls y, which is not available (it is turned off (${far}))`), 'not loading x: it calls y, which is not available (it is turned off)');
+  assert.strictEqual(fitHeld(`not loading x: it is turned off (${far})`), 'not loading x: it is turned off');
+  // (an earlier command is whole or not there)
+  const long = fitHeld(`not loading x: first, run \`node "${'a'.repeat(100)}" one\`; then ${'b'.repeat(60)}: run ${far}`);
+  assert.strictEqual(long, `not loading x: first, run \`node "${'a'.repeat(100)}" one\``);
+  assert.strictEqual(fitHeld(`not loading x: first, run \`node "${'a'.repeat(190)}" one\`; then: run ${far}`), 'not loading x: first');
+  for (const t of [cut, words, reason]) assert.ok([...t].length <= NOTICE_MAX, t);
+});
+
 test('fitNotice: a cut explanation carries no backtick, so no half command; the one at the end is whole', () => {
   const {fitNotice} = require('../lib/command-line');
   const first = '`node "/home/alexandra/.countinghouse/bin/ch-local.js" install --pack ci-failure-triage`';

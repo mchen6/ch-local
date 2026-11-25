@@ -1,5 +1,6 @@
 'use strict';
 require('./tmp-dirs');
+const {layout} = require('../lib/home');
 const {unhomed} = require('./unhomed');
 
 // ch-local start --stdio (plan Task 11; reviewer, 2026-11-12): the
@@ -1202,7 +1203,9 @@ test('start in session mode with no pack loadable: the shared runtime starts wit
   for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /no pack is loaded/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   assert.strictEqual(sent[0].type, 'restore', 'the restore is still the first request');
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => /^not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local credentials add ch-access-github`/.test(t)), told.join(' | '));
+  // (fitted to a notice: a runner's long temp path cuts the words, never the command)
+  assert.ok(told.includes(require('../lib/command-line').fitHeld(`not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${require('../lib/command-line').chLocal(layout({COUNTINGHOUSE_HOME: home}), 'credentials add ch-access-github')}\``)), told.join(' | '));
+  assert.ok(told.some((x) => x.endsWith('@countinghouse/ch-local credentials add ch-access-github`') && [...x].length <= 200), told.join(' | '));
   assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   end(0);
   await done;
@@ -1222,9 +1225,11 @@ test('start in session mode says how to add a missing credential, never to set a
   const done = start({passThrough: [], session: {socket: path.join(home, 'run', 'daemon', 'sessions.sock'), home, restore: () => ({type: 'restore', sessions: [], declines: [], reset: []})}}, f);
   for (let i = 0; i < 100 && deliver == null; i++) await new Promise((r) => setTimeout(r, 10));
   deliver({type: 'ready'});
-  for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /not loading ch-pack-other/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /credentials add ch-pack-other/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.some((t) => unhomed(t) === 'not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run `npx @countinghouse\/ch-local credentials add ch-pack-other`'), told.join(' | '));
+  assert.ok(told.includes(require('../lib/command-line').fitHeld(`not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run \`${require('../lib/command-line').chLocal(layout({COUNTINGHOUSE_HOME: home}), 'credentials add ch-pack-other')}\``)), told.join(' | '));
+  assert.ok(told.some((x) => x.endsWith('@countinghouse/ch-local credentials add ch-pack-other`') && [...x].length <= 200), told.join(' | '));
+  assert.strictEqual(unhomed(f.err).split('not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run `npx @countinghouse/ch-local credentials add ch-pack-other`').length, 2, f.err);
   assert.ok(!told.some((t) => /environment/.test(t)), told.join(' | '));
   end(0);
   await done;

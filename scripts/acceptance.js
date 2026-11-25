@@ -295,7 +295,8 @@ function writeOwnModule(dir) {
 // no flag loosens add-module itself). -> {name (the check's), ok, hash (the
 // short hash added), output}
 async function addOwn({home, node, launcher, dir, env, platform = process.platform}) {
-  const added = (out) => new RegExp(`Added ${OWN_NAME} \\(own, ([0-9a-f]{12})\\): your clients see it now\\.`).exec(out);
+  // (no runtime runs yet when it is added: the first client's start loads it)
+  const added = (out) => new RegExp(`Added ${OWN_NAME} \\(own, ([0-9a-f]{12})\\): your clients see it when they next start\\.`).exec(out);
   if (platform !== 'win32') {
     const r = spawnSync('python3', [path.join(__dirname, '..', 'test', 'pty-answer.py'), 'y', 'Add it? [y/N]', node, launcher, 'add-module', dir], {env, encoding: 'utf8', timeout: 120000});
     const out = `${r.stdout || ''}${r.stderr || ''}${r.error != null ? r.error.message : ''}`;

@@ -70,7 +70,7 @@ test('a pack\'s part called: named, with no claim about its key; on yes copied a
   // (R7: the question makes no claim about keys its calls reach)
   assert.ok(!/key|reach/i.test(io.out.split('\n').filter((l) => l.startsWith('It calls')).join('\n')), io.out);
   assert.deepStrictEqual(io.asked, ['Add it? [y/N] ']);
-  assert.match(io.out, /Added my-tool \(own, [0-9a-f]{12}\): your clients see it now\./);
+  assert.match(io.out, /Added my-tool \(own, [0-9a-f]{12}\): your clients see it when they next start\./);
   const r = readOwnRecord(where).modules['my-tool'];
   assert.deepStrictEqual([r.calls, r.from, r.friendlyName], [['ch-access-github/s.ch_access_github'], dir, 'my-tool']);
   assert.strictEqual(r.reach, undefined, 'nothing recorded of what it reaches (R8)');

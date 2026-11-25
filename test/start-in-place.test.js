@@ -151,10 +151,12 @@ test('no pack has its credential: the runtime starts with no pack, and the clien
   const s = await running({bound: null});
   try {
     assert.ok(!s.args().includes('--loadModule'), `no pack loaded: ${s.args().join(' ')}`);
-    await until(() => [/not loading ch-pack-ci-failure-triage/, /no module is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
+    await until(() => [/credentials add ch-access-github/, /no module is loaded this start/].every((re) => notices(s).some(([, t]) => re.test(t))));
     const told = notices(s).map(([, t]) => t);
-    const why = told.find((t) => /not loading ch-pack-ci-failure-triage/.test(t));
-    assert.match(why, new RegExp(`it calls ch-access-github, which needs a credential: run \`${cmd(s.home, 'credentials add ch-access-github')}\``));
+    const why = told.find((t) => /credentials add/.test(t));
+    assert.strictEqual(why, toldAs(`not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${said(s.home, 'credentials add ch-access-github')}\``));
+    assert.ok(why.endsWith(`ch-local.js" credentials add ch-access-github\``) && [...why].length <= NOTICE_MAX, why);
+    assert.match(s.f.err, /not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run `[^`]+ credentials add ch-access-github`/);
     assert.doesNotMatch(why, /\(above\)/, 'self-contained: the client never saw a line above');
     assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   } finally {
@@ -747,6 +749,8 @@ test('B3: a load and an unload from the settings are in the module form; the unl
 // record is marked only by --unreleased-pins, which needs CH_LOCAL_DEV=1),
 // and says so at every start; a released one never is, whatever its env.
 const withdrawnRelease = () => ({...require('../lib/allowlist').ALLOWLIST, packs: {}});
+// (as a client is told it: a runner's long temp path is fitted to the cut)
+const toldAs = (line) => require('../lib/command-line').fitHeld(line);
 const LINE = (home) => `module ch-pack-ci-failure-triage was withdrawn in this release and was not started; \`${said(home, 'remove-pack ci-failure-triage')}\` removes it`;
 // every file of the home a start must leave as it was: the record, and the pack's tree and data
 function packFiles(home) {
@@ -777,7 +781,8 @@ test('a withdrawn pack is not started: told once (stderr and the client), its re
   try {
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false, JSON.stringify(s.args()));
-    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, LINE(s.home)]], 'once, to the client');
+    assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, toldAs(LINE(s.home))]], 'once, to the client');
+    assert.match(notices(s).find(([, t]) => /withdrawn/.test(t))[1], /^module ch-pack-ci-failure-triage was withdrawn in .*`[^`]+ remove-pack ci-failure-triage` removes it$/);
     assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(LINE(s.home))).length, 1, s.f.err);
     assert.ok(!/\/|\\\\/.test(LINE(s.home).replace(/`[^`]*`/g, '')), 'no path in the notice');
   } finally {
@@ -792,7 +797,7 @@ test('a released install started with CH_LOCAL_DEV=1 is still refused its withdr
   try {
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false);
-    assert.ok(notices(s).some(([, t]) => t === LINE(s.home)));
+    assert.ok(notices(s).some(([, t]) => t === toldAs(LINE(s.home))));
   } finally {
     s.end();
     await s.done;
@@ -1215,10 +1220,10 @@ test('a pack whose module has no credential stored is told once, in start\'s wor
   const s = await running({bound: null});
   try {
     const line = `not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${said(s.home, 'credentials add ch-access-github')}\``;
-    await until(() => notices(s).some(([, t]) => t === line));
+    await until(() => notices(s).some(([, t]) => t === toldAs(line)));
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
-    assert.strictEqual(notices(s).filter(([, t]) => /^not loading ch-pack-ci-failure-triage/.test(t)).length, 1, JSON.stringify(notices(s)));
+    assert.strictEqual(notices(s).filter(([, t]) => t.endsWith("credentials add ch-access-github`")).length, 1, JSON.stringify(notices(s)));
   } finally {
     s.end();
     await s.done;
@@ -1796,7 +1801,8 @@ test('a credential store that cannot be read keeps what is loaded, says so once,
 test('a gh binding gh gave no token for at start is not told to restart on a later change; it says how to provide it', async () => {
   const s = await running({bound: 'gh'});
   try {
-    await until(() => notices(s).some(([, t]) => /has no gh token: run `[^`]+credentials add ch-access-github`/.test(t)));
+    await until(() => notices(s).some(([, t]) => /`[^`]+credentials add ch-access-github`/.test(t)));
+    assert.match(s.f.err, /has no gh token: run `[^`]+credentials add ch-access-github`/);
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));
     await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
     await new Promise((r) => setTimeout(r, 300));
@@ -2023,11 +2029,11 @@ test('a key stored under COUNTINGHOUSE_GITHUB_TOKEN: the pack loads, the start s
 // read unloads them all, said once.
 const ownTree = require('../lib/own-tree');
 const {writeOwnRecord} = require('../lib/own-record');
-function placeOwn(home, name, {calls = [], body = ''} = {}) {
+function placeOwn(home, name, {calls = [], body = '', remotes = undefined} = {}) {
   const where = layout({COUNTINGHOUSE_HOME: home});
   const src = path.join(fs.realpathSync.native(tmp('ch-ownsrc-')), name);
   fs.mkdirSync(path.join(src, 'handlers', 'toolService'), {recursive: true});
-  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse: {role: 'scenario', calls}}));
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse: {role: 'scenario', calls, ...(remotes != null ? {remotes} : {})}}));
   fs.writeFileSync(path.join(src, 'api.json'), JSON.stringify({device: {friendlyName: name, serviceList: {'urn:countinghouse-test:serviceID:toolService': {actionList: [{name: 'run'}]}}}}));
   fs.writeFileSync(path.join(src, 'handlers', 'toolService', 'run.js'), `module.exports = async () => ({output: {}});\n${body}`);
   const c = ownTree.checkFolder(src, home);
@@ -2062,6 +2068,310 @@ test('an own module added while start runs loads from its copy; changed code: un
   assert.deepStrictEqual([ownAsks(s)[3].type, ownAsks(s)[3].notice], ['unload', 'my-tool removed']);
   s.end();
   await s.done;
+});
+
+// R-add-module-says-early: run.json's ownSeen is own.json as the applier last
+// applied it, written once each load and unload was answered: what
+// add-module and remove-module wait for (lib/own-applied.js).
+test('ownSeen: null at the start; an own module\'s entry only once its load is answered; gone once removed', {skip: OWN_SKIP}, async () => {
+  let held = null;
+  const s = await running({answer: (m) => (m.type === 'load' && named(m) === 'my-tool' ? {ok: true, delayMs: 400} : {ok: true}),
+    duringSpawn: (home) => { held = JSON.parse(fs.readFileSync(path.join(home, 'run', fs.readdirSync(path.join(home, 'run'))[0], 'run.json'), 'utf8')); }});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    assert.deepStrictEqual([held.ownSeen, held.shared], [null, false], 'before its first apply');
+    await until(() => run().ownSeen != null);
+    assert.deepStrictEqual(run().ownSeen, {}, 'no own module');
+    const stampOf = require('../lib/own-applied').stampOf;
+    const none = run().ownAt;
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => ownAsks(s).length === 1);
+    assert.deepStrictEqual(run().ownSeen, {}, 'the load not answered yet');
+    await until(() => run().ownSeen['my-tool'] != null);
+    assert.deepStrictEqual(run().ownSeen, {'my-tool': {addedAt: a.entry.addedAt, state: 'loaded'}});
+    assert.strictEqual(run().loaded['my-tool'], a.tree);
+    assert.notDeepStrictEqual(run().ownAt, none);
+    assert.deepStrictEqual(run().ownAt, stampOf(a.where), 'own.json as it was read');
+    writeOwnRecord(a.where, {v: 1, modules: {}});
+    await until(() => Object.keys(run().ownSeen).length === 0);
+    assert.deepStrictEqual(run().ownAt, stampOf(a.where));
+    assert.strictEqual(run().loaded['my-tool'], undefined);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('ownSeen: refused with the runtime\'s code; one kept out (its copy changed) is kept; a code of another form, or the channel\'s own, is loaded by a restart', {skip: OWN_SKIP}, async () => {
+  const codes = {'my-refused': {ok: false, code: 'MODULE_INVALID'}, 'my-busy': {ok: false, code: 'CONTROL_BUSY'}, 'my-odd': {ok: false, code: 'not a code'}, 'my-passing': {ok: false, code: 'CONTROL_FAILED'}};
+  const s = await running({answer: (m) => (m.type === 'load' && codes[named(m)]) || {ok: true}});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const modules = {};
+    for (const name of [...Object.keys(codes), 'my-changed', 'my-tool']) modules[name] = placeOwn(s.home, name);
+    const changed = path.join(ownTree.copyDir(modules['my-tool'].where, 'my-changed', modules['my-changed'].tree), 'api.json');
+    fs.chmodSync(changed, 0o644);
+    fs.appendFileSync(changed, ' ');
+    writeOwnRecord(modules['my-tool'].where, {v: 1, modules: Object.fromEntries(Object.entries(modules).map(([n, m]) => [n, m.entry]))});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    const at = new Date(0).toISOString();
+    assert.deepStrictEqual(run().ownSeen, {'my-refused': {addedAt: at, state: 'refused', code: 'MODULE_INVALID'}, 'my-busy': {addedAt: at, state: 'restart'},
+      'my-odd': {addedAt: at, state: 'restart'}, 'my-passing': {addedAt: at, state: 'restart'}, 'my-changed': {addedAt: at, state: 'kept', kind: 'changed'}, 'my-tool': {addedAt: at, state: 'loaded'}});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (paths made long here, on every platform: a held-back module's line ends in
+// the command that adds it again, which the runtime's notice cut never cuts)
+for (const [what, commandLength] of [['room for its name', 160], ['room for the command alone', 178], ['the folder passes the notice', 200], ['the folder is far past it', 260]]) {
+  test(`a held-back own module's notice keeps its command whole: ${what}`, {skip: OWN_SKIP}, async () => {
+    const {chLocal} = require('../lib/command-line');
+    const s = await running({});
+    try {
+      const own = placeOwn(s.home, 'my-changed');
+      const changed = path.join(ownTree.copyDir(own.where, 'my-changed', own.tree), 'api.json');
+      fs.chmodSync(changed, 0o644);
+      fs.appendFileSync(changed, ' ');
+      const bare = [...chLocal(own.where, 'add-module ""')].length;
+      const root = path.join(path.parse(s.home).root, 'w');
+      const from = path.join(root, 'x'.repeat(Math.max(1, commandLength - 2 - bare - root.length - 1)));
+      writeOwnRecord(own.where, {v: 1, modules: {'my-changed': {...own.entry, from}}});
+      const told = () => s.requests.filter((m) => m.type === 'notice').map((m) => m.text).find((t) => /add-module/.test(t));
+      await until(() => told() != null);
+      const whole = `\`${chLocal(own.where, `add-module "${from}"`)}\``;
+      if ([...whole].length <= NOTICE_MAX - ' again'.length) assert.ok(told().endsWith(`${whole} again`), told());
+      else assert.ok(told().endsWith(`\`${chLocal(own.where, 'add-module "<its folder>"')}\` again`), told());
+      assert.ok([...told()].length <= NOTICE_MAX, `${[...told()].length}: ${told()}`);
+      if (commandLength === 160) assert.match(told(), /^not loading my-ch/);
+      // (stderr has the line whole)
+      assert.ok(s.f.err.includes(`not loading my-changed: its files changed since you added it: run ${whole} again`), s.f.err);
+    } finally {
+      s.end();
+      await s.done;
+    }
+  });
+}
+
+test('a module held back at the start: its notice keeps its command whole too', {skip: OWN_SKIP}, async () => {
+  const {chLocal} = require('../lib/command-line');
+  let where = null;
+  const s = await running({beforeStart: (home) => {
+    const own = placeOwn(home, 'my-changed');
+    where = own.where;
+    const changed = path.join(ownTree.copyDir(where, 'my-changed', own.tree), 'api.json');
+    fs.chmodSync(changed, 0o644);
+    fs.appendFileSync(changed, ' ');
+    writeOwnRecord(where, {v: 1, modules: {'my-changed': {...own.entry, from: path.join(path.parse(home).root, 'w', 'x'.repeat(240))}}});
+  }});
+  try {
+    const told = () => s.requests.filter((m) => m.type === 'notice').map((m) => m.text).find((t) => /add-module/.test(t));
+    await until(() => told() != null);
+    assert.ok(told().endsWith(`\`${chLocal(where, 'add-module "<its folder>"')}\` again`), told());
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (nothing in place tries them again but another change)
+test('ownSeen: a load not answered may yet be done: waits; new code whose old could not be unloaded: a restart', {skip: OWN_SKIP}, async () => {
+  let refuse = false;
+  let answered = false;
+  const s = await running({timeoutMs: 300, answer: (m) => (m.type === 'load' && named(m) === 'my-slow' ? (answered ? {ok: false, code: 'CONTROL_FAILED'} : null) : m.type === 'unload' && refuse ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const slow = placeOwn(s.home, 'my-slow');
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-slow': slow.entry, 'my-tool': a.entry}});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    assert.deepStrictEqual([run().ownSeen['my-slow'].state, run().ownSeen['my-tool'].state], ['waits', 'loaded']);
+    // (another apply: the load is sent again and refused as under way, or
+    // loaded already; what it did is as unknown as before)
+    answered = true;
+    writeOwnRecord(a.where, {v: 1, modules: {'my-slow': {...slow.entry, addedAt: new Date(500).toISOString()}, 'my-tool': a.entry}});
+    await until(() => run().ownSeen['my-slow'].addedAt === new Date(500).toISOString());
+    assert.strictEqual(run().ownSeen['my-slow'].state, 'waits');
+    refuse = true;
+    const b = placeOwn(s.home, 'my-tool', {body: '// edited\n'});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': {...b.entry, addedAt: new Date(1000).toISOString()}}});
+    await until(() => run().ownSeen['my-tool'].addedAt === new Date(1000).toISOString());
+    assert.strictEqual(run().ownSeen['my-tool'].state, 'restart');
+    assert.strictEqual(run().loaded['my-tool'], a.tree, 'the old code still served');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (a key stored while the runtime runs: only its next start is given it)
+test('ownSeen: a module whose stored key this runtime was not started with is loaded by a restart', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const a = placeOwn(s.home, 'my-tool', {remotes: [{name: 'mine', transport: 'streamable-http', url: 'https://api.mine.example/mcp/', credential: {env: 'MY_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]});
+    require('../lib/credential-store').bind(s.home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.mine.example', source: 'stored', value: STORED}, {held: require('./store-helpers').FIXTURE_HELD});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    assert.deepStrictEqual(run().ownSeen['my-tool'], {addedAt: a.entry.addedAt, state: 'restart'});
+    // and one with none stored at all is kept out: status says so
+    const b = placeOwn(s.home, 'my-other', {remotes: [{name: 'mine', transport: 'streamable-http', url: 'https://api.other.example/mcp/', credential: {env: 'OTHER_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry, 'my-other': b.entry}});
+    await until(() => run().ownSeen['my-other'] != null);
+    assert.deepStrictEqual(run().ownSeen['my-other'], {addedAt: b.entry.addedAt, state: 'kept', kind: 'credential'});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (said to load on a restart only where the restart would load it)
+test('ownSeen: a changed key is a restart only where the next start is given one; a caller only where nothing else keeps it out', {skip: OWN_SKIP}, async () => {
+  const remote = (origin) => [{name: 'mine', transport: 'streamable-http', url: `${origin}/mcp/`, credential: {env: 'MY_TOKEN', header: 'Authorization', scheme: 'Bearer'}}];
+  const held = {held: require('./store-helpers').FIXTURE_HELD};
+  const store = require('../lib/credential-store');
+  let a = null;
+  const s = await running({bound: null, beforeStart: (home) => {
+    a = placeOwn(home, 'my-tool', {remotes: remote('https://api.a.example')});
+    store.bind(home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.a.example', source: 'stored', value: STORED}, held);
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+  }});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const put = async (modules) => { writeOwnRecord(a.where, {v: 1, modules}); await until(() => run().ownSeen != null && Object.entries(modules).every(([n, e]) => run().ownSeen[n] != null && run().ownSeen[n].addedAt === e.addedAt)); return run().ownSeen; };
+    const added = (m, n) => ({...m.entry, addedAt: new Date(n).toISOString()});
+    await until(() => run().ownSeen != null);
+    // its declared address changed: the stored key is the old address's
+    const b = placeOwn(s.home, 'my-tool', {remotes: remote('https://api.b.example')});
+    const bySelf = await put({'my-tool': added(b, 1000)});
+    assert.deepStrictEqual([bySelf['my-tool'].state, bySelf['my-tool'].kind], ['kept', 'credential']);
+    // the same declaration, another key stored: the next start is given it
+    store.bind(s.home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.b.example', source: 'stored', value: `${STORED}-2`}, held);
+    assert.strictEqual((await put({'my-tool': added(b, 2000)}))['my-tool'].state, 'restart');
+    // a caller whose own key is missing: the new key of what it calls is not enough
+    store.bind(s.home, ACCESS, 'GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: STORED}, held);
+    const c = placeOwn(s.home, 'my-caller', {calls: ['ch-access-github/githubService.listRuns'], remotes: [{...remote('https://api.c.example')[0], credential: {env: 'C_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]});
+    const d = placeOwn(s.home, 'my-plain', {calls: ['ch-access-github/githubService.listRuns']});
+    const callers = await put({'my-caller': added(c, 3000), 'my-plain': added(d, 3000)});
+    assert.strictEqual(callers['my-caller'].state, 'kept', JSON.stringify(callers));
+    assert.strictEqual(callers['my-plain'].state, 'restart', JSON.stringify(callers));
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (the sandbox the settings name now is the next start's, not this one's)
+test('ownSeen: a new key is not a restart where the settings turn the next start to audit', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    await until(() => run().ownSeen != null);
+    fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+    const a = placeOwn(s.home, 'my-tool', {remotes: [{name: 'mine', transport: 'streamable-http', url: 'https://api.mine.example/mcp/', credential: {env: 'MY_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]});
+    require('../lib/credential-store').bind(s.home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.mine.example', source: 'stored', value: STORED}, {held: require('./store-helpers').FIXTURE_HELD});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => run().ownSeen['my-tool'] != null);
+    assert.deepStrictEqual(run().ownSeen['my-tool'], {addedAt: a.entry.addedAt, state: 'kept', kind: 'credential'});
+  } finally {
+    s.end();
+    await s.done;
+  }
+  // (a client that passes the option itself passes it to its next start too)
+  const p = await running({passThrough: ['--moduleSandbox', 'enforce']});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(p.runDir(), 'run.json'), 'utf8'));
+    await until(() => run().ownSeen != null);
+    fs.writeFileSync(path.join(p.home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+    const a = placeOwn(p.home, 'my-tool', {remotes: [{name: 'mine', transport: 'streamable-http', url: 'https://api.mine.example/mcp/', credential: {env: 'MY_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]});
+    require('../lib/credential-store').bind(p.home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.mine.example', source: 'stored', value: STORED}, {held: require('./store-helpers').FIXTURE_HELD});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => run().ownSeen['my-tool'] != null);
+    assert.strictEqual(run().ownSeen['my-tool'].state, 'restart');
+  } finally {
+    p.end();
+    await p.done;
+  }
+});
+
+test('ownSeen: a load not answered, then refused: no longer one that may yet be done', {skip: OWN_SKIP}, async () => {
+  let answer = null;
+  const s = await running({timeoutMs: 300, answer: (m) => (m.type === 'load' && named(m) === 'my-slow' ? answer : {ok: true})});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const slow = placeOwn(s.home, 'my-slow');
+    const again = async (n) => { writeOwnRecord(slow.where, {v: 1, modules: {'my-slow': {...slow.entry, addedAt: new Date(n).toISOString()}}}); await until(() => run().ownSeen != null && run().ownSeen['my-slow'] != null && run().ownSeen['my-slow'].addedAt === new Date(n).toISOString()); return run().ownSeen['my-slow'].state; };
+    assert.strictEqual(await again(1000), 'waits');
+    answer = {ok: false, code: 'MODULE_INVALID'};
+    assert.strictEqual(await again(2000), 'refused');
+    answer = {ok: false, code: 'CONTROL_BUSY'};
+    assert.strictEqual(await again(3000), 'restart');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (the runtime says nothing of when its start's plan has loaded, and may yet
+// refuse one of it: never said to be loaded by this)
+test('ownSeen: an own module of the start\'s own plan is not said loaded until a request of it is answered', {skip: OWN_SKIP}, async () => {
+  let a = null;
+  const s = await running({beforeStart: (home) => { a = placeOwn(home, 'my-tool'); writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}}); }});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    await until(() => run().ownSeen != null);
+    assert.deepStrictEqual(run().ownSeen, {'my-tool': {addedAt: a.entry.addedAt, state: 'waits'}});
+    const b = placeOwn(s.home, 'my-tool', {body: '// edited\n'});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': b.entry}});
+    await until(() => run().ownSeen['my-tool'].state === 'loaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('ownSeen: a run.json that can\'t be written is written again', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    await until(() => run().ownSeen != null);
+    const a = placeOwn(s.home, 'my-tool');
+    const rename = fs.renameSync;
+    let failed = 0;
+    // (as Windows refuses a rename over a file another process has open)
+    fs.renameSync = (from, to) => { if (path.basename(to) === 'run.json' && failed < 3) { failed += 1; throw Object.assign(new Error('EPERM'), {code: 'EPERM'}); } return rename(from, to); };
+    try {
+      writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+      await until(() => run().ownSeen['my-tool'] != null);
+    } finally {
+      fs.renameSync = rename;
+    }
+    assert.ok(failed >= 2, `${failed} refused`);
+    assert.strictEqual(run().ownSeen['my-tool'].state, 'loaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('ownSeen: an own.json that can\'t be read leaves the last one; a shared start says it is', {skip: OWN_SKIP}, async () => {
+  const s = await running({shared: true});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    assert.strictEqual(run().shared, true);
+    fs.writeFileSync(a.where.ownRecord, '{');
+    await until(() => ownAsks(s).some((m) => m.type === 'unload'));
+    await until(() => run().loaded['my-tool'] === undefined);
+    assert.deepStrictEqual(run().ownSeen, {'my-tool': {addedAt: a.entry.addedAt, state: 'loaded'}}, 'not said seen');
+  } finally {
+    s.end();
+    await s.done;
+  }
 });
 
 // F9 (the feature audit): an own module this release's runtime refuses to
