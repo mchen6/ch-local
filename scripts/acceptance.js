@@ -48,15 +48,33 @@ const {ALLOWLIST} = require('../lib/allowlist');
 
 const GITHUB = 'https://api.githubcopilot.com';
 const RECORDED_REPO = 'mchen6/countinghouse';
-const RECEIPT = /^read [\d,]+ lines? \([\d.]+ [KM]?B\) in \d+ calls? to github \(acceptance stand-in\); [\d,]+ lines? \([\d.]+ [KM]?B\) reached the model\.$/;
+// (bytes, no line counts: countinghouse #544)
+const RECEIPT = /^read (?:\d+ B|\d+\.\d [KM]B) in \d+ calls? to github \(acceptance stand-in\); (?:\d+ B|\d+\.\d [KM]B) reached the model\.$/;
+// The receipt object of the same call: the calls to github, all the
+// stand-in's, in bytes. -> true, or false
+function standInReceipt(receipt) {
+  return receipt != null && receipt.calls > 0 && JSON.stringify(receipt.servers) === '["github"]' && JSON.stringify(receipt.standIn) === '["github"]' &&
+    ['bytesIn', 'bytesOut'].every((k) => Number.isInteger(receipt[k]) && receipt[k] > 0) && ['linesIn', 'linesOut'].every((k) => !Object.prototype.hasOwnProperty.call(receipt, k));
+}
 const LIMIT_MS = 300000;
 
 // The recorded answers, as the triage pack's own tests serve them
-// (ch-pack-ci-failure-triage test/github.js recordedServer).
+// (ch-pack-ci-failure-triage test/github.js recordedServer), and one that is
+// not a recording: the pack lists the failed jobs of every run of its window
+// that did not pass, and a recorded run that neither passed nor failed (a
+// cancelled one) is answered with none. Stricter than the pack's server: a run
+// that passed, one that failed with no recording of its jobs, and one that is
+// not in the recording have no answer.
+const FAILED = ['failure', 'timed_out', 'startup_failure'];
 function recordedAnswer(fixtures, tool, args) {
   const recorded = (name) => JSON.parse(fs.readFileSync(path.join(fixtures, `${name}.json`), 'utf8')).result;
   if (tool === 'actions_list' && args.method === 'list_workflow_runs') return recorded('list_workflow_runs');
   if (tool === 'actions_list' && args.method === 'list_workflow_jobs' && String(args.resource_id) === '42775507169') return recorded('list_workflow_jobs');
+  if (tool === 'actions_list' && args.method === 'list_workflow_jobs') {
+    const {workflow_runs: runs} = JSON.parse(recorded('list_workflow_runs').content[0].text);
+    const run = runs.find((r) => String(r.id) === args.resource_id);
+    return run != null && run.conclusion !== 'success' && !FAILED.includes(run.conclusion) ? {content: [{type: 'text', text: JSON.stringify({jobs: {total_count: 0, jobs: []}})}]} : null;
+  }
   if (tool === 'get_job_logs' && /^\d+$/.test(String(args.job_id)) && fs.existsSync(path.join(fixtures, `get_job_logs-${args.job_id}.json`))) return recorded(`get_job_logs-${args.job_id}`);
   if (tool === 'list_commits') return recorded('list_commits');
   return null;
@@ -487,7 +505,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const sentence = Array.isArray(result.content) && result.content[1] != null ? result.content[1].text : '';
     check('ci_failure_triage answers with summary and coverage', result.isError !== true && result.structuredContent != null && typeof result.structuredContent.summary === 'string' && result.structuredContent.coverage != null,
       `${JSON.stringify(called).slice(0, 1200)}\n--- runtime stderr ---\n${stderr.split('\n').filter((l) => /ready|composition|loaded|spawn walk|error|refused/i.test(l)).slice(-25).join('\n')}`);
-    check('the receipt counts the calls to github, marked as the stand-in\'s', receipt != null && receipt.calls > 0 && JSON.stringify(receipt.servers) === '["github"]' && JSON.stringify(receipt.standIn) === '["github"]' && ['linesIn', 'bytesIn', 'linesOut', 'bytesOut'].every((k) => Number.isInteger(receipt[k])), JSON.stringify(receipt));
+    check('the receipt counts the calls to github, marked as the stand-in\'s', standInReceipt(receipt), JSON.stringify(receipt));
     check('the receipt\'s sentence marks the acceptance stand-in', RECEIPT.test(sentence), sentence);
     check('the stand-in saw only this run\'s tokens, and every call was recorded', standIn.state.refused === 0 && standIn.state.unexpected.length === 0, JSON.stringify(standIn.state));
     const packCalls = standIn.state.calls.length;
@@ -571,4 +589,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`acceptance: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, reportText, trapSignals, startStandIn, recordedAnswer, filesContaining, launcherEnv, waitForText, stopTree, endTree, writeOwnModule, addOwn, removeTree, RECEIPT};
+module.exports = {main, reportText, trapSignals, startStandIn, recordedAnswer, standInReceipt, filesContaining, launcherEnv, waitForText, stopTree, endTree, writeOwnModule, addOwn, removeTree, RECEIPT};
