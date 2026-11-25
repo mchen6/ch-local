@@ -239,6 +239,7 @@ test('a first runtime that does not stop: its end is awaited within the stop bou
   // (the two waits one after the other would be 3.5 s; on Windows the file's
   // own write, PowerShell, takes of it what it takes)
   if (process.platform !== 'win32') assert.ok(took < 3200, `the bound once: ${Math.round(took)} ms`);
+  assert.ok(took >= 1700, `its end awaited: ${Math.round(took)} ms`);
   assert.match(io.err, /it was stopped, and did not end within 2 s/);
 }));
 
@@ -252,8 +253,9 @@ test('a daemon that waited on start.lock while failed.json was written starts no
   const written = fs.readFileSync(failedJson(home), 'utf8');
   await one.exit(137);
   assert.strictEqual(await done, 1);
-  assert.strictEqual(await Promise.race([second, tick(10000).then(() => 'still running')]), 0);
+  for (const until = Date.now() + 10000; t.calls.length === 0 && !/not starting/.test(io.err) && Date.now() < until;) await tick();
   assert.strictEqual(t.calls.length, 0, 'no runtime started');
+  assert.strictEqual(await second, 0);
   assert.match(io.err, /failed\.json/);
   assert.strictEqual(fs.readFileSync(failedJson(home), 'utf8'), written, 'left as it is');
   // a daemon started with it already there (the shim decided to): it runs
@@ -262,6 +264,41 @@ test('a daemon that waited on start.lock while failed.json was written starts no
   (await u.nth(0)).tell({type: 'idle'});
   assert.strictEqual(await third, 0);
 }));
+
+// (a hand-over's holds its sessions' table; a file the shim would ignore is
+// no give-up)
+for (const [what, start, text] of [
+  ['a hand-over\'s daemon', {handoff: null, handedOver: true}, () => JSON.stringify({v: 1, at: Date.now(), exit: null, signal: null, reason: 'never-listened'})],
+  ['a stale file', {}, () => JSON.stringify({v: 1, at: Date.now() - 700000, exit: null, signal: null, reason: 'never-listened'})],
+  ['a file of another shape', {}, () => '{"v":1}']
+]) {
+  test(`a failed.json written while a daemon waits on start.lock: ${what} starts its runtime all the same`, async() => {
+    const home = tmpHome();
+    const run = runDirOf(home);
+    const {withLockFile} = require('../lib/lock');
+    const io = fast(home);
+    const t = scripted(home);
+    let done = null;
+    try {
+      fs.mkdirSync(run, {recursive: true, mode: 0o700});
+      let release = null;
+      const held = new Promise((r) => { release = r; });
+      const lock = withLockFile(path.join(run, 'start.lock'), run, io, async() => { await held; return 0; }, {wait: true, what: 'a test'});
+      done = daemon({home, ...start}, io, {run: t.run});
+      await tick(300);
+      assert.strictEqual(t.calls.length, 0, 'it waits');
+      fs.writeFileSync(failedJson(home), text(), {mode: 0o600});
+      release();
+      await lock;
+      (await t.nth(0)).tell({type: 'idle'});
+      assert.strictEqual(await done, 0);
+    } finally {
+      for (const c of t.calls) await c.exit(0);
+      if (done != null) await done;
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  });
+}
 
 // (as the rule before it: a stop of the daemon's while it starts is a stop)
 test('the daemon stopped while a first runtime that never listened has its moment to end: a stop, no failed.json', async() => {
