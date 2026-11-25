@@ -1373,10 +1373,10 @@ pub fn own_runtime_to(
 
 #[cfg(all(test, unix))]
 mod tests {
+    use crate::test_files::private;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::Path;
 
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as B64;
@@ -1401,11 +1401,6 @@ mod tests {
         fn lines(&self) -> Vec<String> {
             String::from_utf8(self.0.lock().unwrap().clone()).unwrap().lines().map(String::from).collect()
         }
-    }
-
-    fn private(path: &Path, body: &[u8]) {
-        fs::write(path, body).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     /// A home with a daemon.json (our own pid), a secret, and a shim.json

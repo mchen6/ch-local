@@ -41,3 +41,5 @@ pub(crate) mod win_ffi;
 
 #[cfg(test)]
 mod conformance;
+#[cfg(all(test, unix))]
+mod test_files;
