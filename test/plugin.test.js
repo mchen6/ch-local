@@ -45,6 +45,14 @@ test('the skill carries the plan\'s sentence verbatim', () => {
   assert.ok(skill.includes('when a CI run failed, call `ci_failure_triage` first and show its receipt line verbatim'));
 });
 
+// What the tool gives: the authors of the commits the failure occurred on, and
+// with several failed jobs a verdict for each. It names no last toucher.
+test('the triage skill asks only for what the tool returns', () => {
+  const skill = fs.readFileSync(path.join(PLUGIN, 'skills', 'ci-failure-triage', 'SKILL.md'), 'utf8');
+  assert.ok(skill.includes('Then answer from what the tool returned: the failing step, its error lines, whether the failure is new, flaky or recurring where it says so (with several failed jobs, each job\'s own), and the authors of the commits the failure occurred on, when it names them.'));
+  assert.doesNotMatch(skill, /last touched/);
+});
+
 // The final pass on the packs (A13): a missing credential unloads the tool
 // too, and the command it gives is the launcher's, never the bare ch-local
 // (installing puts none on the PATH, as the setup skill says).

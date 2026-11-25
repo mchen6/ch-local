@@ -7,7 +7,7 @@ description: Use when a CI run (GitHub Actions) failed and the user wants to kno
 
 when a CI run failed, call `ci_failure_triage` first and show its receipt line verbatim.
 
-Then answer from what the tool returned: the failing step, its error lines, whether the failure is new, flaky or recurring, and who last touched it. Do not read the raw logs yourself unless the user asks; the receipt says how much of them the tool read.
+Then answer from what the tool returned: the failing step, its error lines, whether the failure is new, flaky or recurring where it says so (with several failed jobs, each job's own), and the authors of the commits the failure occurred on, when it names them. Do not read the raw logs yourself unless the user asks; the receipt says how much of them the tool read.
 
 If the `ci_failure_triage` tool is not available, it is often one of these:
 - countinghouse is not installed, or the ci-failure-triage pack is not;

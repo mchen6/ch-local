@@ -158,15 +158,20 @@ The checks are grouped. Within a group, the order doesn't matter.
         password after an address and a colon (#12);
       - ch-step-log-clean 0.2.3: the same masking, with an omitted bare key
         body keeping redact's state and step names whole (#7);
-      - ch-access-github 0.2.2: the GitHub remote asks for read-only tools
-        (0.2.1), and 0.2.2 is the version pack 1 0.7.1 is built against
-        (a refusal names its cause; a large log comes back as its tail);
+      - ch-access-github 0.3.0: the GitHub remote asks for read-only tools
+        (0.2.1), a refusal names its cause and a large log comes back as its
+        tail (0.2.2); GitHub's attempt number and the workflow's id are given,
+        and a run without a branch or a name no longer loses the list
+        (#8, #10);
       - ch-step-report 0.4.4: the summary quotes no step name and an
         e-mail address costs its field (#7), an @ before a password or after
         a redacted address is an address's (#8), and the final pass's (#9);
-      - ch-pack-ci-failure-triage 0.7.1: step names go through redact before
-        any part, the result or the cache (#18), with
-        ch-access-github 0.2.2.
+      - ch-pack-ci-failure-triage 0.7.2: step names go through redact before
+        any part, the result or the cache (#18); runs are compared by their
+        workflow's id where GitHub gives one (#28), a success that was re-run
+        only when the attempt before it is known (#29), and an older run's
+        log that a part refuses does not lose the call (#30). 0.7.2 is built
+        against the versions of its parts pinned in its own repository.
       The parts fixed on 11-21 for function only (error-patterns, dedupe,
       owner-hint) have no floor.
     - How: the machine check holds it. lib/release-pins.js refuses a pin
