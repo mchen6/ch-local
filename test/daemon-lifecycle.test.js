@@ -242,6 +242,27 @@ test('a first runtime that does not stop: its end is awaited within the stop bou
   assert.match(io.err, /it was stopped, and did not end within 2 s/);
 }));
 
+// Two shims can each spawn a daemon (shim/src/attach.rs): the second waits on
+// start.lock, and the sessions are on their own runtimes by the time it has it
+test('a daemon that waited on start.lock while failed.json was written starts no runtime; one already there before is no reason', async() => hung({daemonGraceMs: 100}, async({home, one, done}) => {
+  const io = fast(home);
+  const t = scripted(home);
+  const second = daemon({home}, io, {run: t.run});
+  for (const until = Date.now() + 5000; !fs.existsSync(failedJson(home)) && Date.now() < until;) await tick();
+  const written = fs.readFileSync(failedJson(home), 'utf8');
+  await one.exit(137);
+  assert.strictEqual(await done, 1);
+  assert.strictEqual(await Promise.race([second, tick(10000).then(() => 'still running')]), 0);
+  assert.strictEqual(t.calls.length, 0, 'no runtime started');
+  assert.match(io.err, /failed\.json/);
+  assert.strictEqual(fs.readFileSync(failedJson(home), 'utf8'), written, 'left as it is');
+  // a daemon started with it already there (the shim decided to): it runs
+  const u = scripted(home);
+  const third = daemon({home}, fast(home), {run: u.run});
+  (await u.nth(0)).tell({type: 'idle'});
+  assert.strictEqual(await third, 0);
+}));
+
 // (as the rule before it: a stop of the daemon's while it starts is a stop)
 test('the daemon stopped while a first runtime that never listened has its moment to end: a stop, no failed.json', async() => {
   let stop = null;
