@@ -1413,6 +1413,10 @@ test('cold start: the longer wait only with provably nothing to restore; the bou
   assert.strictEqual(d.READY_MS + Math.max(...retries) * 1000 + handshake * 1000, 55000, 'a restored session\'s worst case, as before');
   assert.ok(55000 < d.SESSION_WINDOW_MS);
   assert.ok(d.COLD_READY_MS + 3000 <= cold * 1000, 'inside the shim\'s: at most 1 s of late spawn, and 2 s to answer');
+  // (a first runtime that never listened has its moment to end before
+  // failed.json is written: at most 1 s of late spawn, then that, and 1.5 s
+  // for the write and the shim's next look)
+  assert.ok(d.GRACE_MS > 0 && 1000 + d.COLD_READY_MS + d.GRACE_MS + 1500 <= cold * 1000, 'failed.json inside the shim\'s');
   assert.ok(cold * 1000 < 30000, 'under Claude Code\'s 30 s for a stdio server');
 });
 
