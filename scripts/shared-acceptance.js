@@ -297,30 +297,39 @@ function treeOf(root) {
 // quotes (and a Windows path's backslashes) are escaped.
 const terminalInJson = (launcher, args) => JSON.stringify(`node "${launcher}" ${args}`).slice(1, -1);
 
-// (b-latched), the countinghouse #337 contract: a session whose client's
-// conditions latched "no" is refused a loosening as that latch, with the
-// reason the shim handed over, never as the user's decline; a tightening
-// still applies to it; and another session's settings are its own.
+// (b-latched), the countinghouse #337 and #545 contract: a session whose
+// client's conditions latched "no" is, while no client is on the tested list,
+// refused a loosening word for word as any session is, never as the user's
+// decline; that it is latched, and the other is not, is in each session's own
+// history; the conditions handed over say why; a tightening still applies to
+// it; and another session's settings are its own. (With a client on the list
+// the latch has a refusal of its own again: the (b1) todo.)
 // second, first: each session's tools/call of countinghouse_settings; why:
 // the conditions line's `why` ({reason, at?}) for the second client; reason:
 // the fixture's own expected reason. -> nothing; each finding via check().
+const LOCKED = 'not confirmed (locked in this session)';
 async function latchedChecks({second, first, why, reason, launcher, check}) {
   check('(b-latched) the conditions handed over for the second client say no, with the fixture\'s reason', why != null && why.reason === reason, JSON.stringify(why));
-  const loosen = await second({action: 'set', name: 'requestTimeout', value: '60s'});
-  const code = loosen.result != null && loosen.result._meta != null ? loosen.result._meta['countinghouse/code'] : null;
-  const text = loosen.result != null ? JSON.stringify(loosen.result.content) : '';
-  // the refusal states the session's own conditionsWhy, as the runtime holds
-  // it from the hand-over (countinghouse lib/conditions-why.js said())
-  const said = why != null ? `(${why.reason}${why.at !== undefined ? `: ${why.at}` : ''})` : '(none handed over)';
-  check('(b-latched) a loosening is refused as the latch, with the handed-over reason and the terminal command; never as a decline',
-    loosen.result != null && loosen.result.isError === true && code === 'SETTING_CLIENT_NOT_CONFIRMED' && text.includes(said) &&
-    text.includes(terminalInJson(launcher, 'settings set requestTimeout 60s')), `${said} ${JSON.stringify(loosen).slice(0, 1000)}`);
+  const ask = {action: 'set', name: 'requestTimeout', value: '60s'};
+  const loosen = await second(ask);
+  const answer = (r) => (r.result == null ? null : {isError: r.result.isError, code: r.result._meta != null ? r.result._meta['countinghouse/code'] : null, content: r.result.content, structuredContent: r.result.structuredContent});
+  const a = answer(loosen);
+  check('(b-latched) a loosening is refused with the terminal command; never as a decline',
+    a != null && a.isError === true && a.code === 'SETTING_NEEDS_CONFIRMATION' && JSON.stringify(a.content).includes(terminalInJson(launcher, 'settings set requestTimeout 60s')),
+    JSON.stringify(loosen).slice(0, 1000));
+  const unlatched = await first(ask);
+  check('(b-latched) word for word as the first session\'s, which is not latched', a != null && JSON.stringify(a) === JSON.stringify(answer(unlatched)), JSON.stringify({second: a, first: answer(unlatched)}).slice(0, 1500));
+  const asked = async (call) => { const got = await call({action: 'get'}); return got.result != null && got.result.structuredContent != null ? got.result.structuredContent : null; };
+  const changes = (got) => (got == null ? null : (got.history || []).filter((h) => h.setting === 'requestTimeout').map((h) => h.change));
+  const here = changes(await asked(second));
+  const there = await asked(first);
+  check('(b-latched) the second session\'s history says it is locked', here != null && here.includes(LOCKED), JSON.stringify(here));
+  check('(b-latched) the first session\'s does not', changes(there) != null && changes(there).length > 0 && !changes(there).includes(LOCKED), JSON.stringify(changes(there)));
   const tighten = await second({action: 'set', name: 'requestTimeout', value: '20s'});
   const t = tighten.result != null ? tighten.result.structuredContent : null;
   check('(b-latched) a tightening still applies to that session', t != null && t.new === 20000 && t.applies === 'this session', JSON.stringify(tighten).slice(0, 1000));
-  const got = await first({action: 'get'});
-  const value = got.result != null && got.result.structuredContent != null ? (got.result.structuredContent.settings || []).find((x) => x.name === 'requestTimeout') : null;
-  check('(b-latched) the first session\'s settings are its own (its 10 s kept)', value != null && value.value === 10000, JSON.stringify(got).slice(0, 1000));
+  const value = there != null ? (there.settings || []).find((x) => x.name === 'requestTimeout') : null;
+  check('(b-latched) the first session\'s settings are its own (its 10 s kept)', value != null && value.value === 10000, JSON.stringify(there).slice(0, 1000));
 }
 
 // The acceptance fixture pack (test/fixtures/ch-pack-accept): built into
@@ -615,7 +624,9 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     // SETTING_DECLINED_THIS_SESSION: no form was declined, and a session the
     // client's conditions latched "no" is the machine's, not the tested
     // client's (2026-11-16: a run under a home whose .claude held plugins
-    // answered so; the guard above now refuses such a run)
+    // answered so; the guard above now refuses such a run). With no tested
+    // client a latched session is refused in the same words: (b-latched) reads
+    // in this session's history that it is not one.
     check('(b) a loosening, with no tested client yet, is refused with the terminal command', loosen.result != null && loosen.result.isError === true &&
       loosenCode === 'SETTING_NEEDS_CONFIRMATION' && JSON.stringify(loosen.result.content).includes(terminalInJson(launcher, 'settings set requestTimeout 60s')),
       JSON.stringify(loosen).slice(0, 1000));
