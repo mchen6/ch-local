@@ -321,6 +321,38 @@ test('remove-module: added again meanwhile by another command: this removal was 
   }), 'Removed my-tool.\n');
 });
 
+// (its copy put right by hand, or a module the runtime stopped: what runs may
+// not be what was confirmed, and adding it again is how the user puts it right)
+test('add-module: the same code, its copy whole, is asked and added again where a runtime runs here; with none, nothing changes', opt, async () => {
+  const h = setup();
+  await h.added();
+  const before = readOwnRecord(h.where).modules['my-tool'];
+  const none = h.io();
+  assert.strictEqual(await addModule({dir: h.dir}, none, {where: h.where}), 0);
+  assert.match(none.out, /my-tool [0-9a-f]{12} is already added: nothing changed\./);
+  assert.strictEqual(readOwnRecord(h.where).modules['my-tool'].addedAt, before.addedAt);
+  // a runtime here, the module loaded, then stopped, in it
+  for (const now of [h.seen('loaded'), {...h.seen('kept', {kind: 'stopped'}), stopped: {'my-tool': 'MODULE_STOPPED'}}]) {
+    h.write(11, now);
+    await tick(5);
+    const was = readOwnRecord(h.where).modules['my-tool'].addedAt;
+    const f = h.io();
+    const done = addModule({dir: h.dir}, f, {where: h.where});
+    for (let i = 0; i < 200 && readOwnRecord(h.where).modules['my-tool'].addedAt === was; i++) await tick(10);
+    h.write(11, h.seen('loaded'));
+    assert.strictEqual(await done, 0, f.err);
+    assert.ok(f.out.endsWith(`${h.own()}: your clients see it now.\n`), f.out);
+    assert.notStrictEqual(readOwnRecord(h.where).modules['my-tool'].addedAt, was);
+  }
+  // a no: it is added already, and stays so
+  const at = readOwnRecord(h.where).modules['my-tool'].addedAt;
+  const no = Object.assign(h.io(), {ask: async () => 'n'});
+  assert.strictEqual(await addModule({dir: h.dir}, no, {where: h.where}), 0, no.err);
+  assert.match(no.out, /my-tool [0-9a-f]{12} is already added: nothing changed\.\n$/);
+  assert.doesNotMatch(no.err, /was not added/);
+  assert.strictEqual(readOwnRecord(h.where).modules['my-tool'].addedAt, at);
+});
+
 test('remove-module: the same code added again meanwhile, of the start\'s own plan: not said to be stopped by a restart', opt, async () => {
   const h = setup();
   await h.added();
@@ -330,6 +362,18 @@ test('remove-module: the same code added again meanwhile, of the start\'s own pl
     const later = h.at();
     later.at = String(BigInt(later.at) + 1000000n);
     h.write(11, {ownSeen: {'my-tool': {addedAt: '2026-11-24T00:00:00.000Z', state: 'waits'}}, ownAt: later, loaded: {'my-tool': tree}});
+  }), 'Removed my-tool.\n');
+});
+
+test('remove-module: the same code added again meanwhile, not loaded again: not said to be stopped by a restart, which loads it', opt, async () => {
+  const h = setup();
+  await h.added();
+  const tree = readOwnRecord(h.where).modules['my-tool'].tree;
+  h.write(11, h.seen('loaded'));
+  assert.strictEqual(await h.remove(async () => {
+    const later = h.at();
+    later.at = String(BigInt(later.at) + 1000000n);
+    h.write(11, {ownSeen: {'my-tool': {addedAt: '2026-11-24T00:00:00.000Z', state: 'restart', again: true}}, ownAt: later, loaded: {'my-tool': tree}});
   }), 'Removed my-tool.\n');
 });
 
@@ -459,6 +503,183 @@ test('status: an own module a running runtime refused in place is not said to be
     assert.strictEqual(await status({}, g), 0, g.err);
     assert.match(g.out, /^ {2}my-tool \(own, unpinned, [0-9a-f]{12}\) +on; tools: run$/m, JSON.stringify(entry));
   }
+});
+
+test('status: an own module only a restart takes up is said so, its tools not listed: the shared runtime\'s command, or the client', opt, async () => {
+  const {status} = require('../lib/packs-command');
+  const h = setup();
+  await h.added();
+  const row = async () => { const f = h.io(); assert.strictEqual(await status({}, f), 0, f.err); return /^ {2}my-tool \(own, unpinned, [0-9a-f]{12}\) +(.*)$/m.exec(f.out)[1]; };
+  h.write(11, {shared: false, ...h.seen('restart')});
+  assert.strictEqual(await row(), 'on; taken up when your client restarts');
+  h.write(11, {shared: true, ...h.seen('restart')});
+  assert.match(await row(), /^on; taken up when the runtime restarts: `.+ restart`$/);
+  // (a run of neither kind: an older ch-local's, or a file that says otherwise)
+  h.write(11, {shared: 'true', ...h.seen('restart')});
+  assert.strictEqual(await row(), 'on; taken up when your client restarts');
+  // two runs: the shared one's command first; a refusal, and the sandbox, before both
+  h.write(11, {shared: false, ...h.seen('restart')});
+  h.write(12, {shared: true, ...h.seen('restart')});
+  assert.match(await row(), /^on; taken up when the runtime restarts: /);
+  h.write(11, h.seen('kept', {kind: 'sandbox'}));
+  assert.match(await row(), /^not loaded: own modules run only with the sandbox enforced$/);
+  h.write(11, h.seen('refused', {code: 'MODULE_INVALID'}));
+  assert.match(await row(), /^not loaded: this release's runtime refuses it \(MODULE_INVALID\)/);
+  // one of an earlier add says nothing of this one; one taken up is on
+  h.gone(12);
+  h.write(11, {shared: true, ownSeen: {'my-tool': {addedAt: '2026-01-01T00:00:00.000Z', state: 'restart'}}});
+  assert.strictEqual(await row(), 'on; tools: run');
+  h.write(11, {shared: true, ...h.seen('loaded')});
+  assert.strictEqual(await row(), 'on; tools: run');
+  // (loaded since: loaded is written at once, ownSeen when the whole apply ends)
+  h.write(11, {shared: true, ...h.seen('restart'), loaded: {'my-tool': readOwnRecord(h.where).modules['my-tool'].tree}});
+  assert.strictEqual(await row(), 'on; tools: run');
+});
+
+// (the copy is checked at a start and at an apply, not by the runtime)
+test('status: an own module whose copy changed or is gone is said to be still on where a running runtime has it loaded', opt, async () => {
+  const {status} = require('../lib/packs-command');
+  const {copyDir} = require('../lib/own-tree');
+  const h = setup();
+  await h.added();
+  const e = readOwnRecord(h.where).modules['my-tool'];
+  const row = async () => { const f = h.io(); assert.strictEqual(await status({}, f), 0, f.err); return /^ {2}my-tool \(own, unpinned, [0-9a-f]{12}\) +(.*)$/m.exec(f.out)[1]; };
+  const copy = copyDir(h.where, 'my-tool', e.tree);
+  const api = path.join(copy, 'api.json');
+  fs.chmodSync(api, 0o644);
+  fs.appendFileSync(api, ' ');
+  const again = `run \`${chLocal(h.where, `add-module "${h.dir}"`)}\` again`;
+  const CHANGED = `its files changed since you added it: ${again}`;
+  // no runtime has it: held back, as before
+  assert.strictEqual(await row(), `not loaded: ${CHANGED}`);
+  // the shared runtime's, then a client's own
+  for (const shared of [true, false]) {
+    h.write(11, {...h.seen('loaded'), shared});
+    assert.strictEqual(await row(), `still on in the running runtime; ${CHANGED}`, `shared: ${shared}`);
+  }
+  // other code of the same name, a module stopped there, or a run elsewhere, is not this copy on here
+  for (const not of [{loaded: {'my-tool': 'f'.repeat(64)}}, {loaded: {'my-tool': '1.0.0'}}, {loaded: {}}, {stopped: {'my-tool': 'MODULE_STOPPED'}}]) {
+    h.write(11, {...h.seen('loaded'), ...not});
+    assert.strictEqual(await row(), `not loaded: ${CHANGED}`, JSON.stringify(not));
+  }
+  h.end(11);
+  const dir = path.join(h.where.run, 'box-2-21-0a1b2c3d');
+  fs.mkdirSync(dir, {recursive: true});
+  fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({host: 'box-2', machine: 'another-machine', pid: 21, startedAt: 1, shared: true, stopped: {}, ...h.seen('loaded')}));
+  assert.strictEqual(await row(), `not loaded: ${CHANGED}`);
+  // its copy gone
+  h.write(11, h.seen('loaded'));
+  fs.chmodSync(path.dirname(copy), 0o755);
+  fs.renameSync(copy, `${copy}-away`);
+  assert.strictEqual(await row(), `still on in the running runtime; its copy is gone: ${again}`);
+  // held back for any other reason while it is loaded: still on, and that reason
+  fs.renameSync(`${copy}-away`, copy);
+  fs.chmodSync(api, 0o644);
+  fs.writeFileSync(api, fs.readFileSync(path.join(h.dir, 'api.json')));
+  fs.writeFileSync(h.where.settings, JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
+  assert.strictEqual(await row(), 'still on in the running runtime; own modules run only with the sandbox enforced');
+  h.end(11);
+  assert.strictEqual(await row(), 'not loaded: own modules run only with the sandbox enforced');
+  fs.writeFileSync(h.where.settings, JSON.stringify({version: 1, values: {'enabled.my-tool': false}}));
+  h.write(11, h.seen('loaded'));
+  assert.match(await row(), /^still on in the running runtime; it is turned off/);
+});
+
+test('status: an own module that calls one whose copy changed is still on too, where a running runtime has it loaded', opt, async () => {
+  const {status} = require('../lib/packs-command');
+  const {copyDir} = require('../lib/own-tree');
+  const {writeOwnRecord} = require('../lib/own-record');
+  const h = setup();
+  await h.added();
+  const e = readOwnRecord(h.where).modules['my-tool'];
+  const callers = {'my-tool': e, 'my-caller': {...e, friendlyName: 'my-caller', calls: ['my-tool/toolService.run']}};
+  // (its copy: the same files under its own name)
+  const dir = path.join(path.dirname(h.dir), 'caller');
+  fs.cpSync(h.dir, dir, {recursive: true});
+  const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({...pkg, name: 'my-caller', countinghouse: {...pkg.countinghouse, calls: ['my-tool/toolService.run']}}));
+  fs.writeFileSync(path.join(dir, 'api.json'), fs.readFileSync(path.join(dir, 'api.json'), 'utf8').replaceAll('my-tool', 'my-caller'));
+  const tree = require('../lib/own-tree');
+  const c = tree.checkFolder(fs.realpathSync.native(dir), h.home);
+  assert.strictEqual(c.problems, undefined, JSON.stringify(c.problems));
+  callers['my-caller'].tree = tree.treeHash(c.real, c.entries);
+  callers['my-caller'].from = c.real;
+  tree.placeCopy(h.where, 'my-caller', c.real, c.entries, callers['my-caller'].tree);
+  writeOwnRecord(h.where, {v: 1, modules: callers});
+  h.write(11, {...h.seen('loaded'), loaded: {'my-tool': e.tree, 'my-caller': callers['my-caller'].tree}});
+  const api = path.join(copyDir(h.where, 'my-tool', e.tree), 'api.json');
+  fs.chmodSync(api, 0o644);
+  fs.appendFileSync(api, ' ');
+  const f = h.io();
+  assert.strictEqual(await status({}, f), 0, f.err);
+  assert.match(f.out, /^ {2}my-caller \(own, unpinned, [0-9a-f]{12}\) +still on in the running runtime; it calls my-tool, which is not available \(its files changed since you added it: /m);
+});
+
+test('status: new code a runtime takes up only when it restarts: the earlier code is said to be still on', opt, async () => {
+  const {status} = require('../lib/packs-command');
+  const h = setup();
+  await h.added();
+  const row = async () => { const f = h.io(); assert.strictEqual(await status({}, f), 0, f.err); return /^ {2}my-tool \(own, unpinned, [0-9a-f]{12}\) +(.*)$/m.exec(f.out)[1]; };
+  h.write(11, {...h.seen('restart'), loaded: {'my-tool': 'f'.repeat(64)}});
+  assert.match(await row(), /^the earlier code is still on; this one is taken up when the runtime restarts: `.+ restart`$/);
+  h.write(11, {...h.seen('restart'), shared: false, loaded: {'my-tool': 'f'.repeat(64)}});
+  assert.strictEqual(await row(), 'the earlier code is still on; this one is taken up when your client restarts');
+  // (a pack's module of that name is not its earlier code; the same code added again and not loaded again is not "earlier")
+  h.write(11, {...h.seen('restart'), shared: false, loaded: {'my-tool': '1.2.0'}});
+  assert.strictEqual(await row(), 'on; taken up when your client restarts');
+  h.write(11, {...h.seen('restart', {again: true}), shared: false, loaded: {'my-tool': readOwnRecord(h.where).modules['my-tool'].tree}});
+  assert.strictEqual(await row(), 'on; taken up when your client restarts');
+});
+
+// (as Windows refuses a read while the file is being replaced)
+test('status: each run.json is read once, so a second read that fails loses nothing', opt, async () => {
+  const {status} = require('../lib/packs-command');
+  const h = setup();
+  await h.added();
+  h.write(11, h.seen('refused', {code: 'MODULE_INVALID'}));
+  const file = path.join(h.where.run, 'box-1-11-0a1b2c3d', 'run.json');
+  const read = fs.readFileSync;
+  let n = 0;
+  fs.readFileSync = (p, ...o) => { if (p === file && ++n > 1) throw Object.assign(new Error('EBUSY'), {code: 'EBUSY'}); return read(p, ...o); };
+  const f = h.io();
+  try { assert.strictEqual(await status({}, f), 0, f.err); } finally { fs.readFileSync = read; }
+  assert.match(f.out, /not loaded: this release's runtime refuses it \(MODULE_INVALID\)/);
+  assert.strictEqual(n, 1);
+});
+
+// (one run has not read the new own.json yet, and still holds the refusal of the code before)
+test('status: a refusal of the code as it is now is not hidden by another run\'s refusal of the code before', opt, async () => {
+  const {status} = require('../lib/packs-command');
+  const h = setup();
+  await h.added();
+  h.write(11, {refused: {'my-tool': {code: 'MODULE_OLD', tree: 'f'.repeat(64)}}});
+  h.write(12, h.seen('refused', {code: 'MODULE_INVALID'}));
+  const f = h.io();
+  assert.strictEqual(await status({}, f), 0, f.err);
+  assert.match(f.out, /^ {2}my-tool \(own, unpinned, [0-9a-f]{12}\) +not loaded: this release's runtime refuses it \(MODULE_INVALID\)/m);
+  // (and two starts' own: the one of the code as it is now)
+  h.write(12, {refused: {'my-tool': {code: 'MODULE_INVALID', tree: readOwnRecord(h.where).modules['my-tool'].tree}}});
+  const g = h.io();
+  assert.strictEqual(await status({}, g), 0, g.err);
+  assert.match(g.out, /refuses it \(MODULE_INVALID\)/);
+});
+
+// (a home on a shared disk: that machine's restart is not this one's to run)
+test('status: a runtime on another machine that needs a restart is not said as this one\'s', opt, async () => {
+  const {status} = require('../lib/packs-command');
+  const h = setup();
+  await h.added();
+  const dir = path.join(h.where.run, 'box-2-21-0a1b2c3d');
+  fs.mkdirSync(dir, {recursive: true});
+  fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({host: 'box-2', machine: 'another-machine', pid: 21, startedAt: 1, shared: true, stopped: {}, ...h.seen('restart'), loaded: {}}));
+  const f = h.io();
+  assert.strictEqual(await status({}, f), 0, f.err);
+  assert.match(f.out, /^ {2}my-tool \(own, unpinned, [0-9a-f]{12}\) +on; tools: run$/m);
+  // (its run is read: a refusal there is said, as before)
+  fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({host: 'box-2', machine: 'another-machine', pid: 21, startedAt: 1, shared: true, stopped: {}, ...h.seen('refused', {code: 'MODULE_INVALID'}), loaded: {}}));
+  const g = h.io();
+  assert.strictEqual(await status({}, g), 0, g.err);
+  assert.match(g.out, /not loaded: this release's runtime refuses it \(MODULE_INVALID\)/);
 });
 
 // (as the user stops it: the signal ends the command, the lock already released)

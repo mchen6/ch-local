@@ -140,6 +140,26 @@ test('an own module whose callee is held back is held back through it; one calli
   assert.deepStrictEqual(top.modules, {'my-top': top.version, 'my-base': t2});
 });
 
+// (a copy that changed or is gone has no device name to read: its entry's)
+test('an own module that calls an own one whose copy changed or is gone says why that one is held back, never that it is not installed', () => {
+  for (const [what, spoil] of [['changed', (dir) => { fs.chmodSync(path.join(dir, 'api.json'), 0o644); fs.writeFileSync(path.join(dir, 'api.json'), '{'); }],
+    ['gone', (dir) => { fs.chmodSync(path.dirname(dir), 0o755); fs.renameSync(dir, `${dir}-away`); }]]) {
+    const h = home();
+    const tree = h.addOwn('my-b', {friendlyName: 'b-device'});
+    h.addOwn('my-a', {calls: ['b-device/toolService.run']});
+    spoil(ownTree.copyDir(h.where, 'my-b', tree));
+    const u = run(h).unavailable.get('my-a');
+    assert.deepStrictEqual([u.kind, u.root, u.via], ['calls', what, 'my-b'], u.reason);
+    assert.match(u.reason, what === 'gone' ? /^it calls b-device, which is not available \(its copy is gone: / : /^it calls b-device, which is not available \(its files changed since you added it: /);
+  }
+  // (a pack's module still finds no own one)
+  const h = home({aCalls: ['b-device/toolService.run']});
+  const tree = h.addOwn('my-b', {friendlyName: 'b-device'});
+  fs.chmodSync(path.join(ownTree.copyDir(h.where, 'my-b', tree), 'api.json'), 0o644);
+  fs.appendFileSync(path.join(ownTree.copyDir(h.where, 'my-b', tree), 'api.json'), ' ');
+  assert.match(run(h).unavailable.get(A).reason, /which is not installed$/);
+});
+
 test('the seams are asked of an own module too: the ceiling and off', () => {
   const h = home();
   h.addOwn('my-tool');

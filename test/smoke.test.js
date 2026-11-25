@@ -160,6 +160,30 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       const ownCalled = await mcp2.request('tools/call', {name: 'own_shout', arguments: {text: 'mine'}});
       assert.ok(ownCalled.result != null && ownCalled.result.isError === false, JSON.stringify(ownCalled).slice(0, 2000) + `\n--- stderr ---\n${stderr2.slice(-4000)}`);
       assert.deepStrictEqual(ownCalled.result.structuredContent, {mine: 'MINE'}, 'through the pack\'s step');
+
+      // In this order: a file of the copy changed, the worker started
+      // again (it runs the changed file: nothing checks the copy then), the
+      // same folder added again -- and what was confirmed runs, in the same
+      // runtime.
+      const runFile = () => path.join(home, 'run', fs.readdirSync(path.join(home, 'run')).find((n) => fs.existsSync(path.join(home, 'run', n, 'run.json'))), 'run.json');
+      const runtimePid = JSON.parse(fs.readFileSync(runFile(), 'utf8')).childPid;
+      const said = async () => { const r = (await mcp2.request('tools/call', {name: 'own_shout', arguments: {text: 'mine'}}, 60000)).result; return r != null && r.structuredContent != null ? r.structuredContent.mine : null; };
+      const saysWithin = async (want, ms) => { let last = null; for (const until = Date.now() + ms; Date.now() < until;) { last = await said().catch((err) => err.message); if (last === want) return; await new Promise((resolve) => setTimeout(resolve, 250)); } assert.fail(`own_shout said ${last}, not ${want}\n--- stderr ---\n${stderr2.slice(-4000)}`); };
+      const ownTree = JSON.parse(fs.readFileSync(path.join(home, 'own.json'), 'utf8')).modules['own-smoke'].tree;
+      const copied = path.join(require('../lib/own-tree').copyDir(require('../lib/home').layout({COUNTINGHOUSE_HOME: home}), 'own-smoke', ownTree), 'handlers', 'ownService', 'own_shout.js');
+      fs.chmodSync(copied, 0o644);
+      fs.writeFileSync(copied, 'module.exports = async () => ({output: {mine: \'not confirmed\'}});\n');
+      mcp2.request('tools/call', {name: 'own_shout', arguments: {text: 'crash'}}, 60000).catch(() => {});
+      await saysWithin('not confirmed', 90000);
+      const stillOn = spawnSync(process.execPath, [launcher, 'status'], {env: plain, encoding: 'utf8', timeout: 60000});
+      assert.match(stillOn.stdout, /own-smoke \(own, unpinned, [0-9a-f]{12}\)\s+still on in the running runtime; its files changed since you added it: run `.+add-module ".+own-smoke"` again/, stillOn.stdout);
+      const addedAgain = spawnSync('python3', [path.join(ROOT, 'test', 'pty-answer.py'), 'y', 'Add it? [y/N]', process.execPath, launcher, 'add-module', own],
+        {env: plain, encoding: 'utf8', timeout: 120000});
+      assert.strictEqual(addedAgain.status, 0, `${addedAgain.stdout}\n${addedAgain.stderr}`);
+      assert.match(addedAgain.stdout, new RegExp(`Added own-smoke \\(own, ${hash[1]}\\): your clients see it now\\.`), addedAgain.stdout);
+      // ("now": the first call after it)
+      assert.strictEqual(await said(), 'MINE', stderr2.slice(-4000));
+      assert.strictEqual(JSON.parse(fs.readFileSync(runFile(), 'utf8')).childPid, runtimePid, 'in the same runtime');
       child.stdin.end();
       const code2 = await Promise.race([exited2, new Promise((resolve) => setTimeout(() => resolve('timeout'), 30000))]);
       assert.notStrictEqual(code2, 'timeout', 'the runtime exits when the client closes stdin');
