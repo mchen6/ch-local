@@ -80,8 +80,9 @@ test.afterEach(() => {
 async function running({answer = () => ({ok: true}), timeoutMs, passThrough = [], duringSpawn = null, beforeStart = null, shared = false, ghToken = null, home: reuse = null, deep = false,
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null, heldRetryMs = null} = {}) {
   // (deep: a home whose launcher path is as long as a user's, or longer:
-  // the notices' 200 characters are measured with it -- #147's M3)
-  const home = reuse != null ? reuse : deep ? (() => { const d = path.join(tmp('ch-home-'), 'alexandra'); fs.mkdirSync(d, {mode: 0o700}); return path.join(d, '.countinghouse'); })() : tmp('ch-home-');
+  // the notices' 200 characters are measured with it -- #147's M3; 'long':
+  // one far longer, where a line is cut before its command)
+  const home = reuse != null ? reuse : deep ? (() => { const d = path.join(tmp('ch-home-'), deep === 'long' ? 'alexandra'.repeat(7) : 'alexandra'); fs.mkdirSync(d, {mode: 0o700}); return path.join(d, '.countinghouse'); })() : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
@@ -1562,6 +1563,27 @@ test('a home rolled back under a running start: a module moved back is stopped "
   }
 });
 
+// (its key changed, so it is unloaded, and then removed before a restart: the
+// line that says it is not loaded names the command, which is never cut)
+test('shared mode: a held-back module\'s line keeps its command whole, with a long launcher path', async () => {
+  const s = await running({shared: true, deep: 'long'});
+  try {
+    await until(() => s.args() != null);
+    require('../lib/credential-store').bind(s.home, ACCESS, 'GITHUB_TOKEN', {origin: GH_ORIGIN, source: 'stored', value: `${STORED}-another`}, {held: require('./store-helpers').FIXTURE_HELD});
+    await until(() => s.requests.some((m) => m.type === 'unload'));
+    require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
+    const line = () => notices(s).map(([, t]) => t).find((t) => /^not loading .*credential removed|credentials add ch-access-github/.test(t));
+    await until(() => line() != null);
+    // (a runner's temp home can make the command alone longer than the cut: the
+    // line then names none, never part of one)
+    assert.ok([...line()].length <= NOTICE_MAX, `${[...line()].length}: ${line()}`);
+    assert.ok(/`node "[^"]+ch-local\.js" credentials add ch-access-github`$/.test(line()) || !line().includes('`'), line());
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // #413 section 6.4; the /code-review medium on L5a, 5: a binding removed
 // while running unloads its module and its callers, told in the state's own
 // words, once
@@ -1570,7 +1592,7 @@ test('a credential removed while running unloads the callers of its module, said
   try {
     await until(() => s.args() != null);
     require('../lib/credential-store').unbind(s.home, ACCESS, {held: require('./store-helpers').FIXTURE_HELD});
-    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add it again, or restart your client';
+    const line = 'ch-pack-ci-failure-triage unloaded: it calls ch-access-github, which has had its credential removed: add the key it started with again, or another and restart your client';
     await until(() => s.requests.some((m) => m.type === 'unload' && named(m) === '@countinghouse/ch-pack-ci-failure-triage' && m.notice === line));
     // a later change sends no second unload
     fs.writeFileSync(path.join(s.home, 'settings.json'), JSON.stringify({version: 1, values: {requestTimeout: 20000}}));

@@ -181,6 +181,21 @@ test('the registry is asked for abbreviated metadata, one package per request', 
   assert.deepStrictEqual(io.fetches, ['https://registry.npmjs.org/@countinghouse%2Fch-local']);
 });
 
+// (Windows names a home that is not the default in words, beside each command)
+test('the automatic-upgrade sentences name a home that is not the default, on Windows too', () => {
+  const {autoWaits, autoBack} = require('../lib/upgrade');
+  const where = {home: path.resolve('/home/dev/ch')};
+  const {homeNote, homePrefix} = require('../lib/command-line');
+  const home = homeNote(where, 'win32');
+  assert.match(home, /COUNTINGHOUSE_HOME set to/);
+  const prefix = homePrefix(where, 'linux');
+  assert.match(prefix, /^COUNTINGHOUSE_HOME="[^"]+" $/);
+  assert.ok(autoWaits(where, 'linux').endsWith(`waits for your own \`${prefix}npx @countinghouse/ch-local upgrade\``), autoWaits(where, 'linux'));
+  assert.ok(autoBack(where, 'linux').startsWith(`\`${prefix}npx @countinghouse/ch-local rollback\` returns`), autoBack(where, 'linux'));
+  assert.ok(autoWaits(where, 'win32').endsWith(`waits for your own \`npx @countinghouse/ch-local upgrade\`${home}`), autoWaits(where, 'win32'));
+  assert.ok(autoBack(where, 'win32').startsWith(`\`npx @countinghouse/ch-local rollback\`${home} returns`), autoBack(where, 'win32'));
+});
+
 test('the automatic-upgrade setting is off by default, stored on request, and asks the network nothing', async () => {
   const s = setup();
   try {
@@ -189,7 +204,14 @@ test('the automatic-upgrade setting is off by default, stored on request, and as
     assert.strictEqual(await upgrade({auto: 'on'}, on), 0);
     assert.match(on.asked[0], /Loosen autoUpgrade from off to on\?/);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: true}});
-    assert.match(on.out, /installs automatically 72 hours after it is published, and runs new code with your keys; (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local rollback undoes one/);
+    const where = require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home});
+    const command = (args, platform) => require('../lib/command-line').hintCommand(where, args, platform);
+    for (const platform of ['linux', 'win32']) {
+      const here = Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: s.home}}), {platform});
+      assert.strictEqual(await upgrade({auto: 'on'}, here), 0);
+      const said = `a new one, checked by its pins and its provenance, installs automatically at the first check 72 hours or more after it was published and first seen here, and runs new code with your keys; a major or breaking version, or one that adds to what you have or changes its identity, always waits for your own ${command('upgrade', platform)}; ${command('rollback', platform)} returns to the version before, while it is kept\n`;
+      assert.ok(here.out.includes(said), here.out);
+    }
     assert.strictEqual(await upgrade({auto: 'off'}, fakeIo({env: {COUNTINGHOUSE_HOME: s.home}})), 0);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(s.home, 'settings.json'), 'utf8')), {version: 1, values: {autoUpgrade: false}});
     assert.deepStrictEqual(on.fetches, []);
@@ -229,7 +251,9 @@ test('offerAuto: at a terminal, asked once (cliSet\'s own question); a yes turns
     yes.interactive = true;
     await offerAuto(yes);
     assert.strictEqual(yes.asked.length, 1, 'one question');
-    assert.match(yes.out, /72 hours after each is published/);
+    const {hintCommand} = require('../lib/command-line');
+    const said = (platform) => `Automatic upgrades install a new version of ch-local and its packs, checked by its pin and its provenance, at the first check 72 hours or more after it was published and first seen here; a major or breaking version, or one that adds to what you have or changes its identity, always waits for your own ${hintCommand(where, 'upgrade', platform)}. ${hintCommand(where, 'rollback', platform)} returns to the version before, while it is kept.\n`;
+    assert.ok(yes.out.includes(said()), yes.out);
     assert.strictEqual(readSettings(where).values.autoUpgrade, true);
     // set: never asked again
     const again = fakeIo({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['yes']});
