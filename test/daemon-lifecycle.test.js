@@ -37,7 +37,8 @@ function scripted(home) {
       const a = call.answers[msg.type];
       return Promise.resolve(a != null ? a(msg) : {ok: true});
     });
-    opts.signal.addEventListener('abort', () => { call.exit(143); });
+    call.stopped = false;
+    opts.signal.addEventListener('abort', () => { call.stopped = true; if (r.ignoresStop !== true) call.exit(143); });
     r.calls.push(call);
     if (r.listens !== false) opts.onListening({type: 'listening', socket: opts.socket});
     return exited;
@@ -166,6 +167,84 @@ test('a first runtime that never listens: failed.json, reason never-listened; a 
     assert.ok(!fs.existsSync(failedJson(home)), 'failed.json cleared');
     one.tell({type: 'idle'});
     assert.strictEqual(await done, 0);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+// R-first-start-failed-json: the shim that started the daemon gives up at 28 s,
+// and a hung runtime's end is awaited up to 15 s past the first 25: failed.json
+// is written once the runtime was told to stop and has had a moment to end
+test('a first runtime that never listens and doesn\'t stop: failed.json is there while its end is awaited, start.lock still held', async() => {
+  const home = tmpHome();
+  const s = scripted(home);
+  let done = null;
+  try {
+    const io = fast(home);
+    Object.assign(io, {daemonReadyMs: 200, daemonGraceMs: 100, daemonStopMs: 5000});
+    Object.assign(s, {listens: false, ignoresStop: true});
+    let ended = null;
+    done = daemon({home}, io, {run: s.run}).then((c) => { ended = c; return c; });
+    const one = await s.nth(0);
+    const until = Date.now() + 3000;
+    while (!fs.existsSync(failedJson(home)) && Date.now() < until) await tick();
+    assert.ok(fs.existsSync(failedJson(home)), 'written while the hung runtime is stopped');
+    assert.deepStrictEqual([ended, one.stopped, one.ended], [null, true, false], 'told to stop first, its end still awaited');
+    assert.ok(fs.existsSync(path.join(runDirOf(home), 'start.lock')), 'the lock held: no second daemon starts beside it');
+    const f = JSON.parse(fs.readFileSync(failedJson(home), 'utf8'));
+    assert.deepStrictEqual([f.reason, f.exit], ['never-listened', null], 'it had not ended');
+    await one.exit(137);
+    assert.strictEqual(await done, 1);
+    assert.match(io.err, /the runtime did not listen within \d+ s; it was stopped$/m);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(failedJson(home), 'utf8')), f, 'written once');
+  } finally {
+    for (const c of s.calls) await c.exit(137);
+    await done;
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('a first runtime that stops when told: failed.json only once it has ended, with its exit', async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    Object.assign(io, {daemonReadyMs: 200, daemonGraceMs: 3000, daemonStopMs: 5000});
+    const s = scripted(home);
+    s.listens = false;
+    s.ignoresStop = true;
+    const done = daemon({home}, io, {run: s.run});
+    const one = await s.nth(0);
+    for (const until = Date.now() + 3000; !one.stopped && Date.now() < until;) await tick();
+    assert.strictEqual(one.stopped, true);
+    await tick(200);
+    assert.ok(!fs.existsSync(failedJson(home)), 'not while it may still end in its moment');
+    await one.exit(143);
+    assert.strictEqual(await done, 1);
+    assert.strictEqual(JSON.parse(fs.readFileSync(failedJson(home), 'utf8')).exit, 143);
+  } finally {
+    fs.rmSync(home, {recursive: true, force: true});
+  }
+});
+
+test('a first runtime that does not stop: its end is awaited within the stop bound in all, the moment included', async() => {
+  const home = tmpHome();
+  try {
+    const io = fast(home);
+    Object.assign(io, {daemonReadyMs: 100, daemonGraceMs: 400, daemonStopMs: 800});
+    const s = scripted(home);
+    s.listens = false;
+    s.ignoresStop = true;
+    let ended = null;
+    const done = daemon({home}, io, {run: s.run}).then((c) => { ended = c; return c; });
+    const one = await s.nth(0);
+    for (const until = Date.now() + 3000; !one.stopped && Date.now() < until;) await tick(5);
+    const began = performance.now();
+    assert.strictEqual(await done, 1);
+    const took = performance.now() - began;
+    assert.ok(took >= 700 && took < 1150, `the bound once, not the bound after the moment: ${Math.round(took)} ms`);
+    assert.strictEqual(ended, 1);
+    assert.match(io.err, /it was stopped, and did not end within 0\.8 s/);
+    await one.exit(137);
   } finally {
     fs.rmSync(home, {recursive: true, force: true});
   }
