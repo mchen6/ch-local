@@ -288,6 +288,21 @@ test('fitAny: within 200 code points; the last command in backticks kept whole; 
   assert.ok([...plain].length <= NOTICE_MAX);
 });
 
+test('fitHeld: the command whole; a folder that passes the cut named in words; a launcher that does, the reason alone', () => {
+  const {fitHeld, NOTICE_MAX} = require('../lib/command-line');
+  const line = (launcher, folder) => `not loading my-tool: its files changed since you added it: run \`node "${launcher}" add-module "${folder}"\` again`;
+  const launcher = '/home/alexandra/.countinghouse/bin/ch-local.js';
+  assert.strictEqual(fitHeld(line(launcher, '/w/a')), line(launcher, '/w/a'));
+  const cut = fitHeld(line(launcher, `/w/${'a'.repeat(80)}`));
+  assert.ok(cut.startsWith('not loading my-') && cut.endsWith(`\`node "${launcher}" add-module "/w/${'a'.repeat(80)}"\` again`), cut);
+  const words = fitHeld(line(launcher, `/w/${'a'.repeat(200)}`));
+  assert.ok(words.endsWith(`\`node "${launcher}" add-module "<its folder>"\` again`), words);
+  const reason = fitHeld(line(`/${'h'.repeat(200)}/ch-local.js`, '/w/a'));
+  assert.strictEqual(reason, 'not loading my-tool: its files changed since you added it');
+  assert.strictEqual(fitHeld(`not loading x: its files are missing; run \`node "/${'h'.repeat(200)}/ch-local.js" install\` again`), 'not loading x: its files are missing');
+  for (const t of [cut, words, reason]) assert.ok([...t].length <= NOTICE_MAX, t);
+});
+
 test('fitNotice: a cut explanation carries no backtick, so no half command; the one at the end is whole', () => {
   const {fitNotice} = require('../lib/command-line');
   const first = '`node "/home/alexandra/.countinghouse/bin/ch-local.js" install --pack ci-failure-triage`';

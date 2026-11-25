@@ -2121,6 +2121,58 @@ test('ownSeen: refused with the runtime\'s code; one kept out (its copy changed)
   }
 });
 
+// (paths made long here, on every platform: a held-back module's line ends in
+// the command that adds it again, which the runtime's notice cut never cuts)
+for (const [what, commandLength] of [['room for its name', 160], ['room for the command alone', 178], ['the folder passes the notice', 200], ['the folder is far past it', 260]]) {
+  test(`a held-back own module's notice keeps its command whole: ${what}`, {skip: OWN_SKIP}, async () => {
+    const {chLocal} = require('../lib/command-line');
+    const s = await running({});
+    try {
+      const own = placeOwn(s.home, 'my-changed');
+      const changed = path.join(ownTree.copyDir(own.where, 'my-changed', own.tree), 'api.json');
+      fs.chmodSync(changed, 0o644);
+      fs.appendFileSync(changed, ' ');
+      const bare = [...chLocal(own.where, 'add-module ""')].length;
+      const root = path.join(path.parse(s.home).root, 'w');
+      const from = path.join(root, 'x'.repeat(Math.max(1, commandLength - 2 - bare - root.length - 1)));
+      writeOwnRecord(own.where, {v: 1, modules: {'my-changed': {...own.entry, from}}});
+      const told = () => s.requests.filter((m) => m.type === 'notice').map((m) => m.text).find((t) => /add-module/.test(t));
+      await until(() => told() != null);
+      const whole = `\`${chLocal(own.where, `add-module "${from}"`)}\``;
+      if ([...whole].length <= NOTICE_MAX - ' again'.length) assert.ok(told().endsWith(`${whole} again`), told());
+      else assert.ok(told().endsWith(`\`${chLocal(own.where, 'add-module "<its folder>"')}\` again`), told());
+      assert.ok([...told()].length <= NOTICE_MAX, `${[...told()].length}: ${told()}`);
+      if (commandLength === 160) assert.match(told(), /^not loading my-ch/);
+      // (stderr has the line whole)
+      assert.ok(s.f.err.includes(`not loading my-changed: its files changed since you added it: run ${whole} again`), s.f.err);
+    } finally {
+      s.end();
+      await s.done;
+    }
+  });
+}
+
+test('a module held back at the start: its notice keeps its command whole too', {skip: OWN_SKIP}, async () => {
+  const {chLocal} = require('../lib/command-line');
+  let where = null;
+  const s = await running({beforeStart: (home) => {
+    const own = placeOwn(home, 'my-changed');
+    where = own.where;
+    const changed = path.join(ownTree.copyDir(where, 'my-changed', own.tree), 'api.json');
+    fs.chmodSync(changed, 0o644);
+    fs.appendFileSync(changed, ' ');
+    writeOwnRecord(where, {v: 1, modules: {'my-changed': {...own.entry, from: path.join(path.parse(home).root, 'w', 'x'.repeat(240))}}});
+  }});
+  try {
+    const told = () => s.requests.filter((m) => m.type === 'notice').map((m) => m.text).find((t) => /add-module/.test(t));
+    await until(() => told() != null);
+    assert.ok(told().endsWith(`\`${chLocal(where, 'add-module "<its folder>"')}\` again`), told());
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // (nothing in place tries them again but another change)
 test('ownSeen: a load not answered may yet be done: waits; new code whose old could not be unloaded: a restart', {skip: OWN_SKIP}, async () => {
   let refuse = false;
