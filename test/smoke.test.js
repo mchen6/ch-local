@@ -91,8 +91,8 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       assert.deepStrictEqual(result.structuredContent, OUTPUT, 'through the step, with its own setting defaultRepo');
       assert.strictEqual(result.content.length, 2);
       const text = JSON.stringify(OUTPUT);
-      assert.deepStrictEqual(result._meta['countinghouse/receipt'], {calls: 0, linesIn: 0, bytesIn: 0, linesOut: 1, bytesOut: Buffer.byteLength(text), servers: []});
-      assert.strictEqual(result.content[1].text, `no server was called; 1 line (${Buffer.byteLength(text)} B) reached the model.`);
+      assert.deepStrictEqual(result._meta['countinghouse/receipt'], {calls: 0, bytesIn: 0, bytesOut: Buffer.byteLength(text), servers: []});
+      assert.strictEqual(result.content[1].text, `no server was called; ${Buffer.byteLength(text)} B reached the model.`);
 
       // The home's launcher acts on its own home from a terminal with no
       // COUNTINGHOUSE_HOME (the reviewer on ch-local#110, 2): a printed

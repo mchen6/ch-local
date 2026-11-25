@@ -205,8 +205,50 @@ test('the launcher environment carries no token of this shell\'s unless given on
 });
 
 test('the receipt pattern: a stand-in run, and only that', () => {
-  assert.match('read 1,204 lines (88.1 KB) in 4 calls to github (acceptance stand-in); 31 lines (2.4 KB) reached the model.', acceptance.RECEIPT);
-  assert.doesNotMatch('read 1,204 lines (88.1 KB) in 4 calls to github; 31 lines (2.4 KB) reached the model.', acceptance.RECEIPT);
+  assert.match('read 226.1 KB in 9 calls to github (acceptance stand-in); 1.6 KB reached the model.', acceptance.RECEIPT);
+  assert.match('read 812 B in 1 call to github (acceptance stand-in); 1.2 MB reached the model.', acceptance.RECEIPT);
+  assert.doesNotMatch('read 226.1 KB in 9 calls to github; 1.6 KB reached the model.', acceptance.RECEIPT);
+  assert.doesNotMatch('read 226.1 KB in 9 calls to github (acceptance stand-in) and 2 to linear; 1.6 KB reached the model.', acceptance.RECEIPT);
+  // (no line counts: countinghouse #544)
+  assert.doesNotMatch('read 1,204 lines (88.1 KB) in 4 calls to github (acceptance stand-in); 31 lines (2.4 KB) reached the model.', acceptance.RECEIPT);
+});
+
+test('the receipt object: the calls to github, all the stand-in\'s, in bytes and no line counts', () => {
+  const {standInReceipt} = acceptance;
+  const good = {calls: 9, bytesIn: 231526, bytesOut: 1638, servers: ['github'], standIn: ['github']};
+  assert.strictEqual(standInReceipt(good), true);
+  for (const [what, bad] of Object.entries({
+    'none': null, 'no call': {...good, calls: 0}, 'another server': {...good, servers: ['github', 'linear']},
+    'not marked': (({standIn, ...rest}) => rest)(good), 'another marked': {...good, standIn: ['linear']},
+    'nothing read': {...good, bytesIn: 0}, 'nothing sent': {...good, bytesOut: 0}, 'lines in': {...good, linesIn: 1}, 'lines out': {...good, linesOut: 0}, 'no bytes in': {...good, bytesIn: undefined}, 'bytes out': {...good, bytesOut: '1638'}
+  })) assert.strictEqual(standInReceipt(bad), false, what);
+});
+
+// (the pack lists the failed jobs of every run of the window that did not pass;
+// recorded ones but the one had none. A call it has no reason to make is still
+// one the stand-in has no recording for)
+test('the stand-in answers the failed jobs of the recorded runs that neither passed nor failed, and of no other', async () => {
+  const dir = fixtures();
+  const env = (result) => JSON.stringify({_recorded: 'test', request: {}, result});
+  const runs = [{id: 42775507169, conclusion: 'failure'}, {id: 41, conclusion: 'cancelled'}, {id: 42, conclusion: 'success'}, {id: 43, conclusion: 'failure'},
+    {id: 45, conclusion: 'timed_out'}, {id: 46, conclusion: 'startup_failure'}, {id: 47, conclusion: null}];
+  fs.writeFileSync(path.join(dir, 'list_workflow_runs.json'), env({content: [{type: 'text', text: JSON.stringify({total_count: runs.length, workflow_runs: runs})}]}));
+  fs.writeFileSync(path.join(dir, 'list_workflow_jobs.json'), env({content: [{type: 'text', text: '{"jobs": {"total_count": 1, "jobs": [{"id": 7}]}}'}]}));
+  const jobs = (id) => acceptance.recordedAnswer(dir, 'actions_list', {method: 'list_workflow_jobs', resource_id: id});
+  assert.deepStrictEqual(jobs('42775507169'), {content: [{type: 'text', text: '{"jobs": {"total_count": 1, "jobs": [{"id": 7}]}}'}]}, 'the recorded one');
+  for (const id of ['41', '47']) assert.deepStrictEqual(jobs(id), {content: [{type: 'text', text: '{"jobs":{"total_count":0,"jobs":[]}}'}]}, id);
+  // (one that failed has failed jobs, which the recording would need; the id is a string, as GitHub's tool declares it)
+  for (const id of ['42', '43', '45', '46', '44', '', undefined, '__proto__', 41]) assert.strictEqual(jobs(id), null, `${id}: a run that passed or failed, or none of the recorded`);
+  const s = await acceptance.startStandIn({fixtures: dir, token: 'chacc_right'});
+  try {
+    const call = (id) => post(s.port, 'chacc_right', {jsonrpc: '2.0', id: 1, method: 'tools/call', params: {name: 'actions_list', arguments: {method: 'list_workflow_jobs', resource_id: id}}});
+    await call('41');
+    assert.deepStrictEqual(s.state.unexpected, []);
+    assert.strictEqual((await call('42')).body.result.isError, true);
+    assert.deepStrictEqual(s.state.unexpected.map((u) => u.args.resource_id), ['42']);
+  } finally {
+    await s.close();
+  }
 });
 
 // The review of the acceptance branch (2026-11-12).
