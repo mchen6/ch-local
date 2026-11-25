@@ -807,8 +807,9 @@ test('audit, passed, stored or forced on Windows, says what it watches and that 
   // names the npx form with its home, so the explanation is cut before it)
   windowsLine(windows.err);
   // (at a user's home: the npx form's home as long as a typical one)
-  // (one fitted to the cut, "…" before its command, measured as sent)
-  const atHome = (l) => { const t = l.replace(/^ch-local: /, ''); return /…/.test(t) ? [...t].length : require('./notice-length').atRealisticHome(t.replace(/COUNTINGHOUSE_HOME="[^"]*"/g, 'COUNTINGHOUSE_HOME="/home/alexandra/.countinghouse"')); };
+  // (said whole; measured as told: one fitted to the cut, "…" before its
+  // command, as sent)
+  const atHome = (l) => { const t = require('../lib/command-line').fitHeld(l.replace(/^ch-local: /, '')); return /…/.test(t) ? [...t].length : require('./notice-length').atRealisticHome(t.replace(/COUNTINGHOUSE_HOME="[^"]*"/g, 'COUNTINGHOUSE_HOME="/home/alexandra/.countinghouse"')); };
   for (const l of windows.err.split('\n').filter((x) => /countinghouse#195|under audit/.test(x))) assert.ok(atHome(l) <= 200, `${atHome(l)}: ${l}`);
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({version: 1, values: {moduleSandbox: 'audit'}}));
   const stored = io(home, {platform: 'linux'});
@@ -1204,7 +1205,7 @@ test('start in session mode with no pack loadable: the shared runtime starts wit
   assert.strictEqual(sent[0].type, 'restore', 'the restore is still the first request');
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
   // (fitted to a notice: a runner's long temp path cuts the words, never the command)
-  assert.ok(told.includes(require('../lib/command-line').fitHeld(`not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${require('../lib/command-line').chLocal(layout({COUNTINGHOUSE_HOME: home}), 'credentials add ch-access-github')}\``)), told.join(' | '));
+  assert.ok(told.includes(require('../lib/command-line').fitHeld(`not loading ch-pack-ci-failure-triage: it calls ch-access-github, which needs a credential: run \`${require('../lib/command-line').chLocal(layout({COUNTINGHOUSE_HOME: home}), 'credentials add ch-access-github')}\``, 'ch-pack-ci-failure-triage')), told.join(' | '));
   assert.ok(told.some((x) => x.endsWith('@countinghouse/ch-local credentials add ch-access-github`') && [...x].length <= 200), told.join(' | '));
   assert.ok(told.some((t) => /no module is loaded this start/.test(t)), told.join(' | '));
   end(0);
@@ -1227,7 +1228,7 @@ test('start in session mode says how to add a missing credential, never to set a
   deliver({type: 'ready'});
   for (let i = 0; i < 100 && !sent.some((m) => m.type === 'notice' && /credentials add ch-pack-other/.test(m.text)); i++) await new Promise((r) => setTimeout(r, 10));
   const told = sent.filter((m) => m.type === 'notice').map((m) => m.text);
-  assert.ok(told.includes(require('../lib/command-line').fitHeld(`not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run \`${require('../lib/command-line').chLocal(layout({COUNTINGHOUSE_HOME: home}), 'credentials add ch-pack-other')}\``)), told.join(' | '));
+  assert.ok(told.includes(require('../lib/command-line').fitHeld(`not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run \`${require('../lib/command-line').chLocal(layout({COUNTINGHOUSE_HOME: home}), 'credentials add ch-pack-other')}\``, 'ch-pack-other')), told.join(' | '));
   assert.ok(told.some((x) => x.endsWith('@countinghouse/ch-local credentials add ch-pack-other`') && [...x].length <= 200), told.join(' | '));
   assert.strictEqual(unhomed(f.err).split('not loading ch-pack-other: it needs a credential (OTHER_TOKEN, sent to https://api.other.example): run `npx @countinghouse/ch-local credentials add ch-pack-other`').length, 2, f.err);
   assert.ok(!told.some((t) => /environment/.test(t)), told.join(' | '));

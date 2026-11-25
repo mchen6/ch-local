@@ -64,13 +64,13 @@ test.afterEach(() => {
   const long = [];
   for (const requests of runs.splice(0)) {
     // (a notice fitted to the cut -- its explanation cut, "…", before the
-    // command -- is measured as sent: fitted to its own launcher path; any
-    // other at a user's home)
+    // command, or gone but for the module's name -- is measured as sent: fitted
+    // to its own launcher path; any other at a user's home)
     // (a notice told, and one carried by a load or an unload)
     for (const m of requests) {
       const text = m.type === 'notice' ? m.text : typeof m.notice === 'string' ? m.notice : null;
       if (text == null) continue;
-      const len = /…/.test(text) ? [...text].length : atRealisticHome(text);
+      const len = /…|^(?:[\w@./-]+: )?[a-z ]{0,20}`/.test(text) ? [...text].length : atRealisticHome(text);
       if (len > NOTICE_MAX) long.push(`${len}: ${text}`);
     }
   }
@@ -81,8 +81,9 @@ async function running({answer = () => ({ok: true}), timeoutMs, passThrough = []
   env = {}, bound = 'stored', clientAncestry = Promise.resolve({lines: null, policyPresent: false}), release: running_release = null, heldRetryMs = null} = {}) {
   // (deep: a home whose launcher path is as long as a user's, or longer:
   // the notices' 200 characters are measured with it -- #147's M3; 'long':
-  // one far longer, where a line is cut before its command)
-  const home = reuse != null ? reuse : deep ? (() => { const d = path.join(tmp('ch-home-'), deep === 'long' ? 'alexandra'.repeat(7) : 'alexandra'); fs.mkdirSync(d, {mode: 0o700}); return path.join(d, '.countinghouse'); })() : tmp('ch-home-');
+  // one far longer, where a line is cut before its command; 'far': one whose
+  // command alone passes the cut)
+  const home = reuse != null ? reuse : deep ? (() => { const d = path.join(tmp('ch-home-'), deep === 'long' ? 'alexandra'.repeat(7) : deep === 'far' ? 'alexandra'.repeat(22) : 'alexandra'); fs.mkdirSync(d, {mode: 0o700}); return path.join(d, '.countinghouse'); })() : tmp('ch-home-');
   const r = reuse != null ? null : release();
   const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
   if (reuse == null) assert.strictEqual(await install({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
@@ -418,8 +419,11 @@ const sentAs = (got, full) => {
   if (typeof got !== 'string') return false;
   if (got === full) return true;
   const {atRealisticHome} = require('./notice-length');
-  if (atRealisticHome(full) > 200 || !/…/.test(got) || [...got].length > 200) return false;
+  if (atRealisticHome(full) > 200 || [...got].length > 200) return false;
   const last = full.match(/`[^`]*`[^`]*$/);
+  // (cut, or with the module's name alone before its command)
+  const name = (full.match(/^(?:not loading (?:your own module )?|module )?([^:,\s]+)/) || [])[1];
+  if (!/…/.test(got) && !(last != null && got.startsWith(`${name}: `))) return false;
   return last != null ? got.endsWith(last[0]) : full.startsWith(got.slice(0, got.indexOf('…')));
 };
 
@@ -472,7 +476,8 @@ test('A5: in shared mode a setting the runtime could not take in place is told, 
     setSetting(layout({COUNTINGHOUSE_HOME: s.home}), 'requestTimeout', '10s', {by: 'cli'});
     await until(() => notices(s).some(([, t]) => /requestTimeout set to/.test(t)));
     const line = notices(s).find(([, t]) => /requestTimeout set to/.test(t))[1];
-    assert.match(line, /^requestTimeout set to 10s: applies when the shared runtime restarts \(`[^`]+ restart`\) \(NOT_NOW\)$/);
+    assert.strictEqual(line, toldAs(`requestTimeout set to 10s: applies when the shared runtime restarts (\`${said(s.home, 'restart')}\`) (NOT_NOW)`));
+    assert.ok(line.endsWith(' restart`) (NOT_NOW)'), line);
     assert.ok(require('./notice-length').atRealisticHome(line) <= 200, line);
   } finally {
     s.end();
@@ -484,10 +489,10 @@ test('A5: in shared mode a setting the runtime could not take in place is told, 
 // that applies it. A setting loosened is line 14 (no command); a change not
 // applied in place -- which may carry one, a pack turned on -- names no
 // command in shared mode either
-test('A5: in shared mode no loosening is told with a restart command: a setting loosened, a sandbox loosened, a pack added and refused', async () => {
+for (const deep of [true, 'long', 'far']) test(`A5: in shared mode no loosening is told with a restart command: a setting loosened, a sandbox loosened, a pack added and refused (home: ${deep})`, {skip: deep === 'far' && process.platform === 'win32' && 'a path past what Windows tools take'}, async () => {
   const {setSetting} = require('../lib/settings');
   const {layout} = require('../lib/home');
-  const s = await running({shared: true, deep: true, answer: (m) => (m.name === '@countinghouse/ch-pack-other' || m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
+  const s = await running({shared: true, deep, answer: (m) => (m.name === '@countinghouse/ch-pack-other' || m.type === 'set' ? {ok: false, code: 'NOT_NOW'} : {ok: true})});
   try {
     const where = layout({COUNTINGHOUSE_HOME: s.home});
     setSetting(where, 'maxOutputBytes', '32MiB', {by: 'cli', mayLoosen: true});
@@ -498,7 +503,7 @@ test('A5: in shared mode no loosening is told with a restart command: a setting 
     assert.ok(told.some((t) => /^maxOutputBytes loosened from 16MiB to 32MiB, when the shared runtime restarts \(NOT_NOW\)$/.test(t)), told.join(' | '));
     assert.ok(told.some((t) => /^moduleSandbox loosened from enforce to audit, when the shared runtime restarts$/.test(t)), told.join(' | '));
     assert.ok(told.some((t) => /^ch-pack-other added 0\.3\.0: not applied in place \(NOT_NOW\); it applies when the shared runtime restarts$/.test(t)), told.join(' | '));
-    for (const t of told.filter((x) => /loosened|added/.test(x))) assert.doesNotMatch(t, / restart`/, t);
+    for (const t of told.filter((x) => /loosened|added/.test(x))) assert.doesNotMatch(t, / restart(?:[`?]|$)/, t);
     // (every notice within the runtime's 200, with a launcher path as long as a user's)
     assert.ok(require('../lib/command-line').chLocal(require('../lib/home').layout({COUNTINGHOUSE_HOME: s.home}), 'restart').length >= 'node "/home/alexandra/.countinghouse/bin/ch-local.js" restart'.length);
     for (const t of told) assert.ok(require('./notice-length').atRealisticHome(t) <= 200, `${t.length}: ${t}`);
@@ -751,7 +756,8 @@ test('B3: a load and an unload from the settings are in the module form; the unl
 // and says so at every start; a released one never is, whatever its env.
 const withdrawnRelease = () => ({...require('../lib/allowlist').ALLOWLIST, packs: {}});
 // (as a client is told it: a runner's long temp path is fitted to the cut)
-const toldAs = (line) => require('../lib/command-line').fitHeld(line);
+// (the module it is about, as its teller names it)
+const toldAs = (line) => require('../lib/command-line').fitHeld(line, (line.match(/^(?:not loading (?:your own module )?|module )([^:\s]+)/) || [null, null])[1]);
 const LINE = (home) => `module ch-pack-ci-failure-triage was withdrawn in this release and was not started; \`${said(home, 'remove-pack ci-failure-triage')}\` removes it`;
 // every file of the home a start must leave as it was: the record, and the pack's tree and data
 function packFiles(home) {
@@ -783,7 +789,7 @@ test('a withdrawn pack is not started: told once (stderr and the client), its re
     await until(() => notices(s).length > 0);
     assert.strictEqual(loadsPack(s), false, JSON.stringify(s.args()));
     assert.deepStrictEqual(notices(s).filter(([, t]) => /withdrawn/.test(t)), [[null, toldAs(LINE(s.home))]], 'once, to the client');
-    assert.match(notices(s).find(([, t]) => /withdrawn/.test(t))[1], /^module ch-pack-ci-failure-triage was withdrawn in .*`[^`]+ remove-pack ci-failure-triage` removes it$/);
+    assert.match(notices(s).find(([, t]) => /withdrawn/.test(t))[1], /^module ch-pack-ci-failure-triage was with.*`[^`]+ remove-pack ci-failure-triage` removes it$/);
     assert.strictEqual(s.f.err.split('\n').filter((l) => l.includes(LINE(s.home))).length, 1, s.f.err);
     assert.ok(!/\/|\\\\/.test(LINE(s.home).replace(/`[^`]*`/g, '')), 'no path in the notice');
   } finally {
@@ -1012,7 +1018,7 @@ test('A5: in shared mode a refused moved-back unload is told whole, its command 
     // (found by its command: at a home so long the command leaves no room,
     // the command goes alone)
     const sent = s.requests.find((m) => m.type === 'unload' && /stopped until `/.test(m.notice || ''));
-    assert.match(sent.notice, /(?:^|; )stopped until `[^`]+ restart` is run$/, 'the unload\'s own notice keeps its command whole');
+    assert.match(sent.notice, /(?:^|; |^[\w-]+: )stopped until `[^`]+ restart` is run$/, 'the unload\'s own notice keeps its command whole');
   } finally {
     s.end();
     await s.done;
@@ -1427,11 +1433,11 @@ test('a record older than this ch-local, while running: judged by this release, 
   try {
     editRecord(s.home, (r) => ({...r, release: {version: '0.0.1', security: null}}));
     const line = `this home's record is not this ch-local's release; run \`${said(s.home, 'install --pack ci-failure-triage')}\` to bring the home to ${require('../lib/allowlist').ALLOWLIST.release.version}`;
-    await until(() => notices(s).some(([, t]) => t === line));
+    await until(() => notices(s).some(([, t]) => t === toldAs(line)));
     // not frozen: a pack added loads
     assert.strictEqual(await addPack({pack: 'other', from: s.r.from}, s.cmd(), s.r.allow), 0);
     await until(() => s.requests.some((m) => m.type === 'load' && m.name === '@countinghouse/ch-pack-other'));
-    assert.strictEqual(notices(s).filter(([, t]) => t === line).length, 1);
+    assert.strictEqual(notices(s).filter(([, t]) => t === toldAs(line)).length, 1);
     assert.ok(!/rolled back|upgraded to/.test(s.f.err), s.f.err);
   } finally {
     s.end();
@@ -2002,6 +2008,26 @@ test('a caller of a module turned off: its unload carries reason calls and becau
   }
 });
 
+// its command goes with it: the failure line is built on the explanation
+test('in shared mode a refused unload of a caller of a module turned off: its failure line has no part of a command', async () => {
+  const home = tmp('ch-home-');
+  const r = release({extra: {[SCENARIO]: {countinghouse: {role: 'scenario', calls: ['ch-access-github/githubService.listRuns', 'ch-step-redact/redactService.redact', 'ch-pack-other/otherService.go']}}}});
+  const cmd = () => fakeIo({env: {COUNTINGHOUSE_HOME: home}, exec: npm()});
+  assert.strictEqual(await install({pack: 'other', from: r.from}, cmd(), r.allow), 0);
+  assert.strictEqual(await addPack({pack: 'ci-failure-triage', from: r.from}, cmd(), r.allow), 0);
+  bindAccess(home);
+  const s = await running({home, shared: true, answer: (m) => (m.type === 'unload' && m.name === SCENARIO ? {ok: false, code: 'NO'} : {ok: true})});
+  try {
+    await settled(s, {'pack.other': false});
+    await until(() => notices(s).some(([, t]) => /not applied in place \(NO\)/.test(t)));
+    const [, t] = notices(s).find(([, x]) => /not applied in place \(NO\)/.test(x));
+    assert.strictEqual(t, 'ch-pack-ci-failure-triage unloaded: it calls ch-pack-other, which is turned off: not applied in place (NO); it applies when the shared runtime restarts');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // A-reason, the Reviewer: a module the operator's ceiling refuses sends no
 // reason (it may still be turned on), and its notice says why it can't
 // simply be turned back on
@@ -2176,6 +2202,31 @@ for (const [what, commandLength] of [['room for its name', 160], ['room for the 
     }
   });
 }
+
+test('an own module unloaded as its copy changed: the unload\'s notice keeps its command whole; stderr and the history have the line whole', {skip: OWN_SKIP}, async () => {
+  const s = await running({});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const own = placeOwn(s.home, 'my-changed');
+    const from = path.join(path.parse(s.home).root, 'w', 'x'.repeat(240));
+    writeOwnRecord(own.where, {v: 1, modules: {'my-changed': {...own.entry, from}}});
+    await until(() => run().loaded['my-changed'] != null);
+    const changed = path.join(ownTree.copyDir(own.where, 'my-changed', own.tree), 'api.json');
+    fs.chmodSync(changed, 0o644);
+    fs.appendFileSync(changed, ' ');
+    writeOwnRecord(own.where, {v: 1, modules: {'my-changed': {...own.entry, from, addedAt: new Date(1000).toISOString()}}});
+    const unload = () => s.requests.find((m) => m.type === 'unload');
+    await until(() => unload() != null);
+    assert.ok([...unload().notice].length <= NOTICE_MAX, unload().notice);
+    assert.ok(unload().notice.endsWith(`\`${said(s.home, 'add-module "<its folder>"')}\` again`), unload().notice);
+    const line = `my-changed unloaded: its files changed since you added it: run \`${said(s.home, `add-module "${from}"`)}\` again`;
+    await until(() => s.history().some((h) => h.notice === line));
+    assert.ok(s.f.err.includes(line), s.f.err);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
 
 test('a module held back at the start: its notice keeps its command whole too', {skip: OWN_SKIP}, async () => {
   const {chLocal} = require('../lib/command-line');
@@ -2426,6 +2477,24 @@ test('an own module the runtime refuses: held back as refused with its code, its
     assert.ok(s.history().some((h) => h.module === 'my-tool' && h.change === 'stopped' && sentAs(h.notice, said)));
     const run = JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
     assert.deepStrictEqual(run.refused, {'my-tool': {code: 'MODULE_INVALID', tree: b.tree}});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('an own.json that can\'t be read, at a home whose command passes the notice\'s cut: what is wrong is told', {skip: OWN_SKIP}, async () => {
+  const s = await running({deep: 'far'});
+  try {
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => ownAsks(s).length === 1);
+    fs.writeFileSync(a.where.ownRecord, '{');
+    await until(() => notices(s).some(([, t]) => /^your own modules are not loaded: /.test(t)));
+    const [, t] = notices(s).find(([, x]) => /^your own modules are not loaded: /.test(x));
+    assert.ok([...t].length <= 200 && !/`/.test(t), t);
+    // (the history has it whole)
+    assert.match(String(s.history().find((h) => /your own modules are not loaded: /.test(String(h.notice))).notice), /; `[^`]+ status` shows them$/);
   } finally {
     s.end();
     await s.done;
