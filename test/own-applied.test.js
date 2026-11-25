@@ -340,6 +340,40 @@ test('an io that can\'t tell which starts are alive is an error, never a wait', 
   await assert.rejects(require('../lib/own-applied').addApplied(h.where, h.io({alive: undefined}), {name: 'my-tool', tree: 'f'.repeat(64), addedAt: 'x'}), /alive/);
 });
 
+test('remove-module: an own.json older by its content than its time says (the clock set back) is not this removal', opt, async () => {
+  const h = setup();
+  await h.added();
+  const ahead = h.at();
+  ahead.at = String(BigInt(ahead.at) + 60000000000n);
+  const before = h.seen('loaded');
+  h.write(11, {...before, ownAt: ahead});
+  assert.strictEqual(await h.remove(async (f) => { await tick(200); assert.strictEqual(f.out, ''); h.write(11, {ownSeen: {}, ownAt: ahead}); }), 'Removed my-tool.\n');
+});
+
+test('remove-module: added again meanwhile with other code, the removed code still loaded: still served', opt, async () => {
+  const h = setup();
+  await h.added();
+  const tree = readOwnRecord(h.where).modules['my-tool'].tree;
+  h.write(11, {});
+  assert.match(await h.remove(async () => {
+    const later = h.at();
+    later.at = String(BigInt(later.at) + 1000000n);
+    h.write(11, {ownSeen: {'my-tool': {addedAt: '2026-11-24T00:00:00.000Z', state: 'restart'}}, ownAt: later, loaded: {'my-tool': tree}});
+  }), /still serves it/);
+});
+
+test('add-module: the only runtime hands over to another process meanwhile: that one is judged', opt, async () => {
+  const h = setup();
+  h.write(11, {ownSeen: {}});
+  assert.strictEqual(await h.add(async (f) => {
+    h.write(12, {startedAt: 2});
+    h.end(11);
+    await tick(100);
+    assert.ok(!f.out.includes('Added '), f.out);
+    h.write(12, {startedAt: 2, ...h.seen('waits')});
+  }), `${h.own()}. The running runtime has not taken it up yet: your clients see it once it has.\n`);
+});
+
 test('add-module: the shared runtime restarting meanwhile is waited for (its daemon lives), and judged as it starts again', opt, async () => {
   const h = setup();
   h.write(11, {ownSeen: {}});
@@ -349,8 +383,9 @@ test('add-module: the shared runtime restarting meanwhile is waited for (its dae
     assert.ok(!f.out.includes('Added '), f.out);
     h.write(11, {startedAt: 2});
     await tick(50);
-    h.write(11, {startedAt: 2, ...h.seen('loaded')});
-  }), `${h.own()}: your clients see it now.\n`);
+    // (a module of the new start's plan: whether it loaded is not told)
+    h.write(11, {startedAt: 2, ...h.seen('waits')});
+  }), `${h.own()}. The running runtime has not taken it up yet: your clients see it once it has.\n`);
 });
 
 test('status: an own module a running client keeps out for its sandbox is not said to be on', opt, async () => {

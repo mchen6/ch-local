@@ -2026,11 +2026,11 @@ test('a key stored under COUNTINGHOUSE_GITHUB_TOKEN: the pack loads, the start s
 // read unloads them all, said once.
 const ownTree = require('../lib/own-tree');
 const {writeOwnRecord} = require('../lib/own-record');
-function placeOwn(home, name, {calls = [], body = ''} = {}) {
+function placeOwn(home, name, {calls = [], body = '', remotes = undefined} = {}) {
   const where = layout({COUNTINGHOUSE_HOME: home});
   const src = path.join(fs.realpathSync.native(tmp('ch-ownsrc-')), name);
   fs.mkdirSync(path.join(src, 'handlers', 'toolService'), {recursive: true});
-  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse: {role: 'scenario', calls}}));
+  fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({name, version: '1.0.0', countinghouse: {role: 'scenario', calls, ...(remotes != null ? {remotes} : {})}}));
   fs.writeFileSync(path.join(src, 'api.json'), JSON.stringify({device: {friendlyName: name, serviceList: {'urn:countinghouse-test:serviceID:toolService': {actionList: [{name: 'run'}]}}}}));
   fs.writeFileSync(path.join(src, 'handlers', 'toolService', 'run.js'), `module.exports = async () => ({output: {}});\n${body}`);
   const c = ownTree.checkFolder(src, home);
@@ -2124,7 +2124,8 @@ test('ownSeen: refused with the runtime\'s code; one kept out (its copy changed)
 // (nothing in place tries them again but another change)
 test('ownSeen: a load not answered may yet be done: waits; new code whose old could not be unloaded: a restart', {skip: OWN_SKIP}, async () => {
   let refuse = false;
-  const s = await running({timeoutMs: 300, answer: (m) => (m.type === 'load' && named(m) === 'my-slow' ? null : m.type === 'unload' && refuse ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
+  let answered = false;
+  const s = await running({timeoutMs: 300, answer: (m) => (m.type === 'load' && named(m) === 'my-slow' ? (answered ? {ok: false, code: 'CONTROL_FAILED'} : null) : m.type === 'unload' && refuse ? {ok: false, code: 'CONTROL_FAILED'} : {ok: true})});
   try {
     const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
     const slow = placeOwn(s.home, 'my-slow');
@@ -2132,12 +2133,39 @@ test('ownSeen: a load not answered may yet be done: waits; new code whose old co
     writeOwnRecord(a.where, {v: 1, modules: {'my-slow': slow.entry, 'my-tool': a.entry}});
     await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
     assert.deepStrictEqual([run().ownSeen['my-slow'].state, run().ownSeen['my-tool'].state], ['waits', 'loaded']);
+    // (another apply: the load is sent again and refused as under way, or
+    // loaded already; what it did is as unknown as before)
+    answered = true;
+    writeOwnRecord(a.where, {v: 1, modules: {'my-slow': {...slow.entry, addedAt: new Date(500).toISOString()}, 'my-tool': a.entry}});
+    await until(() => run().ownSeen['my-slow'].addedAt === new Date(500).toISOString());
+    assert.strictEqual(run().ownSeen['my-slow'].state, 'waits');
     refuse = true;
     const b = placeOwn(s.home, 'my-tool', {body: '// edited\n'});
     writeOwnRecord(a.where, {v: 1, modules: {'my-tool': {...b.entry, addedAt: new Date(1000).toISOString()}}});
     await until(() => run().ownSeen['my-tool'].addedAt === new Date(1000).toISOString());
     assert.strictEqual(run().ownSeen['my-tool'].state, 'restart');
     assert.strictEqual(run().loaded['my-tool'], a.tree, 'the old code still served');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (a key stored while the runtime runs: only its next start is given it)
+test('ownSeen: a module whose stored key this runtime was not started with is loaded by a restart', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const a = placeOwn(s.home, 'my-tool', {remotes: [{name: 'mine', transport: 'streamable-http', url: 'https://api.mine.example/mcp/', credential: {env: 'MY_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]});
+    require('../lib/credential-store').bind(s.home, 'my-tool', 'MY_TOKEN', {origin: 'https://api.mine.example', source: 'stored', value: STORED}, {held: require('./store-helpers').FIXTURE_HELD});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    assert.deepStrictEqual(run().ownSeen['my-tool'], {addedAt: a.entry.addedAt, state: 'restart'});
+    // and one with none stored at all is kept out: status says so
+    const b = placeOwn(s.home, 'my-other', {remotes: [{name: 'mine', transport: 'streamable-http', url: 'https://api.other.example/mcp/', credential: {env: 'OTHER_TOKEN', header: 'Authorization', scheme: 'Bearer'}}]});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry, 'my-other': b.entry}});
+    await until(() => run().ownSeen['my-other'] != null);
+    assert.deepStrictEqual(run().ownSeen['my-other'], {addedAt: b.entry.addedAt, state: 'kept', kind: 'credential'});
   } finally {
     s.end();
     await s.done;
