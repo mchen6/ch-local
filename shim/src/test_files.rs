@@ -86,7 +86,12 @@ fn a_file_being_written_is_whole_and_0600_at_every_look() {
         for _ in 0..1000 {
             private(&path, &body);
         }
-        // (the looks made while it was written)
+        // (the looks made while it was written: it is written on until there
+        // is one, however slow the machine)
+        let until = Instant::now() + Duration::from_secs(30);
+        while looks.load(Ordering::SeqCst) == before && Instant::now() < until {
+            private(&path, &body);
+        }
         let during = looks.load(Ordering::SeqCst) - before;
         there.store(false, Ordering::SeqCst);
         stop.store(true, Ordering::SeqCst);
