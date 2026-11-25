@@ -233,12 +233,8 @@ fn attach_until(
             }
         }
     }
-    // (a daemon of this shim's that gave up as the deadline passed: its
-    // failed.json is read once more, so the session falls back)
-    if spawned.is_some() {
-        if let Some(r) = crate::failed::read(home) {
-            return Err(AttachError::SharedFailed(r));
-        }
+    if let Some(r) = failed_at_the_end(home, spawned.is_some()) {
+        return Err(AttachError::SharedFailed(r));
     }
     // (past a release the wait ended before the cold budget: the time it took)
     let waited = if released.is_some() && budget == COLD_BUDGET {
@@ -247,6 +243,14 @@ fn attach_until(
         budget.as_secs()
     };
     Err(AttachError::GaveUp(format!("{waited} s ({last})")))
+}
+
+/// A daemon that gave up as the deadline passed, this shim's own or the one
+/// whose start.lock it waited on: its failed.json is read once more, so the
+/// session falls back; never past a daemon that is there.
+fn failed_at_the_end(home: &Home, own: bool) -> Option<crate::failed::Reason> {
+    let none_there = || matches!(config::read_daemon(home), Ok(d) if !d.as_ref().is_some_and(daemon::live));
+    if own || none_there() { crate::failed::read(home) } else { None }
 }
 
 /// No reachable daemon: start one, once per attach.
@@ -641,6 +645,56 @@ mod tests {
         assert!(matches!(r, Err(AttachError::GaveUp(_))), "{:?}", r.as_ref().err());
         assert!(now.elapsed() < Duration::from_millis(2500), "the plain deadline: {:?}", now.elapsed());
         assert!(appears(&spawned));
+    }
+
+    /// Another shim's first start hangs: its daemon writes failed.json and
+    /// holds start.lock while it stops the runtime. A shim waiting on the lock
+    /// meanwhile falls back as soon as the file is there.
+    #[test]
+    fn a_shim_waiting_on_the_lock_falls_back_once_failed_json_is_written() {
+        let t = home();
+        let spawned = stand_in_daemon(&t);
+        fs::create_dir_all(t.home.run_dir()).unwrap();
+        fs::set_permissions(t.home.run_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+        let held = crate::lock::acquire(&t.home.start_lock(), Instant::now() + Duration::from_secs(2)).unwrap();
+        let file = t.home.run_dir().join("failed.json");
+        let body = serde_json::json!({"v": 1, "at": crate::failed::now_ms() as i64, "exit": null, "signal": null, "reason": "never-listened"});
+        let write = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            private(&file, body.to_string().as_bytes());
+        });
+        let now = Instant::now();
+        let r = attach_first(&t.home, None, now + Duration::from_secs(10), now + Duration::from_secs(12));
+        write.join().unwrap();
+        assert!(
+            matches!(r, Err(AttachError::SharedFailed(crate::failed::Reason::NeverListened))),
+            "{:?}",
+            r.as_ref().err()
+        );
+        assert!(now.elapsed() < Duration::from_secs(4), "{:?}", now.elapsed());
+        assert!(!spawned.exists(), "it started nothing");
+        drop(held);
+    }
+
+    /// Written after the last look at the lock, before the deadline: read once
+    /// more at the end, for the shim that waited as for the one that started
+    /// the daemon; not where a daemon is there.
+    #[test]
+    fn at_its_deadline_a_shim_reads_failed_json_once_more_unless_a_daemon_is_there() {
+        let t = home();
+        for own in [false, true] {
+            assert_eq!(failed_at_the_end(&t.home, own), None, "no file yet");
+        }
+        let body = serde_json::json!({"v": 1, "at": crate::failed::now_ms() as i64, "exit": null, "signal": null, "reason": "never-listened"});
+        private(&t.home.run_dir().join("failed.json"), body.to_string().as_bytes());
+        for own in [false, true] {
+            assert_eq!(failed_at_the_end(&t.home, own), Some(crate::failed::Reason::NeverListened), "own: {own}");
+        }
+        // a live daemon (this process's pid): a file left beside it says nothing
+        let d = serde_json::json!({"pid": std::process::id(), "socket": "/x", "runtimeVersion": "0", "daemonVersion": "0", "started": "0"});
+        private(&t.home.daemon_json(), d.to_string().as_bytes());
+        assert_eq!(failed_at_the_end(&t.home, false), None);
+        assert_eq!(failed_at_the_end(&t.home, true), Some(crate::failed::Reason::NeverListened));
     }
 
     /// A daemon spawned late (this shim first waited on start.lock) may wait

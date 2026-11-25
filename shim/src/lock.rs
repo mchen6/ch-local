@@ -308,7 +308,34 @@ pub fn acquire(lock: &Path, deadline: Instant) -> Result<Held, LockError> {
     acquire_as(lock, deadline, HEARTBEAT)
 }
 
+/// What a wait for the lock came to: the lock, or what its stop said.
+pub enum Waited<T> {
+    Held(Held),
+    Stopped(T),
+}
+
+/// acquire, asking `stop` at each turn of the wait: what it says ends it.
+pub fn acquire_unless<T>(
+    lock: &Path,
+    deadline: Instant,
+    stop: impl FnMut() -> Option<T>,
+) -> Result<Waited<T>, LockError> {
+    acquire_with(lock, deadline, HEARTBEAT, stop)
+}
+
 fn acquire_as(lock: &Path, deadline: Instant, heartbeat: Duration) -> Result<Held, LockError> {
+    match acquire_with(lock, deadline, heartbeat, || None::<std::convert::Infallible>)? {
+        Waited::Held(h) => Ok(h),
+        Waited::Stopped(never) => match never {},
+    }
+}
+
+fn acquire_with<T>(
+    lock: &Path,
+    deadline: Instant,
+    heartbeat: Duration,
+    mut stop: impl FnMut() -> Option<T>,
+) -> Result<Waited<T>, LockError> {
     let host = this_host();
     let mine = Holder::ours(std::process::id(), &host, &iso_utc(SystemTime::now()));
     loop {
@@ -327,15 +354,18 @@ fn acquire_as(lock: &Path, deadline: Instant, heartbeat: Duration) -> Result<Hel
                 }
             }
         }
+        if let Some(t) = stop() {
+            return Ok(Waited::Stopped(t));
+        }
         if Instant::now() + POLL > deadline {
             return Err(LockError::Held(holder));
         }
         thread::sleep(POLL);
     }
-    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::new(AtomicBool::new(false));
     let wake = Arc::new((Mutex::new(()), std::sync::Condvar::new()));
     let beat = {
-        let (stop, wake, lock) = (stop.clone(), wake.clone(), lock.to_path_buf());
+        let (stop, wake, lock) = (stopped.clone(), wake.clone(), lock.to_path_buf());
         thread::spawn(move || {
             let mut guard = wake.0.lock().expect("the heartbeat's lock");
             while !stop.load(Ordering::SeqCst) {
@@ -346,7 +376,7 @@ fn acquire_as(lock: &Path, deadline: Instant, heartbeat: Duration) -> Result<Hel
             }
         })
     };
-    Ok(Held { lock: lock.to_path_buf(), mine, stop, beat: Some(beat), wake })
+    Ok(Waited::Held(Held { lock: lock.to_path_buf(), mine, stop: stopped, beat: Some(beat), wake }))
 }
 
 #[cfg(all(test, unix))]
@@ -410,6 +440,28 @@ mod tests {
         assert!(matches!(acquire(&lock, Instant::now()), Err(LockError::Held(Some(h))) if h.same(&other)));
         File::open(&lock).unwrap().set_modified(SystemTime::now() - Duration::from_secs(121)).unwrap();
         drop(acquire(&lock, Instant::now() + Duration::from_secs(1)).unwrap());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_wait_ends_as_soon_as_its_stop_says_so_and_takes_nothing() {
+        let d = dir();
+        let lock = d.join("start.lock");
+        let held = acquire(&lock, Instant::now() + Duration::from_secs(1)).unwrap();
+        let asked = AtomicUsize::new(0);
+        let began = Instant::now();
+        let r = acquire_unless(&lock, began + Duration::from_secs(20), || {
+            (asked.fetch_add(1, Ordering::SeqCst) == 2).then_some("gave up")
+        });
+        assert!(matches!(r, Ok(Waited::Stopped("gave up"))));
+        assert!(began.elapsed() < Duration::from_secs(5), "{:?}", began.elapsed());
+        assert!(lock.exists(), "the holder's, still");
+        drop(held);
+        // free: taken, whatever the stop would say
+        assert!(matches!(
+            acquire_unless(&lock, Instant::now() + Duration::from_secs(1), || Some(())),
+            Ok(Waited::Held(_))
+        ));
         fs::remove_dir_all(&d).unwrap();
     }
 
