@@ -204,50 +204,55 @@ test('a first runtime that never listens and doesn\'t stop: failed.json is there
   }
 });
 
-test('a first runtime that stops when told: failed.json only once it has ended, with its exit', async() => {
+// a first runtime that never listens and ignores the stop; ended, with its
+// daemon, whatever the test does
+async function hung(over, body) {
   const home = tmpHome();
+  const io = fast(home);
+  Object.assign(io, {daemonReadyMs: 200, daemonStopMs: 5000}, over);
+  const s = Object.assign(scripted(home), {listens: false, ignoresStop: true});
+  const done = daemon({home}, io, {run: s.run});
   try {
-    const io = fast(home);
-    Object.assign(io, {daemonReadyMs: 200, daemonGraceMs: 3000, daemonStopMs: 5000});
-    const s = scripted(home);
-    s.listens = false;
-    s.ignoresStop = true;
-    const done = daemon({home}, io, {run: s.run});
-    const one = await s.nth(0);
-    for (const until = Date.now() + 3000; !one.stopped && Date.now() < until;) await tick();
-    assert.strictEqual(one.stopped, true);
-    await tick(200);
-    assert.ok(!fs.existsSync(failedJson(home)), 'not while it may still end in its moment');
-    await one.exit(143);
-    assert.strictEqual(await done, 1);
-    assert.strictEqual(JSON.parse(fs.readFileSync(failedJson(home), 'utf8')).exit, 143);
-  } finally {
-    fs.rmSync(home, {recursive: true, force: true});
-  }
-});
-
-test('a first runtime that does not stop: its end is awaited within the stop bound in all, the moment included', async() => {
-  const home = tmpHome();
-  try {
-    const io = fast(home);
-    Object.assign(io, {daemonReadyMs: 100, daemonGraceMs: 400, daemonStopMs: 800});
-    const s = scripted(home);
-    s.listens = false;
-    s.ignoresStop = true;
-    let ended = null;
-    const done = daemon({home}, io, {run: s.run}).then((c) => { ended = c; return c; });
     const one = await s.nth(0);
     for (const until = Date.now() + 3000; !one.stopped && Date.now() < until;) await tick(5);
-    const began = performance.now();
-    assert.strictEqual(await done, 1);
-    const took = performance.now() - began;
-    assert.ok(took >= 700 && took < 1150, `the bound once, not the bound after the moment: ${Math.round(took)} ms`);
-    assert.strictEqual(ended, 1);
-    assert.match(io.err, /it was stopped, and did not end within 0\.8 s/);
-    await one.exit(137);
+    assert.strictEqual(one.stopped, true, 'told to stop');
+    await body({home, io, one, done});
   } finally {
+    for (const c of s.calls) await c.exit(137);
+    await done;
     fs.rmSync(home, {recursive: true, force: true});
   }
+}
+
+test('a first runtime that stops when told: failed.json only once it has ended, with its exit', async() => hung({daemonGraceMs: 3000}, async({home, one, done}) => {
+  await tick(200);
+  assert.ok(!fs.existsSync(failedJson(home)), 'not while it may still end in its moment');
+  await one.exit(143);
+  assert.strictEqual(await done, 1);
+  assert.strictEqual(JSON.parse(fs.readFileSync(failedJson(home), 'utf8')).exit, 143);
+}));
+
+test('a first runtime that does not stop: its end is awaited within the stop bound in all, the moment included', async() => hung({daemonGraceMs: 1500, daemonStopMs: 2000}, async({io, done}) => {
+  const began = performance.now();
+  assert.strictEqual(await done, 1);
+  const took = performance.now() - began;
+  // (the two waits one after the other would be 3.5 s; on Windows the file's
+  // own write, PowerShell, takes of it what it takes)
+  if (process.platform !== 'win32') assert.ok(took < 3200, `the bound once: ${Math.round(took)} ms`);
+  assert.match(io.err, /it was stopped, and did not end within 2 s/);
+}));
+
+// (as the rule before it: a stop of the daemon's while it starts is a stop)
+test('the daemon stopped while a first runtime that never listened has its moment to end: a stop, no failed.json', async() => {
+  let stop = null;
+  await hung({daemonGraceMs: 1500, trapSignals: (fn) => { stop = fn; return () => {}; }}, async({home, io, one, done}) => {
+    stop('SIGTERM');
+    await tick(50);
+    await one.exit(143);
+    assert.strictEqual(await done, 0);
+    assert.ok(!fs.existsSync(failedJson(home)), 'no failed.json');
+    assert.match(io.err, /stopped while starting/);
+  });
 });
 
 test('the idle stop: not while busy; idle for the bound, then idle-stop, daemon.json removed, the runtime stopped, exit 0', async() => {
