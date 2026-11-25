@@ -2067,6 +2067,73 @@ test('an own module added while start runs loads from its copy; changed code: un
   await s.done;
 });
 
+// R-add-module-says-early: run.json's ownSeen is own.json as the applier last
+// applied it, written once each load and unload was answered: what
+// add-module and remove-module wait for (lib/own-applied.js).
+test('ownSeen: null at the start; an own module\'s entry only once its load is answered; gone once removed', {skip: OWN_SKIP}, async () => {
+  let held = null;
+  const s = await running({answer: (m) => (m.type === 'load' && named(m) === 'my-tool' ? {ok: true, delayMs: 400} : {ok: true}),
+    duringSpawn: (home) => { held = JSON.parse(fs.readFileSync(path.join(home, 'run', fs.readdirSync(path.join(home, 'run'))[0], 'run.json'), 'utf8')); }});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    assert.deepStrictEqual([held.ownSeen, held.shared], [null, false], 'before its first apply');
+    await until(() => run().ownSeen != null);
+    assert.deepStrictEqual(run().ownSeen, {}, 'no own module');
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => ownAsks(s).length === 1);
+    assert.deepStrictEqual(run().ownSeen, {}, 'the load not answered yet');
+    await until(() => run().ownSeen['my-tool'] != null);
+    assert.deepStrictEqual(run().ownSeen, {'my-tool': {addedAt: a.entry.addedAt, state: 'loaded'}});
+    assert.strictEqual(run().loaded['my-tool'], a.tree);
+    writeOwnRecord(a.where, {v: 1, modules: {}});
+    await until(() => Object.keys(run().ownSeen).length === 0);
+    assert.strictEqual(run().loaded['my-tool'], undefined);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('ownSeen: refused with the runtime\'s code; one it never answered waits; one kept out (its copy changed) is kept; a code of another form is none', {skip: OWN_SKIP}, async () => {
+  const codes = {'my-refused': {ok: false, code: 'MODULE_INVALID'}, 'my-busy': {ok: false, code: 'CONTROL_BUSY'}, 'my-odd': {ok: false, code: 'not a code'}};
+  const s = await running({answer: (m) => (m.type === 'load' && codes[named(m)]) || {ok: true}});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const modules = {};
+    for (const name of [...Object.keys(codes), 'my-changed', 'my-tool']) modules[name] = placeOwn(s.home, name);
+    const changed = path.join(ownTree.copyDir(modules['my-tool'].where, 'my-changed', modules['my-changed'].tree), 'api.json');
+    fs.chmodSync(changed, 0o644);
+    fs.appendFileSync(changed, ' ');
+    writeOwnRecord(modules['my-tool'].where, {v: 1, modules: Object.fromEntries(Object.entries(modules).map(([n, m]) => [n, m.entry]))});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    const at = new Date(0).toISOString();
+    assert.deepStrictEqual(run().ownSeen, {'my-refused': {addedAt: at, state: 'refused', code: 'MODULE_INVALID'}, 'my-busy': {addedAt: at, state: 'waits'},
+      'my-odd': {addedAt: at, state: 'refused'}, 'my-changed': {addedAt: at, state: 'kept'}, 'my-tool': {addedAt: at, state: 'loaded'}});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('ownSeen: an own.json that can\'t be read leaves the last one; a shared start says it is', {skip: OWN_SKIP}, async () => {
+  const s = await running({shared: true});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    const a = placeOwn(s.home, 'my-tool');
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+    await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
+    assert.strictEqual(run().shared, true);
+    fs.writeFileSync(a.where.ownRecord, '{');
+    await until(() => ownAsks(s).some((m) => m.type === 'unload'));
+    await until(() => run().loaded['my-tool'] === undefined);
+    assert.deepStrictEqual(run().ownSeen, {'my-tool': {addedAt: a.entry.addedAt, state: 'loaded'}}, 'not said seen');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 // F9 (the feature audit): an own module this release's runtime refuses to
 // load is held back with its own reason, refused, and the runtime's code;
 // its notice says it is the user's own and where to look, never the generic

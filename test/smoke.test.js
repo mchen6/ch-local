@@ -131,7 +131,7 @@ test('the smoke test: a no-remote pack installed with --unreleased-pins, started
       assert.strictEqual(added.status, 0, `${added.stdout}\n${added.stderr}`);
       assert.match(added.stdout, /^Add your own module own-smoke 1\.0\.0 \(code [0-9a-f]{12}, 4 files\)\?\r?$/m, added.stdout);
       assert.match(added.stdout, /^It calls ch-step-smoke\.\r?$/m, added.stdout);
-      const hash = /Added own-smoke \(own, ([0-9a-f]{12})\): your clients see it now\./.exec(added.stdout);
+      const hash = /Added own-smoke \(own, ([0-9a-f]{12})\): your clients see it when they next start\./.exec(added.stdout);
       assert.ok(hash != null, added.stdout);
       const ownStatus = spawnSync(process.execPath, [launcher, 'status'], {env: plain, encoding: 'utf8', timeout: 60000});
       assert.match(ownStatus.stdout, new RegExp(`own-smoke \\(own, unpinned, ${hash[1]}\\)\\s+on; tools: own_shout`), ownStatus.stdout);
