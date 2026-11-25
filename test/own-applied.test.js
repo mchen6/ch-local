@@ -42,16 +42,20 @@ function setup() {
     const d = path.join(where.run, `box-1-${pid}-0a1b2c3d`);
     fs.mkdirSync(d, {recursive: true});
     const file = path.join(d, 'run.json');
-    fs.writeFileSync(`${file}.tmp`, JSON.stringify({host: 'box-1', pid, startedAt: 1, shared: true, loaded: {}, stopped: {}, ownSeen: null, ...fields}));
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify({host: 'box-1', pid, startedAt: 1, shared: true, loaded: {}, stopped: {}, ownSeen: null, ownAt: null, ...fields}));
     fs.renameSync(`${file}.tmp`, file);
   };
-  const end = (pid) => { alive.delete(pid); fs.rmSync(path.join(where.run, `box-1-${pid}-0a1b2c3d`), {recursive: true, force: true}); };
+  // a start whose process goes on (the daemon's, restarting its runtime), and one that ended
+  const gone = (pid) => fs.rmSync(path.join(where.run, `box-1-${pid}-0a1b2c3d`), {recursive: true, force: true});
+  const end = (pid) => { alive.delete(pid); gone(pid); };
   const io = (more = {}) => Object.assign(fakeIo({env: {COUNTINGHOUSE_HOME: home}, answers: ['y']}),
     {interactive: true, stdoutTTY: true, hostname: 'box-1', alive: (pid) => alive.has(pid), appliedWaitMs: 5000, appliedPollMs: 10, appliedSayMs: 4000, ...more});
+  // own.json as it is now, as the applier stamps the one it read
+  const at = () => require('../lib/own-applied').stampOf(where);
   // what the applier would write of my-tool as recorded now
   const seen = (state, more = {}) => {
     const e = readOwnRecord(where).modules['my-tool'];
-    return {ownSeen: {'my-tool': {addedAt: e.addedAt, state, ...more}}, loaded: state === 'loaded' ? {'my-tool': e.tree} : {}};
+    return {ownAt: at(), ownSeen: {'my-tool': {addedAt: e.addedAt, state, ...more}}, loaded: state === 'loaded' ? {'my-tool': e.tree} : {}};
   };
   const recorded = async () => { for (let i = 0; i < 500; i++) { const r = readOwnRecord(where); if (r != null && r.modules['my-tool'] != null) return; await tick(10); } throw new Error('never recorded'); };
   const removed = async () => { for (let i = 0; i < 500; i++) { const r = readOwnRecord(where); if (r != null && r.modules['my-tool'] == null) return; await tick(10); } throw new Error('never removed'); };
@@ -75,7 +79,7 @@ function setup() {
   const status = chLocal(where, 'status');
   const restart = chLocal(where, 'restart');
   const own = () => `Added my-tool (own, ${readOwnRecord(where).modules['my-tool'].tree.slice(0, 12)})`;
-  return {home, where, dir, io, write, end, seen, add, added, remove, status, restart, own};
+  return {home, where, dir, io, write, gone, end, at, seen, add, added, remove, status, restart, own};
 }
 const opt = {skip: ENFORCE};
 
@@ -143,8 +147,7 @@ test('add-module: a code of another form, or an entry of another shape, is never
   for (const bad of ['rm -rf', 'A'.repeat(65), 'lower', 'MODULE_INVALID\u001b[2J', 7, null]) {
     const h = setup();
     h.write(11, {ownSeen: {}});
-    assert.strictEqual(await h.add(async () => h.write(11, h.seen('refused', {code: bad}))),
-      `${h.own()}, but the running runtime has not loaded it: \`${h.status}\` says why.\n`, JSON.stringify(bad));
+    assert.match(await h.add(async () => h.write(11, h.seen('refused', {code: bad})), {appliedWaitMs: 150}), /has not taken it up yet/, JSON.stringify(bad));
   }
   for (const shape of [[], 'x', 7, {'my-tool': 'loaded'}, {'my-tool': null}]) {
     const h = setup();
@@ -220,18 +223,18 @@ test('remove-module: printed once the running runtime has dropped it; still serv
   const h = setup();
   await h.added();
   h.write(11, h.seen('loaded'));
-  assert.strictEqual(await h.remove(async (f) => { await tick(200); assert.strictEqual(f.out, ''); h.write(11, {ownSeen: {}}); }), 'Removed my-tool.\n');
+  assert.strictEqual(await h.remove(async (f) => { await tick(200); assert.strictEqual(f.out, ''); h.write(11, {ownSeen: {}, ownAt: h.at()}); }), 'Removed my-tool.\n');
   const still = setup();
   await still.added();
   const held = still.seen('loaded');
   still.write(11, held);
-  assert.strictEqual(await still.remove(async () => still.write(11, {ownSeen: {}, loaded: held.loaded})),
+  assert.strictEqual(await still.remove(async () => still.write(11, {ownSeen: {}, ownAt: still.at(), loaded: held.loaded})),
     `Removed my-tool, but the running runtime still serves it: \`${still.restart}\` stops it.\n`);
   const own = setup();
   await own.added();
   const loaded = own.seen('loaded');
   own.write(11, {...loaded, shared: false});
-  assert.strictEqual(await own.remove(async () => own.write(11, {ownSeen: {}, loaded: loaded.loaded, shared: false})),
+  assert.strictEqual(await own.remove(async () => own.write(11, {ownSeen: {}, ownAt: own.at(), loaded: loaded.loaded, shared: false})),
     'Removed my-tool, but the running runtime still serves it: restart your client to stop it.\n');
   const late = setup();
   await late.added();
@@ -263,12 +266,86 @@ test('remove-module: several runtimes: the worst is said (still served, not in t
         const before = h.seen('loaded');
         h.write(11, before);
         h.write(12, before);
-        const as = {still: {ownSeen: {}, loaded: before.loaded}, late: before, removed: {ownSeen: {}}};
-        const line = await h.remove(async () => { h.write(11, as[REMOVE[a][0]]); h.write(12, as[REMOVE[b][0]]); }, {appliedWaitMs: 200});
+        const line = await h.remove(async () => { const as = {still: {ownSeen: {}, ownAt: h.at(), loaded: before.loaded}, late: before, removed: {ownSeen: {}, ownAt: h.at()}}; h.write(11, as[REMOVE[a][0]]); h.write(12, as[REMOVE[b][0]]); }, {appliedWaitMs: 200});
         assert.match(line, REMOVE[i][1], `${REMOVE[a][0]} and ${REMOVE[b][0]}`);
       }
     }
   }
+});
+
+test('remove-module: an own.json applied before the removal is not this one (an add still loading, then removed)', opt, async () => {
+  const h = setup();
+  // (no module seen yet, nothing loaded: the add's load is under way)
+  h.write(11, {ownSeen: {}, ownAt: h.at()});
+  const f = h.io({appliedWaitMs: 100});
+  assert.strictEqual(await addModule({dir: h.dir}, f, {where: h.where}), 0);
+  assert.strictEqual(await h.remove(async (g) => { await tick(150); assert.strictEqual(g.out, ''); h.write(11, {ownSeen: {}, ownAt: h.at()}); }), 'Removed my-tool.\n');
+});
+
+test('remove-module: a pack\'s module of the same name in what is loaded is not the own one', opt, async () => {
+  const h = setup();
+  await h.added();
+  h.write(11, {ownSeen: {'my-tool': {addedAt: 'x', state: 'kept'}}, loaded: {'my-tool': '1.2.0'}});
+  assert.strictEqual(await h.remove(async () => h.write(11, {ownSeen: {}, ownAt: h.at(), loaded: {'my-tool': '1.2.0'}})), 'Removed my-tool.\n');
+  // (an own one's earlier code still loaded is)
+  const old = setup();
+  await old.added();
+  old.write(11, {});
+  assert.match(await old.remove(async () => old.write(11, {ownSeen: {}, ownAt: old.at(), loaded: {'my-tool': ['1.2.0', 'f'.repeat(64)]}})), /still serves it/);
+});
+
+test('remove-module: added again meanwhile by another command: this removal was applied', opt, async () => {
+  const h = setup();
+  await h.added();
+  h.write(11, {});
+  assert.strictEqual(await h.remove(async () => {
+    await tick(30);
+    const later = h.at();
+    later.at = String(BigInt(later.at) + 1000000n);
+    h.write(11, {ownSeen: {'my-tool': {addedAt: '2026-11-24T00:00:00.000Z', state: 'loaded'}}, ownAt: later, loaded: {'my-tool': 'e'.repeat(64)}});
+  }), 'Removed my-tool.\n');
+});
+
+test('a run.json that can\'t be read: a dead start\'s is nothing; a live one\'s is waited for', opt, async () => {
+  const dead = setup();
+  const d = path.join(dead.where.run, 'box-1-77-0a1b2c3d');
+  fs.mkdirSync(d, {recursive: true});
+  fs.writeFileSync(path.join(d, 'run.json'), '');
+  const began = Date.now();
+  assert.strictEqual(await dead.add(async () => {}), `${dead.own()}: your clients see it when they next start.\n`);
+  assert.ok(Date.now() - began < 3000, 'not waited for');
+  const live = setup();
+  live.write(11, {});
+  fs.writeFileSync(path.join(live.where.run, 'box-1-11-0a1b2c3d', 'run.json'), '');
+  assert.match(await live.add(async () => {}, {appliedWaitMs: 150}), /has not taken it up yet/);
+});
+
+test('an io that can\'t tell which starts are alive is an error, never a wait', opt, async () => {
+  const h = setup();
+  await assert.rejects(require('../lib/own-applied').addApplied(h.where, h.io({alive: undefined}), {name: 'my-tool', tree: 'f'.repeat(64), addedAt: 'x'}), /alive/);
+});
+
+test('add-module: the shared runtime restarting meanwhile is waited for (its daemon lives), and judged as it starts again', opt, async () => {
+  const h = setup();
+  h.write(11, {ownSeen: {}});
+  assert.strictEqual(await h.add(async (f) => {
+    h.gone(11);
+    await tick(150);
+    assert.ok(!f.out.includes('Added '), f.out);
+    h.write(11, {startedAt: 2});
+    await tick(50);
+    h.write(11, {startedAt: 2, ...h.seen('loaded')});
+  }), `${h.own()}: your clients see it now.\n`);
+});
+
+test('status: an own module a running client keeps out for its sandbox is not said to be on', opt, async () => {
+  const {status} = require('../lib/packs-command');
+  const h = setup();
+  await h.added();
+  h.write(11, h.seen('kept', {kind: 'sandbox'}));
+  const f = h.io();
+  assert.strictEqual(await status({}, f), 0, f.err);
+  assert.match(f.out, /^ {2}my-tool \(own, unpinned, [0-9a-f]{12}\) +not loaded: own modules run only with the sandbox enforced$/m);
 });
 
 test('status: an own module a running runtime refused in place is not said to be on; a code of another form is not shown', opt, async () => {

@@ -2079,6 +2079,8 @@ test('ownSeen: null at the start; an own module\'s entry only once its load is a
     assert.deepStrictEqual([held.ownSeen, held.shared], [null, false], 'before its first apply');
     await until(() => run().ownSeen != null);
     assert.deepStrictEqual(run().ownSeen, {}, 'no own module');
+    const stampOf = require('../lib/own-applied').stampOf;
+    const none = run().ownAt;
     const a = placeOwn(s.home, 'my-tool');
     writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
     await until(() => ownAsks(s).length === 1);
@@ -2086,8 +2088,11 @@ test('ownSeen: null at the start; an own module\'s entry only once its load is a
     await until(() => run().ownSeen['my-tool'] != null);
     assert.deepStrictEqual(run().ownSeen, {'my-tool': {addedAt: a.entry.addedAt, state: 'loaded'}});
     assert.strictEqual(run().loaded['my-tool'], a.tree);
+    assert.notDeepStrictEqual(run().ownAt, none);
+    assert.deepStrictEqual(run().ownAt, stampOf(a.where), 'own.json as it was read');
     writeOwnRecord(a.where, {v: 1, modules: {}});
     await until(() => Object.keys(run().ownSeen).length === 0);
+    assert.deepStrictEqual(run().ownAt, stampOf(a.where));
     assert.strictEqual(run().loaded['my-tool'], undefined);
   } finally {
     s.end();
@@ -2095,8 +2100,8 @@ test('ownSeen: null at the start; an own module\'s entry only once its load is a
   }
 });
 
-test('ownSeen: refused with the runtime\'s code; one it never answered waits; one kept out (its copy changed) is kept; a code of another form is none', {skip: OWN_SKIP}, async () => {
-  const codes = {'my-refused': {ok: false, code: 'MODULE_INVALID'}, 'my-busy': {ok: false, code: 'CONTROL_BUSY'}, 'my-odd': {ok: false, code: 'not a code'}};
+test('ownSeen: refused with the runtime\'s code; one it never answered waits; one kept out (its copy changed) is kept; a code of another form, or the channel\'s own, waits', {skip: OWN_SKIP}, async () => {
+  const codes = {'my-refused': {ok: false, code: 'MODULE_INVALID'}, 'my-busy': {ok: false, code: 'CONTROL_BUSY'}, 'my-odd': {ok: false, code: 'not a code'}, 'my-passing': {ok: false, code: 'CONTROL_FAILED'}};
   const s = await running({answer: (m) => (m.type === 'load' && codes[named(m)]) || {ok: true}});
   try {
     const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
@@ -2109,7 +2114,49 @@ test('ownSeen: refused with the runtime\'s code; one it never answered waits; on
     await until(() => run().ownSeen != null && run().ownSeen['my-tool'] != null);
     const at = new Date(0).toISOString();
     assert.deepStrictEqual(run().ownSeen, {'my-refused': {addedAt: at, state: 'refused', code: 'MODULE_INVALID'}, 'my-busy': {addedAt: at, state: 'waits'},
-      'my-odd': {addedAt: at, state: 'refused'}, 'my-changed': {addedAt: at, state: 'kept'}, 'my-tool': {addedAt: at, state: 'loaded'}});
+      'my-odd': {addedAt: at, state: 'waits'}, 'my-passing': {addedAt: at, state: 'waits'}, 'my-changed': {addedAt: at, state: 'kept', kind: 'changed'}, 'my-tool': {addedAt: at, state: 'loaded'}});
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+// (the runtime says nothing of when its start's plan has loaded, and may yet
+// refuse one of it: never said to be loaded by this)
+test('ownSeen: an own module of the start\'s own plan is not said loaded until a request of it is answered', {skip: OWN_SKIP}, async () => {
+  let a = null;
+  const s = await running({beforeStart: (home) => { a = placeOwn(home, 'my-tool'); writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}}); }});
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    await until(() => run().ownSeen != null);
+    assert.deepStrictEqual(run().ownSeen, {'my-tool': {addedAt: a.entry.addedAt, state: 'waits'}});
+    const b = placeOwn(s.home, 'my-tool', {body: '// edited\n'});
+    writeOwnRecord(a.where, {v: 1, modules: {'my-tool': b.entry}});
+    await until(() => run().ownSeen['my-tool'].state === 'loaded');
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
+test('ownSeen: a run.json that can\'t be written is written again', {skip: OWN_SKIP}, async () => {
+  const s = await running();
+  try {
+    const run = () => JSON.parse(fs.readFileSync(path.join(s.runDir(), 'run.json'), 'utf8'));
+    await until(() => run().ownSeen != null);
+    const a = placeOwn(s.home, 'my-tool');
+    const rename = fs.renameSync;
+    let failed = 0;
+    // (as Windows refuses a rename over a file another process has open)
+    fs.renameSync = (from, to) => { if (path.basename(to) === 'run.json' && failed < 3) { failed += 1; throw Object.assign(new Error('EPERM'), {code: 'EPERM'}); } return rename(from, to); };
+    try {
+      writeOwnRecord(a.where, {v: 1, modules: {'my-tool': a.entry}});
+      await until(() => run().ownSeen['my-tool'] != null);
+    } finally {
+      fs.renameSync = rename;
+    }
+    assert.ok(failed >= 2, `${failed} refused`);
+    assert.strictEqual(run().ownSeen['my-tool'].state, 'loaded');
   } finally {
     s.end();
     await s.done;
