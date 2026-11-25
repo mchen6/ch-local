@@ -348,6 +348,7 @@ fn try_once(
 
 #[cfg(all(test, unix))]
 mod tests {
+    use crate::test_files::private;
     use std::fs;
     use std::io::{Read, Write};
     use std::os::unix::fs::PermissionsExt;
@@ -377,11 +378,6 @@ mod tests {
 
     fn hex(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
-    }
-
-    fn private(path: &Path, body: &[u8]) {
-        fs::write(path, body).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     fn home() -> TestHome {
