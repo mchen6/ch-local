@@ -96,12 +96,19 @@ More lines, from countinghouse part 3 (guarding settings by conversation):
   that setting, did not happen.
 - `{"setting", "asked", "change"}` (and later `count`): a request the
   runtime did not make, such as `not confirmed` or `refused by the ceiling`.
+- `{"by": "settings tool", "setting", "old", "new", "change": "all
+  sessions", "session"}` (with `confirmed` on a loosening the user
+  confirmed): a session's change for all sessions, kept in the file. It is
+  the runtime's own change, never one made outside. `{"setting", "change":
+  "all sessions: not made", "problem"}` follows it when the file could not be
+  written: that change did not happen.
 - `{"by": "start", "setting", "old", "new", "change": "changed outside
   ch-local"}`: see below.
 
 A line with `new` and a `change` label other than `changed outside ch-local`
-(such as a change for this start only) does not change what the file is
-expected to hold.
+or `all sessions` (such as a change for this start only, a session's own
+value, or a change for all sessions until the runtime restarts) does not
+change what the file is expected to hold.
 
 ## Loosening from the terminal
 
