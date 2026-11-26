@@ -230,6 +230,30 @@ test('outside edits: an all-sessions change that was not made, or only until the
   assert.deepStrictEqual(edits(), []);
 });
 
+// countinghouse's settings tool past a session's budget of changes recorded
+// one by one: a tightening for all sessions applies until the runtime
+// restarts and is never stored; its history is one line ({new}) and later a
+// count ({latest}), labelled so. Coupled on purpose: if the runtime ever
+// stored it again, these lines would have to set the value, and this test
+// says they don't.
+test('outside edits: a tightening for all sessions past a session\'s budget, and its count, set nothing', () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  const edits = () => outsideEdits(where, readSettings(where)).map((e) => [e.setting, e.old, e.new]);
+  const PAST = 'all sessions, until the runtime restarts: tightened, past this session\'s 32 changes recorded one by one';
+  forAll(home, 'requestTimeout', 30000, 20000);
+  store(where, {requestTimeout: 20000});
+  fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'settings tool', setting: 'requestTimeout', new: 9000, change: PAST, session: 's1', scope: 'all-sessions'}) + '\n');
+  fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'settings tool', setting: 'requestTimeout', change: `${PAST}, 2 more, the latest as \`latest\``, count: 2, latest: 7000, session: 's1', scope: 'all-sessions'}) + '\n');
+  // the file as the runtime leaves it: unchanged
+  assert.deepStrictEqual(edits(), []);
+  // the file at either value is an edit made outside, from what was stored
+  store(where, {requestTimeout: 9000});
+  assert.deepStrictEqual(edits(), [['requestTimeout', 20000, 9000]]);
+  store(where, {requestTimeout: 7000});
+  assert.deepStrictEqual(edits(), [['requestTimeout', 20000, 7000]]);
+});
+
 test('start: says an outside edit and the ceiling\'s clamps, passes the clamped values; an untrusted ceiling and a loosening setting refuse to start', async () => {
   const home = tmp('ch-home-');
   const r = release();
