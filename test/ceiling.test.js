@@ -177,6 +177,59 @@ test('outside edits: a setting changed outside the tools is reported once, and r
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), []);
 });
 
+// countinghouse's lib/settings-tool.js, a session's change for all sessions
+// (setForAll, and its confirmed raise): the line first, then the file
+const forAll = (home, setting, old, next, more = {}) => fs.appendFileSync(path.join(home, 'history.jsonl'),
+  JSON.stringify({by: 'settings tool', setting, old, new: next, change: 'all sessions', session: 's1', ...more}) + '\n');
+const store = (where, values) => fs.writeFileSync(where.settings, JSON.stringify({version: 1, values}));
+
+test('outside edits: a change the settings tool kept for all sessions is the tools\' own', () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  const edits = () => outsideEdits(where, readSettings(where)).map((e) => [e.setting, e.old, e.new, e.loosened]);
+  forAll(home, 'requestTimeout', 30000, 10000);
+  store(where, {requestTimeout: 10000});
+  assert.deepStrictEqual(edits(), [], 'a lowering');
+  forAll(home, 'maxOutputBytes', 16 * MiB, 32 * MiB, {confirmed: 'elicitation (a client 1.0.0)'});
+  store(where, {requestTimeout: 10000, maxOutputBytes: 32 * MiB});
+  assert.deepStrictEqual(edits(), [], 'a raise the user confirmed');
+  // reporting says nothing either, and records nothing
+  const said = [];
+  const before = history(home).length;
+  assert.deepStrictEqual(reportOutsideEdits(where, readSettings(where), {say: (line) => said.push(line)}), []);
+  assert.deepStrictEqual([said, history(home).length], [[], before]);
+});
+
+test('outside edits: the file changed after an all-sessions change is still an outside edit, from what that change kept', () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  forAll(home, 'requestTimeout', 30000, 10000);
+  store(where, {requestTimeout: 120000});
+  const edits = outsideEdits(where, readSettings(where));
+  assert.deepStrictEqual(edits.map((e) => [e.setting, e.old, e.new, e.loosened]), [['requestTimeout', 10000, 120000, true]]);
+});
+
+test('outside edits: an all-sessions change that was not made, or only until the runtime restarts, sets nothing', () => {
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  const edits = () => outsideEdits(where, readSettings(where)).map((e) => [e.setting, e.old, e.new]);
+  // not made: the value before it stands
+  forAll(home, 'requestTimeout', 30000, 10000);
+  forAll(home, 'requestTimeout', 10000, 8000);
+  fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'settings tool', setting: 'requestTimeout', change: 'all sessions: not made', problem: 'EIO', session: 's1'}) + '\n');
+  store(where, {requestTimeout: 10000});
+  assert.deepStrictEqual(edits(), []);
+  store(where, {requestTimeout: 8000});
+  assert.deepStrictEqual(edits(), [['requestTimeout', 10000, 8000]]);
+  // in force only, never stored (its label says so)
+  store(where, {requestTimeout: 10000});
+  forAll(home, 'requestTimeout', 20000, 15000, {change: 'all sessions, until the runtime restarts'});
+  assert.deepStrictEqual(edits(), []);
+  // a session's own value, as before
+  forAll(home, 'requestTimeout', 10000, 6000, {change: 'this session'});
+  assert.deepStrictEqual(edits(), []);
+});
+
 test('start: says an outside edit and the ceiling\'s clamps, passes the clamped values; an untrusted ceiling and a loosening setting refuse to start', async () => {
   const home = tmp('ch-home-');
   const r = release();

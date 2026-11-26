@@ -553,6 +553,35 @@ test('never silent: a loosening applied while running is told to the client; a t
   }
 });
 
+test('never silent: a change the settings tool kept for all sessions is applied, and is no outside edit', async () => {
+  const {layout} = require('../lib/home');
+  const s = await running();
+  try {
+    const where = layout({COUNTINGHOUSE_HOME: s.home});
+    // as the runtime's settings tool writes it: the line, then the file
+    fs.appendFileSync(path.join(s.home, 'history.jsonl'), JSON.stringify({at: new Date().toISOString(), by: 'settings tool', setting: 'requestTimeout', old: 30000, new: 10000, change: 'all sessions', session: 's1'}) + '\n');
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {requestTimeout: 10000}}));
+    await until(() => s.requests.some((m) => m.type === 'set' && m.name === 'requestTimeout'));
+    await until(() => s.history().some((h) => h.change === 'set' && h.setting === 'requestTimeout'));
+    assert.deepStrictEqual(s.history().filter((h) => h.by === 'start' && h.setting === 'requestTimeout').map((h) => h.change), ['set']);
+    // what the client is told: nothing (read before the file's next change)
+    assert.deepStrictEqual(notices(s), []);
+    assert.doesNotMatch(s.f.err, /changed outside ch-local/);
+    // a raise the user confirmed for all sessions: told as a loosening, as any
+    // is, and never as one made outside
+    fs.appendFileSync(path.join(s.home, 'history.jsonl'), JSON.stringify({at: new Date().toISOString(), by: 'settings tool', setting: 'maxOutputBytes', old: 16 * 1024 * 1024, new: 32 * 1024 * 1024, change: 'all sessions', confirmed: 'elicitation (a client 1.0.0)', session: 's1'}) + '\n');
+    fs.writeFileSync(where.settings, JSON.stringify({version: 1, values: {requestTimeout: 10000, maxOutputBytes: 32 * 1024 * 1024}}));
+    await until(() => notices(s).length > 0);
+    await until(() => s.history().some((h) => h.change === 'set' && h.setting === 'maxOutputBytes'));
+    assert.deepStrictEqual(notices(s), [[null, 'maxOutputBytes loosened from 16MiB to 32MiB']]);
+    assert.deepStrictEqual(s.history().filter((h) => h.by === 'start').map((h) => [h.setting, h.change]), [['requestTimeout', 'set'], ['maxOutputBytes', 'set']]);
+    assert.doesNotMatch(s.f.err, /changed outside ch-local/);
+  } finally {
+    s.end();
+    await s.done;
+  }
+});
+
 test('never silent, told once: a clamp start found is not told again by the applier\'s first look', async () => {
   const {layout} = require('../lib/home');
   const s = await running({beforeStart: (home) => {
