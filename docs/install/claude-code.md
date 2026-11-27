@@ -4,6 +4,8 @@
 
 ## Add
 
+First do [Before you start](README.md#before-you-start): Node, the install, the credential.
+
 On Windows, if a new window says `'claude' is not recognized` after Claude
 Code's native installer (`irm https://claude.ai/install.ps1 | iex`), its
 folder, `%USERPROFILE%\.local\bin`, is not on your PATH: the installer says

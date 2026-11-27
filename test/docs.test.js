@@ -133,6 +133,60 @@ test('the Claude Code page\'s updates: the read-only check, the user installs, C
     'It carries the skills, the MCP entry and a small launcher script (bin/launch.js) that starts the installed countinghouse. That script runs as you, so the plugin\'s source matters as much as the release\'s; countinghouse itself and your packs come only through the checked upgrade.']) assert.ok(section.includes(s), s);
 });
 
+// Before you start (a person may follow the install page alone): the
+// README's first section says what a person needs and does before
+// any client page: the Node floor the launcher enforces (read from
+// lib/node-check.js), Node 24 on every route, the install command as the agent
+// section has it, and the credential install ends with. Every client page's Add
+// starts by pointing to it (Claude Desktop's has nothing to add yet).
+test('the install README starts with Before you start: Node, the install command, the credential, then the client\'s page', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8');
+  const first = page.search(/^## /m);
+  assert.strictEqual(page.slice(first).split('\n')[0], '## Before you start', 'its first section');
+  const next = page.slice(first + 1).search(/^## /m);
+  const section = page.slice(first, next < 0 ? page.length : first + 1 + next).replace(/\s+/g, ' ');
+  const floor = require('../lib/node-check').FLOOR.replace(/\.0$/, '');
+  for (const text of ['**Node 24**', `${floor} or later works`, 'our tests run on Node 24 on Linux,', '`node -v`', '`v24.x`', '`brew install node@24`', 'add the PATH line that `brew info node@24` prints to your shell\'s startup file (~/.zshrc for zsh, the default; ~/.bash_profile for bash)', 'the macOS installer (.pkg) from https://nodejs.org/dist/latest-v24.x/. Or with Homebrew', 'https://nodejs.org/dist/latest-v24.x/', 'https://nodejs.org/en/download: choose v24 and Linux',
+    `ch-local itself checks only for ${floor} or later`, 'answer N and paste a read-only token', 'Use your gh login\'s token for',
+    'npx @countinghouse/ch-local install --pack ci-failure-triage', 'Actions read and Contents read',
+    'ch-local credentials add ch-access-github', 'install asks for each module\'s key that is still missing']) assert.ok(section.includes(text), text);
+  // (the prepared-folder route only until a release pins packages: the last test below checks it goes then)
+  if (Object.keys(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8')).pins || {}).length === 0) {
+    for (const text of ["CH_LOCAL_DEV=1 node '<dir>/ch-local/bin/ch-local.js' install --pack ci-failure-triage --from '<dir>/release' --unreleased-pins '<dir>/pins.json'",
+      "node '<dir>\\ch-local\\bin\\ch-local.js' install", 'Remove-Item Env:CH_LOCAL_DEV', 'The home is recorded as unreleased',
+      'claude-code.md#before-the-first-release-a-prepared-local-release']) assert.ok(section.includes(text), text);
+  }
+  // (Node 24 on every route, never whatever is current: winget's LTS id and brew's node move to the newest major)
+  assert.ok(!section.includes('winget install OpenJS.NodeJS.LTS') && !/brew install node(?!@24)/.test(section), 'every route gives 24');
+  const order = ['Node ', 'npx @countinghouse/ch-local install', 'credentials add', '**Then your client\'s page**'].map((t) => section.indexOf(t));
+  assert.ok(order.every((n, i) => n >= 0 && (i === 0 || n > order[i - 1])), `in that order: ${order}`);
+});
+
+test('every client page with something to add points to Before you start first', () => {
+  const pointer = 'First do [Before you start](README.md#before-you-start): Node, the install, the credential.';
+  for (const file of ['claude-code.md', 'cursor.md', 'vscode.md', 'codex.md']) {
+    const page = fs.readFileSync(path.join(DOCS, file), 'utf8');
+    const from = page.search(/^## Add$/m);
+    const body = page.slice(from).split('\n').slice(1).join('\n').trimStart();
+    assert.ok(from >= 0 && body.startsWith(pointer), `${file}: its Add section starts with the pointer`);
+  }
+});
+
+// The prepared-folder route is for before a release only: once
+// lib/release-pins.json pins packages, the README's marked paragraph must go
+// (the RC checks run this file; until a release, the marker must be on it).
+test('install README: the before-a-release paragraph goes once a release pins packages', () => {
+  const pins = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8')).pins || {};
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'docs', 'install', 'README.md'), 'utf8');
+  const marker = '<!-- until a release:';
+  if (Object.keys(pins).length > 0) {
+    for (const gone of [marker, 'CH_LOCAL_DEV', 'prepared local release']) assert.ok(!readme.includes(gone), `a release pins packages: remove the README's before-a-release text (${gone})`);
+  } else {
+    const at = readme.indexOf(marker);
+    assert.ok(at >= 0 && readme.indexOf('CH_LOCAL_DEV') > at, 'the before-a-release paragraph carries its marker');
+  }
+});
+
 // VS Code's Copilot chat refuses a server started by hand before its session
 // exists ("Cannot start an MCP server before the session runtime has been
 // created. Send a message first."): the page says servers start with the
