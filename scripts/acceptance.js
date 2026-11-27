@@ -66,12 +66,37 @@ const LIMIT_MS = 300000;
 // that passed, one that failed with no recording of its jobs, and one that is
 // not in the recording have no answer.
 const FAILED = ['failure', 'timed_out', 'startup_failure'];
+// One recorded success answered as cancelled too, so the window holds five
+// runs to list besides the failed one: a batch of four at once and one more,
+// through the real runtime (the pack lists a few at a time).
+const EXTRA_CANCELLED = '42954667398';
+// A second triage, of another repository's name (the stand-in answers any; the
+// pack's cache is per repository, so it lists again): one listing in its first
+// batch answers as GitHub does past a rate limit, and the pack must ask
+// nothing more, so the fifth run is never listed.
+// (tied to the pack's recording, newest first: 43082260306, the extra
+// cancelled 42954667398, 42774486556, 42773488341, then 42772162587; and to its
+// four listings at once, so the first four make one batch)
+const LIMITED_REPO = 'mchen6/countinghouse-limited';
+const LIMITED_RUN = '42774486556';
+const NEVER_LISTED = '42772162587';
 function recordedAnswer(fixtures, tool, args) {
   const recorded = (name) => JSON.parse(fs.readFileSync(path.join(fixtures, `${name}.json`), 'utf8')).result;
-  if (tool === 'actions_list' && args.method === 'list_workflow_runs') return recorded('list_workflow_runs');
+  const runsOf = () => JSON.parse(recorded('list_workflow_runs').content[0].text).workflow_runs
+    .map((r) => (String(r.id) === EXTRA_CANCELLED ? {...r, conclusion: 'cancelled'} : r));
+  if (tool === 'actions_list' && args.method === 'list_workflow_runs') {
+    // (the recording as it is, unless it holds the run answered as cancelled)
+    const result = recorded('list_workflow_runs');
+    const body = JSON.parse(result.content[0].text);
+    if (!body.workflow_runs.some((r) => String(r.id) === EXTRA_CANCELLED)) return result;
+    return {content: [{type: 'text', text: JSON.stringify({...body, workflow_runs: runsOf()})}]};
+  }
+  if (tool === 'actions_list' && args.method === 'list_workflow_jobs' && `${args.owner}/${args.repo}` === LIMITED_REPO && String(args.resource_id) === LIMITED_RUN) {
+    return {isError: true, content: [{type: 'text', text: `failed to list workflow jobs: GET https://api.github.com/repos/${LIMITED_REPO}/actions/runs/${LIMITED_RUN}/jobs: 429 Too Many Requests []`}]};
+  }
   if (tool === 'actions_list' && args.method === 'list_workflow_jobs' && String(args.resource_id) === '42775507169') return recorded('list_workflow_jobs');
   if (tool === 'actions_list' && args.method === 'list_workflow_jobs') {
-    const {workflow_runs: runs} = JSON.parse(recorded('list_workflow_runs').content[0].text);
+    const runs = runsOf();
     const run = runs.find((r) => String(r.id) === args.resource_id);
     return run != null && run.conclusion !== 'success' && !FAILED.includes(run.conclusion) ? {content: [{type: 'text', text: JSON.stringify({jobs: {total_count: 0, jobs: []}})}]} : null;
   }
@@ -89,7 +114,7 @@ function startStandIn({fixtures, token, tokens = {pack: token}}) {
   const tools = JSON.parse(fs.readFileSync(path.join(fixtures, 'tools-list.json'), 'utf8')).tools;
   // (seen: every authorised request -- handshakes too -- with whose token it
   // carried and the module header it came with, OWN_HEADER's value or null)
-  const state = {requests: 0, refused: 0, calls: [], by: [], seen: [], unexpected: []};
+  const state = {requests: 0, refused: 0, calls: [], args: [], by: [], seen: [], unexpected: []};
   const whose = (header) => { for (const [who, t] of Object.entries(tokens)) if (header === `Bearer ${t}`) return who; return null; };
   const server = http.createServer((req, res) => {
     let body = '';
@@ -118,6 +143,7 @@ function startStandIn({fixtures, token, tokens = {pack: token}}) {
         const name = msg.params && msg.params.name;
         const args = (msg.params && msg.params.arguments) || {};
         state.calls.push(name);
+        state.args.push(args);
         state.by.push(who);
         const result = recordedAnswer(fixtures, name, args);
         if (result != null) return answer(result);
@@ -551,6 +577,28 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     check('the usage report counts the own module\'s calls as the stand-in\'s too, and none as a real server call',
       report2 != null && report1 != null && report2.totals.serverCalls === 0 && report2.standIn != null && report2.standIn.serverCalls > report1.standIn.serverCalls,
       JSON.stringify(report2 != null ? {totals: report2.totals, standIn: report2.standIn} : null));
+
+    // The pack lists a few at a time through the real runtime, and stops at a
+    // rate limit: the first triage listed all five runs of its window; the
+    // second, of another repository's name, meets GitHub's 429 in its first
+    // batch and lists nothing after it.
+    const listedIn = (from, to, repo) => standIn.state.args.slice(from, to).filter((a) => a.method === 'list_workflow_jobs' && `${a.owner}/${a.repo}` === repo).map((a) => String(a.resource_id));
+    const firstListed = listedIn(0, packCalls, RECORDED_REPO).filter((id) => id !== '42775507169');
+    check('the first triage listed all five other runs of its window that did not pass, the run answered as cancelled among them', firstListed.length === 5 && firstListed.includes(EXTRA_CANCELLED), JSON.stringify(firstListed));
+    const before = standIn.state.calls.length;
+    const limited = await mcp.request('tools/call', {name: 'ci_failure_triage', arguments: {repo: LIMITED_REPO}});
+    const lr = limited.result || {};
+    const limitedListed = listedIn(before, standIn.state.calls.length, LIMITED_REPO).filter((id) => id !== '42775507169');
+    // (after the first of the other runs' listings, every call of this triage
+    // is one of that batch's listings: no log, no commit, no listing after)
+    const afterFirst = standIn.state.args.slice(before).map((a, i) => ({a, i})).filter(({a}) => a.method === 'list_workflow_jobs' && String(a.resource_id) !== '42775507169');
+    const tail = afterFirst.length === 0 ? [] : standIn.state.args.slice(before + afterFirst[0].i);
+    check('a rate limit in a batch stops the triage\'s GitHub calls: the batch under way finishes, nothing is asked after it, the run after it is never listed, and capHit says so',
+      lr.isError !== true && lr.structuredContent != null && lr.structuredContent.coverage != null && lr.structuredContent.coverage.capHit === true &&
+      limitedListed.includes(LIMITED_RUN) && !limitedListed.includes(NEVER_LISTED) && limitedListed.length === 4 &&
+      tail.length === 4 && tail.every((a) => a.method === 'list_workflow_jobs') &&
+      standIn.state.unexpected.length === 0 && standIn.state.by.slice(before).every((w) => w === 'pack'),
+      JSON.stringify({listed: limitedListed, coverage: lr.structuredContent != null ? lr.structuredContent.coverage : null, error: lr.isError === true ? lr.content : undefined}).slice(0, 1500));
 
     child.stdin.end();
     const code2 = await Promise.race([exited, new Promise((r) => setTimeout(() => r('timeout'), 30000))]);

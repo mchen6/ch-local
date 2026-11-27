@@ -153,27 +153,40 @@ The checks are grouped. Within a group, the order doesn't matter.
       (`floors` in lib/release-pins.json) names the version that carries a
       fix every release must hold, and with it every fix before it. Today's
       floors, each with the fixes it carries:
-      - ch-step-redact 0.2.4: secrets and key blocks masked before a result
+      - ch-step-redact 0.2.5: secrets and key blocks masked before a result
         reaches the model, with secret names inside escaped JSON (#11) and a
-        password after an address and a colon (#12);
-      - ch-step-log-clean 0.2.3: the same masking, with an omitted bare key
-        body keeping redact's state and step names whole (#7);
-      - ch-access-github 0.3.0: the GitHub remote asks for read-only tools
+        password after an address and a colon (#12); its README true of the
+        release (#17);
+      - ch-step-log-clean 0.2.5: the same masking, with an omitted bare key
+        body keeping redact's state and step names whole (#7); its README
+        true of the release (#13);
+      - ch-access-github 0.3.2: the GitHub remote asks for read-only tools
         (0.2.1), a refusal names its cause and a large log comes back as its
         tail (0.2.2); GitHub's attempt number and the workflow's id are given,
         and a run without a branch or a name no longer loses the list
-        (#8, #10);
-      - ch-step-report 0.4.4: the summary quotes no step name and an
+        (#8, #10); a refusal for a rate limit says so in its details (#12);
+        a step with no conclusion or name no longer loses the list, and a
+        failed job without a name refuses the answer (#13);
+      - ch-step-report 0.4.6: the summary quotes no step name and an
         e-mail address costs its field (#7), an @ before a password or after
         a redacted address is an address's (#8), and the final pass's (#9);
-      - ch-pack-ci-failure-triage 0.7.2: step names go through redact before
+        a limit reached is said as one, the summary may be 520 characters,
+        and an owner hint of no logins and one reason passes (#14);
+      - ch-step-error-patterns 0.3.1: a FAIL's indented message is kept, and
+        node's comparison past a long message is one of its values (#10);
+      - ch-step-failure-signature 0.2.2, ch-step-dedupe 0.1.3,
+        ch-step-owner-hint 0.1.3: their READMEs true of the release (#8, #7,
+        #7);
+      - ch-pack-ci-failure-triage 0.7.3: step names go through redact before
         any part, the result or the cache (#18); runs are compared by their
         workflow's id where GitHub gives one (#28), a success that was re-run
         only when the attempt before it is known (#29), and an older run's
-        log that a part refuses does not lose the call (#30). 0.7.2 is built
-        against the versions of its parts pinned in its own repository.
-      The parts fixed on 11-21 for function only (error-patterns, dedupe,
-      owner-hint) have no floor.
+        log that a part refuses does not lose the call (#30); the window's
+        runs are listed a few at a time, a rate limit stops every GitHub
+        call, a refusal of the runtime's own fails the call named, and the
+        owner hint says when it was refused (#35). 0.7.3 is built against
+        its parts as its own repository pins them; the later versions of
+        redact, log-clean, dedupe and owner-hint change their READMEs only.
     - How: the machine check holds it. lib/release-pins.js refuses a pin
       below its floor (a pre-release, or anything not a version, counts as
       below), `node scripts/describe-release.js <tarballs>` refuses a
