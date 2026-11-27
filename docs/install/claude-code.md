@@ -4,6 +4,8 @@
 
 ## Add
 
+First do [Before you start](README.md#before-you-start): Node, the install, the credential.
+
 The plugin is the simplest route:
 
     claude plugin marketplace add mchen6/ch-local

@@ -4,6 +4,8 @@
 
 ## Add
 
+First do [Before you start](README.md#before-you-start): Node, the install, the credential.
+
 `ch-local snippet vscode` prints the entry for this machine, in the portable
 format of `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`
 when that is set). Merge it under `mcpServers`:

@@ -4,6 +4,8 @@
 
 ## Add
 
+First do [Before you start](README.md#before-you-start): Node, the install, the credential.
+
 `ch-local snippet codex` prints the entry for this machine. Append it to
 `~/.codex/config.toml` (Codex's default config file and its `[mcp_servers.<name>]`
 table, checked by hand against Codex's MCP docs, November 2026; `ch-local add
