@@ -1,3 +1,5 @@
 [mcp_servers.countinghouse]
 command = "/usr/local/bin/node"
 args = ["/home/dev/.countinghouse/bin/ch-local.js", "session", "--home", "/home/dev/.countinghouse"]
+startup_timeout_sec = 90
+tool_timeout_sec = 130

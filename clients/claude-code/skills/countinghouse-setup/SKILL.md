@@ -38,7 +38,7 @@ Read the install's output. For each line `<module> needs a credential: in your o
 
 ## 4. Connect Claude Code
 
-If the `ch-packs` plugin is not installed, with the user's yes run `claude plugin marketplace add mchen6/ch-local` and then `claude plugin install ch-packs@ch-packs`, and tell the user to restart Claude Code. If the plugin was installed already, tell them to restart Claude Code, or open `/mcp` and reconnect `countinghouse`, so it starts with what was installed.
+If the `ch-packs` plugin is not installed, with the user's yes run `claude plugin marketplace add mchen6/ch-local` and then `claude plugin install ch-packs@ch-packs`, and tell the user to restart Claude Code. If the plugin was installed already, tell them to restart Claude Code, or open `/mcp` and reconnect `countinghouse`, so it starts with what was installed. If `/mcp` then shows `countinghouse` as failed, tell the user that on a busy machine its first start can take longer than Claude Code waits: they can select Reconnect on it in `/mcp`, and if it fails again, set `"MCP_TIMEOUT": "90000"` (the value in quotes) under `env` in their `~/.claude/settings.json`, then restart Claude Code.
 
 ## 5. Ready
 
