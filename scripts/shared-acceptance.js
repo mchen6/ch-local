@@ -929,7 +929,7 @@ if (require.main === module) main(process.argv.slice(2)).then((code) => process.
 // it, so the cause is learned. It never throws: the verdict already reported
 // stands. quick (an interrupted run): no retries and no process scan, so a
 // cancel's grace period is not spent here.
-function removeRunFolder(dir, {rm = fs.rmSync, say, quick = false, home = null, holders = () => { const rows = processes(); if (rows == null) throw new Error('the process list could not be read'); return holdersOf(pathForms(dir), rows); }}) {
+function removeRunFolder(dir, {rm = fs.rmSync, say, quick = false, home = null, platform = process.platform, holders = () => { const rows = processes(); if (rows == null) throw new Error('the process list could not be read'); return holdersOf(pathForms(dir), rows); }}) {
   if (home != null) { try { require('../lib/own-tree').unlockTree(path.join(home, 'own')); } catch (e) { /* the removal says it */ } }
   try {
     rm(dir, {recursive: true, force: true, ...(quick ? {} : {maxRetries: 5, retryDelay: 100})});
@@ -939,7 +939,7 @@ function removeRunFolder(dir, {rm = fs.rmSync, say, quick = false, home = null, 
     if (quick) { say(`cleanup: what names ${dir} was not looked for: the run was interrupted`); return false; }
     let held = [];
     try { held = holders(); } catch (err) { say(`cleanup: what names ${dir} could not be looked for: ${err.code || err.message}`); return false; }
-    const none = process.platform === 'win32' ? 'no process names it on its command line (a working folder can\'t be read on Windows)' : 'no process names it (one may hold a file in it without naming it)';
+    const none = platform === 'win32' ? 'no process names it on its command line (a working folder can\'t be read on Windows)' : 'no process names it (one may hold a file in it without naming it)';
     say(`cleanup: what names ${dir} now: ${held.length > 0 ? held.join('; ') : none}`);
     return false;
   }

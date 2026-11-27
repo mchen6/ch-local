@@ -785,9 +785,13 @@ test('shared: the run\'s folders are removed with retries; one left behind is sa
   const eperm = (dir, opts) => { calls.push({dir, opts}); throw Object.assign(new Error(`EPERM: operation not permitted, rmdir '${dir}'`), {code: 'EPERM'}); };
   assert.strictEqual(shared.removeRunFolder('/x/work', {rm: eperm, say: (s) => said.push(s), holders: () => ['pid 7: node /x/work/daemon.js']}), false);
   assert.deepStrictEqual(said, ['cleanup: /x/work was not removed (EPERM); the verdict above stands', 'cleanup: what names /x/work now: pid 7: node /x/work/daemon.js']);
-  const none = [];
-  shared.removeRunFolder('/x/work', {rm: eperm, say: (s) => none.push(s), holders: () => []});
-  assert.strictEqual(none[1], 'cleanup: what names /x/work now: no process names it (one may hold a file in it without naming it)');
+  // (each system's own line when nothing names it: Windows can't read a working folder)
+  for (const [platform, line] of [['linux', 'no process names it (one may hold a file in it without naming it)'], ['darwin', 'no process names it (one may hold a file in it without naming it)'],
+    ['win32', 'no process names it on its command line (a working folder can\'t be read on Windows)']]) {
+    const none = [];
+    shared.removeRunFolder('/x/work', {rm: eperm, say: (s) => none.push(s), holders: () => [], platform});
+    assert.strictEqual(none[1], `cleanup: what names /x/work now: ${line}`, platform);
+  }
   assert.ok(calls[0].opts.recursive === true && calls[0].opts.force === true && calls[0].opts.maxRetries >= 5 && calls[0].opts.retryDelay >= 100, JSON.stringify(calls[0].opts));
   const unread = [];
   shared.removeRunFolder('/x/work', {rm: eperm, say: (s) => unread.push(s), holders: () => { throw new Error('the process list could not be read'); }});
