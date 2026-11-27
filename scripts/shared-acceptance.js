@@ -21,8 +21,10 @@
 //     tightening applied to this session;
 //   - (d) a paged list (countinghouse M1): one page with no nextCursor, a
 //     cursor the client sends carried and answered, a bad one -32602.
-// On win32 the daemon is not yet available (C4c): the shim runs the
-// per-session runtime, and that fallback is what is checked.
+// On win32 the shared runtime's socket is a named pipe, a new one at each
+// start (C4c): the run checks that daemon.json names a live daemon and its
+// pipe, and no per-session runtime in the client's tree; (b) and (d) run as
+// elsewhere.
 //
 // Not yet here, and where each is covered meanwhile (the reviewer's ruling):
 //   - (a) progress frames before an answer and (c) a cancelled call: they

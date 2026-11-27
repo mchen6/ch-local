@@ -500,9 +500,8 @@ test('shared: treeOf lists a process and its descendants, and nothing else (on W
   }
 });
 
-// Gated as the whole run is. The windows acceptance leg is still the known
-// non-gating red: there the daemon is not yet available (C4c), and what this
-// checks is the per-session fallback, so its result there is informational.
+// Gated as the whole run is, Windows included: there daemon.json names a
+// live daemon and its named pipe (C4c).
 test('the shared runtime through the native shim', {timeout: 2400000, skip: SRC == null && 'CH_ACCEPTANCE_SRC is not set (a directory of clones)'}, async () => {
   const pairs = (v, flag) => (v || '').split(',').filter(Boolean).flatMap((p) => [flag, p]);
   const reportFile = path.join(tmp('ch-shared-report-'), 'report.json');
