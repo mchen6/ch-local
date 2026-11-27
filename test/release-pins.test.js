@@ -140,15 +140,16 @@ test('what a new release adds that needs the user\'s yes, for the installed pack
   changed.modules[REDACT].confirmSettings = {depth: 4};
   const c = additions(before, parseReleasePins(changed).pins, ['ci-failure-triage']);
   assert.deepStrictEqual(c.map((x) => [x.kind, x.setting, x.now]), [['confirm', 'depth', {default: 4}], ['confirm', 'strict', null]]);
-  // a part no longer one: its settings could be changed in conversation
-  // from then on (the Reviewer's high review of #98, 6)
+  // a part no longer one: those of its settings that need no confirmation
+  // could be changed in conversation from then on (the Reviewer's high review of #98, 6)
   assert.strictEqual(now.modules[REDACT].role, 'part', 'the shipped description records the role');
   const promoted = shipped();
   promoted.modules[REDACT].role = 'scenario';
   const r = additions(now, parseReleasePins(promoted).pins, ['ci-failure-triage']);
   assert.deepStrictEqual(r.map((x) => [x.kind, x.module, x.was, x.now]), [['role', REDACT, 'part', 'scenario']]);
-  // (a text setting needs a confirmation, and that is a terminal's: the line
-  // says only what the conversation can change)
+  // (a setting marked confirm, or any text setting, needs a confirmation, a
+  // terminal's while no client is tested: the line says only what the
+  // conversation can change)
   assert.strictEqual(r[0].line, 'ch-step-redact is no longer a part: those of its settings that need no confirmation can now be changed in conversation');
   // anything removed asks nothing
   const fewer = shipped();
