@@ -176,10 +176,35 @@ test('CodexSandboxUsers able to read, a named account able to change: moved asid
 
 // a name is printed only as plain text: one with a control or direction-changing character is said by its SID
 test('a name with a control or direction-changing character is said by its SID', () => withHome((h) => {
-  for (const bad of ['MACHINE\\b\u202eob', 'MACHINE\\b\u0007ob', 'MACHINE\\b\u2066ob', 'MACHINE\\admin\u3164', 'MACHINE\\b\ud800ob', 'MACHINE\\bob\udb40\udc41']) {
+  for (const bad of ['MACHINE\\b\u202eob', 'MACHINE\\b\u0007ob', 'MACHINE\\b\u2066ob', 'MACHINE\\admin\u3164', 'MACHINE\\b\ud800ob', 'MACHINE\\bob\udb40\udc41', 'MACHINE\\bo\u2028b', 'MACHINE\\bo\u2029b', 'MACHINE\\admin\u00a0', 'MACHINE\\admin\u3000']) {
     const r = rule('S-1-5-21-1-2-3-1002', bad, MODIFY);
     assert.strictEqual(problem(h, [r]).why, 'it can be changed by S-1-5-21-1-2-3-1002', JSON.stringify(bad));
   }
+}));
+
+// a name hidden for being unsafe is an account Windows names: never taken for a Codex sandbox identity (one that names no account)
+test('a hidden name able to change, beside CodexSandboxUsers able to read: said by its SID and moved aside, never a Codex identity', () => withHome((h) => {
+  const p = problem(h, [rule(CODEX_SID, CODEX, READ), rule('S-1-5-21-1-2-3-1002', 'MACHINE\\admin\u3164', MODIFY)]);
+  assert.strictEqual(p.why, 'it can be changed by S-1-5-21-1-2-3-1002');
+  assert.strictEqual(p.fix, MOVE);
+}));
+
+// where %LOCALAPPDATA% is, from Windows (the lookup's, as the machine's name), not the environment: a session may have none
+test('%LOCALAPPDATA% known from Windows with none in the environment: a home under it open to Codex is moved aside', () => withHome((h) => {
+  const rules = [rule(CODEX_SID, CODEX, READ)];
+  const lookup = (sids) => Object.assign(namesOf(rules)(sids), {localAppData: path.dirname(h)});
+  const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: {}, principalNames: lookup});
+  assert.match(p.consequence, /move it aside and install again, which makes it a folder that takes nothing from the folders above it/);
+}));
+
+// in it is in it: a first part that merely starts with two dots is a folder in it
+test('a home in %LOCALAPPDATA% whose folder starts with two dots is in it', () => withHome((h) => {
+  const rules = [rule(CODEX_SID, CODEX, READ)];
+  const home = path.join(h, '..ch');
+  fs.mkdirSync(home);
+  const p = homeOpenProblem(home, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: h});
+  assert.match(p.consequence, /move it aside and install again/);
+  assert.ok(!/point it under/.test(p.consequence), p.consequence);
 }));
 
 // an ACL reader a caller gave (session's and start's cached one) and no lookup: Windows' own lookup still names them

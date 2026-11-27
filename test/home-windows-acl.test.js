@@ -81,7 +81,7 @@ test('a home directly in a profile, given change: refused as one that may alread
   assert.strictEqual(p.fix, 'it may already have been changed: move it aside and install again');
 }));
 
-test('this machine\'s CodexSandboxUsers on a home directly in a profile: the Codex line, no lines', {skip: !WIN || process.env.CI !== 'true'}, () => tree((root) => {
+test('this machine\'s CodexSandboxUsers on a home directly in a profile: the Codex line, no lines; on one under %LOCALAPPDATA% taking it from above: moved aside', {skip: !WIN || process.env.CI !== 'true'}, () => tree((root) => {
   const {ensureHome, homeOpenProblem, openHomeLine} = require('../lib/home');
   const net = (...a) => execFileSync(path.win32.join(SYS32, 'net.exe'), a, {encoding: 'utf8'});
   let made = false;
@@ -91,9 +91,21 @@ test('this machine\'s CodexSandboxUsers on a home directly in a profile: the Cod
     ensureHome(home, 'win32');
     icacls(home, '/grant', 'CodexSandboxUsers:(OI)(CI)(M)');
     icacls(home, '/grant', `*${UNNAMED}:(OI)(CI)(M)`);
-    const p = homeOpenProblem(home, {platform: 'win32'});
+    // (the runner's temp folder is under its %LOCALAPPDATA%: this tree's own stands in for it, outside the profile home)
+    const local = path.join(root, 'local');
+    const p = homeOpenProblem(home, {platform: 'win32', localAppData: local});
     assert.strictEqual(p.fix, null);
-    assert.ok(openHomeLine(home, {platform: 'win32'}).includes(`\\CodexSandboxUsers and a Codex sandbox identity (${UNNAMED}), so another account could change what runs from it and read its credentials. Codex's Windows sandbox gives these access`));
+    const said = openHomeLine(home, {platform: 'win32', localAppData: local});
+    assert.ok(said.includes(`\\CodexSandboxUsers and a Codex sandbox identity (${UNNAMED}), so another account could change what runs from it and read its credentials. Codex's Windows sandbox gives these access`), said);
+    assert.ok(said.endsWith('so removing it by hand does not last: unset COUNTINGHOUSE_HOME, or point it under %LOCALAPPDATA%, then install again and delete the old home (it still holds the stored credentials)'), said);
+    // a home under %LOCALAPPDATA% not made by install, taking the group's grant from the folder above: moved aside and installed again
+    fs.mkdirSync(local);
+    icacls(local, '/grant', 'CodexSandboxUsers:(OI)(CI)(RX)');
+    const under = path.join(local, 'countinghouse');
+    fs.mkdirSync(under);
+    const q = homeOpenProblem(under, {platform: 'win32', localAppData: local});
+    assert.match(q.why, /^it is readable by [^ ]+\\CodexSandboxUsers$/);
+    assert.match(q.consequence, /move it aside and install again, which makes it a folder that takes nothing from the folders above it, then delete the old home/);
   } finally {
     if (made) { try { net('localgroup', 'CodexSandboxUsers', '/delete'); } catch (e) { /* left for the runner's teardown */ } }
   }
