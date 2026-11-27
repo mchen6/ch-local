@@ -157,8 +157,18 @@ Releases are published by `.github/workflows/publish.yml` under npm
 trusted publishing: a `v<version>` tag on a `main` commit whose
 package.json carries that version. No npm token exists anywhere and no 2FA
 code is typed for a release. One-time setup on npmjs.com, by the
-maintainer: the package's first version is published by hand (`npm publish
---access public`, with 2FA); then **Settings → Trusted publishing → GitHub
+maintainer: the package is first published by hand, as a placeholder: in an empty
+directory, a package.json holding only name, version "0.0.1-placeholder.0"
+and description "Placeholder for the first release; not for use. Install a
+released version.", then `npm publish --access public --tag placeholder`
+(2FA). The one-time placeholder publish uses a throwaway pre-release
+version (e.g. 0.0.1-placeholder.0) under a dist-tag other than latest
+(e.g. `--tag placeholder`), never the release's version; deprecate it once
+the real version is out. Then check `npm dist-tag ls <package>`: if
+`latest` names the placeholder, `npm install <package>` installs it until
+the real version is published (publishing the real version without
+`--tag` moves `latest` to it), so publish the real version before the
+package's name is given to anyone. Then **Settings → Trusted publishing → GitHub
 Actions** with owner `mchen6`, repository `ch-local`, workflow
 `publish.yml`, allowing `npm publish` as well as `npm stage publish`;
 then **Settings → Publishing access → Require two-factor authentication
@@ -285,13 +295,24 @@ repository holds no token.
 
 **One-time setup, by the maintainer, in one sitting.** npm configures a
 trusted publisher only on a package that already exists, so each of the
-seven names is first published by hand:
+seven names is first published by hand, as a placeholder that holds no
+binaries:
 
-1. From a `shim-v<version>` CI run, download the six `ch-shim-<os>-<arch>`
-   artifacts into `artifacts/`, keeping their directory names.
-2. `node npm-shim/assemble.js --version <version> --artifacts artifacts --out dist/npm-shim`
-3. `npm login`, with 2FA. Then, in each of `dist/npm-shim/ch-shim-*/`,
-   followed last by `dist/npm-shim/ch-shim/`, run `npm publish --access public`.
+1. `npm login`, with 2FA.
+2. For each of the six `@countinghouse/ch-shim-<os>-<arch>` names, then
+   `@countinghouse/ch-shim`: in an empty directory, a package.json holding
+   only name, version "0.0.1-placeholder.0" and description "Placeholder for
+   the first release; not for use. Install a released version.", then
+   `npm publish --access public --tag placeholder` (2FA). The one-time
+   placeholder publish uses a throwaway pre-release version (e.g.
+   0.0.1-placeholder.0) under a dist-tag other than latest (e.g. `--tag
+   placeholder`), never the release's version; deprecate it once the real
+   version is out.
+3. Then check `npm dist-tag ls <package>`: if `latest` names the
+   placeholder, `npm install <package>` installs it until the real version
+   is published (publishing the real version without `--tag` moves `latest`
+   to it), so publish the real version before the package's name is given
+   to anyone.
 4. On npmjs.com, for each of the seven packages: **Settings → Trusted
    publishing → GitHub Actions**, with owner `mchen6`, repository
    `ch-local` and workflow `shim.yml`. Then **Settings → Publishing access

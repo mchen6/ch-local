@@ -117,10 +117,10 @@ The checks are grouped. Within a group, the order doesn't matter.
 14. **No tag and no publish has happened before.**
     - How: `git ls-remote --tags` on each repository, and `npm view <name>
       versions` for each package.
-    - Check: no `v*` or `shim-v*` tag. No npm version, except a first
-      version the maintainer published by hand only to set up trusted
-      publishing. A release never pins such a version, since it has no
-      provenance.
+    - Check: no `v*` or `shim-v*` tag. No npm version, except the one-time
+      placeholder (a throwaway pre-release under a dist-tag other than
+      latest, deprecated once the real version is out). A release never
+      pins it.
     - Evidence: the two commands' output, saved with the checklist.
 
 20. **The Claude Code plugin's marketplace entry is pinned to this
