@@ -27,6 +27,11 @@ credential comes from ch-local's store. The config-file entry is preferred
 over `codex mcp add --url`, which probes the server for OAuth and may start a
 browser login.
 
+The `ch-packs` plugin's skills (guided setup, building your own module, and
+the CI triage guide) come with Claude Code only ([Claude
+Code](claude-code.md)); in Codex, countinghouse's tools and its overview work
+without them.
+
 ## Credentials
 
 A credential belongs to a module: the key, for that module's variable, to

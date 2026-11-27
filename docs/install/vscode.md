@@ -26,6 +26,11 @@ harness, which is deprecated for removal in February 2027, so they are not the
 target here. (Checked by hand against VS Code's MCP configuration reference
 and GitHub's Copilot CLI docs, November 2026.)
 
+The `ch-packs` plugin's skills (guided setup, building your own module, and
+the CI triage guide) come with Claude Code only ([Claude
+Code](claude-code.md)); in VS Code, countinghouse's tools and its overview
+work without them.
+
 ## Credentials
 
 A credential belongs to a module: the key, for that module's variable, to

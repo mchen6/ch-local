@@ -21,6 +21,11 @@ under `mcpServers`:
 
 The entry has no `type` and no `env` ([Cursor's MCP docs](https://cursor.com/docs/context/mcp)).
 
+The `ch-packs` plugin's skills (guided setup, building your own module, and
+the CI triage guide) come with Claude Code only ([Claude
+Code](claude-code.md)); in Cursor, countinghouse's tools and its overview work
+without them.
+
 ## Credentials
 
 A credential belongs to a module: the key, for that module's variable, to
