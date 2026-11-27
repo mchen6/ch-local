@@ -5,7 +5,11 @@
 //!   answer: the runtime's (written here) or a crash answer (taken by the
 //!   relay under the same mutex when the connection is lost), never both.
 //!   The body is streamed to stdout, never held whole. A seq in `dropped`
-//!   (the shim's own initialize replay) has its body read and discarded.
+//!   (the shim's own requests) has its body read and discarded, with one
+//!   exception: a replayed initialize's answer (`replay_seqs`), held whole up
+//!   to REPLAY_ANSWER_BYTES and read for the lists it declares listChanged,
+//!   whose notices it writes (R-cold-prompts); counted in `streaming` while
+//!   it is read, and nothing written once the session is closed.
 //! - C: an object with a string `op`, handed to the relay.
 //! - anything else, a malformed M or C, or the connection ending: Lost.
 
@@ -21,6 +25,7 @@ use crate::frame::{self, Caps, Kind};
 use crate::inflight::InFlight;
 use crate::message::{self, HeaderError};
 use crate::out::{Out, StreamError};
+use crate::relay::{LISTS_CHANGED, told_of};
 
 #[derive(Debug)]
 pub enum Event {
@@ -35,6 +40,36 @@ pub enum Event {
     StdoutGone(String),
 }
 
+/// The most of a replayed initialize's answer read to see what it declares
+/// (an initialize answer is small); past it, it is dropped unread and nothing
+/// more is told. The one answer this reader holds whole.
+pub(crate) const REPLAY_ANSWER_BYTES: usize = 64 * 1024;
+
+/// A replayed initialize's answer (its tools were told when it was sent): the
+/// client told each other list it declares listChanged. Anything else -- an
+/// answer that doesn't parse, an error answer, a missing field -- tells
+/// nothing more.
+///
+/// Its writes wait for stdout as a streamed answer's do; the session's
+/// `closed` is read again under stdout's lock, so nothing is written once the
+/// relay has crash-answered and handed the session on or ended it.
+fn tell_declared(body: &[u8], shared: &Shared) -> Result<(), Ended> {
+    let Ok(answer) = serde_json::from_slice::<Value>(body.trim_ascii_end()) else { return Ok(()) };
+    if !answer.get("result").is_some_and(Value::is_object) {
+        return Ok(());
+    }
+    let mut held = shared.out.lock();
+    if shared.closed.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    for (list, line) in LISTS_CHANGED.iter().filter(|(list, _)| *list != "tools") {
+        if told_of(&answer, list) {
+            held.message(line).map_err(|e| Ended::Stdout(e.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Why the reader stopped.
 enum Ended {
     Lost(String),
@@ -47,6 +82,10 @@ pub struct Shared {
     pub inflight: Arc<Mutex<InFlight>>,
     /// Seqs whose answers the shim itself asked for and drops.
     pub dropped: Arc<Mutex<HashSet<u64>>>,
+    /// Of those, the shim's replayed initializes: the answer is still dropped,
+    /// but read first, up to REPLAY_ANSWER_BYTES, for the lists it declares
+    /// listChanged (R-cold-prompts).
+    pub replay_seqs: Arc<Mutex<HashSet<u64>>>,
     pub out: Out,
     /// Set (under the in-flight mutex) once the relay has crash-answered
     /// what was in flight and handed the session on or ended it: from then
@@ -86,23 +125,52 @@ fn one<R: Read>(conn: &mut R, caps: Caps, shared: &Shared) -> Result<Event, Ende
             // this reader owns its answer), and stdout's lock taken BEFORE the
             // in-flight lock is released, so the relay's finish(), which takes
             // stdout's lock after the in-flight one, waits for this answer.
-            let stdout = {
+            let (stdout, replay) = {
                 let mut t = shared.inflight.lock().expect("the in-flight table's lock");
                 let closed = shared.closed.load(Ordering::SeqCst);
                 let dropped = seq.is_some_and(|n| shared.dropped.lock().expect("the dropped set's lock").remove(&n));
+                let replay_seq =
+                    seq.is_some_and(|n| shared.replay_seqs.lock().expect("the replay seqs' lock").remove(&n));
                 if closed || dropped {
                     if let Some(n) = seq {
                         t.settle(n);
                     }
-                    None
+                    let replay = replay_seq && dropped && !closed;
+                    // (a replay's answer read for its notices counts as one
+                    // being written, so the relay's finish() waits for it)
+                    if replay {
+                        shared.streaming.fetch_add(1, Ordering::SeqCst);
+                    }
+                    (None, replay)
                 } else {
                     let pending = seq.and_then(|n| t.take(n));
                     shared.streaming.fetch_add(1, Ordering::SeqCst);
-                    Some((pending, shared.out.lock()))
+                    (Some((pending, shared.out.lock())), false)
                 }
             };
             let Some((pending, mut held)) = stdout else {
-                io::copy(&mut conn.take(u64::from(rest)), &mut io::sink()).map_err(|e| Ended::Lost(e.to_string()))?;
+                let told = if replay && rest as usize <= REPLAY_ANSWER_BYTES {
+                    // The one exception to "streamed, never held whole": the
+                    // shim's replayed initialize's answer, at most
+                    // REPLAY_ANSWER_BYTES, read to tell the client the lists
+                    // it declares listChanged (R-cold-prompts). Still dropped.
+                    let mut body = Vec::with_capacity(rest as usize);
+                    match conn.take(u64::from(rest)).read_to_end(&mut body) {
+                        Err(e) => Err(Ended::Lost(e.to_string())),
+                        Ok(_) if body.len() < rest as usize => {
+                            Err(Ended::Lost("the connection ended within a message".into()))
+                        }
+                        Ok(_) => tell_declared(&body, shared),
+                    }
+                } else {
+                    io::copy(&mut conn.take(u64::from(rest)), &mut io::sink())
+                        .map(|_| ())
+                        .map_err(|e| Ended::Lost(e.to_string()))
+                };
+                if replay {
+                    shared.streaming.fetch_sub(1, Ordering::SeqCst);
+                }
+                told?;
                 return Ok(Event::Answered(seq));
             };
             let result = match held.stream(conn, u64::from(rest)) {
@@ -163,10 +231,20 @@ mod tests {
     }
 
     fn read_all(frames: Vec<u8>, inflight: InFlight, dropped: &[u64]) -> (Vec<Event>, Vec<u8>, Arc<Mutex<InFlight>>) {
+        read_all_with(frames, inflight, dropped, &[])
+    }
+
+    fn read_all_with(
+        frames: Vec<u8>,
+        inflight: InFlight,
+        dropped: &[u64],
+        replays: &[u64],
+    ) -> (Vec<Event>, Vec<u8>, Arc<Mutex<InFlight>>) {
         let sink = Sink::default();
         let shared = Shared {
             inflight: Arc::new(Mutex::new(inflight)),
             dropped: Arc::new(Mutex::new(dropped.iter().copied().collect())),
+            replay_seqs: Arc::new(Mutex::new(replays.iter().copied().collect())),
             out: Out::new(Box::new(sink.clone())),
             closed: Arc::new(AtomicBool::new(false)),
             streaming: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -214,6 +292,57 @@ mod tests {
         let (events, written, _) = read_all(hex(m["replyToShim"]["hex"].as_str().unwrap()), InFlight::default(), &[1]);
         assert!(written.is_empty(), "{}", String::from_utf8_lossy(&written));
         assert!(matches!(events[0], Event::Answered(Some(1))));
+    }
+
+    /// The shim's replayed initialize (R-cold-prompts): its answer is still
+    /// dropped, but read first, bounded, for the lists it declares.
+    fn replay_answer(body: &[u8]) -> Vec<u8> {
+        let p = message::to_runtime(Some(7), body, 1 << 22).unwrap();
+        let frame = frame::encode(Kind::Message, &p, Caps { message: 1 << 22 }).unwrap();
+        let (events, written, _) = read_all_with(frame, InFlight::default(), &[7], &[7]);
+        assert!(matches!(events[0], Event::Answered(Some(7))));
+        written
+    }
+    const PROMPTS: &str = r#"{"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}"#;
+    const RESOURCES: &str = r#"{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}"#;
+
+    #[test]
+    fn a_replayed_initializes_answer_declaring_both_lists_tells_both() {
+        let written = replay_answer(br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{"capabilities":{"tools":{"listChanged":true},"prompts":{"listChanged":true},"resources":{"listChanged":true}}}}"#);
+        assert_eq!(String::from_utf8(written).unwrap(), format!("{PROMPTS}\n{RESOURCES}\n"));
+    }
+
+    #[test]
+    fn a_list_the_replayed_initialize_declares_no_listchanged_for_is_not_told() {
+        let written = replay_answer(br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{"capabilities":{"tools":{"listChanged":true},"prompts":{},"resources":{"listChanged":true}}}}"#);
+        assert_eq!(String::from_utf8(written).unwrap(), format!("{RESOURCES}\n"));
+        let none = replay_answer(br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{"capabilities":{"tools":{"listChanged":true},"prompts":{},"resources":{}}}}"#);
+        assert!(none.is_empty(), "{}", String::from_utf8_lossy(&none));
+    }
+
+    #[test]
+    fn an_error_a_malformed_or_an_oversized_replay_answer_tells_nothing() {
+        for body in [
+            br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","error":{"code":-32602,"message":"no","data":{"capabilities":{"prompts":{"listChanged":true}}}}}"#.to_vec(),
+            br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{"capabilities":{"prompts":{"listChanged":true}"#.to_vec(),
+            br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":null}"#.to_vec(),
+            format!(r#"{{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{{"pad":"{}","capabilities":{{"prompts":{{"listChanged":true}}}}}}}}"#, "x".repeat(REPLAY_ANSWER_BYTES)).into_bytes(),
+        ] {
+            let written = replay_answer(&body);
+            assert!(written.is_empty(), "{}", String::from_utf8_lossy(&written));
+        }
+    }
+
+    #[test]
+    fn a_replay_answer_cut_short_is_lost_and_tells_nothing() {
+        let body =
+            br#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{"capabilities":{"prompts":{"listChanged":true}}}}"#;
+        let p = message::to_runtime(Some(7), body, 1 << 22).unwrap();
+        let mut frame = frame::encode(Kind::Message, &p, Caps { message: 1 << 22 }).unwrap();
+        frame.truncate(frame.len() - 10);
+        let (events, written, _) = read_all_with(frame, InFlight::default(), &[7], &[7]);
+        assert!(written.is_empty(), "{}", String::from_utf8_lossy(&written));
+        assert!(matches!(events.last(), Some(Event::Lost(_))), "{events:?}");
     }
 
     #[test]
