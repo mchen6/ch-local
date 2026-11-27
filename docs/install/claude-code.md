@@ -4,6 +4,16 @@
 
 ## Add
 
+First do [Before you start](README.md#before-you-start): Node, the install, the credential.
+
+On Windows, if a new window says `'claude' is not recognized` after Claude
+Code's native installer (`irm https://claude.ai/install.ps1 | iex`), its
+folder, `%USERPROFILE%\.local\bin`, is not on your PATH: the installer says
+so under "Setup notes:" and prints the fix, but doesn't change PATH itself.
+Add that folder to your user PATH as Claude Code's
+[install troubleshooting](https://code.claude.com/docs/en/troubleshoot-install)
+shows, then open a new window.
+
 The plugin is the simplest route:
 
     claude plugin marketplace add mchen6/ch-local
@@ -13,6 +23,15 @@ It adds the `ci_failure_triage` tool and a skill that tells Claude to call it
 first when a CI run failed. The plugin runs the installed launcher; if it is
 not installed yet, the tool fails with one line naming the install command.
 
+Adding the marketplace clones this repository, so it needs Git on your PATH
+(`git --version` prints a version). On Windows, install Git for Windows
+first (`winget install --id Git.Git -e --source winget`, or the installer
+from https://git-scm.com/install/windows), then open a new window; without
+it the add fails with "Command 'git' not found or is in an unsafe location".
+On macOS, `xcode-select --install` or `brew install git`
+(https://git-scm.com/install/mac). On Linux, your distribution's `git`
+package. Without Git, add the server by hand (below).
+
 Or add the server by hand. `ch-local snippet claude-code` prints the command
 for this machine, for example:
 
@@ -21,8 +40,8 @@ for this machine, for example:
 A path with a space is double-quoted. The line is for a POSIX shell (bash,
 zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`
 (`claude.ps1`) drops the `--` before the command, so on Windows run it in
-`cmd.exe`, or use the plugin
-([`claude mcp add`](https://code.claude.com/docs/en/mcp)).
+`cmd.exe` (with Git, the plugin route works from any shell). See
+[`claude mcp add`](https://code.claude.com/docs/en/mcp).
 
 **If `/mcp` shows `countinghouse` as failed.** On a busy machine its first
 start can take longer than Claude Code waits for a server. Select
@@ -62,9 +81,21 @@ if it does, stop and tell the user.
    a bare `ch-local <command>`, give them `node "<home>/bin/ch-local.js" <command>`
    instead, never the bare `ch-local`: neither way of installing puts it on
    their PATH.
-4. If the `ch-packs` plugin is not installed, run
-   `claude plugin marketplace add mchen6/ch-local`, then
-   `claude plugin install ch-packs@ch-packs`, and ask the user to restart
+4. If the `ch-packs` plugin is not installed, first say you'll check for
+   Git and, with the user's yes, run `git --version` (on macOS, this can
+   open Apple's prompt to install the command line tools; say so first). If
+   it fails, tell the user the plugin route needs Git (Windows:
+   `winget install --id Git.Git -e --source winget`; macOS:
+   `xcode-select --install`; Linux: the distribution's `git` package) and
+   that after installing it they restart Claude Code in a new window and ask
+   Claude again to install countinghouse from this page (check
+   `git --version` again before the plugin lines); or give them the
+   hand-added line that `node "<home>/bin/ch-local.js" snippet claude-code`
+   prints instead (on Windows, run it in `cmd.exe`, not PowerShell). With
+   Git, run `claude plugin marketplace add mchen6/ch-local`, then
+   `claude plugin install ch-packs@ch-packs` (if the marketplace add still
+   fails with "Command 'git' not found or is in an unsafe location", offer
+   the hand-added line), and ask the user to restart
    Claude Code. If it was installed already, ask them to restart Claude Code,
    or to reconnect `countinghouse` in `/mcp`.
 5. Call `countinghouse_overview` and tell the user what it reports. Only a

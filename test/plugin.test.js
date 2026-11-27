@@ -122,7 +122,7 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
   assert.ok(!/dev-server|countinghouse-dev|section 8/.test(skill));
   // (no credential handed through the conversation: no export of one, no value)
   assert.ok(!/\bexport [A-Z_]+=|GITHUB_TOKEN=|ghp_|github_pat_/.test(skill));
-  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), 'ce3ceb1875c51eff7b50de6af62dd384ad87dc6898d9f232eb189b06c80c4356', 'the checked text, byte for byte');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '3997fc1693abf0bc2bffb852f156ee1745b0b28f77f811169600bf54be4ca57a', 'the checked text, byte for byte');
 });
 
 test('launch.js without an installed launcher exits non-zero with one line naming the install command', () => {
@@ -445,4 +445,16 @@ test('launch.js and lib/home.js carry the same aboveProblemWith, word for word',
     return s.slice(at, s.indexOf('\n}\n', at) + 2);
   };
   assert.strictEqual(fn(LAUNCH), fn(path.join(ROOT, 'lib', 'home.js')));
+});
+
+// The plugin route clones the marketplace, so it needs Git: before the plugin
+// lines the setup skill checks for it, with the user's yes, and without it
+// offers the hand-added line instead.
+test('the setup skill checks for Git before the plugin lines', () => {
+  const skill = fs.readFileSync(path.join(PLUGIN, 'skills', 'countinghouse-setup', 'SKILL.md'), 'utf8').replace(/\s+/g, ' ');
+  const line = 'If the `ch-packs` plugin is not installed, first say you\'ll check for Git and, with the user\'s yes, run `git --version` (on macOS, this can open Apple\'s prompt to install the command line tools; say so first). If it fails, tell the user the plugin route needs Git (Windows: `winget install --id Git.Git -e --source winget`; macOS: `xcode-select --install`; Linux: the distribution\'s `git` package) and that after installing it they restart Claude Code in a new window and ask again to set up countinghouse (the steps start over and reach this one quickly; check `git --version` again before the plugin lines); or give them the hand-added line that `node "<home>/bin/ch-local.js" snippet claude-code` prints instead (on Windows, run it in `cmd.exe`, not PowerShell). With Git, with the user\'s yes run `claude plugin marketplace add mchen6/ch-local` and then `claude plugin install ch-packs@ch-packs` (if `claude plugin marketplace add` still fails with "Command \'git\' not found or is in an unsafe location", offer the hand-added line)';
+  const at = skill.indexOf(line);
+  // (the Git check, then the plugin lines, in that order within section 4: the sentence holds both, so its own order is checked)
+  assert.ok(at > skill.indexOf('## 4. Connect Claude Code'), 'in section 4');
+  assert.ok(line.indexOf('git --version') < line.indexOf('claude plugin marketplace add mchen6/ch-local'), 'the check before the plugin lines');
 });

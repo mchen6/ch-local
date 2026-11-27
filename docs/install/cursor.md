@@ -4,6 +4,8 @@
 
 ## Add
 
+First do [Before you start](README.md#before-you-start): Node, the install, the credential.
+
 `ch-local snippet cursor` prints the entry for this machine. Merge it into
 `~/.cursor/mcp.json` (every project; the file `ch-local add cursor` writes,
 checked by hand against Cursor's MCP docs, November 2026) or

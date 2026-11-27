@@ -44,7 +44,8 @@ test('the Claude Code page\'s agent section: the proxy check first, then the ins
   const proxy = section.indexOf('HTTPS_PROXY');
   const install = section.indexOf('npx @countinghouse/ch-local install --pack ci-failure-triage');
   const plugin = section.indexOf('claude plugin install ch-packs@ch-packs');
-  const restart = section.indexOf('restart Claude Code');
+  // (the plugin's one restart; a missing Git's restart before it is the user's own, in a new window)
+  const restart = section.indexOf('ask the user to restart Claude Code');
   // (the skill's order: the plugin's server starts only after the install,
   // once, at the one restart: the medium on d2, 9)
   assert.ok(proxy > 0 && proxy < install && install < plugin && plugin < restart, 'in that order');
@@ -131,4 +132,95 @@ test('the Claude Code page\'s updates: the read-only check, the user installs, C
     'claude plugin marketplace update ch-packs claude plugin update ch-packs@ch-packs', 'then restart Claude Code',
     'The plugin comes from this repository\'s marketplace entry (`.claude-plugin/marketplace.json`), not from the npm release whose provenance `upgrade` checks.',
     'It carries the skills, the MCP entry and a small launcher script (bin/launch.js) that starts the installed countinghouse. That script runs as you, so the plugin\'s source matters as much as the release\'s; countinghouse itself and your packs come only through the checked upgrade.']) assert.ok(section.includes(s), s);
+});
+
+// Before you start (a person may follow the install page alone): the
+// README's first section says what a person needs and does before
+// any client page: the Node floor the launcher enforces (read from
+// lib/node-check.js), Node 24 on every route, the install command as the agent
+// section has it, and the credential install ends with. Every client page's Add
+// starts by pointing to it (Claude Desktop's has nothing to add yet).
+test('the install README starts with Before you start: Node, the install command, the credential, then the client\'s page', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8');
+  const first = page.search(/^## /m);
+  assert.strictEqual(page.slice(first).split('\n')[0], '## Before you start', 'its first section');
+  const next = page.slice(first + 1).search(/^## /m);
+  const section = page.slice(first, next < 0 ? page.length : first + 1 + next).replace(/\s+/g, ' ');
+  const floor = require('../lib/node-check').FLOOR.replace(/\.0$/, '');
+  for (const text of ['**Node 24**', `${floor} or later works`, 'our tests run on Node 24 on Linux,', '`node -v`', '`v24.x`', '`brew install node@24`', 'add the PATH line that `brew info node@24` prints to your shell\'s startup file (~/.zshrc for zsh, the default; ~/.bash_profile for bash)', 'the macOS installer (.pkg) from https://nodejs.org/dist/latest-v24.x/. Or with Homebrew', 'https://nodejs.org/dist/latest-v24.x/', 'https://nodejs.org/en/download: choose v24 and Linux',
+    `ch-local itself checks only for ${floor} or later`, 'answer N and paste a read-only token', 'Use your gh login\'s token for',
+    'npx @countinghouse/ch-local install --pack ci-failure-triage', 'Actions read and Contents read',
+    'ch-local credentials add ch-access-github', 'install asks for each module\'s key that is still missing']) assert.ok(section.includes(text), text);
+  // (the prepared-folder route only until a release pins packages: the last test below checks it goes then)
+  if (Object.keys(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8')).pins || {}).length === 0) {
+    for (const text of ["CH_LOCAL_DEV=1 node '<dir>/ch-local/bin/ch-local.js' install --pack ci-failure-triage --from '<dir>/release' --unreleased-pins '<dir>/pins.json'",
+      "node '<dir>\\ch-local\\bin\\ch-local.js' install", 'Remove-Item Env:CH_LOCAL_DEV', 'The home is recorded as unreleased',
+      'claude-code.md#before-the-first-release-a-prepared-local-release']) assert.ok(section.includes(text), text);
+  }
+  // (Node 24 on every route, never whatever is current: winget's LTS id and brew's node move to the newest major)
+  assert.ok(!section.includes('winget install OpenJS.NodeJS.LTS') && !/brew install node(?!@24)/.test(section), 'every route gives 24');
+  const order = ['Node ', 'npx @countinghouse/ch-local install', 'credentials add', '**Then your client\'s page**'].map((t) => section.indexOf(t));
+  assert.ok(order.every((n, i) => n >= 0 && (i === 0 || n > order[i - 1])), `in that order: ${order}`);
+});
+
+test('every client page with something to add points to Before you start first', () => {
+  const pointer = 'First do [Before you start](README.md#before-you-start): Node, the install, the credential.';
+  for (const file of ['claude-code.md', 'cursor.md', 'vscode.md', 'codex.md']) {
+    const page = fs.readFileSync(path.join(DOCS, file), 'utf8');
+    const from = page.search(/^## Add$/m);
+    const body = page.slice(from).split('\n').slice(1).join('\n').trimStart();
+    assert.ok(from >= 0 && body.startsWith(pointer), `${file}: its Add section starts with the pointer`);
+  }
+});
+
+// The prepared-folder route is for before a release only: once
+// lib/release-pins.json pins packages, the README's marked paragraph must go
+// (the RC checks run this file; until a release, the marker must be on it).
+test('install README: the before-a-release paragraph goes once a release pins packages', () => {
+  const pins = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'lib', 'release-pins.json'), 'utf8')).pins || {};
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'docs', 'install', 'README.md'), 'utf8');
+  const marker = '<!-- until a release:';
+  if (Object.keys(pins).length > 0) {
+    for (const gone of [marker, 'CH_LOCAL_DEV', 'prepared local release']) assert.ok(!readme.includes(gone), `a release pins packages: remove the README's before-a-release text (${gone})`);
+  } else {
+    const at = readme.indexOf(marker);
+    assert.ok(at >= 0 && readme.indexOf('CH_LOCAL_DEV') > at, 'the before-a-release paragraph carries its marker');
+  }
+});
+
+// VS Code's Copilot chat refuses a server started by hand before its session
+// exists ("Cannot start an MCP server before the session runtime has been
+// created. Send a message first."): the page says servers start with the
+// first chat message.
+test('the VS Code page says its MCP servers start with the first chat message', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'vscode.md'), 'utf8');
+  const add = page.slice(page.search(/^## Add$/m), page.search(/^## Credentials$/m)).replace(/\s+/g, ' ');
+  assert.ok(add.includes('In VS Code\'s Copilot chat, MCP servers start with your first chat message: starting one by hand from MCP: List Servers before that fails with \'Cannot start an MCP server before the session runtime has been created\'.'), 'the line, in Add');
+});
+
+// Claude Code on Windows: the native installer leaves its folder off PATH
+// (it says so under "Setup notes:"), and adding a GitHub marketplace clones
+// it, so the plugin route needs Git: the page says both, with each source's
+// own commands.
+test('the Claude Code page says the Windows PATH step and that the plugin route needs Git', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
+  const add = page.slice(page.search(/^## Add$/m), page.search(/^## For an agent/m)).replace(/\s+/g, ' ');
+  for (const text of ['`%USERPROFILE%\\.local\\bin`, is not on your PATH', 'https://code.claude.com/docs/en/troubleshoot-install',
+    'Adding the marketplace clones this repository, so it needs Git on your PATH', '`winget install --id Git.Git -e --source winget`',
+    'https://git-scm.com/install/windows', "Command 'git' not found or is in an unsafe location", '`xcode-select --install` or `brew install git`',
+    'Without Git, add the server by hand']) assert.ok(add.includes(text), text);
+  assert.ok(add.indexOf('Adding the marketplace clones') > add.indexOf('claude plugin install ch-packs@ch-packs'), 'after the plugin lines');
+});
+
+// The agent's route checks for Git too, the hand route's Windows advice no
+// longer points back at the plugin, and Linux has its Git line.
+test('the Claude Code page: the agent checks for Git before the plugin lines; the hand route and Linux', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
+  const flat = page.replace(/\s+/g, ' ');
+  const line = 'If the `ch-packs` plugin is not installed, first say you\'ll check for Git and, with the user\'s yes, run `git --version` (on macOS, this can open Apple\'s prompt to install the command line tools; say so first). If it fails, tell the user the plugin route needs Git (Windows: `winget install --id Git.Git -e --source winget`; macOS: `xcode-select --install`; Linux: the distribution\'s `git` package) and that after installing it they restart Claude Code in a new window and ask Claude again to install countinghouse from this page (check `git --version` again before the plugin lines); or give them the hand-added line that `node "<home>/bin/ch-local.js" snippet claude-code` prints instead (on Windows, run it in `cmd.exe`, not PowerShell).';
+  const agent = flat.slice(flat.indexOf('## For an agent'));
+  assert.ok(agent.includes(line) && agent.indexOf(line) < agent.indexOf('claude plugin marketplace add mchen6/ch-local'), 'agent step 4, before the plugin lines');
+  assert.ok(flat.includes('On Linux, your distribution\'s `git` package.'), 'Linux');
+  const hand = flat.slice(flat.indexOf('Or add the server by hand'), flat.indexOf('**If `/mcp` shows'));
+  assert.ok(hand.length > 0 && !hand.includes('or use the plugin'), 'the hand route does not send a user without Git back to the plugin');
 });
