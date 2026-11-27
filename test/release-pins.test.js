@@ -147,7 +147,9 @@ test('what a new release adds that needs the user\'s yes, for the installed pack
   promoted.modules[REDACT].role = 'scenario';
   const r = additions(now, parseReleasePins(promoted).pins, ['ci-failure-triage']);
   assert.deepStrictEqual(r.map((x) => [x.kind, x.module, x.was, x.now]), [['role', REDACT, 'part', 'scenario']]);
-  assert.strictEqual(r[0].line, 'ch-step-redact is no longer a part: its settings can be changed in conversation');
+  // (a text setting needs a confirmation, and that is a terminal's: the line
+  // says only what the conversation can change)
+  assert.strictEqual(r[0].line, 'ch-step-redact is no longer a part: those of its settings that need no confirmation can now be changed in conversation');
   // anything removed asks nothing
   const fewer = shipped();
   fewer.packs['ci-failure-triage'].modules = fewer.packs['ci-failure-triage'].modules.filter((m) => m !== '@countinghouse/ch-step-dedupe');
