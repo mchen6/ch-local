@@ -775,3 +775,49 @@ test('shared: the acceptance fixture pack is in no shipped allowlist, release pi
   assert.deepStrictEqual(Object.keys(added.packs).filter((k) => k !== shared.ACCEPT), Object.keys(ALLOWLIST.packs));
   assert.deepStrictEqual(added.packs[shared.ACCEPT], {modules: shared.ACCEPT_PACKAGES});
 });
+
+// A work tree that Windows keeps locked a moment after the daemon is gone
+// (EPERM, EBUSY) is retried; one still not removed is said on its own line
+// and never ends the run: the verdict already reported stands.
+test('shared: the run\'s folders are removed with retries; one left behind is said, never thrown, and leaves the verdict alone', () => {
+  const said = [];
+  const calls = [];
+  const eperm = (dir, opts) => { calls.push({dir, opts}); throw Object.assign(new Error(`EPERM: operation not permitted, rmdir '${dir}'`), {code: 'EPERM'}); };
+  assert.strictEqual(shared.removeRunFolder('/x/work', {rm: eperm, say: (s) => said.push(s), holders: () => ['pid 7: node /x/work/daemon.js']}), false);
+  assert.deepStrictEqual(said, ['cleanup: /x/work was not removed (EPERM); the verdict above stands', 'cleanup: what names /x/work now: pid 7: node /x/work/daemon.js']);
+  const none = [];
+  shared.removeRunFolder('/x/work', {rm: eperm, say: (s) => none.push(s), holders: () => []});
+  assert.strictEqual(none[1], 'cleanup: what names /x/work now: no process names it (one may hold a file in it without naming it)');
+  assert.ok(calls[0].opts.recursive === true && calls[0].opts.force === true && calls[0].opts.maxRetries >= 5 && calls[0].opts.retryDelay >= 100, JSON.stringify(calls[0].opts));
+  const unread = [];
+  shared.removeRunFolder('/x/work', {rm: eperm, say: (s) => unread.push(s), holders: () => { throw new Error('the process list could not be read'); }});
+  assert.strictEqual(unread[1], 'cleanup: what names /x/work could not be looked for: the process list could not be read');
+  const quiet = [];
+  assert.strictEqual(shared.removeRunFolder('/x/repo', {rm: () => {}, say: (s) => quiet.push(s)}), true);
+  assert.deepStrictEqual(quiet, []);
+});
+
+test('shared: what holds a folder: a process whose command line or working folder is under it, never one beside it', () => {
+  const rows = [{pid: 1, ppid: 0, args: 'node /x/work/bin/daemon.js'}, {pid: 2, ppid: 0, args: 'node /x/workshop/a.js'}, {pid: 3, ppid: 0, args: 'sleep 9'}, {pid: 4, ppid: 0, args: 'x'.repeat(400) + ' /x/work'}];
+  const cwdOf = (pid) => (pid === 3 ? '/x/work/sub' : null);
+  const held = shared.holdersOf('/x/work', rows, cwdOf);
+  assert.deepStrictEqual(held.map((h) => h.split(':')[0]), ['pid 1', 'pid 3', 'pid 4']);
+  assert.ok(held[1].includes('working folder /x/work/sub'), held[1]);
+  assert.ok(held.every((h) => h.length <= 260), 'a long command line is cut');
+});
+
+test('shared: a path that only ends in the folder\'s name is not it; on Windows, case and slashes do not matter', () => {
+  const none = () => null;
+  assert.deepStrictEqual(shared.holdersOf('/tmp/acc-1', [{pid: 1, ppid: 0, args: 'cp /home/u/tmp/acc-1 x'}, {pid: 2, ppid: 0, args: 'node --home=/tmp/acc-1/home'}, {pid: 5, ppid: 0, args: 'env NODE_PATH=/a:/tmp/acc-1/lib node'}], none).map((h) => h.split(':')[0]), ['pid 2', 'pid 5']);
+  const win = shared.holdersOf(['C:\\Users\\R\\AppData\\Local\\Temp\\acc-2'], [{pid: 3, ppid: 0, args: '"c:/users/r/appdata/local/temp/ACC-2/bin/ch-shim.exe" --x'}, {pid: 4, ppid: 0, args: 'C:\\other\\acc-2'}], none, 'win32');
+  assert.deepStrictEqual(win.map((h) => h.split(':')[0]), ['pid 3']);
+});
+
+test('shared: an interrupted run removes its folders without retries and looks for no process', () => {
+  const said = []; let opts = null; let looked = false;
+  const rm = (dir, o) => { opts = o; throw Object.assign(new Error('EBUSY'), {code: 'EBUSY'}); };
+  assert.strictEqual(shared.removeRunFolder('/x/work', {rm, say: (s) => said.push(s), quick: true, holders: () => { looked = true; return []; }}), false);
+  assert.ok(opts.maxRetries == null, JSON.stringify(opts));
+  assert.strictEqual(looked, false);
+  assert.deepStrictEqual(said, ['cleanup: /x/work was not removed (EBUSY); the verdict above stands', 'cleanup: what names /x/work was not looked for: the run was interrupted']);
+});
