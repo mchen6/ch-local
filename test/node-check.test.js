@@ -54,7 +54,8 @@ test('node-check loads on an old Node: no node: requires, no newer syntax it nee
 const LINES = {
   darwin: 'brew install node@24, then put it on your PATH as brew info node@24 says (Homebrew keeps it off the PATH): echo \'export PATH="$(brew --prefix node@24)/bin:$PATH"\' >> ~/.zshrc, and open a new terminal; or the macOS installer (.pkg) from https://nodejs.org/dist/latest-v24.x/',
   win32: 'the Windows installer (.msi, x64) from https://nodejs.org/dist/latest-v24.x/, then open a new terminal',
-  linux: 'your distribution\'s package if node -v then prints v24.x; otherwise https://nodejs.org/en/download: choose v24 and Linux, and it shows the commands to run'
+  linux: 'your distribution\'s package if node -v then prints v24.x; otherwise https://nodejs.org/en/download: choose v24 and Linux, and it shows the commands to run',
+  other: 'https://nodejs.org/en/download: choose v24 and your system, and it shows the commands to run'
 };
 for (const platform of ['darwin', 'win32', 'linux', 'freebsd']) {
   test(`below the floor on ${platform}: the install-yourself line is the install pages' route, never "whatever is current"`, async () => {
@@ -62,7 +63,7 @@ for (const platform of ['darwin', 'win32', 'linux', 'freebsd']) {
     io.platform = platform;
     assert.strictEqual(await offerNode(io), 'install-yourself');
     const line = io.err.split('\n').find((l) => l.startsWith('  1. install Node 24 yourself: '));
-    assert.strictEqual(line, '  1. install Node 24 yourself: ' + (LINES[platform] || LINES.linux));
+    assert.strictEqual(line, '  1. install Node 24 yourself: ' + (LINES[platform] || LINES.other));
     assert.ok(!/winget install OpenJS\.NodeJS\.LTS/.test(io.err) && !/brew install node(?!@)/.test(io.err), io.err);
   });
 }
