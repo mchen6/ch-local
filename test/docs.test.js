@@ -44,7 +44,8 @@ test('the Claude Code page\'s agent section: the proxy check first, then the ins
   const proxy = section.indexOf('HTTPS_PROXY');
   const install = section.indexOf('npx @countinghouse/ch-local install --pack ci-failure-triage');
   const plugin = section.indexOf('claude plugin install ch-packs@ch-packs');
-  const restart = section.indexOf('restart Claude Code');
+  // (the plugin's one restart; a missing Git's restart before it is the user's own, in a new window)
+  const restart = section.indexOf('ask the user to restart Claude Code');
   // (the skill's order: the plugin's server starts only after the install,
   // once, at the one restart: the medium on d2, 9)
   assert.ok(proxy > 0 && proxy < install && install < plugin && plugin < restart, 'in that order');
@@ -209,4 +210,17 @@ test('the Claude Code page says the Windows PATH step and that the plugin route 
     'https://git-scm.com/install/windows', "Command 'git' not found or is in an unsafe location", '`xcode-select --install` or `brew install git`',
     'Without Git, add the server by hand']) assert.ok(add.includes(text), text);
   assert.ok(add.indexOf('Adding the marketplace clones') > add.indexOf('claude plugin install ch-packs@ch-packs'), 'after the plugin lines');
+});
+
+// The agent's route checks for Git too, the hand route's Windows advice no
+// longer points back at the plugin, and Linux has its Git line.
+test('the Claude Code page: the agent checks for Git before the plugin lines; the hand route and Linux', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
+  const flat = page.replace(/\s+/g, ' ');
+  const line = 'If the `ch-packs` plugin is not installed, first say you\'ll check for Git and, with the user\'s yes, run `git --version` (on macOS, this can open Apple\'s prompt to install the command line tools; say so first). If it fails, tell the user the plugin route needs Git (Windows: `winget install --id Git.Git -e --source winget`; macOS: `xcode-select --install`; Linux: the distribution\'s `git` package) and that after installing it they restart Claude Code in a new window and ask Claude again to install countinghouse from this page (check `git --version` again before the plugin lines); or give them the hand-added line that `node "<home>/bin/ch-local.js" snippet claude-code` prints instead (on Windows, run it in `cmd.exe`, not PowerShell).';
+  const agent = flat.slice(flat.indexOf('## For an agent'));
+  assert.ok(agent.includes(line) && agent.indexOf(line) < agent.indexOf('claude plugin marketplace add mchen6/ch-local'), 'agent step 4, before the plugin lines');
+  assert.ok(flat.includes('On Linux, your distribution\'s `git` package.'), 'Linux');
+  const hand = flat.slice(flat.indexOf('Or add the server by hand'), flat.indexOf('**If `/mcp` shows'));
+  assert.ok(hand.length > 0 && !hand.includes('or use the plugin'), 'the hand route does not send a user without Git back to the plugin');
 });
