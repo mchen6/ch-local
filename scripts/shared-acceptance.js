@@ -518,77 +518,89 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   let stderr = '';
   let finished = null;
   const finish = (interrupted) => finished || (finished = (async () => {
-    if (interrupted != null) check('the run was not interrupted', false, interrupted);
-    // The traced client ends as a client does (its stdin closed: the
-    // harness and its shim exit) while strace goes on tracing the daemon,
-    // which outlives the shim; the daemon is stopped last, so strace ends with
-    // it and its trace is whole. Never strace stopped first: under
-    // --seccomp-bpf a process it traced and left running has its network
-    // calls fail.
-    const tracing = traced != null && traced.traced && client != null;
-    // this run's processes but strace and this one, by the run's own folder
-    // in their arguments (the daemon's and the runtime's name the home),
-    // with strace's own tree: what strace traces
-    const tracees = () => {
-      const rows = processes() || [];
-      const tree = new Set((treeOf(client.pid) || []).map((r) => r.pid));
-      return rows.filter((r) => r.pid !== client.pid && r.pid !== process.pid && (tree.has(r.pid) || r.args.includes(work))).map((r) => r.pid);
-    };
-    const kill = (pids, sig) => { for (const pid of pids) { try { process.kill(pid, sig); } catch (e) { /* gone */ } } };
-    // (an interrupted run: short bounds, so a CI cancel's SIGKILL finds
-    // nothing left)
-    const bound = (ms) => (interrupted != null ? Math.min(ms, 1000) : ms);
-    // the untraced clients first: none of their shims is left to start a
-    // daemon again once the traced one's stops
-    if (client2 != null) await stopTree(client2);
-    for (const c of more) await stopTree(c);
-    // the daemon serving now: the one traced at attach, or the trace missed it
-    const servingDaemon = daemonPid(home);
-    if (tracing) {
-      try { client.stdin.end(); } catch (e) { /* gone */ }
-      // (the harness and its shim gone: strace's tree is strace and the
-      // daemon's alone; one not read is not known to be, and waited for to
-      // the bound; at the bound, the harness and the shim are ended, never
-      // the daemon)
-      const daemonTree = () => new Set(servingDaemon != null ? (treeOf(servingDaemon) || []).map((r) => r.pid) : []);
-      const left = () => { const t = treeOf(client.pid); if (t == null) return null; const d = daemonTree(); return t.filter((r) => r.pid !== client.pid && !d.has(r.pid)).map((r) => r.pid); };
-      for (const until = Date.now() + bound(10000); Date.now() < until;) { const l = left(); if (l != null && l.length === 0) break; await new Promise((r) => setTimeout(r, 100)); }
-      const still = left();
-      if (still == null || still.length > 0) { kill(still || [], 'SIGTERM'); await new Promise((r) => setTimeout(r, bound(1000))); }
-    } else if (client != null) await stopTree(client);
-    if (report.checks.some((c) => !c.ok) && interrupted == null) await diagnose();
-    await stopDaemon(home, bound(10000));
-    if (tracing) {
-      let timer = null;
-      const exit = await Promise.race([clientExited, new Promise((r) => { timer = setTimeout(() => r('timeout'), bound(15000)); })]);
-      clearTimeout(timer);
-      // (whole: strace ended in time, and not by a signal -- one killed cut its trace short)
-      const whole = exit !== 'timeout' && exit != null && exit.signal == null;
-      // (strace did not end: every process it may still trace is killed
-      // first -- its process group, the daemon's tree and anything naming the
-      // run's folder -- then strace, so none is left running under its filter)
-      if (exit === 'timeout') {
-        try { process.kill(-client.pid, 'SIGKILL'); } catch (e) { /* gone */ }
-        kill([...(servingDaemon != null ? [servingDaemon] : []), ...tracees()], 'SIGKILL');
-        await stopTree(client);
-      }
-      const daemon = tracedDaemon == null ? null
-        : tracedDaemon.traced !== true ? {problem: `the daemon (pid ${tracedDaemon.pid}) was not traced at attach (TracerPid ${tracedDaemon.traced === false ? '0' : 'unreadable'})`}
-        : servingDaemon !== tracedDaemon.pid ? {problem: `the daemon serving at the end (pid ${servingDaemon}) is not the one traced at attach (pid ${tracedDaemon.pid})`} : {};
-      for (const c of traceVerdict({text: fs.existsSync(traceFile) ? fs.readFileSync(traceFile, 'utf8') : null, whole, sessionSocket, daemon})) check(c.name, c.ok, c.ok ? null : c.detail);
-    }
-    const left = daemonPid(home);
-    if (left != null) check('the daemon is stopped at the end', !alive(left), `pid ${left}`);
-    report.finishedAt = new Date().toISOString();
-    report.ok = report.checks.length > 0 && report.checks.every((c) => c.ok);
-    if (!report.ok && stderr !== '') report.shimLog = stderr.split('\n').slice(-200).join('\n');
-    try { if (!report.ok && fs.existsSync(path.join(work, 'daemon.log'))) report.daemonLog = fs.readFileSync(path.join(work, 'daemon.log'), 'utf8').split('\n').slice(-300).join('\n'); } catch (e) { /* none */ }
+    let daemonStopped = false;
     try {
+      if (interrupted != null) check('the run was not interrupted', false, interrupted);
+      // The traced client ends as a client does (its stdin closed: the
+      // harness and its shim exit) while strace goes on tracing the daemon,
+      // which outlives the shim; the daemon is stopped last, so strace ends with
+      // it and its trace is whole. Never strace stopped first: under
+      // --seccomp-bpf a process it traced and left running has its network
+      // calls fail.
+      const tracing = traced != null && traced.traced && client != null;
+      // this run's processes but strace and this one, by the run's own folder
+      // in their arguments (the daemon's and the runtime's name the home),
+      // with strace's own tree: what strace traces
+      const tracees = () => {
+        const rows = processes() || [];
+        const tree = new Set((treeOf(client.pid) || []).map((r) => r.pid));
+        return rows.filter((r) => r.pid !== client.pid && r.pid !== process.pid && (tree.has(r.pid) || r.args.includes(work))).map((r) => r.pid);
+      };
+      const kill = (pids, sig) => { for (const pid of pids) { try { process.kill(pid, sig); } catch (e) { /* gone */ } } };
+      // (an interrupted run: short bounds, so a CI cancel's SIGKILL finds
+      // nothing left)
+      const bound = (ms) => (interrupted != null ? Math.min(ms, 1000) : ms);
+      // the untraced clients first: none of their shims is left to start a
+      // daemon again once the traced one's stops
+      if (client2 != null) await stopTree(client2);
+      for (const c of more) await stopTree(c);
+      // the daemon serving now: the one traced at attach, or the trace missed it
+      const servingDaemon = daemonPid(home);
+      if (tracing) {
+        try { client.stdin.end(); } catch (e) { /* gone */ }
+        // (the harness and its shim gone: strace's tree is strace and the
+        // daemon's alone; one not read is not known to be, and waited for to
+        // the bound; at the bound, the harness and the shim are ended, never
+        // the daemon)
+        const daemonTree = () => new Set(servingDaemon != null ? (treeOf(servingDaemon) || []).map((r) => r.pid) : []);
+        const left = () => { const t = treeOf(client.pid); if (t == null) return null; const d = daemonTree(); return t.filter((r) => r.pid !== client.pid && !d.has(r.pid)).map((r) => r.pid); };
+        for (const until = Date.now() + bound(10000); Date.now() < until;) { const l = left(); if (l != null && l.length === 0) break; await new Promise((r) => setTimeout(r, 100)); }
+        const still = left();
+        if (still == null || still.length > 0) { kill(still || [], 'SIGTERM'); await new Promise((r) => setTimeout(r, bound(1000))); }
+      } else if (client != null) await stopTree(client);
+      if (report.checks.some((c) => !c.ok) && interrupted == null) await diagnose();
+      await stopDaemon(home, bound(10000));
+      daemonStopped = true;
+      if (tracing) {
+        let timer = null;
+        const exit = await Promise.race([clientExited, new Promise((r) => { timer = setTimeout(() => r('timeout'), bound(15000)); })]);
+        clearTimeout(timer);
+        // (whole: strace ended in time, and not by a signal -- one killed cut its trace short)
+        const whole = exit !== 'timeout' && exit != null && exit.signal == null;
+        // (strace did not end: every process it may still trace is killed
+        // first -- its process group, the daemon's tree and anything naming the
+        // run's folder -- then strace, so none is left running under its filter)
+        if (exit === 'timeout') {
+          try { process.kill(-client.pid, 'SIGKILL'); } catch (e) { /* gone */ }
+          kill([...(servingDaemon != null ? [servingDaemon] : []), ...tracees()], 'SIGKILL');
+          await stopTree(client);
+        }
+        const daemon = tracedDaemon == null ? null
+          : tracedDaemon.traced !== true ? {problem: `the daemon (pid ${tracedDaemon.pid}) was not traced at attach (TracerPid ${tracedDaemon.traced === false ? '0' : 'unreadable'})`}
+          : servingDaemon !== tracedDaemon.pid ? {problem: `the daemon serving at the end (pid ${servingDaemon}) is not the one traced at attach (pid ${tracedDaemon.pid})`} : {};
+        for (const c of traceVerdict({text: fs.existsSync(traceFile) ? fs.readFileSync(traceFile, 'utf8') : null, whole, sessionSocket, daemon})) check(c.name, c.ok, c.ok ? null : c.detail);
+      }
+      const left = daemonPid(home);
+      if (left != null) check('the daemon is stopped at the end', !alive(left), `pid ${left}`);
+      report.finishedAt = new Date().toISOString();
+      report.ok = report.checks.length > 0 && report.checks.every((c) => c.ok);
+      if (!report.ok && stderr !== '') report.shimLog = stderr.split('\n').slice(-200).join('\n');
+      try { if (!report.ok && fs.existsSync(path.join(work, 'daemon.log'))) report.daemonLog = fs.readFileSync(path.join(work, 'daemon.log'), 'utf8').split('\n').slice(-300).join('\n'); } catch (e) { /* none */ }
       fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
       say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'}${(report.skipped || []).length > 0 ? `; skipped, not passed: ${report.skipped.join('; ')}` : ''})`);
     } finally {
-      fs.rmSync(work, {recursive: true, force: true});
-      fs.rmSync(repoRoot, {recursive: true, force: true});
+      // (whatever ended the run, after the daemon is stopped and checked when
+      // it got that far: a folder Windows still holds is retried, and one left
+      // behind is said with what names it, never thrown over the verdict; an
+      // interrupted run's bounds stay short)
+      // (a run that threw before the daemon was stopped: stopped now, bounded, so no folder goes from under it)
+      if (!daemonStopped) { try { await stopDaemon(home, bound(10000)); } catch (e) { /* the removal says what is left */ } }
+      const quick = interrupted != null;
+      // (one process scan for both folders, when one is needed)
+      let rows;
+      const holders = (dir) => () => { if (rows === undefined) rows = processes(); if (rows == null) throw new Error('the process list could not be read'); return holdersOf(pathForms(dir), rows); };
+      removeRunFolder(work, {say, quick, home, holders: holders(work)});
+      removeRunFolder(repoRoot, {say, quick, holders: holders(repoRoot)});
     }
   })());
   // A failed run's diagnosis, said into the output (CI keeps no report
@@ -901,12 +913,64 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     check('the run completed', false, err.stack || err.message);
   } finally {
     untrap();
-    await finish(null);
+    // (a finish that threw is a failed check, never a crash that hides the verdict)
+    try { await finish(null); } catch (err) { check('the run finished its checks', false, (err && (err.stack || err.message)) || String(err)); }
   }
   return report.ok ? code : 1;
 }
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code));
 
-module.exports = {main, daemonLogMode, DAEMON_LOG_SKIPPED, traceVerdict, TRACE_SAW, TRACE_NONE_LEFT, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session, latchedChecks,
+// A run's folder, removed after the daemon is gone. Windows can hold a file
+// in it a moment longer (EPERM, EBUSY: an exiting process's handles, a
+// scanner): an own module's read-only copies under the home are unlocked
+// first (as acceptance.js's removeTree does), then Node's own retries, then a
+// folder still there is said on its own line with the processes that name
+// it, so the cause is learned. It never throws: the verdict already reported
+// stands. quick (an interrupted run): no retries and no process scan, so a
+// cancel's grace period is not spent here.
+function removeRunFolder(dir, {rm = fs.rmSync, say, quick = false, home = null, platform = process.platform, holders = () => { const rows = processes(); if (rows == null) throw new Error('the process list could not be read'); return holdersOf(pathForms(dir), rows); }}) {
+  if (home != null) { try { require('../lib/own-tree').unlockTree(path.join(home, 'own')); } catch (e) { /* the removal says it */ } }
+  try {
+    rm(dir, {recursive: true, force: true, ...(quick ? {} : {maxRetries: 5, retryDelay: 100})});
+    return true;
+  } catch (e) {
+    say(`cleanup: ${dir} was not removed (${e.code || e.message}); the verdict above stands`);
+    if (quick) { say(`cleanup: what names ${dir} was not looked for: the run was interrupted`); return false; }
+    let held = [];
+    try { held = holders(); } catch (err) { say(`cleanup: what names ${dir} could not be looked for: ${err.code || err.message}`); return false; }
+    const none = platform === 'win32' ? 'no process names it on its command line (a working folder can\'t be read on Windows)' : 'no process names it (one may hold a file in it without naming it)';
+    say(`cleanup: what names ${dir} now: ${held.length > 0 ? held.join('; ') : none}`);
+    return false;
+  }
+}
+// The processes whose command line names a path at or under one of `dirs`
+// (the folder as made and as resolved; an image's path is in its command
+// line) or whose working folder is under it (where it can be read: /proc on
+// Linux; Windows's WMI has none, so there only this process's own):
+// "pid N: <command line, cut>" or "pid N: working folder <path>". On Windows
+// paths compare without case and with either slash.
+// (a folder already unlinked reads "<path> (deleted)")
+const LINUX_CWD = (pid) => { try { return fs.readlinkSync(`/proc/${pid}/cwd`).replace(/ \(deleted\)$/, ''); } catch (e) { return null; } };
+// a folder as made, as resolved, and (Windows) with its 8.3 short names expanded
+const pathForms = (dir) => { const out = [dir, realOr(dir)]; try { out.push(fs.realpathSync.native(dir)); } catch (e) { /* gone */ } return out; };
+function holdersOf(dirs, rows, cwdOf = process.platform === 'linux' ? LINUX_CWD : (pid) => (pid === process.pid ? process.cwd() : null), platform = process.platform) {
+  const norm = (t) => (platform === 'win32' ? String(t).replace(/\\/g, '/').toLowerCase() : String(t));
+  const forms = [...new Set((Array.isArray(dirs) ? dirs : [dirs]).filter((d) => typeof(d) === 'string' && d !== '').map(norm))];
+  const under = (p) => typeof(p) === 'string' && forms.some((d) => { const n = norm(p); return n === d || n.startsWith(d + '/'); });
+  // (a whole path: what is before it starts an argument, what is after it ends it or goes on into it)
+  const names = (args) => {
+    const a = norm(args);
+    return forms.some((d) => { for (let at = a.indexOf(d); at >= 0; at = a.indexOf(d, at + 1)) { const before = at === 0 ? ' ' : a[at - 1]; const next = a[at + d.length]; if (/[\s"'=:,;]/.test(before) && (next == null || /[/\s"':,;]/.test(next))) return true; } return false; });
+  };
+  const cut = (t) => (t.length > 240 ? `${t.slice(0, 240)}…` : t);
+  const out = [];
+  for (const row of rows) {
+    if (names(row.args)) { out.push(`pid ${row.pid}: ${cut(row.args)}`); continue; }
+    const cwd = cwdOf(row.pid);
+    if (under(cwd)) out.push(`pid ${row.pid}: working folder ${cut(cwd)}`);
+  }
+  return out;
+}
+module.exports = {main, removeRunFolder, holdersOf, daemonLogMode, DAEMON_LOG_SKIPPED, traceVerdict, TRACE_SAW, TRACE_NONE_LEFT, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session, latchedChecks,
   progressChecks, cancelChecks, askChecks, ACCEPT, ACCEPT_DIRS, ACCEPT_PACKAGES, acceptRelease};
