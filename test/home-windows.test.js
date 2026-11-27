@@ -197,14 +197,13 @@ test('%LOCALAPPDATA% known from Windows with none in the environment: a home und
   assert.match(p.consequence, /move it aside and install again, which makes it a folder that takes nothing from the folders above it/);
 }));
 
-// install puts the home under the environment's LOCALAPPDATA: a home under it, or under the known folder, is under %LOCALAPPDATA%
-test('a home under the environment\'s LOCALAPPDATA, another folder than the known one: still under %LOCALAPPDATA%, moved aside', () => withHome((h) => {
+// Windows' known folder decides, the environment's LOCALAPPDATA only when it is unknown: one pointed elsewhere (into the profile, say)
+// is no folder Codex leaves alone, so a home under it is told to go under %LOCALAPPDATA%, never to be installed again in place
+test('a home under the environment\'s LOCALAPPDATA but not the known folder: told to go under %LOCALAPPDATA%, not moved aside in place', () => withHome((h) => {
   const rules = [rule(CODEX_SID, CODEX, READ)];
   const lookup = (sids) => Object.assign(namesOf(rules)(sids), {localAppData: 'C:\\Users\\dev\\AppData\\Local'});
-  // (the environment's: this home's folder, a full path where the test runs on Windows; elsewhere given as the test's option)
-  const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: {LOCALAPPDATA: path.dirname(h)}, principalNames: lookup,
-    localAppData: process.platform === 'win32' ? undefined : [lookup([]).localAppData, path.dirname(h)]});
-  assert.match(p.consequence, /move it aside and install again/);
+  const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: {LOCALAPPDATA: path.dirname(h)}, principalNames: lookup});
+  assert.match(p.consequence, /point it under %LOCALAPPDATA%/);
 }));
 
 // a lookup's entry that is not a string: an account it could not say, never one that names no account
