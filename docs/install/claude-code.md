@@ -6,6 +6,14 @@
 
 First do [Before you start](README.md#before-you-start): Node, the install, the credential.
 
+On Windows, if a new window says `'claude' is not recognized` after Claude
+Code's native installer (`irm https://claude.ai/install.ps1 | iex`), its
+folder, `%USERPROFILE%\.local\bin`, is not on your PATH: the installer says
+so under "Setup notes:" and prints the fix, but doesn't change PATH itself.
+Add that folder to your user PATH as Claude Code's
+[install troubleshooting](https://code.claude.com/docs/en/troubleshoot-install)
+shows, then open a new window.
+
 The plugin is the simplest route:
 
     claude plugin marketplace add mchen6/ch-local
@@ -14,6 +22,15 @@ The plugin is the simplest route:
 It adds the `ci_failure_triage` tool and a skill that tells Claude to call it
 first when a CI run failed. The plugin runs the installed launcher; if it is
 not installed yet, the tool fails with one line naming the install command.
+
+Adding the marketplace clones this repository, so it needs Git on your PATH
+(`git --version` prints a version). On Windows, install Git for Windows
+first (`winget install --id Git.Git -e --source winget`, or the installer
+from https://git-scm.com/install/windows), then open a new window; without
+it the add fails with "Command 'git' not found or is in an unsafe location".
+On macOS, `xcode-select --install` or `brew install git`
+(https://git-scm.com/install/mac). Without Git, add the server by hand
+(below).
 
 Or add the server by hand. `ch-local snippet claude-code` prints the command
 for this machine, for example:
