@@ -51,7 +51,47 @@ const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
 const dogfood = require('./dogfood');
 const fixtures = require('../lib/client-conditions-fixtures');
-const {launcherEnv, stopTree, endTree, trapSignals} = require('./acceptance');
+const {launcherEnv, stopTree, endTree, trapSignals, outboundOf, traceCommand, canTrace, onCi, TRACE_SKIPPED} = require('./acceptance');
+// The debugging aid that starts the daemon here, untraced, for its log
+// (CH_SHARED_ACCEPTANCE_DAEMON_LOG=1, POSIX): a second way to leave the
+// daemon out of the no-outbound-connection check, so a local one only, as
+// CH_ACCEPTANCE_NO_TRACE is: refused on CI, and with it the trace's checks
+// are listed as skipped, never a pass -> {on} | {on: false, problem}
+const DAEMON_LOG_SKIPPED = 'not checked: daemon started untraced for its log (CH_SHARED_ACCEPTANCE_DAEMON_LOG=1)';
+// The shared path's trace, once strace has ended (its last tracee, the
+// daemon, exited) -> the checks to record, [{name, ok, detail}]: none whole
+// (strace had to be stopped) fails; the socket reached is asked only of a run
+// that attached (sessionSocket read), so an earlier failure is not said twice
+const TRACE_SAW = 'the trace saw a connection to the shared runtime\'s socket (strace, the shim, the daemon and the runtime followed)';
+const TRACE_NONE_LEFT = 'no connection of the shim, the daemon or the shared runtime left the machine (strace, every process)';
+// (text null: no trace file, which fails as one not whole does; a failure's
+// detail shows the trace's first connects, as CI keeps no file)
+// whether a process is being traced (Linux: its TracerPid) -> true, false,
+// or null when it can't be read
+function traced_(pid) {
+  try { const m = /^TracerPid:\s*(\d+)$/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8')); return m != null ? m[1] !== '0' : null; } catch (e) { return null; }
+}
+function traceVerdict({text, whole, sessionSocket, daemon = null}) {
+  // (the daemon that served: traced, and the same one to the end -- one an
+  // untraced shim started again would go unseen)
+  if (daemon != null && daemon.problem != null) return [{name: TRACE_NONE_LEFT, ok: false, detail: daemon.problem}];
+  if (!whole) return [{name: TRACE_NONE_LEFT, ok: false, detail: 'the trace is not whole: strace did not end with the daemon, and was stopped'}];
+  if (text == null) return [{name: TRACE_NONE_LEFT, ok: false, detail: 'the trace is missing: strace wrote no file'}];
+  const seen = outboundOf(text);
+  const connects = String(text).split('\n').filter((l) => /\bconnect\(/.test(l));
+  const shown = `${connects.length} connects${connects.length > 0 ? `:\n${connects.slice(0, 20).map((l) => l.slice(0, 200)).join('\n')}` : ''}`;
+  const out = [];
+  if (typeof sessionSocket === 'string') {
+    out.push({name: TRACE_SAW, ok: text.includes(`sun_path="${sessionSocket}"`), detail: `socket ${JSON.stringify(sessionSocket)}; ${shown}`});
+  }
+  out.push({name: TRACE_NONE_LEFT, ok: seen.away.length === 0, detail: `${seen.away.join(', ')}; ${shown}`});
+  return out;
+}
+function daemonLogMode(env, platform) {
+  if (env.CH_SHARED_ACCEPTANCE_DAEMON_LOG !== '1' || platform === 'win32') return {on: false};
+  if (onCi(env)) return {on: false, problem: 'CH_SHARED_ACCEPTANCE_DAEMON_LOG=1 is refused on CI: it starts the daemon untraced, leaving it out of the no-outbound-connection check'};
+  return {on: true};
+}
 
 const ROOT = path.resolve(__dirname, '..');
 const SHIM_BUILD_MS = 20 * 60 * 1000;
@@ -462,17 +502,81 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   const node = process.execPath;
   let client = null;
   let client2 = null;
+  // the first client under strace on Linux (traceCommand): -f follows the
+  // shim into the daemon it starts and the shared runtime the daemon runs;
+  // read once strace has ended, with the same rules as the per-session run's
+  let traced = null;
+  let clientExited = null;
+  const traceFile = path.join(work, 'shared.trace');
+  let sessionSocket = null;
+  // the daemon at attach, and whether strace traced it
+  let tracedDaemon = null;
+  // the debugging aid's log (CH_SHARED_ACCEPTANCE_DAEMON_LOG=1), when on
+  let daemonLog = null;
   // (c)'s clients: each stopped in finish, as the others are
   const more = [];
   let stderr = '';
   let finished = null;
   const finish = (interrupted) => finished || (finished = (async () => {
     if (interrupted != null) check('the run was not interrupted', false, interrupted);
-    if (client != null) await stopTree(client);
+    // The traced client ends as a client does (its stdin closed: the
+    // harness and its shim exit) while strace goes on tracing the daemon,
+    // which outlives the shim; the daemon is stopped last, so strace ends with
+    // it and its trace is whole. Never strace stopped first: under
+    // --seccomp-bpf a process it traced and left running has its network
+    // calls fail.
+    const tracing = traced != null && traced.traced && client != null;
+    // this run's processes but strace and this one, by the run's own folder
+    // in their arguments (the daemon's and the runtime's name the home),
+    // with strace's own tree: what strace traces
+    const tracees = () => {
+      const rows = processes() || [];
+      const tree = new Set((treeOf(client.pid) || []).map((r) => r.pid));
+      return rows.filter((r) => r.pid !== client.pid && r.pid !== process.pid && (tree.has(r.pid) || r.args.includes(work))).map((r) => r.pid);
+    };
+    const kill = (pids, sig) => { for (const pid of pids) { try { process.kill(pid, sig); } catch (e) { /* gone */ } } };
+    // (an interrupted run: short bounds, so a CI cancel's SIGKILL finds
+    // nothing left)
+    const bound = (ms) => (interrupted != null ? Math.min(ms, 1000) : ms);
+    // the untraced clients first: none of their shims is left to start a
+    // daemon again once the traced one's stops
     if (client2 != null) await stopTree(client2);
     for (const c of more) await stopTree(c);
-    if (report.checks.some((c) => !c.ok)) await diagnose();
-    await stopDaemon(home);
+    // the daemon serving now: the one traced at attach, or the trace missed it
+    const servingDaemon = daemonPid(home);
+    if (tracing) {
+      try { client.stdin.end(); } catch (e) { /* gone */ }
+      // (the harness and its shim gone: strace's tree is strace and the
+      // daemon's alone; one not read is not known to be, and waited for to
+      // the bound; at the bound, the harness and the shim are ended, never
+      // the daemon)
+      const daemonTree = () => new Set(servingDaemon != null ? (treeOf(servingDaemon) || []).map((r) => r.pid) : []);
+      const left = () => { const t = treeOf(client.pid); if (t == null) return null; const d = daemonTree(); return t.filter((r) => r.pid !== client.pid && !d.has(r.pid)).map((r) => r.pid); };
+      for (const until = Date.now() + bound(10000); Date.now() < until;) { const l = left(); if (l != null && l.length === 0) break; await new Promise((r) => setTimeout(r, 100)); }
+      const still = left();
+      if (still == null || still.length > 0) { kill(still || [], 'SIGTERM'); await new Promise((r) => setTimeout(r, bound(1000))); }
+    } else if (client != null) await stopTree(client);
+    if (report.checks.some((c) => !c.ok) && interrupted == null) await diagnose();
+    await stopDaemon(home, bound(10000));
+    if (tracing) {
+      let timer = null;
+      const exit = await Promise.race([clientExited, new Promise((r) => { timer = setTimeout(() => r('timeout'), bound(15000)); })]);
+      clearTimeout(timer);
+      // (whole: strace ended in time, and not by a signal -- one killed cut its trace short)
+      const whole = exit !== 'timeout' && exit != null && exit.signal == null;
+      // (strace did not end: every process it may still trace is killed
+      // first -- its process group, the daemon's tree and anything naming the
+      // run's folder -- then strace, so none is left running under its filter)
+      if (exit === 'timeout') {
+        try { process.kill(-client.pid, 'SIGKILL'); } catch (e) { /* gone */ }
+        kill([...(servingDaemon != null ? [servingDaemon] : []), ...tracees()], 'SIGKILL');
+        await stopTree(client);
+      }
+      const daemon = tracedDaemon == null ? null
+        : tracedDaemon.traced !== true ? {problem: `the daemon (pid ${tracedDaemon.pid}) was not traced at attach (TracerPid ${tracedDaemon.traced === false ? '0' : 'unreadable'})`}
+        : servingDaemon !== tracedDaemon.pid ? {problem: `the daemon serving at the end (pid ${servingDaemon}) is not the one traced at attach (pid ${tracedDaemon.pid})`} : {};
+      for (const c of traceVerdict({text: fs.existsSync(traceFile) ? fs.readFileSync(traceFile, 'utf8') : null, whole, sessionSocket, daemon})) check(c.name, c.ok, c.ok ? null : c.detail);
+    }
     const left = daemonPid(home);
     if (left != null) check('the daemon is stopped at the end', !alive(left), `pid ${left}`);
     report.finishedAt = new Date().toISOString();
@@ -481,7 +585,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     try { if (!report.ok && fs.existsSync(path.join(work, 'daemon.log'))) report.daemonLog = fs.readFileSync(path.join(work, 'daemon.log'), 'utf8').split('\n').slice(-300).join('\n'); } catch (e) { /* none */ }
     try {
       fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
-      say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'})`);
+      say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'}${(report.skipped || []).length > 0 ? `; skipped, not passed: ${report.skipped.join('; ')}` : ''})`);
     } finally {
       fs.rmSync(work, {recursive: true, force: true});
       fs.rmSync(repoRoot, {recursive: true, force: true});
@@ -572,8 +676,9 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     // here as the shim would start it (shim.json's environment, the home its
     // working directory), its output kept in the report, and the shim attaches
     // to it. Off, the shim starts the daemon, whose output it discards.
-    let daemonLog = null;
-    if (process.env.CH_SHARED_ACCEPTANCE_DAEMON_LOG === '1' && process.platform !== 'win32') {
+    const logMode = daemonLogMode(process.env, process.platform);
+    if (logMode.problem != null) { check('the daemon is started by the shim, as a client starts it', false, logMode.problem); return 1; }
+    if (logMode.on) {
       const sj = JSON.parse(fs.readFileSync(path.join(home, 'shim.json'), 'utf8'));
       daemonLog = path.join(work, 'daemon.log');
       const fd = fs.openSync(daemonLog, 'a');
@@ -581,8 +686,22 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       d.unref();
       for (const until = Date.now() + 30000; daemonPid(home) == null && Date.now() < until;) await new Promise((r) => setTimeout(r, 200));
     }
-    client = spawn(h.claude, [h.script, installed, home], {cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
+    // (on Linux under strace: the no-outbound-connection check of the shared
+    // path; with the debugging aid's daemon above, started untraced, its
+    // checks are skipped)
+    if (logMode.on) {
+      traced = {command: h.claude, args: [h.script, installed, home], traced: false};
+      // (said where the trace would have run: Linux)
+      if (process.platform === 'linux') { report.skipped = [...(report.skipped || []), DAEMON_LOG_SKIPPED]; say(`SKIP ${DAEMON_LOG_SKIPPED}`); }
+    } else {
+      traced = traceCommand({platform: process.platform, node: h.claude, args: [h.script, installed, home], file: traceFile, env: process.env, has: () => canTrace(h.claude)});
+      if (traced.problem != null) { check('on Linux the shared path runs under strace', false, traced.problem); return 1; }
+      if (traced.traced) check('on Linux the shared path runs under strace', true);
+      if (traced.waived === true) { report.skipped = [...(report.skipped || []), TRACE_SKIPPED]; say(`SKIP ${TRACE_SKIPPED}`); }
+    }
+    client = spawn(traced.command, traced.args, {cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
       env: launcherEnv(home, {CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CONFIG_DIR: h.config, CLAUDE_PROJECT_DIR: repo})});
+    clientExited = new Promise((r) => client.once('exit', (code, signal) => r({code, signal})));
     client.stderr.setEncoding('utf8');
     client.stderr.on('data', (d) => { stderr = (stderr + d).slice(-200000); });
     const mcp = session(client);
@@ -606,6 +725,8 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
       const tree = treeOf(client.pid);
       check('no per-session runtime in the client\'s tree', tree != null && !tree.some((p) => /\s--own-runtime\b/.test(p.args)), JSON.stringify(tree));
     } else {
+      try { sessionSocket = JSON.parse(fs.readFileSync(path.join(home, 'run', 'daemon', 'daemon.json'), 'utf8')).socket; } catch (e) { sessionSocket = null; }
+      if (traced != null && traced.traced && pid != null) tracedDaemon = {pid, traced: traced_(pid)};
       const tree = treeOf(client.pid);
       const runtime = pid != null ? (treeOf(pid) || []).find((p) => /framework\.js\b.*\s--sessionSocket\s/.test(p.args)) : null;
       check('attached to the shared runtime: a live daemon running it on its session socket', pid != null && alive(pid) && runtime != null,
@@ -787,5 +908,5 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => process.exit(code));
 
-module.exports = {main, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session, latchedChecks,
+module.exports = {main, daemonLogMode, DAEMON_LOG_SKIPPED, traceVerdict, TRACE_SAW, TRACE_NONE_LEFT, buildShim, installShim, claudeHarness, clientRepoRoot, strayClaudeDirs, configProblem, daemonPid, stopDaemon, daemonDiagnosis, treeOf, session, latchedChecks,
   progressChecks, cancelChecks, askChecks, ACCEPT, ACCEPT_DIRS, ACCEPT_PACKAGES, acceptRelease};

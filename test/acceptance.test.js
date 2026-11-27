@@ -250,6 +250,45 @@ test('traceCommand: the server under strace on Linux, as it is elsewhere; none, 
   for (const CI of ['true', '1']) assert.match(at('linux', 'missing', {CH_ACCEPTANCE_NO_TRACE: '1', CI}).problem, /CH_ACCEPTANCE_NO_TRACE=1 is refused on CI\)$/, CI);
 });
 
+test('the shared run\'s daemon-log aid is a local one too: refused on CI, no workflow sets it, and with it the trace\'s checks are skipped', () => {
+  const shared = require('../scripts/shared-acceptance');
+  assert.deepStrictEqual(shared.daemonLogMode({}, 'linux'), {on: false});
+  assert.deepStrictEqual(shared.daemonLogMode({CH_SHARED_ACCEPTANCE_DAEMON_LOG: '1'}, 'linux'), {on: true});
+  assert.deepStrictEqual(shared.daemonLogMode({CH_SHARED_ACCEPTANCE_DAEMON_LOG: '1', CI: 'false'}, 'darwin'), {on: true});
+  assert.deepStrictEqual(shared.daemonLogMode({CH_SHARED_ACCEPTANCE_DAEMON_LOG: '1'}, 'win32'), {on: false});
+  for (const CI of ['true', '1']) {
+    const m = shared.daemonLogMode({CH_SHARED_ACCEPTANCE_DAEMON_LOG: '1', CI}, 'linux');
+    assert.strictEqual(m.on, false, CI);
+    assert.match(m.problem, /^CH_SHARED_ACCEPTANCE_DAEMON_LOG=1 is refused on CI/, CI);
+  }
+  assert.strictEqual(shared.DAEMON_LOG_SKIPPED, 'not checked: daemon started untraced for its log (CH_SHARED_ACCEPTANCE_DAEMON_LOG=1)');
+  const dir = path.join(__dirname, '..', '.github', 'workflows');
+  for (const f of fs.readdirSync(dir)) assert.ok(!fs.readFileSync(path.join(dir, f), 'utf8').includes('CH_SHARED_ACCEPTANCE_DAEMON_LOG'), f);
+});
+
+test('the shared trace\'s verdict: whole, the socket reached (once attached) and nothing off the machine; not whole, a failure', () => {
+  const shared = require('../scripts/shared-acceptance');
+  const sock = '/tmp/x/run/daemon/countinghouse-1.sock';
+  const reached = `9  connect(5, {sa_family=AF_UNIX, sun_path="${sock}"}, 110) = 0`;
+  const away = '9  connect(6, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("192.0.2.9")}, 16) = 0';
+  const v = (text, whole, sessionSocket) => shared.traceVerdict({text, whole, sessionSocket}).map((c) => [c.name, c.ok]);
+  assert.deepStrictEqual(v(reached, true, sock), [[shared.TRACE_SAW, true], [shared.TRACE_NONE_LEFT, true]]);
+  assert.deepStrictEqual(v(`${reached}\n${away}`, true, sock), [[shared.TRACE_SAW, true], [shared.TRACE_NONE_LEFT, false]]);
+  assert.deepStrictEqual(v('', true, sock), [[shared.TRACE_SAW, false], [shared.TRACE_NONE_LEFT, true]], 'an empty trace never passes');
+  assert.deepStrictEqual(v(away, true, null), [[shared.TRACE_NONE_LEFT, false]], 'not attached: the socket is not asked');
+  assert.deepStrictEqual(v(reached, false, sock), [[shared.TRACE_NONE_LEFT, false]], 'not whole');
+  assert.match(shared.traceVerdict({text: '', whole: false, sessionSocket: sock})[0].detail, /not whole/);
+  assert.deepStrictEqual(v(null, true, sock), [[shared.TRACE_NONE_LEFT, false]], 'no trace file');
+  const vd = (daemon) => shared.traceVerdict({text: reached, whole: true, sessionSocket: sock, daemon}).map((c) => [c.name, c.ok]);
+  assert.deepStrictEqual(vd({}), [[shared.TRACE_SAW, true], [shared.TRACE_NONE_LEFT, true]], 'the daemon traced, the same to the end');
+  assert.deepStrictEqual(vd({problem: 'the daemon serving at the end (pid 2) is not the one traced at attach (pid 1)'}), [[shared.TRACE_NONE_LEFT, false]]);
+  assert.match(shared.traceVerdict({text: away, whole: true, sessionSocket: sock})[1].detail, /^192\.0\.2\.9:443; 1 connects:\n9  connect\(6/);
+});
+
+test('onCi: CI set and not "false" or "0"', () => {
+  for (const [env, on] of [[{}, false], [{CI: ''}, false], [{CI: 'false'}, false], [{CI: '0'}, false], [{CI: 'true'}, true], [{CI: '1'}, true]]) assert.strictEqual(acceptance.onCi(env), on, JSON.stringify(env));
+});
+
 // (on every OS, so acceptance's no-skip guard holds: off Linux it is not asked)
 test('canTrace: strace tracing a node that does nothing: ok where it can, missing, old or blocked where not (Linux)', () => {
   if (process.platform !== 'linux') return;

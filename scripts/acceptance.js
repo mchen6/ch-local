@@ -249,8 +249,9 @@ const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (err
 // to a local resolver's own socket (systemd-resolved's varlink socket,
 // nscd's), which looks a name up the same way. An IPv4 or IPv6 address this
 // cannot read counts as off it: never green by not reading. (What it does
-// not see: a connection made through io_uring, which no runtime part uses,
-// and the shared runtime's daemon, which the shared run starts untraced.)
+// not see: a connection made through io_uring, which no runtime part uses;
+// the shared run traces its daemon too, but for its local debugging aid,
+// CH_SHARED_ACCEPTANCE_DAEMON_LOG=1.)
 const isLoopback = (a) => /^127\./.test(a) || a === '::1' || /^::ffff:127\./i.test(a) || a === '0.0.0.0' || a === '::';
 const RESOLVER_SOCKETS = ['/run/systemd/resolve/io.systemd.Resolve', '/run/nscd/socket', '/var/run/nscd/socket'];
 // strace's output -> {loopback, away}: each as address:port ([v6]:port);
@@ -291,6 +292,9 @@ function canTrace(node) {
   if (r.status === 0) return 'ok';
   return /seccomp-bpf/.test(String(r.stderr || '')) ? 'old' : 'blocked';
 }
+// whether this run is on CI (CI set, and not "false" or "0"): a waiver of a
+// check is refused there
+const onCi = (env) => env.CI != null && env.CI !== '' && env.CI !== 'false' && env.CI !== '0';
 // The server's command: under strace on Linux (has(): canTrace's word); on
 // Linux where it can't, the run's failure (problem), unless the person
 // running it locally waives it (CH_ACCEPTANCE_NO_TRACE=1); never on CI
@@ -300,11 +304,11 @@ function traceCommand({platform, node, args, file, env, has}) {
   if (platform !== 'linux') return plain;
   const can = has();
   if (can === 'ok') return {command: 'strace', args: [...TRACE_ARGS, '-o', file, node, ...args], traced: true};
-  const onCi = env.CI != null && env.CI !== '' && env.CI !== 'false' && env.CI !== '0';
-  if (env.CH_ACCEPTANCE_NO_TRACE === '1' && !onCi) return {...plain, waived: true};
+  const ci = onCi(env);
+  if (env.CH_ACCEPTANCE_NO_TRACE === '1' && !ci) return {...plain, waived: true};
   const why = can === 'blocked' ? 'strace is installed but cannot trace here (ptrace refused)'
     : can === 'old' ? 'strace is too old here (it needs --seccomp-bpf: 5.3 or later)' : 'strace is not installed';
-  return {...plain, problem: `${why}: on Linux the server runs under it, to see that no connection leaves the machine (${onCi && env.CH_ACCEPTANCE_NO_TRACE === '1' ? 'CH_ACCEPTANCE_NO_TRACE=1 is refused on CI' : 'CH_ACCEPTANCE_NO_TRACE=1 waives it, locally only'})`};
+  return {...plain, problem: `${why}: on Linux the server runs under it, to see that no connection leaves the machine (${ci && env.CH_ACCEPTANCE_NO_TRACE === '1' ? 'CH_ACCEPTANCE_NO_TRACE=1 is refused on CI' : 'CH_ACCEPTANCE_NO_TRACE=1 waives it, locally only'})`};
 }
 
 // Ends the launcher and everything it started (the runtime holds the same
@@ -498,8 +502,7 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     if (!report.ok && stderr !== '') report.runtimeLog = stderr.split('\n').slice(-400).join('\n');
     try {
       fs.writeFileSync(reportFile, reportText(report, [token, ownToken], [stderr, offStderr, ...ownLogs]));
-      const skipped = (report.skipped || []).length;
-      say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'}${skipped > 0 ? `, with ${skipped} check${skipped > 1 ? 's' : ''} skipped` : ''})`);
+      say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'}${(report.skipped || []).length > 0 ? `; skipped, not passed: ${report.skipped.join('; ')}` : ''})`);
     } finally {
       const left = removeTree(work, home);
       if (left != null) io.stderr.write(`acceptance: ${left}\n`);
@@ -725,4 +728,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`acceptance: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, outboundOf, traceCommand, canTrace, TRACE_ARGS, TRACE_SKIPPED, reportText, trapSignals, startStandIn, recordedAnswer, standInReceipt, filesContaining, launcherEnv, waitForText, stopTree, endTree, writeOwnModule, addOwn, removeTree, RECEIPT};
+module.exports = {main, outboundOf, traceCommand, canTrace, onCi, TRACE_ARGS, TRACE_SKIPPED, reportText, trapSignals, startStandIn, recordedAnswer, standInReceipt, filesContaining, launcherEnv, waitForText, stopTree, endTree, writeOwnModule, addOwn, removeTree, RECEIPT};
