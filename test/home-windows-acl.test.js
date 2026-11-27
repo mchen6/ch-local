@@ -111,6 +111,15 @@ test('this machine\'s CodexSandboxUsers on a home directly in a profile: the Cod
   }
 }));
 
+// the one lookup a refusal makes: the names, this machine's name and the known local application data folder, from Windows itself
+test('Windows\' name lookup: a name for BUILTIN\\Users, this machine\'s name, and %LOCALAPPDATA%\'s known folder', {skip: !WIN}, () => {
+  const {principalNames} = require('../lib/win-acl');
+  const r = principalNames([USERS]);
+  assert.ok(typeof r.names[USERS] === 'string' && r.names[USERS].includes('\\'), JSON.stringify(r));
+  assert.strictEqual(String(r.machine).toUpperCase(), String(process.env.COMPUTERNAME).toUpperCase(), JSON.stringify(r));
+  assert.strictEqual(path.win32.resolve(String(r.localAppData)).toLowerCase(), path.win32.resolve(process.env.LOCALAPPDATA).toLowerCase(), JSON.stringify(r));
+});
+
 test('on Windows with no LOCALAPPDATA and no COUNTINGHOUSE_HOME, ch-local refuses in one line naming COUNTINGHOUSE_HOME, exit 2', {skip: !WIN}, () => {
   const {spawnSync} = require('node:child_process');
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(LOCALAPPDATA|COUNTINGHOUSE_HOME)$/i.test(k)));

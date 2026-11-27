@@ -176,7 +176,7 @@ test('CodexSandboxUsers able to read, a named account able to change: moved asid
 
 // a name is printed only as plain text: one with a control or direction-changing character is said by its SID
 test('a name with a control or direction-changing character is said by its SID', () => withHome((h) => {
-  for (const bad of ['MACHINE\\b\u202eob', 'MACHINE\\b\u0007ob', 'MACHINE\\b\u2066ob', 'MACHINE\\admin\u3164', 'MACHINE\\b\ud800ob', 'MACHINE\\bob\udb40\udc41', 'MACHINE\\bo\u2028b', 'MACHINE\\bo\u2029b', 'MACHINE\\admin\u00a0', 'MACHINE\\admin\u3000']) {
+  for (const bad of ['MACHINE\\b\u202eob', 'MACHINE\\b\u0007ob', 'MACHINE\\b\u2066ob', 'MACHINE\\admin\u3164', 'MACHINE\\b\ud800ob', 'MACHINE\\bob\udb40\udc41', 'MACHINE\\bo\u2028b', 'MACHINE\\bo\u2029b', 'MACHINE\\admin\u00a0', 'MACHINE\\admin\u3000', 'MACHINE\\admin\ufe0f', 'MACHINE\\admin\u2800', 'MACHINE\\admin\udb40\udd00']) {
     const r = rule('S-1-5-21-1-2-3-1002', bad, MODIFY);
     assert.strictEqual(problem(h, [r]).why, 'it can be changed by S-1-5-21-1-2-3-1002', JSON.stringify(bad));
   }
@@ -195,6 +195,25 @@ test('%LOCALAPPDATA% known from Windows with none in the environment: a home und
   const lookup = (sids) => Object.assign(namesOf(rules)(sids), {localAppData: path.dirname(h)});
   const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: {}, principalNames: lookup});
   assert.match(p.consequence, /move it aside and install again, which makes it a folder that takes nothing from the folders above it/);
+}));
+
+// install puts the home under the environment's LOCALAPPDATA: a home under it, or under the known folder, is under %LOCALAPPDATA%
+test('a home under the environment\'s LOCALAPPDATA, another folder than the known one: still under %LOCALAPPDATA%, moved aside', () => withHome((h) => {
+  const rules = [rule(CODEX_SID, CODEX, READ)];
+  const lookup = (sids) => Object.assign(namesOf(rules)(sids), {localAppData: 'C:\\Users\\dev\\AppData\\Local'});
+  // (the environment's: this home's folder, a full path where the test runs on Windows; elsewhere given as the test's option)
+  const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: {LOCALAPPDATA: path.dirname(h)}, principalNames: lookup,
+    localAppData: process.platform === 'win32' ? undefined : [lookup([]).localAppData, path.dirname(h)]});
+  assert.match(p.consequence, /move it aside and install again/);
+}));
+
+// a lookup's entry that is not a string: an account it could not say, never one that names no account
+test('a name entry that is not a string is no Codex identity', () => withHome((h) => {
+  const rules = [rule(CODEX_SID, CODEX, READ), rule('S-1-5-21-1-2-3-1002', '', MODIFY)];
+  const lookup = (sids) => ({names: Object.fromEntries(sids.map((x) => [x, x === CODEX_SID ? CODEX : null])), machine: 'MACHINE'});
+  const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: lookup});
+  assert.strictEqual(p.why, 'it can be changed by S-1-5-21-1-2-3-1002');
+  assert.strictEqual(p.fix, MOVE);
 }));
 
 // in it is in it: a first part that merely starts with two dots is a folder in it
