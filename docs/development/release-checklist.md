@@ -177,16 +177,18 @@ The checks are grouped. Within a group, the order doesn't matter.
       - ch-step-failure-signature 0.2.2, ch-step-dedupe 0.1.3,
         ch-step-owner-hint 0.1.3: their READMEs true of the release (#8, #7,
         #7);
-      - ch-pack-ci-failure-triage 0.7.3: step names go through redact before
+      - ch-pack-ci-failure-triage 0.7.4: step names go through redact before
         any part, the result or the cache (#18); runs are compared by their
         workflow's id where GitHub gives one (#28), a success that was re-run
         only when the attempt before it is known (#29), and an older run's
         log that a part refuses does not lose the call (#30); the window's
         runs are listed a few at a time, a rate limit stops every GitHub
         call, a refusal of the runtime's own fails the call named, and the
-        owner hint says when it was refused (#35). 0.7.3 is built against
-        its parts as its own repository pins them; the later versions of
-        redact, log-clean, dedupe and owner-hint change their READMEs only.
+        owner hint says when it was refused (#35); its README states the
+        known limits of the new-or-recurring verdict (#36). 0.7.4 is built
+        against its parts as its own repository pins them; the later
+        versions of redact, log-clean, dedupe and owner-hint change their
+        READMEs only.
     - How: the machine check holds it. lib/release-pins.js refuses a pin
       below its floor (a pre-release, or anything not a version, counts as
       below), `node scripts/describe-release.js <tarballs>` refuses a
