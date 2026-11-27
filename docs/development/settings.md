@@ -125,6 +125,11 @@ at once. A loosening is:
 3. made under the lock, only if the setting still holds the value it had
    when the user was asked.
 
+A raised `maxOutputBytes` or `requestTimeout` is kept in `settings.json`: a
+value above what the running runtime started with takes effect when it next
+starts (for the shared runtime, when it restarts: `ch-local restart`); a
+value at or under it takes effect at once.
+
 `ch-local settings reset` is the loosenings it implies: a module that was
 off comes back on, a tightened cap goes back up. A module's settings are
 kept. Each is checked against the
