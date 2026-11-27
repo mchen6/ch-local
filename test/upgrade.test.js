@@ -173,6 +173,8 @@ test('what the new release adds is shown before the question', async () => {
     // store's modules, the Reviewer's high on L4, 3)
     assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
     assert.match(io.out, /it adds:\n  ch-access-github's key goes to https:\/\/api\.example\.invalid as GITHUB_TOKEN \(was https:\/\/api\.githubcopilot\.com as GITHUB_TOKEN\)\n/);
+    // (a minor past 0.x is not breaking: never said to be)
+    if (maj > 0) assert.doesNotMatch(io.out, /may break/);
   } finally {
     await w.close();
     s.done();

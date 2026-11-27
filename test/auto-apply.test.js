@@ -285,18 +285,50 @@ test('L4: a home whose record cannot be read is not upgraded automatically, and 
   }
 });
 
-// (only while this ch-local is on 0.x; the rule itself is npm-upgrade.test's)
-test('the review of #48: a 0.x minor is a major here, announced and never installed', {skip: MAJ !== 0 && 'this ch-local is past 0.x: npm-upgrade.test pins the 0.x rule'}, async() => {
+// (a 0.x home, pinned: a dogfood or pre-release home meets this whatever
+// version runs the check; the breaking check comes before the rest)
+test('the review of #48: a 0.x minor is a major here, announced and never installed', async() => {
   const now = Date.now();
-  const next = `0.${MIN + 1}.0`;
-  const w = await world({version: next, at: new Date(now - 200 * H)});
+  const w = await world({version: '0.2.0', at: new Date(now - 200 * H)});
+  try {
+    const h = home({installed: '0.1.0'});
+    writeStampFile(h, {firstSeen: {'0.2.0': now - 200 * H}});
+    const r = await run(h, w, {now, exec: npm('0.2.0')});
+    assert.strictEqual(r.outcome, 'major');
+    assert.match(r.line, /0\.2\.0 may break what 0\.1\.0 does .*run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade/);
+    assert.deepStrictEqual(r.io.execs, []);
+  } finally {
+    await w.close();
+  }
+});
+
+// (the step a 0.x home meets on release 1: 0.x -> 1.0.0 is a major, announced, never installed)
+test('a 0.x home and 1.0.0: a major, announced and never installed', async() => {
+  const now = Date.now();
+  const w = await world({version: '1.0.0', at: new Date(now - 200 * H)});
+  try {
+    const h = home({installed: '0.1.0'});
+    writeStampFile(h, {firstSeen: {'1.0.0': now - 200 * H}});
+    const r = await run(h, w, {now, exec: npm('1.0.0')});
+    assert.strictEqual(r.outcome, 'major');
+    assert.match(r.line, /ch-local 1\.0\.0 is a major upgrade: run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade to install it/);
+    assert.deepStrictEqual(r.io.execs, []);
+  } finally {
+    await w.close();
+  }
+});
+
+// (the rule release 1's homes live by: a 1.x minor is not breaking, so it installs after the wait, never "may break")
+test('a minor above this ch-local, once past 0.x, installs automatically after the wait, never called breaking', {skip: MAJ === 0 && 'this ch-local is on 0.x, where a minor is breaking'}, async() => {
+  const now = Date.now();
+  const minor = `${MAJ}.${MIN + 1}.0`;
+  const w = await world({version: minor, at: new Date(now - 200 * H)});
   try {
     const h = home();
-    writeStampFile(h, {firstSeen: {[next]: now - 200 * H}});
-    const r = await run(h, w, {now, exec: npm(next)});
-    assert.strictEqual(r.outcome, 'major');
-    assert.match(r.line, new RegExp(`${dots(next)} may break what ${dots(SELF)} does .*run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse/ch-local upgrade`));
-    assert.deepStrictEqual(r.io.execs, []);
+    writeStampFile(h, {firstSeen: {[minor]: now - 200 * H}});
+    const r = await run(h, w, {now, exec: npm(minor)});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    assert.doesNotMatch(r.line, /may break|major/);
   } finally {
     await w.close();
   }
