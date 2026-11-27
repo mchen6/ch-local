@@ -149,38 +149,51 @@ test('CodexSandboxUsers able to read, a Codex sandbox identity able to change: t
   assert.match(p.consequence, /Codex's Windows sandbox gives that identity access to each folder directly in your profile/);
 }));
 
-// the default home (%LOCALAPPDATA%\countinghouse) made by hand or an earlier build, unprotected, takes Codex's read grant on AppData:
-// moving it under %LOCALAPPDATA% says nothing; install makes a new one that takes nothing from the folders above it
-test('the default home open to Codex (an existing one taking it from AppData): moved aside and installed again, never "point it under %LOCALAPPDATA%"', () => withHome((h) => {
+// a home under %LOCALAPPDATA% (the default, or any other) not made by install, unprotected, takes Codex's read grant on AppData: moving
+// it under %LOCALAPPDATA% says nothing; install makes a new one that takes nothing from the folders above it
+test('a home under %LOCALAPPDATA% open to Codex (taking it from AppData): moved aside and installed again, never "point it under %LOCALAPPDATA%"', () => withHome((h) => {
   const rules = [rule(CODEX_SID, CODEX, READ)];
-  const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), defaultHome: h});
-  assert.strictEqual(p.why, 'it is readable by MACHINE\\CodexSandboxUsers');
-  assert.strictEqual(p.final, true);
-  assert.strictEqual(p.fix, null);
-  assert.ok(!/COUNTINGHOUSE_HOME|point it under/.test(p.consequence), p.consequence);
-  assert.match(p.consequence, /move it aside and install again: install makes it a folder that takes nothing from the folders above it$/);
+  for (const local of [path.dirname(h), path.dirname(path.dirname(h))]) {
+    const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: local});
+    assert.strictEqual(p.why, 'it is readable by MACHINE\\CodexSandboxUsers');
+    assert.strictEqual(p.final, true);
+    assert.strictEqual(p.fix, null);
+    assert.ok(!/COUNTINGHOUSE_HOME|point it under/.test(p.consequence), p.consequence);
+    assert.match(p.consequence, /, which a folder in it takes unless install made it: move it aside and install again, which makes it a folder that takes nothing from the folders above it, then delete the old home \(it still holds the stored credentials\)$/);
+  }
+  // (a home elsewhere: the Codex line that sends it under %LOCALAPPDATA%)
+  const q = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: path.join(h, 'elsewhere')});
+  assert.match(q.consequence, /point it under %LOCALAPPDATA%/);
+}));
+
+// Codex's group able to read, and an account Windows names able to change: that account's change right is the refusal, not Codex's
+test('CodexSandboxUsers able to read, a named account able to change: moved aside as any change, never the Codex line', () => withHome((h) => {
+  const p = problem(h, [rule(CODEX_SID, CODEX, READ), BOB]);
+  assert.strictEqual(p.why, 'it can be changed by MACHINE\\bob');
+  assert.strictEqual(p.fix, MOVE);
+  assert.ok(!/Codex/.test(p.consequence), p.consequence);
 }));
 
 // a name is printed only as plain text: one with a control or direction-changing character is said by its SID
 test('a name with a control or direction-changing character is said by its SID', () => withHome((h) => {
-  for (const bad of ['MACHINE\\b\u202eob', 'MACHINE\\b\u0007ob', 'MACHINE\\b\u2066ob']) {
+  for (const bad of ['MACHINE\\b\u202eob', 'MACHINE\\b\u0007ob', 'MACHINE\\b\u2066ob', 'MACHINE\\admin\u3164', 'MACHINE\\b\ud800ob', 'MACHINE\\bob\udb40\udc41']) {
     const r = rule('S-1-5-21-1-2-3-1002', bad, MODIFY);
     assert.strictEqual(problem(h, [r]).why, 'it can be changed by S-1-5-21-1-2-3-1002', JSON.stringify(bad));
   }
 }));
 
-// an ACL a caller gave (a test's) and no lookup: none made, never a real one beside the given ACL
-test('an ACL given with no lookup: no PowerShell lookup, the SIDs said', () => withHome((h) => {
+// an ACL reader a caller gave (session's and start's cached one) and no lookup: Windows' own lookup still names them
+test('an ACL reader given and no lookup: the names still looked up, by Windows\' own lookup', () => withHome((h) => {
   const winAcl = require('../lib/win-acl');
   const saved = winAcl.principalNames;
   let asked = 0;
-  winAcl.principalNames = () => { asked += 1; return {names: {}, machine: null}; };
+  winAcl.principalNames = (sids) => { asked += 1; return {names: Object.fromEntries(sids.map((x) => [x, 'MACHINE\\bob'])), machine: 'MACHINE'}; };
   try {
-    assert.strictEqual(homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(BOB), env: ENV}).why, 'it can be changed by S-1-5-21-1-2-3-1002');
+    assert.strictEqual(homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(BOB), env: ENV}).why, 'it can be changed by MACHINE\\bob');
   } finally {
     winAcl.principalNames = saved;
   }
-  assert.strictEqual(asked, 0);
+  assert.strictEqual(asked, 1);
 }));
 
 // PowerShell takes U+2018-U+201B as single quotes too: each doubled, as an ASCII one is, so a path never ends its string early
