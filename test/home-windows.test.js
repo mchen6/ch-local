@@ -53,9 +53,10 @@ const withHome = (fn) => {
   const h = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-winhome-'));
   try { return fn(h); } finally { fs.rmSync(h, {recursive: true, force: true}); }
 };
-const ENV = {COMPUTERNAME: 'MACHINE'};
-// (each rule's name as Windows would resolve it, given to homeOpenProblem's lookup, which it makes only for a refusal's words)
-const namesOf = (rules) => (sids) => Object.fromEntries(sids.map((s) => [s, (rules.find((r) => r.sid === s) || {}).name || '']));
+const ENV = {LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local'};
+// (each rule's name as Windows would resolve it, and this machine's name as Windows gives it, from homeOpenProblem's lookup, which it
+// makes only for a refusal's words)
+const namesOf = (rules, machine = 'MACHINE') => (sids) => ({names: Object.fromEntries(sids.map((s) => [s, (rules.find((r) => r.sid === s) || {}).name || ''])), machine});
 const problem = (h, rules, env = ENV) => homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env, principalNames: namesOf(rules)});
 const line = (h, rules) => openHomeLine(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules)});
 
@@ -127,6 +128,69 @@ test('by the name on this machine: a domain\'s group called CodexSandboxUsers is
   assert.strictEqual(p.why, `it can be changed by CORP\\CodexSandboxUsers and ${WORKSPACE}`);
   assert.strictEqual(p.fix, MOVE);
 }));
+
+// this machine's name from Windows itself (the lookup's), never from COMPUTERNAME: a session the shim or Codex starts has none
+test('this machine\'s CodexSandboxUsers known with no COMPUTERNAME in the environment: the Codex line', () => withHome((h) => {
+  const rules = [rule(CODEX_SID, CODEX, MODIFY), rule(WORKSPACE, '', MODIFY)];
+  const p = problem(h, rules, {});
+  assert.strictEqual(p.fix, null);
+  assert.strictEqual(p.why, `it can be changed by MACHINE\\CodexSandboxUsers and a Codex sandbox identity (${WORKSPACE})`);
+  // (another machine's name for this one: the group is not this machine's)
+  const q = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: {COMPUTERNAME: 'MACHINE'}, principalNames: namesOf(rules, 'OTHER')});
+  assert.strictEqual(q.fix, MOVE);
+}));
+
+// the group anywhere among them, not only among the strongest: Codex's read grant beside a workspace identity's change right
+test('CodexSandboxUsers able to read, a Codex sandbox identity able to change: the Codex line, the identity named as one', () => withHome((h) => {
+  const rules = [rule(CODEX_SID, CODEX, READ), rule(WORKSPACE, '', MODIFY)];
+  const p = problem(h, rules);
+  assert.strictEqual(p.why, `it can be changed by a Codex sandbox identity (${WORKSPACE})`);
+  assert.strictEqual(p.fix, null);
+  assert.match(p.consequence, /Codex's Windows sandbox gives that identity access to each folder directly in your profile/);
+}));
+
+// the default home (%LOCALAPPDATA%\countinghouse) made by hand or an earlier build, unprotected, takes Codex's read grant on AppData:
+// moving it under %LOCALAPPDATA% says nothing; install makes a new one that takes nothing from the folders above it
+test('the default home open to Codex (an existing one taking it from AppData): moved aside and installed again, never "point it under %LOCALAPPDATA%"', () => withHome((h) => {
+  const rules = [rule(CODEX_SID, CODEX, READ)];
+  const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), defaultHome: h});
+  assert.strictEqual(p.why, 'it is readable by MACHINE\\CodexSandboxUsers');
+  assert.strictEqual(p.final, true);
+  assert.strictEqual(p.fix, null);
+  assert.ok(!/COUNTINGHOUSE_HOME|point it under/.test(p.consequence), p.consequence);
+  assert.match(p.consequence, /move it aside and install again: install makes it a folder that takes nothing from the folders above it$/);
+}));
+
+// a name is printed only as plain text: one with a control or direction-changing character is said by its SID
+test('a name with a control or direction-changing character is said by its SID', () => withHome((h) => {
+  for (const bad of ['MACHINE\\b\u202eob', 'MACHINE\\b\u0007ob', 'MACHINE\\b\u2066ob']) {
+    const r = rule('S-1-5-21-1-2-3-1002', bad, MODIFY);
+    assert.strictEqual(problem(h, [r]).why, 'it can be changed by S-1-5-21-1-2-3-1002', JSON.stringify(bad));
+  }
+}));
+
+// an ACL a caller gave (a test's) and no lookup: none made, never a real one beside the given ACL
+test('an ACL given with no lookup: no PowerShell lookup, the SIDs said', () => withHome((h) => {
+  const winAcl = require('../lib/win-acl');
+  const saved = winAcl.principalNames;
+  let asked = 0;
+  winAcl.principalNames = () => { asked += 1; return {names: {}, machine: null}; };
+  try {
+    assert.strictEqual(homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(BOB), env: ENV}).why, 'it can be changed by S-1-5-21-1-2-3-1002');
+  } finally {
+    winAcl.principalNames = saved;
+  }
+  assert.strictEqual(asked, 0);
+}));
+
+// PowerShell takes U+2018-U+201B as single quotes too: each doubled, as an ASCII one is, so a path never ends its string early
+test('the lines: a path with a curly single quote has it doubled, as a plain one', () => {
+  const {fixHint} = require('../lib/win-acl');
+  for (const q of ['\u2018', '\u2019', '\u201a', '\u201b']) {
+    const first = fixHint(`C:\\Users\\O${q}Brien\\h`, aclWith(rule('S-1-5-32-545', 'BUILTIN\\Users', READ)), {directory: true}).split('\n')[0];
+    assert.ok(first.startsWith(`icacls 'C:\\Users\\O${q}${q}Brien\\h' `), JSON.stringify(first));
+  }
+});
 
 test('names are looked up only for a refusal: none for a private home; a lookup that fails says the SIDs, refused the same', () => withHome((h) => {
   let asked = 0;

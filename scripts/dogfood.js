@@ -75,7 +75,8 @@ const word = (s) => (/^[A-Za-z0-9_/.:@%+=,-]+$/.test(s) ? s : `'${String(s).repl
 // (the launcher's own default: lib/home.js defaultHome, on Windows %LOCALAPPDATA%\\countinghouse)
 const DEFAULT_HOME = () => require('../lib/home').defaultHome();
 
-// --home, else COUNTINGHOUSE_HOME as every ch-local command reads it, else ~/.countinghouse.
+// --home, else COUNTINGHOUSE_HOME as every ch-local command reads it, else the default (~/.countinghouse; on Windows
+// %LOCALAPPDATA%\countinghouse, refused, HOME_NO_LOCALAPPDATA, when LOCALAPPDATA is not set).
 function homeFor(args, env = process.env) {
   if (args.home != null) return path.resolve(args.home);
   if (typeof env.COUNTINGHOUSE_HOME === 'string' && env.COUNTINGHOUSE_HOME !== '') return path.resolve(env.COUNTINGHOUSE_HOME);
@@ -424,7 +425,8 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
   const fail = (s, code = 1) => { io.stderr.write(`dogfood: ${s}\n`); return code; };
   let args;
   try { args = parseArgs(argv); } catch (err) { io.stderr.write(err.message.endsWith('\n') ? err.message : err.message + '\n'); return 2; }
-  const home = homeFor(args);
+  let home;
+  try { home = homeFor(args); } catch (err) { io.stderr.write(`${err.message}\n`); return 2; }
   const planned = planSources(args);
   if (planned.problem != null) return fail(planned.problem);
   const plan = planned.sources;

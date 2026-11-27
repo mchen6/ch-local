@@ -280,26 +280,29 @@ function openPrincipals(acl, names = {}) {
   return out;
 }
 
-// SIDs -> {sid: its name as Windows resolves it ('' when it can't: a capability or workspace SID)}, in one PowerShell run. For a
-// refusal's words only, so it runs only when one names other accounts, never on the way to a private one (a lookup can reach a
-// domain controller). Every rule is judged by its SID; a SID that is not plainly one is not asked. Throws on any failure: the
-// caller then says the SIDs.
+// SIDs -> {names: {sid: its name as Windows resolves it ('' when it can't: a capability or workspace SID)}, machine: this machine's
+// name as Windows gives it ([Environment]::MachineName, never the environment's COMPUTERNAME, which a session the shim or Codex
+// starts lacks)}, in one PowerShell run. For a refusal's words only, so it runs only when one names other accounts, never on the way
+// to a private one (a lookup can reach a domain controller). Every rule is judged by its SID; a SID that is not plainly one is not
+// asked. Each string is written as JSON in ASCII alone (\u escapes), so no console code page changes a localized name. Throws on
+// any failure: the caller then says the SIDs.
 const NAMES_SCRIPT = PRELUDE.concat([
+  "function E($t) { $e = ''; foreach ($c in $t.ToCharArray()) { $i = [int]$c; if ($i -lt 32 -or $i -gt 126 -or $i -eq 34 -or $i -eq 92) { $e += '\\u' + $i.ToString('x4') } else { $e += $c } }; return '\"' + $e + '\"' }",
   '$out = @()',
   "foreach ($s in ($env:CH_SIDS -split \"`n\")) {",
   "  try { $n = $sid::new($s).Translate([System.Security.Principal.NTAccount]).Value } catch { $n = '' }",
-  "  $out += ('\"' + $n.Replace('\\', '\\\\').Replace('\"', '\\\"') + '\"')",
+  '  $out += (E $n)',
   '}',
-  "'[' + ($out -join ',') + ']'"
+  "'{\"machine\":' + (E ([Environment]::MachineName)) + ',\"names\":[' + ($out -join ',') + ']}'"
 ]).join('\n');
 function principalNames(sids) {
   const asked = sids.filter((s) => typeof(s) === 'string' && SID_TEXT.test(s));
-  if (asked.length === 0) return {};
-  const names = JSON.parse(runPowershell(NAMES_SCRIPT, {CH_SIDS: asked.join('\n')}));
-  if (!Array.isArray(names) || names.length !== asked.length) throw new Error('principalNames: not one name per SID');
-  const out = {};
-  asked.forEach((s, i) => { out[s] = typeof(names[i]) === 'string' ? names[i] : ''; });
-  return out;
+  if (asked.length === 0) return {names: {}, machine: null};
+  const got = JSON.parse(runPowershell(NAMES_SCRIPT, {CH_SIDS: asked.join('\n')}));
+  if (got == null || !Array.isArray(got.names) || got.names.length !== asked.length) throw new Error('principalNames: not one name per SID');
+  const names = {};
+  asked.forEach((s, i) => { names[s] = typeof(got.names[i]) === 'string' ? got.names[i] : ''; });
+  return {names, machine: typeof(got.machine) === 'string' && got.machine !== '' ? got.machine : null};
 }
 
 // Whether anyone but this user, SYSTEM and Administrators holds a right that changes it, or what is made in it: an allow rule,
@@ -324,7 +327,8 @@ function foreignChange(acl) {
 // /inheritance:r would leave its own files reachable by no one (the
 // reviewer's Fable high on #126, F13)
 const SID_TEXT = /^S-1-[0-9]+(-[0-9]+)+$/;
-const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+// (PowerShell takes U+2018-U+201B as single quotes too: each doubled, as an ASCII one is)
+const psQuote = (s) => `'${String(s).replace(/['\u2018-\u201b]/g, '$&$&')}'`;
 function fixHint(file, acl, {directory = false} = {}) {
   const user = acl != null && typeof(acl.user) === 'string' ? acl.user : null;
   if (user == null || !SID_TEXT.test(user)) return null;
