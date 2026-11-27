@@ -157,18 +157,24 @@ test('identity changes are shown before the question, marked as never taken auto
 });
 
 test('what the new release adds is shown before the question', async () => {
-  const s = setup({'@countinghouse/ch-local': '0.1.0'});
+  // (the installed release is this ch-local's own, package.json's: the
+  // running release's pins verify the home; the new one a minor above it)
+  const self = require('../package.json').version;
+  const [maj, min] = self.split('.').map(Number);
+  const s = setup({'@countinghouse/ch-local': self});
   // (as an install leaves it: additions are judged against the home's own
   // modules, from the store: L4)
-  require('./install-helpers').installedHome(s.home, ['ci-failure-triage'], {runtime: {'@countinghouse/ch-local': '0.1.0'}});
+  require('./install-helpers').installedHome(s.home, ['ci-failure-triage'], {runtime: {'@countinghouse/ch-local': self}});
   // (version 2: a module's key sent to a new origin)
-  const w = await npmWorld(release(), {edit: (doc) => { doc.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
+  const w = await npmWorld(release(), {version: `${maj}.${min + 1}.0`, edit: (doc) => { doc.modules['@countinghouse/ch-access-github'].credentials = [{variable: 'GITHUB_TOKEN', origin: 'https://api.example.invalid'}]; }});
   try {
     const io = tty({env: {COUNTINGHOUSE_HOME: s.home}, answers: ['no'], fetch: realFetch});
     // (the running ch-local is the installed release: its pins verify the
     // store's modules, the Reviewer's high on L4, 3)
     assert.strictEqual(await asInstalled(w.pinsDoc.pins, () => upgrade({}, io, w.fromNpm), w.installed), 0, io.err);
     assert.match(io.out, /it adds:\n  ch-access-github's key goes to https:\/\/api\.example\.invalid as GITHUB_TOKEN \(was https:\/\/api\.githubcopilot\.com as GITHUB_TOKEN\)\n/);
+    // (a minor past 0.x is not breaking: never said to be)
+    if (maj > 0) assert.doesNotMatch(io.out, /may break/);
   } finally {
     await w.close();
     s.done();

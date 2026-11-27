@@ -7,8 +7,10 @@ const {unhomed} = require('./unhomed');
 // "Announcements"): it re-checks everything itself, then installs a newer
 // release only 72 h after the later of its publish attestation's log time
 // and when this install first saw it. A fake registry and the test root, as
-// its test-only argument. The installed release is 0.1.0 and the new one
-// 0.1.1, a patch (a 0.x minor is treated as a major, the review of #48).
+// its test-only argument. The installed release is this ch-local's own
+// (package.json: the running release verifies the home) and the new one a
+// patch above it; a breaking step is the next major, or a 0.x's next minor
+// (the review of #48).
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -24,8 +26,12 @@ const {layout} = require('../lib/home');
 const cmd = (h, args) => chLocal(layout({COUNTINGHOUSE_HOME: h}), args).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const H = 3600e3;
-const TO = '0.1.1';
-function home({autoUpgrade = true, installed = '0.1.0', packs = ['ci-failure-triage']} = {}) {
+const SELF = require('../package.json').version;
+const [MAJ, MIN, PAT] = SELF.split('.').map(Number);
+const TO = `${MAJ}.${MIN}.${PAT + 1}`;
+const MAJOR = `${MAJ + 1}.0.0`;
+const dots = (v) => v.replace(/\./g, '\\.');
+function home({autoUpgrade = true, installed = SELF, packs = ['ci-failure-triage']} = {}) {
   const h = tmp('ch-auto-');
   // (as an install of the release leaves it: the baseline additions are
   // judged against is the home's own modules, from the store: L4)
@@ -69,13 +75,13 @@ test('the wait: from the later of the publish log time and first seen; 71 h is t
     // first seen now, though signed 100 h ago: waits from now
     const first = await run(h, w, {now});
     assert.strictEqual(first.outcome, 'waiting');
-    assert.match(first.line, /ch-local 0\.1\.1 is available; it installs automatically after /);
+    assert.match(first.line, new RegExp(`ch-local ${dots(TO)} is available; it installs automatically after `));
     assert.strictEqual(stamp(h).firstSeen[TO], now);
     if (process.platform !== 'win32') assert.strictEqual(fs.statSync(path.join(h, 'upgrade-check.json')).mode & 0o777, 0o600, 'written private');
     assert.strictEqual((await run(h, w, {now: now + 71 * H})).outcome, 'waiting');
     const done = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(done.outcome, 'installed', done.line);
-    assert.match(done.line, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.1\\.1; ${cmd(h, 'rollback')} undoes it`));
+    assert.match(done.line, new RegExp(`upgraded ch-local ${dots(SELF)} -> ${dots(TO)}; ${cmd(h, 'rollback')} undoes it`));
     // the install's own lines (paths, credentials) stay out of what the child prints
     assert.strictEqual(done.io.out, '');
     assert.strictEqual(done.io.err, '');
@@ -279,11 +285,13 @@ test('L4: a home whose record cannot be read is not upgraded automatically, and 
   }
 });
 
+// (a 0.x home, pinned: a dogfood or pre-release home meets this whatever
+// version runs the check; the breaking check comes before the rest)
 test('the review of #48: a 0.x minor is a major here, announced and never installed', async() => {
   const now = Date.now();
   const w = await world({version: '0.2.0', at: new Date(now - 200 * H)});
   try {
-    const h = home();
+    const h = home({installed: '0.1.0'});
     writeStampFile(h, {firstSeen: {'0.2.0': now - 200 * H}});
     const r = await run(h, w, {now, exec: npm('0.2.0')});
     assert.strictEqual(r.outcome, 'major');
@@ -294,15 +302,47 @@ test('the review of #48: a 0.x minor is a major here, announced and never instal
   }
 });
 
-test('the re-check of #48: a major is never installed here, nothing of it fetched but the packument', async() => {
+// (the step a 0.x home meets on release 1: 0.x -> 1.0.0 is a major, announced, never installed)
+test('a 0.x home and 1.0.0: a major, announced and never installed', async() => {
   const now = Date.now();
   const w = await world({version: '1.0.0', at: new Date(now - 200 * H)});
   try {
-    const h = home();
+    const h = home({installed: '0.1.0'});
     writeStampFile(h, {firstSeen: {'1.0.0': now - 200 * H}});
     const r = await run(h, w, {now, exec: npm('1.0.0')});
     assert.strictEqual(r.outcome, 'major');
     assert.match(r.line, /ch-local 1\.0\.0 is a major upgrade: run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse\/ch-local upgrade to install it/);
+    assert.deepStrictEqual(r.io.execs, []);
+  } finally {
+    await w.close();
+  }
+});
+
+// (the rule release 1's homes live by: a 1.x minor is not breaking, so it installs after the wait, never "may break")
+test('a minor above this ch-local, once past 0.x, installs automatically after the wait, never called breaking', {skip: MAJ === 0 && 'this ch-local is on 0.x, where a minor is breaking'}, async() => {
+  const now = Date.now();
+  const minor = `${MAJ}.${MIN + 1}.0`;
+  const w = await world({version: minor, at: new Date(now - 200 * H)});
+  try {
+    const h = home();
+    writeStampFile(h, {firstSeen: {[minor]: now - 200 * H}});
+    const r = await run(h, w, {now, exec: npm(minor)});
+    assert.strictEqual(r.outcome, 'installed', r.line);
+    assert.doesNotMatch(r.line, /may break|major/);
+  } finally {
+    await w.close();
+  }
+});
+
+test('the re-check of #48: a major is never installed here, nothing of it fetched but the packument', async() => {
+  const now = Date.now();
+  const w = await world({version: MAJOR, at: new Date(now - 200 * H)});
+  try {
+    const h = home();
+    writeStampFile(h, {firstSeen: {[MAJOR]: now - 200 * H}});
+    const r = await run(h, w, {now, exec: npm(MAJOR)});
+    assert.strictEqual(r.outcome, 'major');
+    assert.match(r.line, new RegExp(`ch-local ${dots(MAJOR)} is a major upgrade: run (?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse/ch-local upgrade to install it`));
     assert.deepStrictEqual(r.io.execs, []);
     assert.ok(!w.reg.requests.some((u) => u.endsWith('.tgz')));
   } finally {
@@ -369,7 +409,7 @@ test('a verification failure is remembered by version and root; a transport fail
     const h = home();
     const r = await run(h, w, {now});
     assert.strictEqual(r.outcome, 'refused');
-    assert.match(r.line, /@countinghouse\/ch-local@0\.1\.1.*not installed/);
+    assert.match(r.line, new RegExp(`@countinghouse/ch-local@${dots(TO)}.*not installed`));
     assert.strictEqual(stamp(h).refused.length, 1);
     const before = w.reg.requests.length;
     const again = await run(h, w, {now: now + H});
@@ -447,16 +487,16 @@ test('a release that withdraws the home\'s one pack installs automatically: the 
     assert.strictEqual((await run(h, w, {now})).outcome, 'waiting');
     const r = await run(h, w, {now: now + 73 * H});
     assert.strictEqual(r.outcome, 'installed', r.line);
-    assert.match(r.line, new RegExp(`upgraded ch-local 0\\.1\\.0 -> 0\\.1\\.1; ${cmd(h, 'rollback')} undoes it; pack ci-failure-triage was withdrawn in this release and was not started; \`${cmd(h, 'remove-pack ci-failure-triage')}\` removes it`));
+    assert.match(r.line, new RegExp(`upgraded ch-local ${dots(SELF)} -> ${dots(TO)}; ${cmd(h, 'rollback')} undoes it; pack ci-failure-triage was withdrawn in this release and was not started; \`${cmd(h, 'remove-pack ci-failure-triage')}\` removes it`));
     // it stays installed; the record's withdrawn list names its modules
     // (#413 section 9.7)
     const after = JSON.parse(fs.readFileSync(path.join(h, 'modules.json'), 'utf8'));
-    assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], '0.1.1');
+    assert.strictEqual(after.runtime.versions['@countinghouse/ch-local'], TO);
     assert.deepStrictEqual(Object.keys(after.packs), ['ci-failure-triage'], 'still recorded');
     // (its modules the release lists in no pack; ch-step-redact stays, as
     // other still lists it)
     assert.deepStrictEqual(after.withdrawn, ['@countinghouse/ch-access-github', '@countinghouse/ch-pack-ci-failure-triage']);
-    assert.deepStrictEqual(historyOf(h).filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', '0.1.1']]);
+    assert.deepStrictEqual(historyOf(h).filter((e) => e.change === 'withdrawn').map((e) => [e.pack, e.to]), [['ci-failure-triage', TO]]);
   } finally {
     await w.close();
   }
