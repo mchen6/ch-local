@@ -753,7 +753,7 @@ test('upgrade --check: up to date, said and written as none available; a check t
 // manifest here: the test home has no installed app); never when the same
 test('the plugin step: said when the release\'s plugin version moved (check and install), not when it is the same', async () => {
   const own = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'clients', 'claude-code', '.claude-plugin', 'plugin.json'), 'utf8')).version;
-  const STEP = /If you use the countinghouse plugin in Claude Code, it (moves|moved) with this release \(([\d.]+) -> ([\d.]+)\): (after the upgrade, )?run `claude plugin marketplace update ch-packs`, then `claude plugin update ch-packs@ch-packs`, then restart Claude Code\./;
+  const STEP = /If you use the ch-packs plugin in Claude Code, it (moves|moved) with this release \(([\d.]+) -> ([\d.]+)\): (after the upgrade, )?run `claude plugin marketplace update ch-packs`, then `claude plugin update ch-packs@ch-packs`, then restart Claude Code\./;
   // (newer only: an older one in the release is never a "move": the medium, 5)
   for (const [plugin, said] of [['9.9.9', true], [own, false], ['0.0.1', false]]) {
     const s = setup({'@countinghouse/ch-local': '0.1.0'});

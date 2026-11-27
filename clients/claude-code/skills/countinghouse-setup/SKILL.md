@@ -56,7 +56,7 @@ Answer only from what this release has: a composite scenario is a module whose t
 
 ## 8. "Is there an update?"
 
-With the user's yes, run `node "<home>/bin/ch-local.js" upgrade --check`. It only checks; it installs nothing. Tell the user what it says: the newer version, what it adds or changes, and anything it calls a major change. Never run `upgrade` yourself: an upgrade runs new code with the user's keys, so the user installs it in their own terminal, with the line the check gives. If the check says the countinghouse plugin moves with it, give the user the Claude Code steps it names, for after the upgrade.
+With the user's yes, run `node "<home>/bin/ch-local.js" upgrade --check`. It only checks; it installs nothing. Tell the user what it says: the newer version, what it adds or changes, and anything it calls a major change. Never run `upgrade` yourself: an upgrade runs new code with the user's keys, so the user installs it in their own terminal, with the line the check gives. If the check says the ch-packs plugin moves with it, give the user the Claude Code steps it names, for after the upgrade.
 
 ## 9. Build a tool of your own
 

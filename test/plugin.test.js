@@ -106,7 +106,7 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
     // (the update path: A-own-skill's easy upgrades, the reviewer 11-20)
     'With the user\'s yes, run `node "<home>/bin/ch-local.js" upgrade --check`. It only checks; it installs nothing.',
     'Never run `upgrade` yourself: an upgrade runs new code with the user\'s keys, so the user installs it in their own terminal, with the line the check gives.',
-    'If the check says the countinghouse plugin moves with it, give the user the Claude Code steps it names, for after the upgrade.',
+    'If the check says the ch-packs plugin moves with it, give the user the Claude Code steps it names, for after the upgrade.',
     // (§9, own modules: the approved design's flow and line 17's limits;
     // A-own-skill)
     'The sandbox limits what module code can do, but it is not a security boundary: code written to escape it could reach their other packs\' keys. It can send what it is given to any internet address.',
@@ -122,7 +122,7 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
   assert.ok(!/dev-server|countinghouse-dev|section 8/.test(skill));
   // (no credential handed through the conversation: no export of one, no value)
   assert.ok(!/\bexport [A-Z_]+=|GITHUB_TOKEN=|ghp_|github_pat_/.test(skill));
-  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '1bbb8b5bbdcd0822b232cbedec604adbcd913d79299e6fa27a4a7bc6c0415c30', 'the checked text, byte for byte');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '2c3d67138dd60218dae6b02105d73acd71f00d8bd77d5dcb2ce2aa7a9b7e67a3', 'the checked text, byte for byte');
 });
 
 test('launch.js without an installed launcher exits non-zero with one line naming the install command', () => {
