@@ -52,6 +52,29 @@ function releaseOwnPackages(release) {
   return [...runtime, ...shims];
 }
 
+// A runtime package's tarballs in dir (any version, by npm pack's file name)
+// held to the release's floor for it, by the version its manifest says (the
+// release's floors may name a runtime package: countinghouse 8.0.0) -> null,
+// or the refusal
+function runtimeFloorProblem(dir, release) {
+  const floors = release.floors != null && typeof release.floors === 'object' ? release.floors : {};
+  const runtime = release.runtime != null && Array.isArray(release.runtime.packages) ? release.runtime.packages : [];
+  let files;
+  try { files = fs.readdirSync(dir); } catch (err) { return null; }   // (the tarballs' own read says it)
+  for (const name of runtime) {
+    const floor = floors[name];
+    if (floor == null) continue;
+    const prefix = `${name.replace(/^@/, '').replace('/', '-')}-`;
+    for (const f of files.filter((x) => x.startsWith(prefix) && VERSION_TGZ.test(x.slice(prefix.length))).sort()) {
+      let manifest = null;
+      try { manifest = JSON.parse(String(readMembers(fs.readFileSync(path.join(dir, f)), ['package.json'])['package.json'])); } catch (err) { manifest = null; }
+      if (manifest == null || manifest.name !== name || typeof manifest.version !== 'string') return `${f}: it is no ${name} package`;
+      if (belowFloor(manifest.version, floor)) return `${f}: ${name} ${manifest.version} is below its floor ${floor}`;
+    }
+  }
+  return null;
+}
+
 // -> {<package>: {version, manifest, api}} from every .tgz in dir, or with
 // only ({package: version}) from those packages' tarballs alone, by npm
 // pack's file name, before any is opened: a directory install's --from
@@ -191,6 +214,9 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
   }
   try {
     const release = JSON.parse(fs.readFileSync(releasePins, 'utf8'));
+    // (the runtime's tarballs beside the release's: held to their floors too)
+    const belowRuntimeFloor = runtimeFloorProblem(dir, release);
+    if (belowRuntimeFloor != null) refuse(belowRuntimeFloor);
     const target = devFile != null ? devFile : releasePins;
     const doc = devFile != null ? JSON.parse(fs.readFileSync(devFile, 'utf8')) : release;
     // (a development file: only the pack modules it pins, the runtime's and
@@ -257,5 +283,5 @@ function main(argv, {stdout = process.stdout, stderr = process.stderr, releasePi
   }
 }
 
-module.exports = {describeRelease, describePinned, readTarballs, main};
+module.exports = {describeRelease, describePinned, readTarballs, runtimeFloorProblem, main};
 if (require.main === module) process.exitCode = main(process.argv.slice(2));

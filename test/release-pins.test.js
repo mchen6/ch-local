@@ -201,7 +201,7 @@ test('identityChanges: self, or a pin of the runtime, an installed pack or the s
     const d = shipped();
     d.packs.other = {modules: ['@countinghouse/ch-pack-other']};
     d.modules['@countinghouse/ch-pack-other'] = {role: 'scenario', credentials: [], calls: [], confirmSettings: {}};
-    d.pins = {'@countinghouse/ch-pack-ci-failure-triage': pin(), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}), countinghouse: Object.assign(pin(), {repository: 'mchen6/countinghouse'})};
+    d.pins = {'@countinghouse/ch-pack-ci-failure-triage': pin(), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}), countinghouse: Object.assign(pin('8.0.0'), {repository: 'mchen6/countinghouse'})};
     if (edit) edit(d);
     const r = parseReleasePins(d);
     assert.strictEqual(r.problem, undefined, r.problem);
@@ -230,7 +230,7 @@ test('the review of #48: a first pin for a name this install uses (the runtime, 
   d.packs.other = {modules: ['@countinghouse/ch-pack-other']};
   d.modules['@countinghouse/ch-pack-other'] = {role: 'scenario', credentials: [], calls: [], confirmSettings: {}};
   const now = parseReleasePins(d).pins;
-  d.pins = {countinghouse: Object.assign(pin(), {repository: 'mchen6/countinghouse'}), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}),
+  d.pins = {countinghouse: Object.assign(pin('8.0.0'), {repository: 'mchen6/countinghouse'}), '@countinghouse/ch-pack-other': Object.assign(pin(), {repository: 'mchen6/ch-pack-other'}),
     '@countinghouse/ch-shim-linux-x64': Object.assign(pin(), {repository: 'mchen6/ch-local', workflow: '.github/workflows/shim.yml', tag: `shim-v${pin().version}`})};
   const parsed = parseReleasePins(d);
   assert.strictEqual(parsed.problem, undefined, parsed.problem);
@@ -245,14 +245,16 @@ test('the review of #48: a first pin for a name this install uses (the runtime, 
 // The reviewer on the redaction fixes (release 1): a home's parts are only as
 // new as the release's pins, so the file names a floor per part that carries
 // a fix a release must hold, and no pin may go below it.
-test('floors: optional; each a strict version of a module some pack lists; a pin below its floor refused', () => {
+test('floors: optional; each a strict version of a module some pack lists, or of a runtime package; a pin below its floor refused', () => {
   const d = shipped();
   // the shipped floors: the redaction and GitHub fixes (A-redact), the
   // credential-leak fixes of 11-21 (report's userinfo, pack 1's step names),
   // the runs list that was lost (access-github), pack 1's fixes of 0.7.2 and
   // 0.7.3 with the parts' fixes they need, 0.7.4's README of its known
-  // limits, and every part's README true of the release
-  assert.deepStrictEqual(d.floors, {'@countinghouse/ch-access-github': '0.3.2', '@countinghouse/ch-pack-ci-failure-triage': '0.7.4', '@countinghouse/ch-step-dedupe': '0.1.3',
+  // limits, and every part's README true of the release; and the runtime
+  // whose store refuses a corrupt file it never saw whole, which status's
+  // store lines describe (countinghouse 8.0.0)
+  assert.deepStrictEqual(d.floors, {countinghouse: '8.0.0', '@countinghouse/ch-access-github': '0.3.2', '@countinghouse/ch-pack-ci-failure-triage': '0.7.4', '@countinghouse/ch-step-dedupe': '0.1.3',
     '@countinghouse/ch-step-error-patterns': '0.3.1', '@countinghouse/ch-step-failure-signature': '0.2.2', '@countinghouse/ch-step-log-clean': '0.2.5',
     '@countinghouse/ch-step-owner-hint': '0.1.3', '@countinghouse/ch-step-redact': '0.2.5', '@countinghouse/ch-step-report': '0.4.6'});
   assert.strictEqual(problemOf(d), undefined);
@@ -264,6 +266,9 @@ test('floors: optional; each a strict version of a module some pack lists; a pin
     [(x) => { x.floors['@countinghouse/ch-step-nope'] = '1.0.0'; }, /floor for @countinghouse\/ch-step-nope names no module/],
     [(x) => { x.floors['@countinghouse/ch-step-redact'] = '0.2'; }, /floor for @countinghouse\/ch-step-redact is no strict/],
     [(x) => { x.pins['@countinghouse/ch-step-redact'] = Object.assign(pin('0.2.4'), {repository: 'mchen6/ch-step-redact'}); }, /ch-step-redact 0\.2\.4 is below its floor 0\.2\.5/],
+    // (the runtime has a floor too: its store's refusal of a corrupt file)
+    [(x) => { x.pins.countinghouse = Object.assign(pin('7.1.2'), {repository: 'mchen6/countinghouse'}); }, /countinghouse 7\.1\.2 is below its floor 8\.0\.0/],
+    [(x) => { x.floors['@countinghouse/ch-shim-linux-x64'] = '1.0.0'; }, /floor for @countinghouse\/ch-shim-linux-x64 names no module/],
     // (a pack's own module has a floor too: pack 1's README of 0.7.4)
     [(x) => { x.pins['@countinghouse/ch-pack-ci-failure-triage'] = Object.assign(pin('0.7.3'), {repository: 'mchen6/ch-pack-ci-failure-triage'}); }, /ch-pack-ci-failure-triage 0\.7\.3 is below its floor 0\.7\.4/]
   ]) {
@@ -275,6 +280,9 @@ test('floors: optional; each a strict version of a module some pack lists; a pin
   at.pins['@countinghouse/ch-step-redact'] = pin('0.2.5');
   at.pins['@countinghouse/ch-step-redact'].repository = 'mchen6/ch-step-redact';
   assert.strictEqual(problemOf(at), undefined, 'at its floor');
+  const runtimeAt = shipped();
+  runtimeAt.pins.countinghouse = Object.assign(pin('8.0.0'), {repository: 'mchen6/countinghouse'});
+  assert.strictEqual(problemOf(runtimeAt), undefined, 'the runtime at its floor');
 });
 
 // the medium on the floors, 1: a pre-release comes before its version, and
