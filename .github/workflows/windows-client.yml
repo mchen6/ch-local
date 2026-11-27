@@ -1,0 +1,116 @@
+name: windows-client
+
+# Claude Code's own steps on Windows, around the acceptance install, as a user
+# takes them, started by hand: Claude Code (a fixed version, its updater off)
+# adds this repository's marketplace and installs the ch-packs plugin, the
+# acceptance run installs pack 1 into a clean home and gets its first result
+# against the recorded GitHub stand-in (scripts/acceptance.js, the whole run
+# of acceptance.yml; its shared-runtime run stays there), and Claude Code
+# uninstalls the plugin and no longer lists it. The time from the first
+# command (`claude plugin marketplace add`) to the first result is the sum of
+# the two: the plugin steps, then the run's install to its first result (its
+# build from the mains is the run's own, not a user's), under 5 minutes.
+# The `claude plugin` commands need no login, and the job holds no token and
+# no model credential: no model turn is taken here, so the first result is
+# the acceptance run's own call, not one through the plugin's server.
+
+on:
+  workflow_dispatch:
+    inputs:
+      marketplace:
+        description: 'where the marketplace is added from: this run''s checkout, or the repository on GitHub as a user types it (its default branch)'
+        type: choice
+        options: [checkout, github]
+        default: checkout
+
+permissions:
+  contents: read
+
+jobs:
+  windows-client:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CLAUDE_CODE_VERSION: '2.1.332'
+      DISABLE_AUTOUPDATER: '1'
+      PLUGIN: ch-packs@ch-packs
+    steps:
+      # The job holds no token: checkout keeps none in .git/config, and none is
+      # put in the environment; the stand-in takes only the run's own,
+      # generated per run.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      # Claude Code at its fixed version, into a folder of this run's (not
+      # global). Its install script is what puts the Windows binary in place,
+      # so this one install runs scripts; nothing else here does.
+      - name: Install Claude Code
+        shell: bash
+        run: |
+          cc="$RUNNER_TEMP/claude-code"
+          npm install --prefix "$cc" --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+          echo "$cc/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Claude Code's version
+        shell: bash
+        run: |
+          claude --version | tee "$RUNNER_TEMP/version.txt"
+          v=$(cut -d' ' -f1 "$RUNNER_TEMP/version.txt" | head -n 1 | tr -d '\r')
+          [ "$v" = "$CLAUDE_CODE_VERSION" ] || { echo "not Claude Code $CLAUDE_CODE_VERSION: $v"; exit 1; }
+      # The first command is timed from here: the marketplace, then the plugin.
+      - name: Add the marketplace and install the plugin
+        shell: bash
+        env:
+          MARKETPLACE: ${{ inputs.marketplace }}
+        run: |
+          t0=$(node -p 'Date.now()')
+          if [ "$MARKETPLACE" = github ]; then claude plugin marketplace add "$GITHUB_REPOSITORY"; else claude plugin marketplace add "$GITHUB_WORKSPACE"; fi
+          claude plugin install "$PLUGIN"
+          t1=$(node -p 'Date.now()')
+          echo "PLUGIN_MS=$((t1 - t0))" >> "$GITHUB_ENV"
+          claude plugin list --json > "$RUNNER_TEMP/plugins-installed.json"
+          node scripts/client-plugin-check.js listed "$RUNNER_TEMP/plugins-installed.json" "$PLUGIN"
+      - name: Acceptance run
+        shell: bash
+        run: |
+          src="$RUNNER_TEMP/acceptance-src"
+          mkdir -p "$src"
+          # exit 0 only when every check of the run passed (its report's ok)
+          node scripts/acceptance.js --src "$src" --report "$RUNNER_TEMP/acceptance-report.json" 2>&1 | tee "$RUNNER_TEMP/acceptance.log"
+      - name: From the first command to the first result
+        shell: bash
+        run: |
+          # (the summary is written whatever the check says: bash runs with -e)
+          set +e
+          node scripts/client-plugin-check.js timed "$RUNNER_TEMP/acceptance-report.json" "$PLUGIN_MS" "$RUNNER_TEMP/client-timing.json" > "$RUNNER_TEMP/timing.txt"
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/timing.txt"
+          cat "$RUNNER_TEMP/timing.txt" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+      # The acceptance run has uninstalled pack 1; then the plugin, as the
+      # uninstall's last line tells the user.
+      - name: Uninstall the plugin
+        shell: bash
+        run: |
+          claude plugin uninstall "$PLUGIN"
+          claude plugin list --json > "$RUNNER_TEMP/plugins-after.json"
+          node scripts/client-plugin-check.js absent "$RUNNER_TEMP/plugins-after.json" "$PLUGIN"
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-client
+          path: |
+            ${{ runner.temp }}/version.txt
+            ${{ runner.temp }}/acceptance-report.json
+            ${{ runner.temp }}/acceptance.log
+            ${{ runner.temp }}/timing.txt
+            ${{ runner.temp }}/client-timing.json
+            ${{ runner.temp }}/plugins-installed.json
+            ${{ runner.temp }}/plugins-after.json
+          if-no-files-found: ignore
