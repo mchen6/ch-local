@@ -90,6 +90,20 @@ test('the Claude Code page says what to do when countinghouse shows as failed in
   assert.ok(page.includes('set `MCP_TIMEOUT` (milliseconds) under `env` in `~/.claude/settings.json` (`%USERPROFILE%\\.claude\\settings.json` on Windows): `"env": {"MCP_TIMEOUT": "90000"}`, then restart Claude Code.'));
 });
 
+// (the skills are a Claude Code plugin's; the other clients get the tools and
+// the overview, and their pages say so where they say what the client gets)
+test('the Cursor, VS Code and Codex pages say the skills come with Claude Code only', () => {
+  for (const [file, name] of [['cursor.md', 'Cursor'], ['vscode.md', 'VS Code'], ['codex.md', 'Codex']]) {
+    const page = fs.readFileSync(path.join(DOCS, file), 'utf8');
+    const line = `The \`ch-packs\` plugin's skills (guided setup, building your own module, and the CI triage guide) come with Claude Code only ([Claude Code](claude-code.md)); in ${name}, countinghouse's tools and its overview work without them.`;
+    assert.ok(page.replace(/\s+/g, ' ').includes(line), file);
+    // (its Add section: from the line `## Add` to the next `## ` heading, or the page's end)
+    const from = page.search(/^## Add$/m), rest = page.slice(from + 1), to = rest.search(/^## /m);
+    const section = (to < 0 ? rest : rest.slice(0, to)).replace(/\s+/g, ' ');
+    assert.ok(from >= 0 && section.includes(line), `${file}: in its Add section`);
+  }
+});
+
 test('every package name the docs, skill and launcher print uses the scope', () => {
   const SCOPE = require('../package.json').name.split('/')[0];
   const files = [...fs.readdirSync(DOCS).map((f) => path.join(DOCS, f)), path.join(__dirname, '..', 'clients', 'claude-code', 'skills', 'ci-failure-triage', 'SKILL.md'), path.join(__dirname, '..', 'clients', 'claude-code', 'bin', 'launch.js')];
