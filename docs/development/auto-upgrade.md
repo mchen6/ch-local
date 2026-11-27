@@ -45,8 +45,8 @@ commit's own `publish.yml`. So, for every repository a pin names:
 - **Every pinned version was published by its repository's workflow,**
   under npm trusted publishing, which attaches provenance.
   - A package without a publish workflow can't be pinned.
-  - Neither can a version published by hand, such as a package's first
-    version, which has no provenance.
+  - Neither can a version published by hand, such as the one-time
+    placeholder that first makes a package exist, which has no provenance.
   - Every package the release pins must be published from a public
     repository with a publish workflow. npm provenance needs both.
 
