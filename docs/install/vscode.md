@@ -26,6 +26,10 @@ harness, which is deprecated for removal in February 2027, so they are not the
 target here. (Checked by hand against VS Code's MCP configuration reference
 and GitHub's Copilot CLI docs, November 2026.)
 
+In VS Code's Copilot chat, MCP servers start with your first chat message:
+starting one by hand from MCP: List Servers before that fails with 'Cannot
+start an MCP server before the session runtime has been created'.
+
 The `ch-packs` plugin's skills (guided setup, building your own module, and
 the CI triage guide) come with Claude Code only ([Claude
 Code](claude-code.md)); in VS Code, countinghouse's tools and its overview

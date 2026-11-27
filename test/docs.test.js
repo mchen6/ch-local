@@ -132,3 +132,27 @@ test('the Claude Code page\'s updates: the read-only check, the user installs, C
     'The plugin comes from this repository\'s marketplace entry (`.claude-plugin/marketplace.json`), not from the npm release whose provenance `upgrade` checks.',
     'It carries the skills, the MCP entry and a small launcher script (bin/launch.js) that starts the installed countinghouse. That script runs as you, so the plugin\'s source matters as much as the release\'s; countinghouse itself and your packs come only through the checked upgrade.']) assert.ok(section.includes(s), s);
 });
+
+// VS Code's Copilot chat refuses a server started by hand before its session
+// exists ("Cannot start an MCP server before the session runtime has been
+// created. Send a message first."): the page says servers start with the
+// first chat message.
+test('the VS Code page says its MCP servers start with the first chat message', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'vscode.md'), 'utf8');
+  const add = page.slice(page.search(/^## Add$/m), page.search(/^## Credentials$/m)).replace(/\s+/g, ' ');
+  assert.ok(add.includes('In VS Code\'s Copilot chat, MCP servers start with your first chat message: starting one by hand from MCP: List Servers before that fails with \'Cannot start an MCP server before the session runtime has been created\'.'), 'the line, in Add');
+});
+
+// Claude Code on Windows: the native installer leaves its folder off PATH
+// (it says so under "Setup notes:"), and adding a GitHub marketplace clones
+// it, so the plugin route needs Git: the page says both, with each source's
+// own commands.
+test('the Claude Code page says the Windows PATH step and that the plugin route needs Git', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
+  const add = page.slice(page.search(/^## Add$/m), page.search(/^## For an agent/m)).replace(/\s+/g, ' ');
+  for (const text of ['`%USERPROFILE%\\.local\\bin`, is not on your PATH', 'https://code.claude.com/docs/en/troubleshoot-install',
+    'Adding the marketplace clones this repository, so it needs Git on your PATH', '`winget install --id Git.Git -e --source winget`',
+    'https://git-scm.com/install/windows', "Command 'git' not found or is in an unsafe location", '`xcode-select --install` or `brew install git`',
+    'Without Git, add the server by hand']) assert.ok(add.includes(text), text);
+  assert.ok(add.indexOf('Adding the marketplace clones') > add.indexOf('claude plugin install ch-packs@ch-packs'), 'after the plugin lines');
+});
