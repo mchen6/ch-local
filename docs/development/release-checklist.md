@@ -185,7 +185,8 @@ The checks are grouped. Within a group, the order doesn't matter.
         runs are listed a few at a time, a rate limit stops every GitHub
         call, a refusal of the runtime's own fails the call named, and the
         owner hint says when it was refused (#35). 0.7.3 is built against
-        the versions of its parts pinned in its own repository.
+        its parts as its own repository pins them; the later versions of
+        redact, log-clean, dedupe and owner-hint change their READMEs only.
     - How: the machine check holds it. lib/release-pins.js refuses a pin
       below its floor (a pre-release, or anything not a version, counts as
       below), `node scripts/describe-release.js <tarballs>` refuses a

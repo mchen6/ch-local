@@ -224,6 +224,24 @@ test('the receipt object: the calls to github, all the stand-in\'s, in bytes and
   })) assert.strictEqual(standInReceipt(bad), false, what);
 });
 
+// (the run answered as cancelled too, so the window lists five; and the 429
+// that one listing of the limited repository's name answers)
+test('the stand-in answers one recorded success as cancelled, and one listing of the limited repository with GitHub\'s 429', () => {
+  const dir = fixtures();
+  const env = (result) => JSON.stringify({_recorded: 'test', request: {}, result});
+  const runs = [{id: 42775507169, conclusion: 'failure'}, {id: 42954667398, conclusion: 'success'}, {id: 42774486556, conclusion: 'cancelled'}];
+  fs.writeFileSync(path.join(dir, 'list_workflow_runs.json'), env({content: [{type: 'text', text: JSON.stringify({total_count: runs.length, workflow_runs: runs})}]}));
+  const listed = JSON.parse(acceptance.recordedAnswer(dir, 'actions_list', {method: 'list_workflow_runs'}).content[0].text).workflow_runs;
+  assert.deepStrictEqual(listed.map((r) => [r.id, r.conclusion]), [[42775507169, 'failure'], [42954667398, 'cancelled'], [42774486556, 'cancelled']]);
+  const jobs = (owner, repo, id) => acceptance.recordedAnswer(dir, 'actions_list', {method: 'list_workflow_jobs', owner, repo, resource_id: id});
+  assert.deepStrictEqual(jobs('mchen6', 'countinghouse', '42954667398'), {content: [{type: 'text', text: '{"jobs":{"total_count":0,"jobs":[]}}'}]}, 'answered as cancelled: no jobs');
+  const limited = jobs('mchen6', 'countinghouse-limited', '42774486556');
+  assert.strictEqual(limited.isError, true);
+  assert.match(limited.content[0].text, /: 429 Too Many Requests/);
+  // (the same run of the recorded repository is answered as any cancelled one)
+  assert.deepStrictEqual(jobs('mchen6', 'countinghouse', '42774486556'), {content: [{type: 'text', text: '{"jobs":{"total_count":0,"jobs":[]}}'}]});
+});
+
 // (the pack lists the failed jobs of every run of the window that did not pass;
 // recorded ones but the one had none. A call it has no reason to make is still
 // one the stand-in has no recording for)

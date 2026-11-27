@@ -74,6 +74,9 @@ const EXTRA_CANCELLED = '42954667398';
 // pack's cache is per repository, so it lists again): one listing in its first
 // batch answers as GitHub does past a rate limit, and the pack must ask
 // nothing more, so the fifth run is never listed.
+// (tied to the pack's recording, newest first: 43082260306, the extra
+// cancelled 42954667398, 42774486556, 42773488341, then 42772162587; and to its
+// four listings at once, so the first four make one batch)
 const LIMITED_REPO = 'mchen6/countinghouse-limited';
 const LIMITED_RUN = '42774486556';
 const NEVER_LISTED = '42772162587';
@@ -581,14 +584,20 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     // batch and lists nothing after it.
     const listedIn = (from, to, repo) => standIn.state.args.slice(from, to).filter((a) => a.method === 'list_workflow_jobs' && `${a.owner}/${a.repo}` === repo).map((a) => String(a.resource_id));
     const firstListed = listedIn(0, packCalls, RECORDED_REPO).filter((id) => id !== '42775507169');
-    check('the first triage listed every other run of its window that did not pass, four at once and one more', firstListed.length === 5 && firstListed.includes(EXTRA_CANCELLED), JSON.stringify(firstListed));
+    check('the first triage listed all five other runs of its window that did not pass, the run answered as cancelled among them', firstListed.length === 5 && firstListed.includes(EXTRA_CANCELLED), JSON.stringify(firstListed));
     const before = standIn.state.calls.length;
     const limited = await mcp.request('tools/call', {name: 'ci_failure_triage', arguments: {repo: LIMITED_REPO}});
     const lr = limited.result || {};
     const limitedListed = listedIn(before, standIn.state.calls.length, LIMITED_REPO).filter((id) => id !== '42775507169');
-    check('a rate limit in a batch stops the triage\'s GitHub calls: the batch under way finishes, the run after it is never listed, and capHit says so',
+    // (after the first of the other runs' listings, every call of this triage
+    // is one of that batch's listings: no log, no commit, no listing after)
+    const afterFirst = standIn.state.args.slice(before).map((a, i) => ({a, i})).filter(({a}) => a.method === 'list_workflow_jobs' && String(a.resource_id) !== '42775507169');
+    const tail = afterFirst.length === 0 ? [] : standIn.state.args.slice(before + afterFirst[0].i);
+    check('a rate limit in a batch stops the triage\'s GitHub calls: the batch under way finishes, nothing is asked after it, the run after it is never listed, and capHit says so',
       lr.isError !== true && lr.structuredContent != null && lr.structuredContent.coverage != null && lr.structuredContent.coverage.capHit === true &&
-      limitedListed.includes(LIMITED_RUN) && !limitedListed.includes(NEVER_LISTED) && limitedListed.length === 4,
+      limitedListed.includes(LIMITED_RUN) && !limitedListed.includes(NEVER_LISTED) && limitedListed.length === 4 &&
+      tail.length === 4 && tail.every((a) => a.method === 'list_workflow_jobs') &&
+      standIn.state.unexpected.length === 0 && standIn.state.by.slice(before).every((w) => w === 'pack'),
       JSON.stringify({listed: limitedListed, coverage: lr.structuredContent != null ? lr.structuredContent.coverage : null, error: lr.isError === true ? lr.content : undefined}).slice(0, 1500));
 
     child.stdin.end();
