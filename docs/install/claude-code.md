@@ -164,7 +164,7 @@ you run in your own terminal: an upgrade runs new code with your keys, so an
 agent never runs it for you. `ch-local upgrade` shows the same and asks before
 installing.
 
-When the countinghouse plugin in Claude Code changes with a release, both say
+When the ch-packs plugin in Claude Code changes with a release, both say
 so, with Claude Code's own steps for after the upgrade:
 
 ```bash
