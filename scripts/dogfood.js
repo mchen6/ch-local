@@ -72,7 +72,8 @@ function parseArgs(argv) {
 
 // A shell word: quoted when it holds anything but plain path characters.
 const word = (s) => (/^[A-Za-z0-9_/.:@%+=,-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`);
-const DEFAULT_HOME = () => path.join(os.homedir(), '.countinghouse');
+// (the launcher's own default: lib/home.js defaultHome, on Windows %LOCALAPPDATA%\\countinghouse)
+const DEFAULT_HOME = () => require('../lib/home').defaultHome();
 
 // --home, else COUNTINGHOUSE_HOME as every ch-local command reads it, else ~/.countinghouse.
 function homeFor(args, env = process.env) {

@@ -258,22 +258,84 @@ function privateProblem(what, acl, {directory = false} = {}) {
   return null;
 }
 
-// The icacls commands that make file private as privateProblem wants it, by
-// SID (no names: they are localized, and a user name is never printed):
-// nothing inherited, this user and SYSTEM, each other SID a rule names
-// removed, and the user made the owner. One per line: valid in cmd and in
-// PowerShell 5.1, which has no &&.
+// The rights that change a file or folder (or what is in it): write and append data, write extended attributes, delete a child,
+// write attributes, delete, change permissions, take ownership; generic write and generic all. Any other right beyond HARMLESS is
+// a read (read data, read extended attributes, execute).
+const CHANGE_RIGHTS = (0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x40000000 | 0x10000000) >>> 0;
+// The other accounts privateProblem would name (allow rules, not inherit-only, granting someone not the user, SYSTEM or
+// Administrators more than HARMLESS), in its order: [{sid, name (names[sid], as principalNames resolves it; '' if not), change}]
+function openPrincipals(acl, names = {}) {
+  if (acl == null || typeof(acl) !== 'object' || typeof(acl.user) !== 'string') return [];
+  const own = new Set([acl.user, SYSTEM, ADMINISTRATORS]);
+  const rules = Array.isArray(acl.rules) ? acl.rules : (acl.rules != null ? [acl.rules] : []);
+  const out = [];
+  for (const r of rules) {
+    if (r == null || typeof(r.sid) !== 'string' || r.type !== 'Allow' || r.inheritOnly === true || own.has(r.sid)) continue;
+    const rights = (Number(r.rights) >>> 0);
+    if ((rights & ~HARMLESS) === 0) continue;
+    const prev = out.find((p) => p.sid === r.sid);
+    if (prev != null) { prev.change = prev.change || (rights & CHANGE_RIGHTS) !== 0; continue; }
+    out.push({sid: r.sid, name: (names != null && typeof(names[r.sid]) === 'string') ? names[r.sid] : '', change: (rights & CHANGE_RIGHTS) !== 0});
+  }
+  return out;
+}
+
+// SIDs -> {sid: its name as Windows resolves it ('' when it can't: a capability or workspace SID)}, in one PowerShell run. For a
+// refusal's words only, so it runs only when one names other accounts, never on the way to a private one (a lookup can reach a
+// domain controller). Every rule is judged by its SID; a SID that is not plainly one is not asked. Throws on any failure: the
+// caller then says the SIDs.
+const NAMES_SCRIPT = PRELUDE.concat([
+  '$out = @()',
+  "foreach ($s in ($env:CH_SIDS -split \"`n\")) {",
+  "  try { $n = $sid::new($s).Translate([System.Security.Principal.NTAccount]).Value } catch { $n = '' }",
+  "  $out += ('\"' + $n.Replace('\\', '\\\\').Replace('\"', '\\\"') + '\"')",
+  '}',
+  "'[' + ($out -join ',') + ']'"
+]).join('\n');
+function principalNames(sids) {
+  const asked = sids.filter((s) => typeof(s) === 'string' && SID_TEXT.test(s));
+  if (asked.length === 0) return {};
+  const names = JSON.parse(runPowershell(NAMES_SCRIPT, {CH_SIDS: asked.join('\n')}));
+  if (!Array.isArray(names) || names.length !== asked.length) throw new Error('principalNames: not one name per SID');
+  const out = {};
+  asked.forEach((s, i) => { out[s] = typeof(names[i]) === 'string' ? names[i] : ''; });
+  return out;
+}
+
+// Whether anyone but this user, SYSTEM and Administrators holds a right that changes it, or what is made in it: an allow rule,
+// inherit-only ones included (what was made in it took that right), CREATOR OWNER's aside (it grants only to whoever makes a child).
+// A folder someone else could change may already have been changed, so it is moved aside, not repaired (the reviewer's ruling on
+// the Windows home, as for POSIX's group or world write).
+function foreignChange(acl) {
+  if (acl == null || typeof(acl) !== 'object' || typeof(acl.user) !== 'string') return false;
+  const own = new Set([acl.user, SYSTEM, ADMINISTRATORS]);
+  const rules = Array.isArray(acl.rules) ? acl.rules : (acl.rules != null ? [acl.rules] : []);
+  return rules.some((r) => r != null && r.type === 'Allow' && typeof(r.sid) === 'string' && !own.has(r.sid) && !CREATORS.has(r.sid) && ((Number(r.rights) >>> 0) & CHANGE_RIGHTS) !== 0);
+}
+
+// The lines that make file private as privateProblem wants it, for Windows PowerShell (each one, on a line of its own): nothing
+// inherited, this user and SYSTEM, each other SID a rule names removed, and the user made the owner. By SID (no names: they are
+// localized, and a user name is never printed). A SID is removed with .NET's PurgeAccessRules, one SID to a line: icacls /remove
+// leaves a SID that names no account (a Codex sandbox capability), and one call with several /remove switches processes nothing,
+// both saying no error (Matt's box); Get-Acl/Set-Acl need SeSecurityPrivilege (Set-Acl writes the SACL), which a standard user
+// lacks. The Windows legs run the printed lines as printed (test/home-windows-acl.test.js). Single quotes: nothing in a path is
+// expanded. A SID that is not plainly one: no lines.
 // directory: the grants inherit to what is made in it ((OI)(CI)), or
 // /inheritance:r would leave its own files reachable by no one (the
 // reviewer's Fable high on #126, F13)
+const SID_TEXT = /^S-1-[0-9]+(-[0-9]+)+$/;
+const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 function fixHint(file, acl, {directory = false} = {}) {
   const user = acl != null && typeof(acl.user) === 'string' ? acl.user : null;
-  if (user == null) return null;
+  if (user == null || !SID_TEXT.test(user)) return null;
   const rules = Array.isArray(acl.rules) ? acl.rules : (acl.rules != null ? [acl.rules] : []);
   const others = [...new Set(rules.map((r) => r && r.sid).filter((s) => typeof(s) === 'string' && s !== user && s !== SYSTEM))];
-  const removes = others.map((s) => ` /remove *${s}`).join('');
+  if (others.some((s) => !SID_TEXT.test(s))) return null;
   const f = directory ? '(OI)(CI)F' : 'F';
-  return `icacls "${file}" /inheritance:r /grant:r *${user}:${f} *${SYSTEM}:${f}${removes}\n  icacls "${file}" /setowner *${user}`;
+  const p = psQuote(file);
+  return [`icacls ${p} /inheritance:r /grant:r *${user}:${f} *${SYSTEM}:${f}`,
+    ...others.map((s) => `  $i = Get-Item -LiteralPath ${p} -Force; $a = $i.GetAccessControl('Access'); $a.PurgeAccessRules([System.Security.Principal.SecurityIdentifier]'${s}'); $i.SetAccessControl($a)`),
+    `  icacls ${p} /setowner *${user}`].join('\n');
 }
 
-module.exports = {windowsDir, powershellPath, runPowershell, runPowershellAsync, fileAcl, fileAcls, makePrivateDirs, createPrivate, createInput, privateProblem, fixHint, PRELUDE, ACL_FN, FILE_ACL_SCRIPT, FILE_ACLS_SCRIPT, PRIVATE_DIRS_SCRIPT, CREATE_SCRIPT, SYSTEM, ADMINISTRATORS, DRIVE_PATH};
+module.exports = {windowsDir, powershellPath, runPowershell, runPowershellAsync, fileAcl, fileAcls, makePrivateDirs, createPrivate, createInput, privateProblem, openPrincipals, principalNames, foreignChange, fixHint, PRELUDE, ACL_FN, FILE_ACL_SCRIPT, FILE_ACLS_SCRIPT, PRIVATE_DIRS_SCRIPT, NAMES_SCRIPT, CREATE_SCRIPT, SYSTEM, ADMINISTRATORS, DRIVE_PATH};

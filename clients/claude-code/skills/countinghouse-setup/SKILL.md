@@ -15,7 +15,7 @@ Never print environment values (except the countinghouse home's path, which sect
 
 ## 1. Is it installed?
 
-The launcher is `<home>/bin/ch-local.js`, where `<home>` is `$COUNTINGHOUSE_HOME` if set, else `~/.countinghouse` (`%USERPROFILE%\.countinghouse` on Windows). Before any command uses `<home>`, check that it holds no `$`, backquote, double quote, `!` or line break; if it does, stop and tell the user. With the user's yes, run `node "<home>/bin/ch-local.js" status`. If the file does not exist, countinghouse is not installed: go to 2. If it lists the pack the user wants, go to 4.
+The launcher is `<home>/bin/ch-local.js`, where `<home>` is `$COUNTINGHOUSE_HOME` if set, else `~/.countinghouse` (`%LOCALAPPDATA%\countinghouse` on Windows). Before any command uses `<home>`, check that it holds no `$`, backquote, double quote, `!` or line break; if it does, stop and tell the user. With the user's yes, run `node "<home>/bin/ch-local.js" status`. If the file does not exist, countinghouse is not installed: go to 2. If it lists the pack the user wants, go to 4.
 
 ## 2. Install
 

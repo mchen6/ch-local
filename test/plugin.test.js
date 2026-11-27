@@ -122,7 +122,7 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
   assert.ok(!/dev-server|countinghouse-dev|section 8/.test(skill));
   // (no credential handed through the conversation: no export of one, no value)
   assert.ok(!/\bexport [A-Z_]+=|GITHUB_TOKEN=|ghp_|github_pat_/.test(skill));
-  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '2c3d67138dd60218dae6b02105d73acd71f00d8bd77d5dcb2ce2aa7a9b7e67a3', 'the checked text, byte for byte');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), 'ce3ceb1875c51eff7b50de6af62dd384ad87dc6898d9f232eb189b06c80c4356', 'the checked text, byte for byte');
 });
 
 test('launch.js without an installed launcher exits non-zero with one line naming the install command', () => {
@@ -184,6 +184,17 @@ test('launch.js and lib/home.js find the launcher at the same path', () => {
   for (const env of [base, {...base, COUNTINGHOUSE_HOME: abs}, {...base, COUNTINGHOUSE_HOME: ''}]) {
     assert.strictEqual(launch.whereIs(env), launcherPath(env), JSON.stringify(env.COUNTINGHOUSE_HOME));
   }
+});
+
+test('launch.js and lib/home.js agree on Windows too: the default under %LOCALAPPDATA%, and a missing LOCALAPPDATA refused alike', () => {
+  const homedir = () => 'C:\\Users\\dev';
+  for (const env of [{LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local'}, {LOCALAPPDATA: 'C:\\x', COUNTINGHOUSE_HOME: 'E:\\ch'}]) {
+    assert.strictEqual(launch.whereIs(env, 'win32', homedir), launcherPath(env, homedir, 'win32'), JSON.stringify(env));
+  }
+  assert.strictEqual(launch.whereIs({LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local'}, 'win32', homedir), 'C:\\Users\\dev\\AppData\\Local\\countinghouse\\bin\\ch-local.js');
+  const words = (fn) => { try { fn(); return null; } catch (e) { return [e.code, e.message]; } };
+  assert.deepStrictEqual(words(() => launch.whereIs({}, 'win32', homedir)), words(() => launcherPath({}, homedir, 'win32')));
+  assert.strictEqual(words(() => launch.whereIs({}, 'win32', homedir))[0], 'HOME_NO_LOCALAPPDATA');
 });
 
 test('launch.js refuses a relative COUNTINGHOUSE_HOME in one line', () => {
@@ -341,9 +352,13 @@ test('launch.js\'s home check on Windows (its ACL check, with ACLs given): a pri
   assert.strictEqual(ok.problem, undefined);
   assert.strictEqual(ok.launcher, fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js')), 'the path checked is the one to run');
   assert.strictEqual(calls, 1, 'one PowerShell run for the three');
-  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => OPEN)}).problem), /is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change: icacls /);
-  // the launcher's own ACL: "a file", never "a folder"
-  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, OPEN]}).problem), /make it a file only you can change/);
+  // (another able to change it: it may already have been changed, so moved aside, no lines that set its access)
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => OPEN)}).problem), /is accessible by S-1-1-0, so another user could change what runs from it; it may already have been changed: move the home aside and install again$/);
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, OPEN]}).problem), /move the home aside and install again$/);
+  // (read only: the lines, for Windows PowerShell; the launcher's own ACL: "a file", never "a folder")
+  const READABLE = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]};
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => READABLE)}).problem), /is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change, in Windows PowerShell \(powershell\.exe\): icacls '/);
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, READABLE]}).problem), /make it a file only you can change, in Windows PowerShell \(powershell\.exe\): /);
 });
 
 test('the plugin carries lib/win-acl.js unchanged (launch.js checks a Windows home with it, never with the home\'s own code)', () => {

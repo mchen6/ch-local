@@ -135,7 +135,7 @@ chmod -R u+w ~/.countinghouse/own
 On Windows, clear their read-only attribute instead:
 
 ```bat
-attrib -r "%USERPROFILE%\.countinghouse\own\*" /s /d
+attrib -r "%LOCALAPPDATA%\countinghouse\own\*" /s /d
 ```
 
 (These are the default home's paths. With `COUNTINGHOUSE_HOME` set, use its

@@ -379,7 +379,7 @@ test('Windows (win-acl stubbed): a directory or file whose DACL fails is refused
   const acl = (dirAcl) => ({privateProblem, fileAcl: () => dirAcl, makePrivateDirs: (dirs) => { made_ += 1; return dirs.map(() => mine); }});
   assert.strictEqual(store.checkDir(path.join(h, 'credentials'), {platform: 'win32', acl: acl(mine), create: true}), 'ok');
   assert.strictEqual(made_, 1, 'a new directory is made private');
-  assert.throws(() => store.checkDir(path.join(h, 'credentials'), {platform: 'win32', acl: acl(open)}), (e) => /accessible by S-1-5-32-545/.test(e.message) && /icacls ".*credentials" \/inheritance:r/.test(e.message));
+  assert.throws(() => store.checkDir(path.join(h, 'credentials'), {platform: 'win32', acl: acl(open)}), (e) => /accessible by S-1-5-32-545/.test(e.message) && /in Windows PowerShell \(powershell\.exe\):\n  icacls '.*credentials' \/inheritance:r/.test(e.message));
   assert.throws(() => store.checkDir(path.join(h, 'credentials'), {platform: 'win32', acl: {privateProblem, fileAcl: () => { throw new Error('powershell failed'); }}}), /access list could not be read \(powershell failed\)/);
 });
 

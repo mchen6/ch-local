@@ -14,7 +14,7 @@ the client's config entry for the installed launcher on stdout, alone, so it
 can be piped. On stderr it names the Node it pinned and how to reprint the
 entry after a Node upgrade. Every entry runs `<absolute node>
 <home>/bin/ch-local.js session --home <home>`, where
-`<home>` is `$COUNTINGHOUSE_HOME` (absolute) or `~/.countinghouse`.
+`<home>` is `$COUNTINGHOUSE_HOME` (absolute) or `~/.countinghouse` (`%LOCALAPPDATA%\countinghouse` on Windows).
 At each session start, `session` runs the shared runtime through the native
 shim install placed and recorded (`<home>/shim/ch-shim`), once it passes its
 ownership and mode checks; otherwise (no shim for this platform, or one set
@@ -26,7 +26,11 @@ key. On Linux and macOS it must be yours and private (`0700`, as install makes
 it); on Windows its DACL must be private. `install` refuses any other home
 (exit 1), and `session`, `start` and the Claude Code plugin's launcher refuse
 it with exit 2. Each names the fix. For a home only too open to read (`0755`)
-that is the `chmod 700` line, and on Windows the `icacls` lines. On Linux and
+that is the `chmod 700` line, and on Windows, for a home others can only read,
+the lines for Windows PowerShell (`powershell.exe`), one to a line, each to be
+run. On Windows a home someone else could change is moved aside and installed
+again, as below, and for a home Codex's sandbox opened the fix is a home under
+`%LOCALAPPDATA%`. On Linux and
 macOS, a home that others could write in may already have been changed, so the
 fix is to move it aside and install again, never a `chmod` that would trust
 what is in it. The plugin's launcher, and a ch-local run
@@ -44,7 +48,12 @@ user a private group of their own, and a umask of `0002` leaves the folders in
 a home group-writable with no one else in that group. If your primary group
 is shared with other users, keep the home under folders that group can't
 write in. On Windows the folders above the home are not checked: keep it under
-your own profile.
+`%LOCALAPPDATA%`, where the default puts it, and not in a folder directly in
+your profile (`%USERPROFILE%\<folder>`): Codex's Windows sandbox gives its own
+identities access to each of those every time it runs a command, so a home
+there would not stay private, and once it isn't it is refused. On Windows `LOCALAPPDATA` must be
+set to an absolute path, or `COUNTINGHOUSE_HOME` set; otherwise ch-local
+refuses rather than guess where the home is.
 
 No entry sets or forwards a credential: a module's credential is stored
 with `ch-local credentials add <module>`, bound to the one address the
@@ -71,7 +80,7 @@ One install page per client is in [docs/install](docs/install/README.md).
 
 ## Commands
 
-`ch-local` here is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"` in cmd, or `node "$env:USERPROFILE\.countinghouse\bin\ch-local.js"` in PowerShell.
+`ch-local` here is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%LOCALAPPDATA%\countinghouse\bin\ch-local.js"` in cmd, or `node "$env:LOCALAPPDATA\countinghouse\bin\ch-local.js"` in PowerShell.
 
 | Command | What it does |
 |---|---|
@@ -110,7 +119,7 @@ Three facts you can check on your own machine, with your home as `<home>`:
 - **The triage cache holds no log text**: one `fingerprints.json` per repository (`/data/<owner>__<name>/fingerprints.json` inside the pack), with run and job ids, commit SHAs, times, the algorithm that signed each entry, GitHub's conclusion word for a run with no job, and hashes (the failure's signature, the step's name and the error lines, each hashed). `find <home>/module_data -name fingerprints.json` lists them.
 - **Usage is recorded on this machine**, in `<home>/store/usage`. `node <home>/app/node_modules/countinghouse/bin/countinghouse-usage.js --usageDir <home>/store/usage` prints the report outside any conversation (`--since 7d`, `--groupBy tool`, `--json` or `--csv`).
 
-`<home>` is `$COUNTINGHOUSE_HOME` (an absolute path) or `~/.countinghouse`. Every
+`<home>` is `$COUNTINGHOUSE_HOME` (an absolute path) or `~/.countinghouse` (`%LOCALAPPDATA%\countinghouse` on Windows). Every
 command first checks Node: below 22.16 it says so and offers two ways on, to
 install Node 24 yourself or to let ch-local fetch its own; that fetch is not
 built yet, so a yes is refused and nothing is downloaded.
