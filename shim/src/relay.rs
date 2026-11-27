@@ -33,7 +33,25 @@ use crate::{answer, child};
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
 /// Sent after a replayed initialize.
 const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
-const LIST_CHANGED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
+/// What a legacy (2025-11-25) client is told when the runtime it talks to
+/// may have changed (a replay, a handover): each of its lists may be others.
+/// Its tools always (every runtime declares their listChanged to such a
+/// client); its prompts and its resources only where the runtime's initialize
+/// answer declared their listChanged (R-cold-prompts: a runtime from before
+/// it declares `{}` for both, and a server sends list_changed only for a list
+/// it declared). A client re-lists on each.
+pub(crate) const LISTS_CHANGED: [(&str, &[u8]); 3] = [
+    ("tools", br#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#),
+    ("prompts", br#"{"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}"#),
+    ("resources", br#"{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}"#),
+];
+
+/// Whether an initialize answer lets its client be told this list changed
+/// (LISTS_CHANGED): the tools always; another list where the answer's
+/// `result.capabilities.<list>.listChanged` is true.
+pub(crate) fn told_of(answer: &Value, list: &str) -> bool {
+    list == "tools" || answer.pointer(&format!("/result/capabilities/{list}/listChanged")) == Some(&Value::Bool(true))
+}
 /// After the per-session runtime exits, its output is waited for while it
 /// keeps coming (a process it started may hold the pipe, writing or not):
 /// until PUMP_DRAIN passes with nothing read, or PUMP_MAX in all.
@@ -151,6 +169,9 @@ pub struct Relay {
     seq: Seq,
     inflight: Arc<Mutex<InFlight>>,
     dropped: Arc<Mutex<HashSet<u64>>>,
+    /// Of `dropped`, the replayed initializes, whose answers the reader reads
+    /// (bounded) for the lists they declare (reader::Shared::replay_seqs).
+    replay_seqs: Arc<Mutex<HashSet<u64>>>,
     closed: Arc<AtomicBool>,
     streaming: Arc<std::sync::atomic::AtomicUsize>,
     records: Records,
@@ -285,6 +306,7 @@ impl Relay {
             seq: Seq::default(),
             inflight: Arc::new(Mutex::new(InFlight::default())),
             dropped: Arc::new(Mutex::new(HashSet::new())),
+            replay_seqs: Arc::new(Mutex::new(HashSet::new())),
             closed: Arc::new(AtomicBool::new(false)),
             streaming: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             records: Records::default(),
@@ -647,6 +669,7 @@ impl Relay {
         let shared = Shared {
             inflight: self.inflight.clone(),
             dropped: self.dropped.clone(),
+            replay_seqs: self.replay_seqs.clone(),
             out: self.out.clone(),
             closed: self.closed.clone(),
             streaming: self.streaming.clone(),
@@ -799,9 +822,6 @@ impl Relay {
         None
     }
 
-    /// The legacy replay (section 6, step 4): the kept initialize line with
-    /// the shim's own id, its answer dropped; then notifications/initialized
-    /// to the runtime, and tools/list_changed to the client.
     /// The kept initialize line under the shim's own next replay id
     /// (`ch-shim-replay-<n>`, section 6 step 4), and that id: what a replay
     /// sends, and how its answer is told from the client's.
@@ -814,10 +834,20 @@ impl Relay {
         Some((serde_json::to_vec(&Value::Object(o)).expect("JSON serialises"), id))
     }
 
+    /// The legacy replay (section 6, step 4): the kept initialize line with
+    /// the shim's own id, its answer dropped; then notifications/initialized
+    /// to the runtime, and tools/list_changed to the client. Its prompts' and
+    /// resources' list_changed follow from the reader, once the replay's
+    /// answer declares them (LISTS_CHANGED, reader::Shared::replay_seqs).
     fn replay_initialize(&mut self) {
         let Some((replay, _)) = self.next_replay() else { return };
         let Some(n) = self.seq.take() else { return };
         self.dropped.lock().expect("dropped lock").insert(n);
+        self.replay_seqs.lock().expect("replay seqs lock").insert(n);
+        // its tools first, before the replay is sent: its prompts and
+        // resources follow from the reader once the replay's answer says they
+        // are declared (reader::Shared::replay_seqs), so never ahead of these
+        self.say(LISTS_CHANGED[0].1);
         if let (Ok(p), Some(w)) = (message::to_runtime(Some(n), &replay, self.to_runtime.message), self.writer.as_mut())
         {
             let _ = frame::write_frame(w, Kind::Message, &p, self.to_runtime);
@@ -827,7 +857,6 @@ impl Relay {
         {
             let _ = frame::write_frame(w, Kind::Message, &p, self.to_runtime);
         }
-        self.say(LIST_CHANGED);
     }
 
     /// Crash answers for everything still in flight, taken under the
@@ -1342,10 +1371,13 @@ pub fn own_runtime_to(
                     None
                 };
                 if let Some(v) = answer {
-                    // it serves now, and its tools may be others than the
+                    // it serves now, and its lists may be others than the
                     // shared runtime's the client listed
-                    if v.get("result").is_some()
-                        && p.wrote(|| out.message(LIST_CHANGED), LIST_CHANGED.len() + 1).is_err()
+                    if v.get("result").is_some_and(Value::is_object)
+                        && LISTS_CHANGED
+                            .iter()
+                            .filter(|(list, _)| told_of(&v, list))
+                            .any(|(_, line)| p.wrote(|| out.message(line), line.len() + 1).is_err())
                     {
                         let _ = done_tx.send(());
                         return;
@@ -1675,8 +1707,10 @@ mod tests {
         assert_eq!(sink.lines(), [r#"{"jsonrpc":"2.0","id":3,"result":{}}"#], "no crash answer during a drain");
     }
 
-    #[test]
-    fn a_legacy_session_replays_initialize_after_a_reconnect_and_drops_its_answer() {
+    /// A legacy session reconnected: its initialize replayed under the shim's
+    /// id, the replay's answer (declaring `caps`, a JSON object) dropped; what
+    /// its client heard.
+    fn reconnected_with(caps: &str) -> Vec<String> {
         let (home, sock) = home();
         let listener = UnixListener::bind(&sock).unwrap();
         let (mut client_in, sink, done) = start(home);
@@ -1698,19 +1732,45 @@ mod tests {
         assert_eq!((replay["id"].as_str(), replay["method"].as_str()), (Some("ch-shim-replay-1"), Some("initialize")));
         let (nseq, initialized) = read_m(&mut s2);
         assert_eq!((nseq, initialized), (None, br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec()));
-        reply(&mut s2, rseq.unwrap(), r#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{"v":1}}"#);
+        reply(
+            &mut s2,
+            rseq.unwrap(),
+            &format!(r#"{{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{{"v":1,"capabilities":{caps}}}}}"#),
+        );
         thread::sleep(Duration::from_millis(100));
         drop(client_in);
         until_op(&mut s2, "bye");
         drop(s2);
         done.join().unwrap();
+        sink.lines()
+    }
+
+    #[test]
+    fn a_legacy_session_replays_initialize_after_a_reconnect_and_drops_its_answer() {
         assert_eq!(
-            sink.lines(),
+            reconnected_with(
+                r#"{"tools":{"listChanged":true},"prompts":{"listChanged":true},"resources":{"listChanged":true}}"#
+            ),
+            [
+                r#"{"jsonrpc":"2.0","id":0,"result":{"v":1}}"#,
+                r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#,
+                r#"{"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}"#,
+                r#"{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}"#
+            ],
+            "the replay's answer is dropped; the client hears its lists changed, its tools first"
+        );
+    }
+
+    /// A runtime from before R-cold-prompts, reconnected to: `{}` for its
+    /// prompts and resources, so its client is told only of its tools.
+    #[test]
+    fn a_reconnect_to_a_runtime_that_declares_no_listchanged_for_prompts_or_resources_tells_only_the_tools() {
+        assert_eq!(
+            reconnected_with(r#"{"tools":{"listChanged":true},"prompts":{},"resources":{}}"#),
             [
                 r#"{"jsonrpc":"2.0","id":0,"result":{"v":1}}"#,
                 r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#
-            ],
-            "the replay's answer is dropped; the client hears list_changed"
+            ]
         );
     }
 
@@ -2625,13 +2685,15 @@ mod tests {
         std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("node")).find(|n| n.is_file()))
     }
 
-    #[test]
-    fn the_replayed_initializes_answer_is_dropped_and_the_rest_passes() {
-        let Some(node) = node() else { return eprintln!("no node on PATH: skipped") };
+    /// A per-session runtime that answers every request by id, in order; its
+    /// initialize's answer declares `caps` (a JS object literal). What a
+    /// handover tells its client: the replayed initialize's answer dropped,
+    /// the list notices its capabilities allow, then the held request's answer.
+    fn handed_over_with(caps: &str) -> Option<Vec<String>> {
+        let node = node()?;
         let (home, _sock) = home();
-        // a per-session runtime that answers every request by id, in order
         let echo = home.root().join("echo.js");
-        fs::write(&echo, "require('readline').createInterface({input: process.stdin}).on('line', (l) => { const m = JSON.parse(l); if (m.id !== undefined) process.stdout.write(JSON.stringify({jsonrpc: '2.0', id: m.id, result: {method: m.method}}) + '\\n'); });\n").unwrap();
+        fs::write(&echo, format!("require('readline').createInterface({{input: process.stdin}}).on('line', (l) => {{ const m = JSON.parse(l); if (m.id !== undefined) process.stdout.write(JSON.stringify({{jsonrpc: '2.0', id: m.id, result: m.method === 'initialize' ? {{method: m.method, capabilities: {caps}}} : {{method: m.method}}}}) + '\\n'); }});\n")).unwrap();
         let shim = serde_json::json!({"node": node, "chLocal": echo, "env": {"PATH": "/usr/bin:/bin"}});
         private(&home.root().join("shim.json"), shim.to_string().as_bytes());
         let sink = Sink::default();
@@ -2641,13 +2703,42 @@ mod tests {
         let code =
             own_runtime_to(&home, &[], held, std::iter::empty(), Some((init, "ch-shim-replay-1".into())), out).unwrap();
         assert_eq!(code, 0);
+        Some(sink.lines())
+    }
+
+    #[test]
+    fn the_replayed_initializes_answer_is_dropped_and_the_rest_passes() {
+        let Some(lines) = handed_over_with(
+            "{tools: {listChanged: true}, prompts: {listChanged: true}, resources: {listChanged: true}}",
+        ) else {
+            return eprintln!("no node on PATH: skipped");
+        };
         assert_eq!(
-            sink.lines(),
+            lines,
+            [
+                r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#,
+                r#"{"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}"#,
+                r#"{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}"#,
+                r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#
+            ],
+            "once this runtime serves, the client hears its lists may be others; then only its own answer"
+        );
+    }
+
+    /// A runtime from before R-cold-prompts declares `{}` for its prompts and
+    /// resources: its client is told only of its tools (a server sends
+    /// list_changed only for a list it declared).
+    #[test]
+    fn a_handed_over_runtime_that_declares_no_listchanged_for_prompts_or_resources_tells_only_the_tools() {
+        let Some(lines) = handed_over_with("{tools: {listChanged: true}, prompts: {}, resources: {}}") else {
+            return eprintln!("no node on PATH: skipped");
+        };
+        assert_eq!(
+            lines,
             [
                 r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#,
                 r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#
-            ],
-            "once this runtime serves, the client hears its tools may be others; then only its own answer"
+            ]
         );
     }
 
@@ -2713,7 +2804,8 @@ mod tests {
             Out::new(Box::new(Slow(sink.clone()))),
         )
         .unwrap();
-        assert_eq!(sink.lines().len(), 2, "{:?}", sink.lines());
+        // (the three lists' notices, then its answer)
+        assert_eq!(sink.lines().len(), 4, "{:?}", sink.lines());
     }
 
     /// The replayed initialize refused: the runtime serves no tools, and the
@@ -2794,7 +2886,7 @@ mod tests {
     fn echo_runtime(home: &Home, before: &str) -> bool {
         let Some(node) = node() else { return false };
         let echo = home.root().join("echo.js");
-        fs::write(&echo, format!("{before}\nrequire('readline').createInterface({{input: process.stdin}}).on('line', (l) => {{ const m = JSON.parse(l); if (m.id !== undefined) process.stdout.write(JSON.stringify({{jsonrpc: '2.0', id: m.id, result: {{method: m.method}}}}) + '\\n'); }});\n")).unwrap();
+        fs::write(&echo, format!("{before}\nrequire('readline').createInterface({{input: process.stdin}}).on('line', (l) => {{ const m = JSON.parse(l); if (m.id !== undefined) process.stdout.write(JSON.stringify({{jsonrpc: '2.0', id: m.id, result: m.method === 'initialize' ? {{method: m.method, capabilities: {{tools: {{listChanged: true}}, prompts: {{listChanged: true}}, resources: {{listChanged: true}}}}}} : {{method: m.method}}}}) + '\\n'); }});\n")).unwrap();
         let shim = serde_json::json!({"node": node, "chLocal": echo, "env": {"PATH": "/usr/bin:/bin"}});
         private(&home.root().join("shim.json"), shim.to_string().as_bytes());
         true
@@ -2924,11 +3016,13 @@ mod tests {
         )
         .unwrap();
         let lines = sink.lines();
-        assert_eq!(lines.len(), 3, "{} lines", lines.len());
+        assert_eq!(lines.len(), 5, "{} lines", lines.len());
         let big: Value = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(big["params"]["x"].as_str().map(str::len), Some(3 << 20), "the big line, whole");
         assert_eq!(lines[1], r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#);
-        assert_eq!(lines[2], r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#);
+        assert_eq!(lines[2], r#"{"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}"#);
+        assert_eq!(lines[3], r#"{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}"#);
+        assert_eq!(lines[4], r#"{"jsonrpc":"2.0","id":5,"result":{"method":"tools/list"}}"#);
     }
 
     #[test]
