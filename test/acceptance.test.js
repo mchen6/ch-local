@@ -204,6 +204,69 @@ test('the launcher environment carries no token of this shell\'s unless given on
   }
 });
 
+// (the no-outbound-connection check: the runtime opens no connection off
+// the machine; on Linux the server runs under strace, and every connect()
+// it made is read)
+test('outboundOf: every connect() strace saw, and every send that names its address, loopback or not; a refused or pending one counts too; DNS is off the machine', () => {
+  const trace = [
+    '4242  connect(21, {sa_family=AF_INET, sin_port=htons(41237), sin_addr=inet_addr("127.0.0.1")}, 16) = 0',
+    '4243  connect(22, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::1", &sin6_addr), sin6_scope_id=0}, 28) = -1 ECONNREFUSED (Connection refused)',
+    '4244  connect(23, {sa_family=AF_UNIX, sun_path="/run/x.sock"}, 110) = 0',
+    '4245  connect(24, {sa_family=AF_INET6, sin6_port=htons(80), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::ffff:127.0.0.1", &sin6_addr), sin6_scope_id=0}, 28) = 0',
+    '4246  connect(25, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("192.0.2.21")}, 16) = -1 EINPROGRESS (Operation now in progress)',
+    '4247  connect(26, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:db8::153", &sin6_addr), sin6_scope_id=0}, 28) = 0',
+    '4248  connect(27, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.53")}, 16) = 0',
+    '4249  connect(28, {sa_family=AF_INET, sin_port=htons(9), sin_addr=inet_addr("0.0.0.0")}, 16) = 0',
+    // (a datagram sent with no connect: strace 6.19's sendmsg, as node's dgram writes it)
+    '4251  sendmsg(20, {msg_name={sa_family=AF_INET, sin_port=htons(9), sin_addr=inet_addr("192.0.2.1")}, msg_namelen=16, msg_iov=[{iov_base="x", iov_len=1}], msg_iovlen=1, msg_controllen=0, msg_flags=0}, 0) = 1',
+    '4252  sendto(21, "x", 1, 0, {sa_family=AF_INET6, sin6_port=htons(8125), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::1", &sin6_addr), sin6_scope_id=0}, 28) = 1',
+    // (a send on a connected socket names no address: its connect is what counts)
+    '4253  sendto(22, "x", 1, MSG_NOSIGNAL, NULL, 0) = 1',
+    '4254  sendmmsg(23, [{msg_hdr={msg_name={sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("198.51.100.8")}, msg_namelen=16}, msg_len=40}], 1, 0) = 1',
+    // (one sendmmsg, two messages: the second's address read too)
+    '4255  sendmmsg(24, [{msg_hdr={msg_name={sa_family=AF_INET, sin_port=htons(9), sin_addr=inet_addr("127.0.0.1")}, msg_namelen=16}, msg_len=1}, {msg_hdr={msg_name={sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("192.0.2.2")}, msg_namelen=16}, msg_len=1}], 2, 0) = 2',
+    // (a name looked up through a local resolver's own socket; another unix socket is the machine's)
+    '4256  connect(25, {sa_family=AF_UNIX, sun_path="/run/systemd/resolve/io.systemd.Resolve"}, 42) = 0',
+    '4257  connect(26, {sa_family=AF_UNIX, sun_path="/run/nscd/socket"}, 19) = -1 ENOENT (No such file or directory)',
+    '4250  +++ exited with 0 +++'
+  ].join('\n');
+  const o = acceptance.outboundOf(trace);
+  assert.deepStrictEqual(o.away, ['192.0.2.21:443', '[2001:db8::153]:443', 'dns: 127.0.0.53:53', '192.0.2.1:9', 'dns: 198.51.100.8:53', '192.0.2.2:443',
+    'dns: unix:/run/systemd/resolve/io.systemd.Resolve', 'dns: unix:/run/nscd/socket']);
+  assert.deepStrictEqual(o.loopback, ['127.0.0.1:41237', '[::1]:443', '[::ffff:127.0.0.1]:80', '0.0.0.0:9', '[::1]:8125', '127.0.0.1:9']);
+  assert.deepStrictEqual(acceptance.outboundOf(''), {loopback: [], away: []});
+});
+
+test('traceCommand: the server under strace on Linux, as it is elsewhere; none, or one that can\'t trace, is the run\'s failure unless waived, and never waived on CI', () => {
+  const at = (platform, can, env = {}) => acceptance.traceCommand({platform, node: '/n', args: ['l', 'start', '--stdio'], file: '/t/trace', env, has: () => can});
+  assert.deepStrictEqual(at('linux', 'ok'), {command: 'strace', args: ['-f', '-qq', '--seccomp-bpf', '-e', 'trace=connect,sendto,sendmsg,sendmmsg', '-o', '/t/trace', '/n', 'l', 'start', '--stdio'], traced: true});
+  assert.deepStrictEqual(at('darwin', 'missing'), {command: '/n', args: ['l', 'start', '--stdio'], traced: false});
+  assert.deepStrictEqual(at('win32', 'missing'), {command: '/n', args: ['l', 'start', '--stdio'], traced: false});
+  assert.match(at('linux', 'missing').problem, /^strace is not installed: .*waives it, locally only\)$/);
+  assert.match(at('linux', 'blocked').problem, /^strace is installed but cannot trace here \(ptrace refused\): /);
+  assert.match(at('linux', 'old').problem, /^strace is too old here \(it needs --seccomp-bpf: 5\.3 or later\): /);
+  assert.deepStrictEqual(at('linux', 'missing', {CH_ACCEPTANCE_NO_TRACE: '1'}), {command: '/n', args: ['l', 'start', '--stdio'], traced: false, waived: true});
+  assert.deepStrictEqual(at('linux', 'blocked', {CH_ACCEPTANCE_NO_TRACE: '1', CI: 'false'}).waived, true, 'CI=false is not CI');
+  for (const CI of ['true', '1']) assert.match(at('linux', 'missing', {CH_ACCEPTANCE_NO_TRACE: '1', CI}).problem, /CH_ACCEPTANCE_NO_TRACE=1 is refused on CI\)$/, CI);
+});
+
+// (on every OS, so acceptance's no-skip guard holds: off Linux it is not asked)
+test('canTrace: strace tracing a node that does nothing: ok where it can, missing, old or blocked where not (Linux)', () => {
+  if (process.platform !== 'linux') return;
+  const word = acceptance.canTrace(process.execPath);
+  assert.ok(['ok', 'missing', 'old', 'blocked'].includes(word), word);
+  const installed = require('node:child_process').spawnSync('strace', ['-V'], {stdio: 'ignore'}).status === 0;
+  if (!installed) assert.strictEqual(word, 'missing');
+  else assert.notStrictEqual(word, 'missing');
+});
+
+test('the trace\'s waiver is a local one: no workflow sets it, and a waived run says the check was not run', () => {
+  const dir = path.join(__dirname, '..', '.github', 'workflows');
+  for (const f of fs.readdirSync(dir)) assert.ok(!fs.readFileSync(path.join(dir, f), 'utf8').includes('CH_ACCEPTANCE_NO_TRACE'), f);
+  assert.match(acceptance.TRACE_SKIPPED, /^trace skipped: the no-outbound-connection check was NOT run/);
+  assert.ok(fs.readFileSync(path.join(__dirname, '..', 'scripts', 'acceptance.js'), 'utf8').includes('report.skipped = [...(report.skipped || []), TRACE_SKIPPED]'));
+});
+
 test('the receipt pattern: a stand-in run, and only that', () => {
   assert.match('read 226.1 KB in 9 calls to github (acceptance stand-in); 1.6 KB reached the model.', acceptance.RECEIPT);
   assert.match('read 812 B in 1 call to github (acceptance stand-in); 1.2 MB reached the model.', acceptance.RECEIPT);

@@ -237,6 +237,76 @@ function endTree(pid, ms = 10000) {
 }
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return false; } };
 
+// The no-outbound-connection check: the runtime opens no connection off the
+// machine. GitHub's origin already goes to the stand-in on 127.0.0.1; on
+// Linux the server runs under strace (every process it starts followed, -f),
+// and each connect() it made, and each send that names its own address (a
+// datagram sent with no connect: sendto, sendmsg, sendmmsg), is read after
+// it exits. A loopback address (127/8, ::1, ::ffff:127/104, and the
+// any-address, which reaches this machine) is this machine's; any other is a
+// connection off it, and so is port 53 on any address: a DNS query, which a
+// local resolver (127.0.0.53) sends on off the machine; and so is a connect
+// to a local resolver's own socket (systemd-resolved's varlink socket,
+// nscd's), which looks a name up the same way. An IPv4 or IPv6 address this
+// cannot read counts as off it: never green by not reading. (What it does
+// not see: a connection made through io_uring, which no runtime part uses,
+// and the shared runtime's daemon, which the shared run starts untraced.)
+const isLoopback = (a) => /^127\./.test(a) || a === '::1' || /^::ffff:127\./i.test(a) || a === '0.0.0.0' || a === '::';
+const RESOLVER_SOCKETS = ['/run/systemd/resolve/io.systemd.Resolve', '/run/nscd/socket', '/var/run/nscd/socket'];
+// strace's output -> {loopback, away}: each as address:port ([v6]:port);
+// every address a line names (a sendmmsg may name one per message)
+function outboundOf(text) {
+  const loopback = [];
+  const away = [];
+  for (const line of String(text).split('\n')) {
+    if (!/\b(?:connect|sendto|sendmsg|sendmmsg)\(/.test(line)) continue;
+    const unix = /sa_family=AF_UNIX, sun_path="([^"]*)"/.exec(line);
+    if (unix != null && /\bconnect\(/.test(line) && RESOLVER_SOCKETS.includes(unix[1])) away.push(`dns: unix:${unix[1]}`);
+    // each address, from its family to the next family (or the line's end)
+    const starts = [...line.matchAll(/sa_family=AF_INET6?\b/g)].map((m) => m.index);
+    for (let i = 0; i < starts.length; i++) {
+      const part = line.slice(starts[i], i + 1 < starts.length ? starts[i + 1] : line.length);
+      const v4 = /^sa_family=AF_INET,.*?sin_port=htons\((\d+)\).*?sin_addr=inet_addr\("([^"]+)"\)/.exec(part);
+      const v6 = v4 == null ? /^sa_family=AF_INET6,.*?sin6_port=htons\((\d+)\).*?inet_pton\(AF_INET6, "([^"]+)"/.exec(part) : null;
+      const m = v4 || v6;
+      if (m == null) { away.push(`unread: ${part.trim().slice(0, 160)}`); continue; }
+      const at = v4 != null ? `${m[2]}:${m[1]}` : `[${m[2]}]:${m[1]}`;
+      if (m[1] === '53') away.push(`dns: ${at}`);
+      else (isLoopback(m[2]) ? loopback : away).push(at);
+    }
+  }
+  return {loopback, away};
+}
+const TRACE_SKIPPED = 'trace skipped: the no-outbound-connection check was NOT run (CH_ACCEPTANCE_NO_TRACE=1)';
+// what strace traces, filtered in the kernel (--seccomp-bpf, strace 5.3 or
+// later), so the traced runtime runs at its own pace
+const TRACE_ARGS = ['-f', '-qq', '--seccomp-bpf', '-e', 'trace=connect,sendto,sendmsg,sendmmsg'];
+// whether strace can trace here: 'ok', 'missing' (not installed), 'old'
+// (before 5.3: no --seccomp-bpf), or 'blocked' (installed, but tracing is
+// refused: no ptrace in a container, a seccomp profile; or the probe did not
+// end), by tracing a node that does nothing
+function canTrace(node) {
+  const r = spawnSync('strace', [...TRACE_ARGS, '-o', os.devNull, node, '-e', '0'], {stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8', timeout: 30000});
+  if (r.error != null && r.error.code === 'ENOENT') return 'missing';
+  if (r.status === 0) return 'ok';
+  return /seccomp-bpf/.test(String(r.stderr || '')) ? 'old' : 'blocked';
+}
+// The server's command: under strace on Linux (has(): canTrace's word); on
+// Linux where it can't, the run's failure (problem), unless the person
+// running it locally waives it (CH_ACCEPTANCE_NO_TRACE=1); never on CI
+// (CI set), where the waiver is refused
+function traceCommand({platform, node, args, file, env, has}) {
+  const plain = {command: node, args: [...args], traced: false};
+  if (platform !== 'linux') return plain;
+  const can = has();
+  if (can === 'ok') return {command: 'strace', args: [...TRACE_ARGS, '-o', file, node, ...args], traced: true};
+  const onCi = env.CI != null && env.CI !== '' && env.CI !== 'false' && env.CI !== '0';
+  if (env.CH_ACCEPTANCE_NO_TRACE === '1' && !onCi) return {...plain, waived: true};
+  const why = can === 'blocked' ? 'strace is installed but cannot trace here (ptrace refused)'
+    : can === 'old' ? 'strace is too old here (it needs --seccomp-bpf: 5.3 or later)' : 'strace is not installed';
+  return {...plain, problem: `${why}: on Linux the server runs under it, to see that no connection leaves the machine (${onCi && env.CH_ACCEPTANCE_NO_TRACE === '1' ? 'CH_ACCEPTANCE_NO_TRACE=1 is refused on CI' : 'CH_ACCEPTANCE_NO_TRACE=1 waives it, locally only'})`};
+}
+
 // Ends the launcher and everything it started (the runtime holds the same
 // pipes): its process group, SIGTERM and then SIGKILL after ms; on Windows,
 // taskkill of the tree, then waits for the launcher to be gone (TerminateProcess
@@ -428,7 +498,8 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     if (!report.ok && stderr !== '') report.runtimeLog = stderr.split('\n').slice(-400).join('\n');
     try {
       fs.writeFileSync(reportFile, reportText(report, [token, ownToken], [stderr, offStderr, ...ownLogs]));
-      say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'})`);
+      const skipped = (report.skipped || []).length;
+      say(`report: ${reportFile} (${report.ok ? 'passed' : 'FAILED'}${skipped > 0 ? `, with ${skipped} check${skipped > 1 ? 's' : ''} skipped` : ''})`);
     } finally {
       const left = removeTree(work, home);
       if (left != null) io.stderr.write(`acceptance: ${left}\n`);
@@ -490,8 +561,18 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     const repo = path.join(work, 'repo');
     fs.mkdirSync(path.join(repo, '.git'), {recursive: true});
     fs.writeFileSync(path.join(repo, '.git', 'config'), `[remote "origin"]\n\turl = https://github.com/${RECORDED_REPO}.git\n`);
+    // (on Linux under strace, every process of the server followed: the no-outbound-connection check)
+    const traceFile = path.join(work, 'connects.trace');
+    const traced = traceCommand({platform: process.platform, node, args: [launcher, 'start', '--stdio'], file: traceFile, env: process.env,
+      has: () => canTrace(node)});
+    // (said only where it ran under strace, or had to and could not: a waived
+    // or non-Linux run has no such check, never an ok one)
+    if (traced.problem != null) { check('on Linux the server runs under strace', false, traced.problem); return 1; }
+    if (traced.traced) check('on Linux the server runs under strace', true);
+    // (a waived trace is never a pass: the report lists it as skipped, said so)
+    if (traced.waived === true) { report.skipped = [...(report.skipped || []), TRACE_SKIPPED]; say(`SKIP ${TRACE_SKIPPED}`); }
     // In a process group of its own, so the runtime it starts ends with it (stopTree).
-    child = spawn(node, [launcher, 'start', '--stdio'], {cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
+    child = spawn(traced.command, traced.args, {cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
       env: launcherEnv(home, {CH_LOCAL_REMOTE_MAP: `${GITHUB}=http://127.0.0.1:${standIn.port}`, COUNTINGHOUSE_ACCEPTANCE: '1'})});
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (d) => {
@@ -603,6 +684,13 @@ async function main(argv, io = {stdout: process.stdout, stderr: process.stderr})
     child.stdin.end();
     const code2 = await Promise.race([exited, new Promise((r) => setTimeout(() => r('timeout'), 30000))]);
     check('the server exits when the client closes stdin', code2 !== 'timeout', String(code2));
+    // (a server that did not exit leaves its trace unfinished: never read as whole)
+    if (traced.traced && code2 === 'timeout') check('no connection of the server left the machine (strace, every process)', false, 'the server did not exit, so its trace is not whole');
+    else if (traced.traced) {
+      const seen = outboundOf(fs.existsSync(traceFile) ? fs.readFileSync(traceFile, 'utf8') : '');
+      check('the trace saw the server reach the stand-in', seen.loopback.some((a) => a.endsWith(`:${standIn.port}`)), `${seen.loopback.length} loopback connections`);
+      check('no connection of the server left the machine (strace, every process)', seen.away.length === 0, seen.away.join(', '));
+    }
     // the store holds it (readable by this user only); no other file does
     const leaks = filesContaining(home, token);
     check('the token is in no file under the home but the credential store', leaks.length === 1 && leaks[0] === path.join('credentials', 'credentials.json'), leaks.join(', '));
@@ -637,4 +725,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`acceptance: ${err.message}\n`); process.exitCode = 1; });
 }
 
-module.exports = {main, reportText, trapSignals, startStandIn, recordedAnswer, standInReceipt, filesContaining, launcherEnv, waitForText, stopTree, endTree, writeOwnModule, addOwn, removeTree, RECEIPT};
+module.exports = {main, outboundOf, traceCommand, canTrace, TRACE_ARGS, TRACE_SKIPPED, reportText, trapSignals, startStandIn, recordedAnswer, standInReceipt, filesContaining, launcherEnv, waitForText, stopTree, endTree, writeOwnModule, addOwn, removeTree, RECEIPT};
