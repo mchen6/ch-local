@@ -45,25 +45,46 @@ test('node-check loads on an old Node: no node: requires, no newer syntax it nee
   assert.ok(bin.indexOf("require('../lib/node-check')") < bin.indexOf("require('../lib/install')"), 'the floor module loads first');
 });
 
-// The install-yourself line for each platform: the routes the install pages
-// give (docs/install, "Before you start"), never "whatever is current".
-// Homebrew's node@24 is keg-only, so `brew install node@24` alone leaves
-// `node -v` where it was: the PATH line `brew info node@24` prints is part of
-// the route. winget has no per-major id for 24 (only exact versions), so
-// Windows takes the .msi from latest-v24.x.
-const LINES = {
-  darwin: 'brew install node@24, then put it on your PATH as brew info node@24 says (Homebrew keeps it off the PATH): echo \'export PATH="$(brew --prefix node@24)/bin:$PATH"\' >> ~/.zshrc, and open a new terminal; or the macOS installer (.pkg) from https://nodejs.org/dist/latest-v24.x/',
-  win32: 'the Windows installer (.msi, x64) from https://nodejs.org/dist/latest-v24.x/, then open a new terminal',
-  linux: 'your distribution\'s package if node -v then prints v24.x; otherwise https://nodejs.org/en/download: choose v24 and Linux, and it shows the commands to run',
-  other: 'https://nodejs.org/en/download: choose v24 and your system, and it shows the commands to run'
+// The install-yourself route for each platform: the routes the install pages
+// give (docs/install, "Before you start"), never "whatever is current", in
+// business's words. Homebrew's node@24 is keg-only, so `brew install node@24`
+// alone leaves `node -v` where it was: the PATH line `brew info node@24`
+// prints is part of the route. winget has no per-major id for 24, so Windows
+// takes the .msi from latest-v24.x. Each command and address stands on its
+// own indented line with nothing after it, so a copy of it is whole.
+const BLOCKS = {
+  darwin: [
+    '  1. install Node 24 yourself: the macOS installer (.pkg) from',
+    '       https://nodejs.org/dist/latest-v24.x/',
+    '     or Homebrew:',
+    '       brew install node@24',
+    '     then add the PATH line that brew info node@24 prints to your shell\'s startup file (~/.zshrc for zsh, the default; ~/.bash_profile for bash), and open a new terminal'
+  ],
+  win32: [
+    '  1. install Node 24 yourself: the Windows installer (.msi, x64) from',
+    '       https://nodejs.org/dist/latest-v24.x/',
+    '     then open a new terminal'
+  ],
+  linux: [
+    '  1. install Node 24 yourself: your distribution\'s package if node -v then prints v24.x; otherwise',
+    '       https://nodejs.org/en/download',
+    '     choose v24 and Linux, and it shows the commands to run'
+  ],
+  other: [
+    '  1. install Node 24 yourself: your system\'s package manager or ports, for Node 24'
+  ]
 };
 for (const platform of ['darwin', 'win32', 'linux', 'freebsd']) {
-  test(`below the floor on ${platform}: the install-yourself line is the install pages' route, never "whatever is current"`, async () => {
+  test(`below the floor on ${platform}: the install-yourself route is the install pages' own, each command on a line of its own`, async () => {
     const io = fakeIo({answers: ['no'], version: 'v20.11.0'});
     io.platform = platform;
     assert.strictEqual(await offerNode(io), 'install-yourself');
-    const line = io.err.split('\n').find((l) => l.startsWith('  1. install Node 24 yourself: '));
-    assert.strictEqual(line, '  1. install Node 24 yourself: ' + (LINES[platform] || LINES.other));
-    assert.ok(!/winget install OpenJS\.NodeJS\.LTS/.test(io.err) && !/brew install node(?!@)/.test(io.err), io.err);
+    const lines = io.err.split('\n');
+    const from = lines.findIndex((l) => l.startsWith('  1. install Node 24 yourself: '));
+    const to = lines.findIndex((l) => l.startsWith('  2. '));
+    assert.deepStrictEqual(lines.slice(from, to), BLOCKS[platform] || BLOCKS.other);
+    // (a command or an address alone on its line: nothing after it)
+    for (const l of lines.slice(from, to).filter((x) => x.startsWith('       '))) assert.match(l, /^ {7}(brew install node@24|https:\/\/\S*[^\s,;:.])$/);
+    assert.ok(!/winget install OpenJS\.NodeJS\.LTS/.test(io.err) && !/brew install node(?!@24)/.test(io.err), io.err);
   });
 }
