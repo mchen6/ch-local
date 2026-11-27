@@ -80,6 +80,16 @@ test('the Claude Code page says which shells the add line is for', () => {
   assert.match(page, /PowerShell[\s\S]{0,80}drops the `--`/, 'says why not PowerShell');
 });
 
+// (a loaded cold start can take longer than Claude Code's MCP_TIMEOUT;
+// settings.json's env sets it on every platform)
+test('the Claude Code page says what to do when countinghouse shows as failed in /mcp', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8').replace(/\s+/g, ' ');
+  assert.ok(page.includes('**If `/mcp` shows `countinghouse` as failed.** On a busy machine its first start can take longer than Claude Code waits for a server.'));
+  assert.ok(page.includes('Select **Reconnect** on `countinghouse` in `/mcp`. If it fails again, give it longer at every start:'));
+  assert.ok(!page.includes('already started'), 'a reconnect of a runtime of its own starts it again');
+  assert.ok(page.includes('set `MCP_TIMEOUT` (milliseconds) under `env` in `~/.claude/settings.json` (`%USERPROFILE%\\.claude\\settings.json` on Windows): `"env": {"MCP_TIMEOUT": "90000"}`, then restart Claude Code.'));
+});
+
 test('every package name the docs, skill and launcher print uses the scope', () => {
   const SCOPE = require('../package.json').name.split('/')[0];
   const files = [...fs.readdirSync(DOCS).map((f) => path.join(DOCS, f)), path.join(__dirname, '..', 'clients', 'claude-code', 'skills', 'ci-failure-triage', 'SKILL.md'), path.join(__dirname, '..', 'clients', 'claude-code', 'bin', 'launch.js')];

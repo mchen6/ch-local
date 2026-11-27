@@ -12,6 +12,14 @@ codex` writes it there, or under `$CODEX_HOME` when that is set):
     [mcp_servers.countinghouse]
     command = "/usr/local/bin/node"
     args = ["/home/you/.countinghouse/bin/ch-local.js", "session", "--home", "/home/you/.countinghouse"]
+    startup_timeout_sec = 90
+    tool_timeout_sec = 130
+
+The two waits give a first start on a busy machine time to load its packs
+(Codex waits 10 seconds by default) and let a call run as long as
+countinghouse's longest request timeout. An entry added by an earlier
+ch-local has neither: run `ch-local add codex` again to add them. To an
+entry you pasted yourself, add the two lines by hand.
 
 The entry forwards no variable of Codex's environment
 ([docs](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)): a module's

@@ -24,6 +24,14 @@ zsh) or, on Windows, `cmd.exe`. In PowerShell an npm-installed `claude`
 `cmd.exe`, or use the plugin
 ([`claude mcp add`](https://code.claude.com/docs/en/mcp)).
 
+**If `/mcp` shows `countinghouse` as failed.** On a busy machine its first
+start can take longer than Claude Code waits for a server. Select
+**Reconnect** on `countinghouse` in `/mcp`. If it fails again, give it
+longer at every start: set `MCP_TIMEOUT` (milliseconds) under `env` in
+`~/.claude/settings.json`
+(`%USERPROFILE%\.claude\settings.json` on Windows):
+`"env": {"MCP_TIMEOUT": "90000"}`, then restart Claude Code.
+
 ## For an agent: install by conversation
 
 When a user asks you to install countinghouse, follow these steps in order.
