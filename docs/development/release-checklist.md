@@ -153,6 +153,9 @@ The checks are grouped. Within a group, the order doesn't matter.
       (`floors` in lib/release-pins.json) names the version that carries a
       fix every release must hold, and with it every fix before it. Today's
       floors, each with the fixes it carries:
+      - countinghouse 8.0.0: its local store refuses a corrupt file it never
+        saw whole, instead of replacing it with what it holds (#559);
+        `ch-local status`'s store lines describe that runtime;
       - ch-step-redact 0.2.5: secrets and key blocks masked before a result
         reaches the model, with secret names inside escaped JSON (#11) and a
         password after an address and a colon (#12); its README true of the

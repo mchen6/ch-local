@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {packageTgz} = require('./tgz');
-const {describeRelease, describePinned, readTarballs, main} = require('../scripts/describe-release');
+const {describeRelease, describePinned, readTarballs, runtimeFloorProblem, main} = require('../scripts/describe-release');
 
 const ORIGIN = 'https://api.example.test';
 const ACCESS = '@countinghouse/ch-access-x';
@@ -170,6 +170,37 @@ test('a tarball below its floor is refused whole', () => {
   const [manifest, files] = tarballs[ACCESS];
   fs.writeFileSync(path.join(dir, 'countinghouse-ch-access-x-0.2.1-rc.1.tgz'), packageTgz({...manifest, version: '0.2.1-rc.1'}, files));
   assert.match(refusal(() => describeRelease(pre, {}, readTarballs(dir))) || '', /ch-access-x 0\.2\.1-rc\.1 is below its floor 0\.2\.1/);
+});
+
+// the runtime's floor (countinghouse 8.0.0): a runtime tarball beside the
+// release's, any version of it, is held to its floor too, its manifest read
+test('a runtime tarball below its floor is refused; at it, or with no floor, it is not', () => {
+  const r = {...release(), runtime: {packages: [RUNTIME, '@countinghouse/ch-local'], lockfile: null}, floors: {[RUNTIME]: '8.0.0'}};
+  const dir = dirOf();
+  assert.strictEqual(runtimeFloorProblem(dir, r), null, 'none there');
+  fs.writeFileSync(path.join(dir, 'countinghouse-8.0.0.tgz'), packageTgz({name: RUNTIME, version: '8.0.0'}));
+  fs.writeFileSync(path.join(dir, 'countinghouse-ch-local-0.4.0.tgz'), packageTgz({name: '@countinghouse/ch-local', version: '0.4.0'}));
+  assert.strictEqual(runtimeFloorProblem(dir, r), null, 'at its floor; ch-local has none');
+  assert.strictEqual(runtimeFloorProblem(dir, {...r, floors: {}}), null);
+  fs.writeFileSync(path.join(dir, 'countinghouse-7.1.2.tgz'), packageTgz({name: RUNTIME, version: '7.1.2'}));
+  assert.strictEqual(runtimeFloorProblem(dir, r), 'countinghouse-7.1.2.tgz: countinghouse 7.1.2 is below its floor 8.0.0');
+  // (the manifest decides, not the file's name)
+  const named = dirOf();
+  fs.writeFileSync(path.join(named, 'countinghouse-9.0.0.tgz'), packageTgz({name: RUNTIME, version: '8.0.0-rc.1'}));
+  assert.strictEqual(runtimeFloorProblem(named, r), 'countinghouse-9.0.0.tgz: countinghouse 8.0.0-rc.1 is below its floor 8.0.0');
+  const other = dirOf();
+  fs.writeFileSync(path.join(other, 'countinghouse-9.0.0.tgz'), packageTgz({name: 'not-countinghouse', version: '9.0.0'}));
+  assert.strictEqual(runtimeFloorProblem(other, r), 'countinghouse-9.0.0.tgz: it is no countinghouse package');
+});
+
+test('the release step refuses a runtime tarball below the shipped floor, before anything is written', () => {
+  const dir = dirOf();
+  fs.writeFileSync(path.join(dir, 'countinghouse-7.1.2.tgz'), packageTgz({name: RUNTIME, version: '7.1.2'}));
+  const out = {text: '', write(t) { this.text += t; }};
+  const err = {text: '', write(t) { this.text += t; }};
+  const code = main([dir, '--check'], {stdout: out, stderr: err});
+  assert.notStrictEqual(code, 0);
+  assert.match(out.text + err.text, /countinghouse-7\.1\.2\.tgz: countinghouse 7\.1\.2 is below its floor 8\.0\.0/);
 });
 
 // K3 (the feature audit): the release's change notes, from the maintainer's

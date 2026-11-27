@@ -88,6 +88,32 @@ test('a running client\'s word: a module it stopped, with its code; a client on 
   assert.ok(!/stopped|still on ch-local/.test(d.out), d.out);
 });
 
+test('a corrupt store file: one line before the modules, naming it and what to do; the rest as before', async () => {
+  const s = await installed();
+  stored(s.home);
+  const file = path.join(s.home, 'store', 'kv.json');
+  fs.mkdirSync(path.dirname(file), {recursive: true});
+  fs.writeFileSync(file, '{not json');
+  const {out, code} = await statusOf(s.io());
+  assert.strictEqual(code, 0);
+  const line = `store: kv.json is corrupt: the modules' stored data can't be read or changed, and an uninstall that would remove it is refused, until a runtime that had it open before it became corrupt replaces it; if none does, move it away (${file}), and what the modules stored starts empty`;
+  assert.ok(out.includes(`\n${line}\nmodules:\n`), out);
+  assert.strictEqual(lineOf(out, 'ch-pack-ci-failure-triage'), 'on; tools: ci_failure_triage');
+});
+
+test('a corrupt store file under a runtime older than the one these lines describe: nothing said of it', async () => {
+  const s = await installed(release({versions: {countinghouse: '7.1.2'}}));
+  stored(s.home);
+  const file = path.join(s.home, 'store', 'kv.json');
+  fs.mkdirSync(path.dirname(file), {recursive: true});
+  fs.writeFileSync(file, '{not json');
+  const {out, code} = await statusOf(s.io());
+  assert.strictEqual(code, 0);
+  assert.ok(out.startsWith('ch-local '), out);
+  assert.ok(out.includes(', countinghouse 7.1.2\n'), out);
+  assert.ok(!out.includes('store: '), out);
+});
+
 // the medium review of L1b-1: status decides as a start decides
 test('a settings file a start refuses: status says so, and lists every module as not loaded, guessing nothing', async () => {
   const s = await installed();
