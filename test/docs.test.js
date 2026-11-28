@@ -163,6 +163,13 @@ test('the install README starts with Before you start: Node, the install command
   assert.ok(order.every((n, i) => n >= 0 && (i === 0 || n > order[i - 1])), `in that order: ${order}`);
 });
 
+// (the hand route's path rule says why it differs from the agent route's:
+// cmd expands % inside double quotes; Windows paths use \)
+test('install README: the release folder\'s character rule says why it differs from the agent route\'s', () => {
+  const flat = fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8').replace(/\s+/g, ' ');
+  assert.ok(flat.includes('`_ / \\ . : @ + = , ~ -` (no `%`, which cmd expands inside double quotes, and `\\` allowed, as Windows paths use it; the agent\'s route on the Claude Code page writes the path with forward slashes instead)'), 'the clause');
+});
+
 test('every client page with something to add points to Before you start first', () => {
   const pointer = 'First do [Before you start](README.md#before-you-start): Node, the install, the credential.';
   for (const file of ['claude-code.md', 'cursor.md', 'vscode.md', 'codex.md']) {
@@ -217,7 +224,7 @@ test('the Claude Code page says the Windows PATH step and that the plugin route 
 test('the Claude Code page: the agent checks for Git before the plugin lines; the hand route and Linux', () => {
   const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8');
   const flat = page.replace(/\s+/g, ' ');
-  const line = 'If the `ch-packs` plugin is not installed, first say you\'ll check for Git and, with the user\'s yes, run `git --version` (on macOS, this can open Apple\'s prompt to install the command line tools; say so first). If it fails, tell the user the plugin route needs Git (Windows: `winget install --id Git.Git -e --source winget`; macOS: `xcode-select --install`; Linux: the distribution\'s `git` package) and that after installing it they restart Claude Code in a new window and ask Claude again to install countinghouse from this page (check `git --version` again before the plugin lines); or give them the hand-added line that `node "<home>/bin/ch-local.js" snippet claude-code` prints instead (on Windows, run it in `cmd.exe`, not PowerShell).';
+  const line = 'If the `ch-packs` plugin is not installed, first say you\'ll check for Git and, with the user\'s yes, run `git --version` (on macOS, this may first ask to install Apple\'s command line tools; say so before running it). If it fails, tell the user the plugin route needs Git (Windows: `winget install --id Git.Git -e --source winget`; macOS: `xcode-select --install`; Linux: the distribution\'s `git` package) and that after installing it they restart Claude Code in a new window and ask Claude again to install countinghouse from this page (check `git --version` again before the plugin lines); or give them the hand-added line that `node "<home>/bin/ch-local.js" snippet claude-code` prints instead (on Windows, run it in `cmd.exe`, not PowerShell).';
   const agent = flat.slice(flat.indexOf('## For an agent'));
   assert.ok(agent.includes(line) && agent.indexOf(line) < agent.indexOf('claude plugin marketplace add mchen6/ch-local'), 'agent step 4, before the plugin lines');
   assert.ok(flat.includes('On Linux, your distribution\'s `git` package.'), 'Linux');
