@@ -771,10 +771,6 @@ impl Relay {
         // a new connection's first client frame comes first; asks queued
         // for an older connection are its, and gone with it
         self.child_queue.clear();
-        if a.new_session && !self.records.is_empty() {
-            let frame = self.records.replay_frame();
-            self.control(&frame);
-        }
         self.state = if matches!(self.state, State::Closing(_)) { return None } else { State::Unsettled };
         // the first run's answer, if one was started with the shim: at once if it is in, else when it comes, within FIRST_WAIT
         // of this welcome; with none, a run of this connection's own, as before
@@ -858,6 +854,19 @@ impl Relay {
             "settled" if self.state == State::Unsettled => {
                 self.state = State::Live;
                 self.settle_losses = 0;
+                // the records go back first, on every settled connection
+                // while any are held, a new session or a resumed one: the
+                // runtime takes a replay only once settled, and a session
+                // lost after its settle (announced, so resumed) may never
+                // have read the one sent before. The runtime skips a value
+                // already in effect, so a replay to a session that has it
+                // changes nothing; it is ahead of every held line on this
+                // one connection, and the runtime applies it as it reads
+                // it, before the next frame
+                if !self.records.is_empty() {
+                    let frame = self.records.replay_frame();
+                    self.control(&frame);
+                }
                 // the session is restored (section 6, step 4) before any of
                 // the client's held traffic reaches it
                 if self.reconnecting {
@@ -2950,13 +2959,14 @@ printf '{{"status":"ok","conditions":"no","repo":"run-%s","token":null}}\n' "$((
         drop(s2);
         let (mut s3, _) = listener.accept().unwrap();
         welcome(&mut s3, "rt3");
+        until_op(&mut s3, "client");
+        settled(&mut s3);
+        // (the replay, on settled)
         let (kind, len) = frame::read_head(&mut s3, BIG).unwrap();
         let mut p = vec![0u8; len as usize];
         s3.read_exact(&mut p).unwrap();
         assert_eq!(kind, Kind::Control);
         assert_eq!(String::from_utf8(p).unwrap(), r#"{"op":"replay","entries":[{ "z": 1,  "a" : [ 1.0, 2e0 ] }]}"#);
-        until_op(&mut s3, "client");
-        settled(&mut s3);
         drop(client_in);
         until_op(&mut s3, "bye");
         drop(s3);
