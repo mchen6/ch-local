@@ -264,7 +264,9 @@ test('hintCommand: the npx form names a non-default home on every platform; the 
   const w = {home: 'D:\\ch'};
   assert.strictEqual(hintCommand(w, 'install --pack <name>', 'win32'), '`npx @countinghouse/ch-local install --pack <name>` (with COUNTINGHOUSE_HOME set to "D:\\ch")');
   assert.strictEqual(hintCommand({home: '/home/dev/ch'}, 'status', 'linux'), '`COUNTINGHOUSE_HOME="/home/dev/ch" npx @countinghouse/ch-local status`');
-  assert.strictEqual(hintCommand(layout({}, require('node:os').homedir), 'status', 'linux'), '`npx @countinghouse/ch-local status`', 'the default home');
+  // (the default home where this runs: on Windows under this process's LOCALAPPDATA)
+  const here = process.platform === 'win32' ? {LOCALAPPDATA: process.env.LOCALAPPDATA} : {};
+  assert.strictEqual(hintCommand(layout(here, require('node:os').homedir), 'status', 'linux'), '`npx @countinghouse/ch-local status`', 'the default home');
   // (on Windows the default is %LOCALAPPDATA%\countinghouse: no words for it; ~\.countinghouse there is any other home, and with
   // no LOCALAPPDATA no home is the default)
   const saved = process.env.LOCALAPPDATA;

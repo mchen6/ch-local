@@ -47,10 +47,11 @@ test('another home is carried into the line, status and uninstall, quoted when i
   assert.ok(text.includes(`COUNTINGHOUSE_HOME='/home/me/my home' '/opt/my node/bin/node' '/home/me/my home/bin/ch-local.js' uninstall`), text);
 });
 
-test('the home: --home, else COUNTINGHOUSE_HOME as every ch-local command reads it, else ~/.countinghouse', () => {
+test('the home: --home, else COUNTINGHOUSE_HOME as every ch-local command reads it, else the default (~/.countinghouse; on Windows %LOCALAPPDATA%\\countinghouse)', () => {
   assert.strictEqual(dogfood.homeFor({home: '/h'}, {COUNTINGHOUSE_HOME: '/e'}), path.resolve('/h'));
   assert.strictEqual(dogfood.homeFor({home: null}, {COUNTINGHOUSE_HOME: '/e'}), path.resolve('/e'));
-  assert.strictEqual(dogfood.homeFor({home: null}, {}), path.join(os.homedir(), '.countinghouse'));
+  const def = process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA, 'countinghouse') : path.join(os.homedir(), '.countinghouse');
+  assert.strictEqual(dogfood.homeFor({home: null}, {}), def);
 });
 
 test('the plan: a repo missing under --src is cloned from GitHub; an explicit --clone must exist; a ref without a clone must be a branch', () => {

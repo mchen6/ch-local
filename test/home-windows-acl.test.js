@@ -3,8 +3,8 @@ require('./tmp-dirs');
 // The Windows home against what Codex's elevated Windows sandbox does, on a real DACL: the Windows legs only. Codex gives its
 // CodexSandboxUsers group (OI)(CI)(RX), and where the profile is its workspace the group and a workspace SID that names no account
 // (OI)(CI)(M), as explicit entries on every folder directly in %USERPROFILE%, AppData among them (codex-rs/windows-sandbox-rs
-// setup.rs profile_read_roots and expand_user_profile_root_for). Imitated with icacls /grant (it propagates as SetSecurityInfo
-// does), on a tree of this test's own:
+// setup.rs profile_read_roots and expand_user_profile_root_for). Imitated with .NET's SetAccessControl (SetSecurityInfo, as
+// Codex's: it propagates, and takes a SID that names no account, which icacls refuses), on a tree of this test's own:
 // - a home where the default puts it, under a LOCALAPPDATA, stays private through both grants on AppData and LOCALAPPDATA;
 // - a home directly in a profile, given read, is refused, and the lines the refusal prints, run in Windows PowerShell exactly as
 //   printed, make it private (a group and a SID that names no account: the two a cleanup on the owner's machine found icacls /remove can't clear);
@@ -27,8 +27,12 @@ const part = () => String(crypto.randomInt(1, 2 ** 31));
 const UNNAMED = `S-1-5-21-${part()}-${part()}-${part()}-${part()}`;
 const icacls = (...a) => execFileSync(path.win32.join(SYS32, 'icacls.exe'), a, {encoding: 'utf8'});
 // the two grants Codex makes, on one folder
-const readGrant = (dir) => { icacls(dir, '/grant', `*${USERS}:(OI)(CI)(RX)`); icacls(dir, '/grant', `*${UNNAMED}:(OI)(CI)(RX)`); };
-const changeGrant = (dir) => { icacls(dir, '/grant', `*${USERS}:(OI)(CI)(M)`); icacls(dir, '/grant', `*${UNNAMED}:(OI)(CI)(M)`); };
+// an explicit (OI)(CI) allow rule for a SID, by .NET as Codex's SetEntriesInAclW and SetSecurityInfo make it (propagated to what is in
+// the folder): icacls maps a SID to an account and refuses one that names none, as a workspace SID does
+const grantSid = (dir, sid, rights) => powershell(`$i = Get-Item -LiteralPath '${dir.replace(/'/g, "''")}' -Force; $a = $i.GetAccessControl('Access'); ` +
+  `$a.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]'${sid}', '${rights}', 'ContainerInherit,ObjectInherit', 'None', 'Allow')); $i.SetAccessControl($a)`);
+const readGrant = (dir) => { grantSid(dir, USERS, 'ReadAndExecute'); grantSid(dir, UNNAMED, 'ReadAndExecute'); };
+const changeGrant = (dir) => { grantSid(dir, USERS, 'Modify'); grantSid(dir, UNNAMED, 'Modify'); };
 // a printed line, run as a person pasting it into Windows PowerShell would: verbatim (encoded, so nothing is quoted on the way)
 const powershell = (line) => execFileSync(path.win32.join(SYS32, 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
   ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(line, 'utf16le').toString('base64')], {encoding: 'utf8'});
@@ -97,7 +101,7 @@ test('this machine\'s CodexSandboxUsers on a home directly in a profile: the Cod
     const home = path.join(root, 'profile', '.countinghouse');
     ensureHome(home, 'win32');
     icacls(home, '/grant', 'CodexSandboxUsers:(OI)(CI)(M)');
-    icacls(home, '/grant', `*${UNNAMED}:(OI)(CI)(M)`);
+    grantSid(home, UNNAMED, 'Modify');
     // (the runner's temp folder is under its %LOCALAPPDATA%: this tree's own stands in for it, outside the profile home)
     const local = path.join(root, 'local');
     const p = homeOpenProblem(home, {platform: 'win32', localAppData: local});
