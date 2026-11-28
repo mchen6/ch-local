@@ -15,26 +15,24 @@ test('check compares against the 22.16 floor', () => {
   assert.deepStrictEqual(check('v24.21.0'), {ok: true, floor: '22.16.0'});
 });
 
-test('below the floor two paths are offered; a no means install it yourself', async () => {
-  const io = fakeIo({answers: ['no'], version: 'v20.11.0'});
+// (a fetch of ch-local's own Node is not built: none is offered, nothing is
+// asked, nothing downloaded -- only the route a person takes)
+test('below the floor: only the install-yourself route, no question asked, nothing fetched', async () => {
+  const io = fakeIo({version: 'v20.11.0'});
   assert.strictEqual(await offerNode(io), 'install-yourself');
-  assert.match(io.err, /Node 24/);
-  assert.match(io.err, /install Node 24 yourself/i);
-  assert.match(io.err, /let ch-local fetch/i);
+  // (under bin's own line, which names the version found: the route's header alone)
+  assert.match(io.err, /^Install Node 24 yourself:\n/);
+  assert.ok(!/fetch/i.test(io.err) && !/two ways/i.test(io.err) && !/^\s+[12]\. /m.test(io.err), io.err);
+  assert.deepStrictEqual(io.asked, []);
   assert.deepStrictEqual(io.fetches, []);
 });
 
-test('a yes to the fetch is refused for now, and nothing is downloaded', async () => {
-  const io = fakeIo({answers: ['yes'], version: 'v20.11.0'});
-  assert.strictEqual(await offerNode(io), 'abort');
-  assert.match(io.err, /cannot fetch Node yet/);
-  assert.deepStrictEqual(io.fetches, []);
-});
-
-test('every command stops below the floor before doing anything', async () => {
-  const io = fakeIo({answers: ['no'], version: 'v20.11.0'});
+test('every command stops below the floor before doing anything: nothing asked, run or fetched', async () => {
+  const io = fakeIo({version: 'v20.11.0'});
   assert.strictEqual(await main(['install', '--pack', 'ci-failure-triage', '--from', '/nowhere'], io), 1);
   assert.deepStrictEqual(io.execs, []);
+  assert.deepStrictEqual(io.asked, []);
+  assert.deepStrictEqual(io.fetches, []);
   assert.match(io.err, /needs Node 22\.16 or later; this is v20\.11\.0/);
 });
 
@@ -54,7 +52,7 @@ test('node-check loads on an old Node: no node: requires, no newer syntax it nee
 // own indented line with nothing after it, so a copy of it is whole.
 const BLOCKS = {
   darwin: [
-    '  1. install Node 24 yourself: the macOS installer (.pkg) from',
+    '     the macOS installer (.pkg) from',
     '       https://nodejs.org/dist/latest-v24.x/',
     '     or Homebrew:',
     '       brew install node@24',
@@ -63,33 +61,35 @@ const BLOCKS = {
     '     and open a new terminal'
   ],
   win32: [
-    '  1. install Node 24 yourself: the Windows installer (.msi, x64) from',
+    '     the Windows installer (.msi, x64) from',
     '       https://nodejs.org/dist/latest-v24.x/',
     '     then open a new terminal'
   ],
   linux: [
-    '  1. install Node 24 yourself: your distribution\'s package if node -v',
+    '     your distribution\'s package if node -v',
     '     then prints v24.x; otherwise',
     '       https://nodejs.org/en/download',
     '     choose v24 and Linux, and it shows the commands to run'
   ],
   other: [
-    '  1. install Node 24 yourself: your system\'s package manager or ports,',
+    '     your system\'s package manager or ports,',
     '     for Node 24'
   ]
 };
 // (a platform named like an Object.prototype member gets the other systems' route)
 for (const platform of ['darwin', 'win32', 'linux', 'freebsd', 'constructor', '__proto__']) {
   test(`below the floor on ${platform}: the install-yourself route is the install pages' own, each command on a line of its own`, async () => {
-    const io = fakeIo({answers: ['no'], version: 'v20.11.0'});
+    const io = fakeIo({version: 'v20.11.0'});
     io.platform = platform;
     assert.strictEqual(await offerNode(io), 'install-yourself');
     const lines = io.err.split('\n');
-    const from = lines.findIndex((l) => l.startsWith('  1. install Node 24 yourself: '));
-    const to = lines.findIndex((l) => l.startsWith('  2. '));
+    // (the route: every line after the header, to the end)
+    const from = lines.findIndex((l) => l.endsWith('Install Node 24 yourself:')) + 1;
+    const to = lines.length - 1;
+    assert.strictEqual(lines[to], '', 'the route ends the output');
     assert.deepStrictEqual(lines.slice(from, to), Object.prototype.hasOwnProperty.call(BLOCKS, platform) ? BLOCKS[platform] : BLOCKS.other);
-    // (each line of the route fits an 80-column terminal)
-    for (const l of lines.slice(from, to)) assert.ok(l.length <= 80, `${l.length}: ${l}`);
+    // (each line, the header's included, fits an 80-column terminal)
+    for (const l of lines.slice(from - 1, to)) assert.ok(l.length <= 80, `${l.length}: ${l}`);
     // (a command or an address alone on its line: nothing after it)
     for (const l of lines.slice(from, to).filter((x) => x.startsWith('       '))) assert.match(l, /^ {7}(brew install node@24|https:\/\/\S*[^\s,;:.])$/);
     assert.ok(!/winget install OpenJS\.NodeJS\.LTS/.test(io.err) && !/brew install node(?!@24)/.test(io.err), io.err);
