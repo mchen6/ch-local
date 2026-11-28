@@ -190,6 +190,13 @@ pub fn client_frame(seq: Option<u64>, printed: Result<Vec<u8>, String>) -> Vec<u
     out
 }
 
+// Tests: a pause between the child's spawn and its joining the job, set on the thread that runs it; a child that ran before
+// it joined, and started something, would show it
+#[cfg(all(test, windows))]
+thread_local! {
+    static BEFORE_ASSIGN: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
 /// Runs the child for the client `for_pid`; what it printed, or why it
 /// failed.
 pub fn run(
@@ -224,6 +231,10 @@ pub fn run(
         #[cfg(windows)]
         let job = crate::win_ffi::Job::kill_on_close().ok();
         let mut spawned = cmd.spawn().map_err(|e| format!("the conditions child could not be started ({e})"))?;
+        #[cfg(all(test, windows))]
+        if let Some(pause) = BEFORE_ASSIGN.with(|p| p.get()) {
+            std::thread::sleep(pause);
+        }
         #[cfg(windows)]
         let job = job.filter(|j| j.assign(&spawned).is_ok());
         let stdout = spawned.stdout.take().expect("piped");
@@ -447,6 +458,60 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(!crate::win_ffi::process_alive(grandchild), "what the child started outlived it");
+    }
+
+    /// The child joins its job before it runs at all: what it starts at once is in the job too, however long the spawn takes
+    /// to reach the assign (a pause there, here, which a child already running would outrun).
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_what_the_child_starts_at_once_is_in_its_job_whatever_the_gap_before_the_assign() {
+        let node = match Command::new("node").args(["-p", "process.execPath"]).output() {
+            Ok(o) => String::from_utf8(o.stdout).unwrap().trim().to_string(),
+            Err(_) => {
+                assert!(std::env::var("CI").is_err(), "node is needed for this test in CI");
+                return;
+            }
+        };
+        let dir = std::env::temp_dir();
+        let pid = dir.join(format!("ch-shim-early-{}.pid", std::process::id()));
+        let script = dir.join(format!("ch-shim-early-{}.js", std::process::id()));
+        // (its first act: a grandchild that would live a minute, its pid written whole; then the child waits as long)
+        std::fs::write(
+            &script,
+            format!(
+                "const g = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {{}}, 60000)'], {{stdio: 'ignore'}}); \
+                 const fs = require('fs'); fs.writeFileSync({p} + '.part', String(g.pid)); fs.renameSync({p} + '.part', {p}); \
+                 setTimeout(() => {{}}, 60000);",
+                p = serde_json::to_string(&pid.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+        let shim = ShimInfo { node: node.into(), ch_local: script.clone(), env: vec![] };
+        let children = Children::default();
+        let theirs = children.clone();
+        let started = Instant::now();
+        let env = child_env(std::env::vars_os());
+        let handle = std::thread::spawn(move || {
+            BEFORE_ASSIGN.with(|p| p.set(Some(Duration::from_secs(8))));
+            run(&shim, std::path::Path::new("C:\\h"), 1, env, Duration::from_secs(60), &theirs)
+        });
+        while !pid.exists() && started.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let grandchild: u32 = std::fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
+        children.kill_all();
+        let _ = handle.join().unwrap();
+        let _ = (std::fs::remove_file(&pid), std::fs::remove_file(&script));
+        let until = Instant::now() + Duration::from_secs(5);
+        while crate::win_ffi::process_alive(grandchild) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let escaped = crate::win_ffi::process_alive(grandchild);
+        if escaped {
+            // (not left running a minute on the runner)
+            let _ = Command::new("taskkill").args(["/F", "/PID", &grandchild.to_string()]).output();
+        }
+        assert!(!escaped, "what the child started before it joined its job outlived it");
     }
 
     #[cfg(windows)]
