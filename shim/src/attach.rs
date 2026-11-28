@@ -790,11 +790,14 @@ mod tests {
     #[test]
     fn a_daemon_that_listens_after_the_plain_deadline_is_attached_to() {
         let t = home();
-        let spawned = stand_in(&t, "$$", "sleep 12");
+        // (the stand-in holds start.lock as the daemon this shim started for as long as the cold deadline: a loaded
+        // machine's slow spawn, or a slow write of the runtime's files, never runs past either; the test's only timing
+        // claim is "after the plain deadline", which a slower machine makes truer, never false)
+        let spawned = stand_in(&t, "$$", "sleep 30");
         let key = [7u8; 32];
         let root = t.home.clone();
         let late = std::thread::spawn(move || {
-            let until = Instant::now() + Duration::from_secs(10);
+            let until = Instant::now() + Duration::from_secs(20);
             while !spawned.exists() && Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -804,7 +807,7 @@ mod tests {
             fake_runtime(&root, key, vec![Reply::Welcome])
         });
         let now = Instant::now();
-        let r = attach_first(&t.home, None, now + PLAIN, now + Duration::from_secs(12));
+        let r = attach_first(&t.home, None, now + PLAIN, now + Duration::from_secs(30));
         let _rx = late.join().unwrap();
         assert!(r.is_ok(), "{:?}", r.as_ref().err());
         assert!(now.elapsed() > PLAIN, "past the plain deadline: {:?}", now.elapsed());
