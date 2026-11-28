@@ -44,12 +44,13 @@ test('snippet prints the entry for this machine: the running node and the home\'
   }
 });
 
-test('without COUNTINGHOUSE_HOME the home is ~/.countinghouse', () => {
+test('without COUNTINGHOUSE_HOME the home is the default: ~/.countinghouse, on Windows %LOCALAPPDATA%\\countinghouse', () => {
   const env = {...process.env};
   delete env.COUNTINGHOUSE_HOME;
   const r = spawnSync(process.execPath, [BIN, 'snippet', 'vscode'], {encoding: 'utf8', env});
   assert.strictEqual(r.status, 0, r.stderr);
-  assert.ok(r.stdout.includes(JSON.stringify(path.join(os.homedir(), '.countinghouse', 'bin', 'ch-local.js'))));
+  const home = process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA, 'countinghouse') : path.join(os.homedir(), '.countinghouse');
+  assert.ok(r.stdout.includes(JSON.stringify(path.join(home, 'bin', 'ch-local.js'))), r.stdout);
 });
 
 test('claude-desktop prints its note on stderr, nothing on stdout, and exits 0', () => {

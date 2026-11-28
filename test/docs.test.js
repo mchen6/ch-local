@@ -91,6 +91,17 @@ test('the Claude Code page says what to do when countinghouse shows as failed in
   assert.ok(page.includes('set `MCP_TIMEOUT` (milliseconds) under `env` in `~/.claude/settings.json` (`%USERPROFILE%\\.claude\\settings.json` on Windows): `"env": {"MCP_TIMEOUT": "90000"}`, then restart Claude Code.'));
 });
 
+// (the plugin finds its home from COUNTINGHOUSE_HOME, else %LOCALAPPDATA%\countinghouse on Windows; a Claude Code that starts it
+// without LOCALAPPDATA gets the plugin's one line, and the page says what to set; a hand-added entry names its home itself)
+test('the Claude Code page says what to do when the plugin says LOCALAPPDATA is not set', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'claude-code.md'), 'utf8').replace(/\s+/g, ' ');
+  assert.ok(page.includes('**If the plugin says `LOCALAPPDATA is not set`** (Windows). The plugin finds your home from `COUNTINGHOUSE_HOME`, else at `%LOCALAPPDATA%\\countinghouse`, and here Claude Code started it without `LOCALAPPDATA`.'));
+  assert.ok(page.includes('Set `COUNTINGHOUSE_HOME` to your home\'s absolute path under `env` in `%USERPROFILE%\\.claude\\settings.json`, for example `"env": {"COUNTINGHOUSE_HOME": "C:\\\\Users\\\\you\\\\AppData\\\\Local\\\\countinghouse"}`, then restart Claude Code. Or add the server by hand (above): that entry names its home itself.'));
+  // (the words the plugin prints, as the page names them)
+  const launch = fs.readFileSync(path.join(__dirname, '..', 'clients', 'claude-code', 'bin', 'launch.js'), 'utf8');
+  assert.ok(launch.includes('LOCALAPPDATA is ${'), 'the plugin still says "LOCALAPPDATA is not set"');
+});
+
 // (the skills are a Claude Code plugin's; the other clients get the tools and
 // the overview, and their pages say so where they say what the client gets)
 test('the Cursor, VS Code and Codex pages say the skills come with Claude Code only', () => {

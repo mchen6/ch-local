@@ -26,11 +26,25 @@ function isFullPath(p, platform = process.platform) {
   return path.posix.isAbsolute(p);
 }
 
-function whereIs(env) {
+// The default home, as lib/home.js defaultHome has it: on Windows %LOCALAPPDATA%\countinghouse, never a folder directly in the
+// profile (Codex's Windows sandbox gives its identities access to each one, every time it runs a command); LOCALAPPDATA from the
+// environment, refused when missing or not absolute (a thrown error, its words lib/home.js's)
+function defaultHome(env, platform = process.platform, homedir = os.homedir) {
+  if (platform !== 'win32') return path.join(homedir(), '.countinghouse');
+  const local = env.LOCALAPPDATA;
+  if (typeof local !== 'string' || local === '' || !isFullPath(local, 'win32')) {
+    const err = new Error(`LOCALAPPDATA is ${typeof local !== 'string' || local === '' ? 'not set' : `not an absolute path ("${local}")`}, so the home's place (%LOCALAPPDATA%\\countinghouse) is not known: set COUNTINGHOUSE_HOME to an absolute path`);
+    err.code = 'HOME_NO_LOCALAPPDATA';
+    throw err;
+  }
+  return path.win32.join(local, 'countinghouse');
+}
+function whereIs(env, platform = process.platform, homedir = os.homedir) {
   const set = env.COUNTINGHOUSE_HOME;
-  if (typeof set !== 'string' || set === '') return path.join(os.homedir(), '.countinghouse', 'bin', 'ch-local.js');
-  if (!isFullPath(set)) return null;
-  return path.join(path.normalize(set), 'bin', 'ch-local.js');
+  const p = platform === 'win32' ? path.win32 : path;
+  if (typeof set !== 'string' || set === '') return p.join(defaultHome(env, platform, homedir), 'bin', 'ch-local.js');
+  if (!isFullPath(set, platform)) return null;
+  return p.join(p.normalize(set), 'bin', 'ch-local.js');
 }
 
 // POSIX, a Node with execve, and its own executable runnable -> true
@@ -148,8 +162,21 @@ function homeProblem(home, launcher, {platform = process.platform, fileAcls = nu
       // remove it and install again, L8)
       const a = acls[i];
       if (a != null && typeof a.owner === 'string' && ![a.user, winAcl.SYSTEM, winAcl.ADMINISTRATORS].includes(a.owner)) return {problem: `${why}, ${OPEN}; remove it and install again`};
+      // another account holding more than it may (privateProblem's "accessible by"): every one holding the strongest right, by SID
+      // (no name lookup on the way to a start), and the verb that right takes, as lib/home.js says it: changeable, or readable
+      const open = winAcl.openPrincipals(a);
+      const said = open.length > 0 && why === `${reals[i]} is accessible by ${open[0].sid}`;
+      const change = said && open.some((p) => p.change);
+      const who = said ? open.filter((p) => p.change === change).map((p) => p.sid) : [];
+      const list = who.length <= 1 ? who.join('') : `${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`;
+      const lead = !said ? `${why}, ${OPEN}`
+        : change ? `${reals[i]} can be changed by ${list}, so another account could change what runs from it`
+          : `${reals[i]} is readable by ${list}, ${i === 0 ? 'so another account could read what is stored in it, its credentials included' : 'so it is not yours alone'}`;
+      // (anyone else able to change it, or what was made in it: it may already have been changed, so the home is moved aside, never
+      // repaired, as lib/home.js has it)
+      if (winAcl.foreignChange(a)) return {problem: `${lead}; it may already have been changed: move the home aside and install again`};
       const hint = plain(reals[i], 'win32') ? winAcl.fixHint(reals[i], acls[i], {directory}) : null;
-      return {problem: `${why}, ${OPEN}; make it a ${directory ? 'folder' : 'file'} only you can change${hint != null ? `: ${hint.split('\n').map((l) => l.trim()).join(', then ')}` : ''}`};
+      return {problem: `${lead}; make it a ${directory ? 'folder' : 'file'} only you can ${said ? 'read' : 'change'}${hint != null ? `, in Windows PowerShell (powershell.exe): ${hint.split('\n').map((l) => l.trim()).join(', then ')}` : ''}`};
     }
   }
   return {launcher: reals[2]};
@@ -157,7 +184,8 @@ function homeProblem(home, launcher, {platform = process.platform, fileAcls = nu
 
 function main() {
   if (!nodeOk(process.version)) fail(`needs Node 22.16 or later; this is ${process.version} (the \`node\` on the PATH Claude Code sees)`);
-  const launcher = whereIs(process.env);
+  let launcher;
+  try { launcher = whereIs(process.env); } catch (err) { fail(err.message); }
   if (launcher == null) fail(`COUNTINGHOUSE_HOME must be an absolute path, not "${process.env.COUNTINGHOUSE_HOME}"`);
   // (COUNTINGHOUSE_HOME set: the home in words, on every platform, or the
   // install goes to the default home -- the closing pass on release 1, L3)
@@ -165,7 +193,10 @@ function main() {
   // misshow -- a control, bidi or invisible character -- said as the folder
   // it names, never printed: the medium on the closing pass, 4)
   const set = process.env.COUNTINGHOUSE_HOME != null && process.env.COUNTINGHOUSE_HOME !== '' ? path.normalize(process.env.COUNTINGHOUSE_HOME) : null;
-  const isDefault = set != null && path.resolve(set) === path.resolve(path.join(os.homedir(), '.countinghouse'));
+  let def = null;
+  try { def = defaultHome(process.env); } catch (err) { def = null; }
+  const same = (a, b) => (process.platform === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b));
+  const isDefault = set != null && def != null && same(set, def);
   const shown = set == null || isDefault ? null : /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/.test(set) ? 'the folder it names now' : set;
   const named = shown != null ? ` (with COUNTINGHOUSE_HOME set to ${shown})` : '';
   if (!fs.existsSync(launcher)) fail(`the launcher is not installed at ${launcher}; install it with: npx @countinghouse/ch-local install --pack ci-failure-triage${named}`);
@@ -201,4 +232,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = {whereIs, nodeOk, isFullPath, canExec, homeProblem, aboveProblem, UNSAFE_SOURCE};
+module.exports = {whereIs, defaultHome, nodeOk, isFullPath, canExec, homeProblem, aboveProblem, UNSAFE_SOURCE};
