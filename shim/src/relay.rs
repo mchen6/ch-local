@@ -31,17 +31,18 @@ use crate::{answer, child};
 
 /// After the client's stdin ends: answers are relayed this long at most.
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
-/// What a session that lost a record is refused with: a new session can't be
+/// What a session that lost a record is refused with when the runtime can't
+/// resume it (a daemon death, or a resume refused): a new session can't be
 /// given back a tightening that wasn't kept.
 // (business's words: what happened, then the next step, as
 // SESSION_CANT_FALL_BACK says "restart the session"; "replay" is the shim's)
-const RECORD_LOST: &str = "ch-shim: the runtime restarted, and a setting this session tightened couldn't be kept, so the session stops: restart it";
+const RECORD_LOST: &str = "ch-shim: the runtime couldn't resume this session, and a setting this session tightened couldn't be kept, so the session stops: restart it";
 /// What a session holding tightenings is refused with when the runtime tells
 /// it to run its own (`reason`, the op's, cleaned): a runtime of its own
 /// starts at the file's values, so never looser, it stops.
 fn cant_share_with_tightenings(reason: &str) -> String {
     format!(
-        "ch-shim: this session can't share the runtime ({reason}), and it holds tightenings a runtime of its own wouldn't have; it can't go on"
+        "ch-shim: this session can't share the runtime ({reason}), and a runtime of its own wouldn't have the settings this session tightened, so the session stops: restart it"
     )
 }
 /// Sent after a replayed initialize.
