@@ -51,6 +51,15 @@ longer at every start: set `MCP_TIMEOUT` (milliseconds) under `env` in
 (`%USERPROFILE%\.claude\settings.json` on Windows):
 `"env": {"MCP_TIMEOUT": "90000"}`, then restart Claude Code.
 
+**If the plugin says `LOCALAPPDATA is not set`** (Windows). The plugin
+finds your home from `COUNTINGHOUSE_HOME`, else at
+`%LOCALAPPDATA%\countinghouse`, and here Claude Code started it without
+`LOCALAPPDATA`. Set `COUNTINGHOUSE_HOME` to your home's absolute path under
+`env` in `%USERPROFILE%\.claude\settings.json`, for example
+`"env": {"COUNTINGHOUSE_HOME": "C:\\Users\\you\\AppData\\Local\\countinghouse"}`,
+then restart Claude Code. Or add the server by hand (above): that entry
+names its home itself.
+
 ## For an agent: install by conversation
 
 When a user asks you to install countinghouse, follow these steps in order.
