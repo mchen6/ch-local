@@ -23,6 +23,10 @@ use serde_json::Value;
 use crate::config::ShimInfo;
 
 pub const TIMEOUT: Duration = Duration::from_secs(10);
+/// The shim's first run of the child starts with the shim, while it attaches, so its bound counts from the shim's start: on
+/// Windows longer than TIMEOUT, since a cold Node, a cold PowerShell and its walk of the client's ancestors can take more; the
+/// relay still answers the runtime within its FIRST_WAIT of the runtime's welcome (relay.rs), whatever is left of this.
+pub const FIRST_TIMEOUT: Duration = if cfg!(windows) { Duration::from_secs(25) } else { TIMEOUT };
 const STDOUT_MAX: u64 = 4096;
 
 /// The environment the child gets: `env` minus NODE_* and npm_config_*.

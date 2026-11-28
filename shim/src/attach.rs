@@ -985,6 +985,7 @@ mod tests {
 /// pipe name, the SQOS open, the handshake.
 #[cfg(all(test, windows))]
 mod windows_tests {
+    use std::ffi::OsString;
     use std::io::{BufRead, BufReader};
     use std::path::Path;
     use std::process::{Command, Stdio};
@@ -1010,7 +1011,14 @@ net.createServer((s) => {
         stage = 1;
       } else if (stage === 1 && kind === 'A') {
         if (JSON.parse(p).mc !== mac('ch-client', ns, nc).toString('base64')) { s.end(frame('R', Buffer.from('{"code":"BAD_PROOF","message":"m"}'))); return; }
-        s.write(frame('W', Buffer.from(JSON.stringify({session: 's', resumeToken: 'rt_pipe', runtimeVersion: '8.0.0', maxToRuntime: 65536, maxToShim: 65536}))));
+        const welcome = () => s.write(frame('W', Buffer.from(JSON.stringify({session: 's', resumeToken: 'rt_pipe', runtimeVersion: '8.0.0', maxToRuntime: 65536, maxToShim: 65536}))));
+        // (a marker file named: the welcome waits until it exists, as a daemon's boot holds an attach; never there: refused)
+        const mark = process.argv[3];
+        if (mark) {
+          const until = Date.now() + 15000;
+          const look = () => (require('fs').existsSync(mark) ? welcome() : Date.now() > until ? s.end(frame('R', Buffer.from('{"code":"NO_CHILD","message":"m"}'))) : setTimeout(look, 20));
+          look();
+        } else welcome();
         stage = 2;
       } else if (stage === 2 && kind === 'C') {
         // the session side: settled after the first client frame
@@ -1046,6 +1054,11 @@ net.createServer((s) => {
 
     /// A private home whose daemon.json names a pipe a Node server holds.
     fn pipe_home() -> Option<(Home, std::process::Child)> {
+        pipe_home_marked(false).map(|(h, c, _)| (h, c))
+    }
+
+    /// The same, and with `marked` a marker file in the home that the server waits for before its welcome.
+    fn pipe_home_marked(marked: bool) -> Option<(Home, std::process::Child, std::path::PathBuf)> {
         if Command::new("node").arg("-v").output().is_err() {
             assert!(std::env::var("CI").is_err(), "node is needed for this test in CI");
             return None;
@@ -1068,12 +1081,16 @@ net.createServer((s) => {
             std::fs::write(&p, body).unwrap();
             icacls_private(&p, &me);
         }
-        let mut server =
-            Command::new("node").args(["-e", SERVER, &hex(&secret), &pipe]).stdout(Stdio::piped()).spawn().unwrap();
+        let mark = root.join("child-started");
+        let mut args = vec![OsString::from("-e"), SERVER.into(), hex(&secret).into(), pipe.clone().into()];
+        if marked {
+            args.push(mark.clone().into());
+        }
+        let mut server = Command::new("node").args(&args).stdout(Stdio::piped()).spawn().unwrap();
         let mut first = String::new();
         BufReader::new(server.stdout.as_mut().unwrap()).read_line(&mut first).unwrap();
         assert_eq!(first.trim(), "listening");
-        Some((Home::new(&root).unwrap(), server))
+        Some((Home::new(&root).unwrap(), server, mark))
     }
 
     #[test]
@@ -1149,6 +1166,73 @@ net.createServer((s) => {
         assert!(
             answered.contains(r#""id":1"#) && answered.contains("the pipe"),
             "no answer over the pipe within 20 s: {answered:?}"
+        );
+    }
+
+    /// Cold start, overlapped (the cold-start sizing's option A): the conditions child's first run starts with the shim, not
+    /// after the attach. The server holds its welcome until the child has written its marker, as a daemon's boot holds an
+    /// attach, and refuses the attach if it never does; a child started only after the welcome never answers here.
+    #[test]
+    fn the_conditions_child_runs_while_the_shim_attaches_over_a_named_pipe() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let Some((home, mut server, mark)) = pipe_home_marked(true) else { return };
+        let me = crate::trust::sid_string(&crate::win_ffi::current_user_sid().unwrap());
+        let node = String::from_utf8(Command::new("node").args(["-p", "process.execPath"]).output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        let script = home.root().join("conditions.js");
+        std::fs::write(
+            &script,
+            format!(
+                "require('fs').writeFileSync({}, ''); console.log(JSON.stringify({{status: 'ok', conditions: 'no', repo: null, token: null}}))",
+                serde_json::to_string(&mark.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+        let shim = serde_json::json!({"node": node, "chLocal": script, "env": {"SystemRoot": std::env::var("SystemRoot").unwrap()}});
+        std::fs::write(home.shim_json(), shim.to_string()).unwrap();
+        icacls_private(&home.shim_json(), &me);
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let sink = Sink::default();
+        let relay = crate::relay::Relay::new(
+            crate::relay::Setup {
+                home,
+                rest: vec![],
+                client_env: vec![],
+                parent: std::process::id(),
+                timing: Default::default(),
+            },
+            crate::out::Out::new(Box::new(sink.clone())),
+        );
+        std::thread::spawn(move || relay.run(reader));
+        writer.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n").unwrap();
+        let until = Instant::now() + Duration::from_secs(25);
+        let answered = loop {
+            let got = String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned();
+            if got.contains("the pipe") || Instant::now() > until {
+                break got;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let _ = server.kill();
+        assert!(mark.exists(), "the conditions child never ran");
+        assert!(
+            answered.contains(r#""id":1"#) && answered.contains("the pipe"),
+            "no answer: the server welcomes only once the child has started: {answered:?}"
         );
     }
 
