@@ -448,11 +448,12 @@ mod tests {
         let dir = std::env::temp_dir();
         let pid = dir.join(format!("ch-shim-tree-{}.pid", std::process::id()));
         let script = dir.join(format!("ch-shim-tree-{}.js", std::process::id()));
-        // (a grandchild that would live a minute; its pid written whole, then the child waits as long)
+        // (a grandchild that would live a minute; its pid written whole, then the child waits as long. Detached, so it is
+        // outside the kill-on-close job Node's libuv keeps for the children it starts: only the shim's job ends it)
         std::fs::write(
             &script,
             format!(
-                "const g = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {{}}, 60000)'], {{stdio: 'ignore'}}); \
+                "const g = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {{}}, 60000)'], {{stdio: 'ignore', detached: true}}); \
                  const fs = require('fs'); fs.writeFileSync({p} + '.part', String(g.pid)); fs.renameSync({p} + '.part', {p}); \
                  setTimeout(() => {{}}, 60000);",
                 p = serde_json::to_string(&pid.to_string_lossy()).unwrap()
