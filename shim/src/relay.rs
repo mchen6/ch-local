@@ -31,6 +31,9 @@ use crate::{answer, child};
 
 /// After the client's stdin ends: answers are relayed this long at most.
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
+/// What a session that lost a record is refused with: a new session can't be
+/// given back a tightening that wasn't kept.
+const RECORD_LOST: &str = "ch-shim: the runtime restarted, and this session holds a tightening that couldn't be kept for replay; it can't go on";
 /// Sent after a replayed initialize.
 const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 /// What a legacy (2025-11-25) client is told when the runtime it talks to
@@ -727,9 +730,7 @@ impl Relay {
             // a new session can't be given back a record that wasn't kept:
             // the connection is dropped unused
             drop(a);
-            return self.refuse_session(
-                "ch-shim: the runtime restarted, and this session holds a tightening that couldn't be kept for replay; it can't go on",
-            );
+            return self.refuse_session(RECORD_LOST);
         }
         self.generation += 1;
         self.retries = 0;
@@ -2212,6 +2213,17 @@ mod tests {
         until_op(&mut s2, "bye");
         drop(s2);
         done.join().unwrap();
+    }
+
+    // (the words a session that lost a record is refused with, as business
+    // gave them: what happened, and the next step, as SESSION_CANT_FALL_BACK's
+    // "restart the session")
+    #[test]
+    fn a_session_that_lost_a_record_is_refused_in_these_words() {
+        assert_eq!(
+            RECORD_LOST,
+            "ch-shim: the runtime restarted, and a setting this session tightened couldn't be kept, so the session stops: restart it"
+        );
     }
 
     #[test]
