@@ -5,12 +5,12 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {uninstall} = require('../lib/uninstall');
-const {fakeIo, tmp} = require('./fake-io');
+const {fakeIo, tmp, homeUnder} = require('./fake-io');
 
 // A home as an install and a few runs leave it.
 function setup() {
   const user = tmp('ch-user-');
-  const home = path.join(user, '.countinghouse');
+  const home = homeUnder(user);
   const files = {
     'settings.json': '{"autoUpgrade": false}',
     'auth.json': '{"keys": ["k"]}',
@@ -380,7 +380,7 @@ test('A9: a removal that fails is said with the way on, never thrown', async (t)
     // (on Windows the home in words after it, from homeNote itself: #140's
     // Windows leg)
     const {homeNote} = require('../lib/command-line');
-    const note = homeNote(require('../lib/home').layout({}, () => s.user), process.platform).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const note = homeNote(require('../lib/home').layout(u.env, () => s.user), process.platform).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     assert.match(u.err, new RegExp(`ch-local uninstall: node could not be removed \\(EBUSY\\)\\. Close what has .*node open and run \`(?:COUNTINGHOUSE_HOME="[^"]+" )?npx @countinghouse/ch-local uninstall\`${note} again`));
   } finally {
     t.mock.restoreAll();

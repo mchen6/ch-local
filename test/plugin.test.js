@@ -152,7 +152,10 @@ test('launch.js: a COUNTINGHOUSE_HOME a terminal would misshow is not printed; t
     assert.strictEqual(r.status, 1);
     assert.match(r.stderr, /\(with COUNTINGHOUSE_HOME set to the folder it names now\)/);
     assert.doesNotMatch(r.stderr, /fake line\)/, 'the value is never printed whole in the hint');
-    r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', env: {...process.env, HOME: base, USERPROFILE: base, COUNTINGHOUSE_HOME: path.join(base, '.countinghouse')}});
+    // (the default home: ~/.countinghouse, on Windows %LOCALAPPDATA%\countinghouse)
+    const local = path.join(base, 'AppData', 'Local');
+    const def = process.platform === 'win32' ? path.join(local, 'countinghouse') : path.join(base, '.countinghouse');
+    r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', env: {...process.env, HOME: base, USERPROFILE: base, LOCALAPPDATA: local, COUNTINGHOUSE_HOME: def}});
     assert.strictEqual(r.status, 1);
     assert.match(r.stderr, /install --pack ci-failure-triage$/m, 'the default home: no words');
   } finally {

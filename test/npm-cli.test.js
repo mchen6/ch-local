@@ -77,7 +77,8 @@ test('A10: none there: the error names the npx way out', () => {
     const {layout} = require('../lib/home');
     const said = (homeEnv) => { try { npmCli({execPath: t.execPath, env: {}, homeEnv}); } catch (e) { return e.message; } return null; };
     const lead = `npm was not found beside ${t.execPath}; run the same ch-local command through npx instead: `;
-    assert.strictEqual(said({}), `${lead}\`npx @countinghouse/ch-local@${v} …\``, 'the default home');
+    // (the default home: on Windows under this process's LOCALAPPDATA)
+    assert.strictEqual(said(WIN ? {LOCALAPPDATA: process.env.LOCALAPPDATA} : {}), `${lead}\`npx @countinghouse/ch-local@${v} …\``, 'the default home');
     // (a home that isn't the default, from the env the io acts on: named, as every npx hint names it)
     const where = layout({COUNTINGHOUSE_HOME: path.join(t.p, 'home')});
     assert.strictEqual(said({COUNTINGHOUSE_HOME: where.home}), `${lead}\`${homePrefix(where)}npx @countinghouse/ch-local@${v} …\`${homeNote(where)}`);

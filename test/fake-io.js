@@ -5,11 +5,20 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// On Windows the default home is under LOCALAPPDATA (lib/home.js defaultHome), never ~/.countinghouse: a fake io given neither
+// LOCALAPPDATA nor COUNTINGHOUSE_HOME gets the LOCALAPPDATA its user folder would have (else this process's), as a session's
+// environment has it; homeUnder(user) is the default home a fixture lays out for that user.
+const WIN_HOME = process.platform === 'win32';
+const homeUnder = (user) => (WIN_HOME ? path.join(user, 'AppData', 'Local', 'countinghouse') : path.join(user, '.countinghouse'));
+
 // The node a fake io names: absolute on the platform under test, as a real
 // one is (shim.json refuses a path that isn't, per platform: ch-local #31).
 const FAKE_NODE = process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/local/bin/node';
 
 function fakeIo({env = {}, answers = [], exec, fetch, version = 'v24.21.0', homedir} = {}) {
+  if (WIN_HOME && env != null && env.LOCALAPPDATA === undefined && env.COUNTINGHOUSE_HOME === undefined) {
+    env.LOCALAPPDATA = (typeof homedir === 'string') ? path.join(homedir, 'AppData', 'Local') : process.env.LOCALAPPDATA;
+  }
   const io = {
     out: '',
     err: '',
@@ -101,4 +110,4 @@ function installedRelease(home) {
   return {...ALLOWLIST, packs: {...ALLOWLIST.packs, ...packs}, modules: {...ALLOWLIST.modules, ...modules}, pins: {...ALLOWLIST.pins, ...pins}};
 }
 
-module.exports = {fakeIo, tmp, FAKE_NODE, installedRelease};
+module.exports = {fakeIo, tmp, FAKE_NODE, installedRelease, homeUnder};
