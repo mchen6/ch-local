@@ -226,7 +226,8 @@ pub fn run(
             return Err("the shim has stopped relaying".into());
         }
         // (Windows: in a job that kills its tree. The child starts suspended, joins the job, and only then runs, so nothing
-        // it starts can be outside it; a job that can't be made, or joined, leaves the child to its own kill)
+        // it starts is outside it. A job that can't be made, or joined, leaves the child to run outside one, to its own
+        // kill, as before)
         #[cfg(windows)]
         let job = crate::win_ffi::Job::kill_on_close().ok();
         #[cfg(windows)]
@@ -243,10 +244,16 @@ pub fn run(
         let job = match job {
             Some(j) => {
                 let joined = j.assign(&spawned).is_ok();
-                // (started suspended: it runs from here; one that can't be resumed would only wait out its timeout)
+                // (started suspended: it runs from here; one that can't be resumed would only wait out its timeout, so it
+                // is killed, by its job if it joined, and waited for only if it was, never blocking the lock on a process
+                // that may not end)
                 if let Err(e) = crate::win_ffi::resume_threads(spawned.id()) {
-                    let _ = spawned.kill();
-                    let _ = spawned.wait();
+                    if joined {
+                        j.terminate();
+                    }
+                    if spawned.kill().is_ok() || joined {
+                        let _ = spawned.wait();
+                    }
                     return Err(format!("the conditions child could not be started ({e})"));
                 }
                 joined.then_some(j)
@@ -510,13 +517,21 @@ mod tests {
         let started = Instant::now();
         let env = child_env(std::env::vars_os());
         let handle = std::thread::spawn(move || {
-            BEFORE_ASSIGN.with(|p| p.set(Some(Duration::from_secs(8))));
+            BEFORE_ASSIGN.with(|p| p.set(Some(Duration::from_secs(5))));
             run(&shim, std::path::Path::new("C:\\h"), 1, env, Duration::from_secs(60), &theirs)
         });
         while !pid.exists() && started.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(50));
         }
+        if !pid.exists() {
+            // (the run's own answer says why: a start that failed, say)
+            children.kill_all();
+            let ran = handle.join().unwrap();
+            let _ = std::fs::remove_file(&script);
+            panic!("the child never started its grandchild: {ran:?}");
+        }
         let grandchild: u32 = std::fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
+        assert!(crate::win_ffi::process_alive(grandchild), "the grandchild never ran");
         children.kill_all();
         let _ = handle.join().unwrap();
         let _ = (std::fs::remove_file(&pid), std::fs::remove_file(&script));
@@ -524,12 +539,11 @@ mod tests {
         while crate::win_ffi::process_alive(grandchild) && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(50));
         }
-        let escaped = crate::win_ffi::process_alive(grandchild);
-        if escaped {
-            // (not left running a minute on the runner)
-            let _ = Command::new("taskkill").args(["/F", "/PID", &grandchild.to_string()]).output();
-        }
-        assert!(!escaped, "what the child started before it joined its job outlived it");
+        // (one that escaped ends on its own within the minute: never killed here by a pid that could be reused)
+        assert!(
+            !crate::win_ffi::process_alive(grandchild),
+            "what the child started before it joined its job outlived it"
+        );
     }
 
     #[cfg(windows)]

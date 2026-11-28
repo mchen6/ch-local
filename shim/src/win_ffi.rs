@@ -397,8 +397,10 @@ impl Job {
 /// nothing until `resume_threads`, so it can join a job before it can start anything.
 pub const CREATE_SUSPENDED: u32 = windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
-/// Resumes the threads of `pid`, a child this process started suspended (it has the one thread it was created with):
-/// an error if none was resumed. The snapshot handle and each thread handle are closed on every path.
+/// Resumes the threads of `pid`, a child this process started suspended (it has the one thread it was created with). Ok
+/// only if every thread of it was opened and resumed and at least one had been suspended (a thread something else added,
+/// running already, does not count as the start resumed); otherwise the first error. The snapshot handle and each thread
+/// handle are closed on every path.
 pub fn resume_threads(pid: u32) -> io::Result<()> {
     // SAFETY: a thread snapshot of the whole system (the pid argument is ignored for threads); the handle, if valid, is
     // closed below on every path.
@@ -409,7 +411,7 @@ pub fn resume_threads(pid: u32) -> io::Result<()> {
     // SAFETY: THREADENTRY32 is plain data; dwSize is set as the API needs.
     let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
     entry.dwSize = size_of::<THREADENTRY32>() as u32;
-    let (mut resumed, mut last) = (0u32, None);
+    let (mut resumed, mut failed) = (0u32, None);
     // SAFETY: snap is a valid snapshot handle and entry a local with dwSize set.
     let mut ok = unsafe { Thread32First(snap, &mut entry) } != 0;
     while ok {
@@ -417,13 +419,16 @@ pub fn resume_threads(pid: u32) -> io::Result<()> {
             // SAFETY: opens a thread by id with only the right to resume it; the handle, if any, is closed below.
             let t = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
             if t.is_null() {
-                last = Some(io::Error::last_os_error());
+                failed.get_or_insert_with(io::Error::last_os_error);
             } else {
                 // SAFETY: t is a live thread handle opened above with THREAD_SUSPEND_RESUME.
-                if unsafe { ResumeThread(t) } == u32::MAX {
-                    last = Some(io::Error::last_os_error());
-                } else {
-                    resumed += 1;
+                match unsafe { ResumeThread(t) } {
+                    u32::MAX => {
+                        failed.get_or_insert_with(io::Error::last_os_error);
+                    }
+                    // (its suspend count before the call: 0 means it was not suspended)
+                    0 => {}
+                    _ => resumed += 1,
                 }
                 // SAFETY: t was opened above and is closed once.
                 unsafe { CloseHandle(t) };
@@ -434,10 +439,11 @@ pub fn resume_threads(pid: u32) -> io::Result<()> {
     }
     // SAFETY: snap was opened above and is closed once.
     unsafe { CloseHandle(snap) };
-    if resumed > 0 {
-        return Ok(());
+    match failed {
+        Some(e) => Err(e),
+        None if resumed > 0 => Ok(()),
+        None => Err(io::Error::new(io::ErrorKind::NotFound, "the process has no suspended thread to resume")),
     }
-    Err(last.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the process has no thread to resume")))
 }
 
 /// Whether one of this process's standard handles is inheritable (tests).
