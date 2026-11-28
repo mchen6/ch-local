@@ -50,7 +50,7 @@ is shared with other users, keep the home under folders that group can't
 write in. On Windows the folders above the home are not checked: keep it under
 `%LOCALAPPDATA%`, where the default puts it, and not in a folder directly in
 your profile (`%USERPROFILE%\<folder>`): Codex's Windows sandbox gives its own
-identities access to each of those every time it runs a command, so a home
+identities access to most of those every time it runs a command, so a home
 there would not stay private, and once it isn't it is refused. On Windows `LOCALAPPDATA` must be
 set to an absolute path, or `COUNTINGHOUSE_HOME` set; otherwise ch-local
 refuses rather than guess where the home is.

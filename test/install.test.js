@@ -1657,10 +1657,12 @@ test('Windows: install makes a new home private, and refuses an existing one ano
   const ME = 'S-1-5-21-1-2-3-1001';
   const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
   const PRIVATE = {user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  // (a lookup that names none: on a Windows runner Windows' own would name S-1-1-0, in the runner's language)
+  const unnamed = () => ({names: {}, machine: null, localAppData: null});
   assert.strictEqual(unsafeHomeLine(h, 'win32', {fileAcl: () => PRIVATE}), null);
-  assert.strictEqual(unsafeHomeLine(h, 'win32', {fileAcl: () => OPEN}), 'this home can be changed by S-1-1-0, so another account could change what runs from it; it may already have been changed: move it aside and install again');
+  assert.strictEqual(unsafeHomeLine(h, 'win32', {fileAcl: () => OPEN, principalNames: unnamed}), 'this home can be changed by S-1-1-0, so another account could change what runs from it; it may already have been changed: move it aside and install again');
   const READABLE = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]};
-  assert.match(String(unsafeHomeLine(h, 'win32', {fileAcl: () => READABLE})), /^this home is readable by S-1-1-0, so another account could read what is stored in it, its credentials included; make it a folder only you can read, in Windows PowerShell \(powershell\.exe\): icacls '/);
+  assert.match(String(unsafeHomeLine(h, 'win32', {fileAcl: () => READABLE, principalNames: unnamed})), /^this home is readable by S-1-1-0, so another account could read what is stored in it, its credentials included; make it a folder only you can read, in Windows PowerShell \(powershell\.exe\): icacls '/);
 });
 
 // ... and on Windows itself, the real DACL (the medium on A-home-check, 1:

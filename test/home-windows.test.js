@@ -117,7 +117,7 @@ test('changeable by this machine\'s CodexSandboxUsers and a Codex sandbox identi
   const p = problem(h, rules);
   assert.strictEqual(p.fix, null);
   assert.strictEqual(p.final, true);
-  assert.strictEqual(line(h, rules), `${h} can be changed by MACHINE\\CodexSandboxUsers and a Codex sandbox identity (${WORKSPACE}), so another account could change what runs from it and read its credentials. Codex's Windows sandbox gives these access to each folder directly in your profile every time it runs a command, so removing it by hand does not last: unset COUNTINGHOUSE_HOME, or point it under %LOCALAPPDATA%, then install again and delete the old home (it still holds the stored credentials)`);
+  assert.strictEqual(line(h, rules), `${h} can be changed by MACHINE\\CodexSandboxUsers and a Codex sandbox identity (${WORKSPACE}), so another account could change what runs from it and read its credentials. Codex's Windows sandbox gives these access to most folders directly in your profile every time it runs a command, so removing it by hand does not last: unset COUNTINGHOUSE_HOME, or point it under %LOCALAPPDATA%, then install again and delete the old home (it still holds the stored credentials)`);
 }));
 
 // the group named first, then a Codex sandbox identity, whatever order the DACL lists them in (as business passed it)
@@ -129,7 +129,7 @@ test('Codex\'s group and a Codex sandbox identity: the group named first, whatev
 
 test('readable by this machine\'s CodexSandboxUsers alone: the Codex line, read', () => withHome((h) => {
   const rules = [rule(CODEX_SID, CODEX, READ)];
-  assert.strictEqual(line(h, rules), `${h} is readable by MACHINE\\CodexSandboxUsers, so another account could read what is stored in it, its credentials included. Codex's Windows sandbox gives that group read access to each folder directly in your profile every time it runs a command, so removing it by hand does not last: unset COUNTINGHOUSE_HOME, or point it under %LOCALAPPDATA%, then install again and delete the old home (it still holds the stored credentials)`);
+  assert.strictEqual(line(h, rules), `${h} is readable by MACHINE\\CodexSandboxUsers, so another account could read what is stored in it, its credentials included. Codex's Windows sandbox gives that group read access to most folders directly in your profile every time it runs a command, so removing it by hand does not last: unset COUNTINGHOUSE_HOME, or point it under %LOCALAPPDATA%, then install again and delete the old home (it still holds the stored credentials)`);
 }));
 
 test('by the name on this machine: a domain\'s group called CodexSandboxUsers is any other account, and its SID is no Codex identity', () => withHome((h) => {
@@ -155,7 +155,7 @@ test('CodexSandboxUsers able to read, a Codex sandbox identity able to change: t
   const p = problem(h, rules);
   assert.strictEqual(p.why, `it can be changed by a Codex sandbox identity (${WORKSPACE})`);
   assert.strictEqual(p.fix, null);
-  assert.match(p.consequence, /Codex's Windows sandbox gives that identity access to each folder directly in your profile/);
+  assert.match(p.consequence, /Codex's Windows sandbox gives that identity access to most folders directly in your profile/);
 }));
 
 // a home under %LOCALAPPDATA% (the default, or any other) not made by install, unprotected, takes Codex's read grant on AppData: moving
@@ -168,7 +168,7 @@ test('a home under %LOCALAPPDATA% open to Codex (taking it from AppData): moved 
     assert.strictEqual(p.final, true);
     assert.strictEqual(p.fix, null);
     assert.strictEqual(openHomeLine(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: local}),
-      `${h} is readable by MACHINE\\CodexSandboxUsers, so another account could read what is stored in it, its credentials included. Codex's Windows sandbox gives that group read access to each folder directly in your profile, AppData included, every time it runs a command, ${INHERITS}`);
+      `${h} is readable by MACHINE\\CodexSandboxUsers, so another account could read what is stored in it, its credentials included. Codex's Windows sandbox gives that group read access to most folders directly in your profile, AppData included, every time it runs a command, ${INHERITS}`);
   }
   // (a home elsewhere: the Codex line that sends it under %LOCALAPPDATA%)
   const q = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: path.join(h, 'elsewhere')});
@@ -180,7 +180,7 @@ test('a home under %LOCALAPPDATA% open to Codex (taking it from AppData): moved 
 test('a home under %LOCALAPPDATA% that Codex\'s inherited grant can change: the change words, inherited, moved aside', () => withHome((h) => {
   const rules = [rule(CODEX_SID, CODEX, MODIFY), rule(WORKSPACE, '', MODIFY)];
   assert.strictEqual(openHomeLine(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: path.dirname(h)}),
-    `${h} can be changed by MACHINE\\CodexSandboxUsers and a Codex sandbox identity (${WORKSPACE}), so another account could change what runs from it and read its credentials. Codex's Windows sandbox gives these access to each folder directly in your profile, AppData included, every time it runs a command, ${INHERITS}`);
+    `${h} can be changed by MACHINE\\CodexSandboxUsers and a Codex sandbox identity (${WORKSPACE}), so another account could change what runs from it and read its credentials. Codex's Windows sandbox gives these access to most folders directly in your profile, AppData included, every time it runs a command, ${INHERITS}`);
 }));
 
 // Codex's group able to read, and an account Windows names able to change: that account's change right is the refusal, not Codex's

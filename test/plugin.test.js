@@ -362,6 +362,15 @@ test('launch.js\'s home check on Windows (its ACL check, with ACLs given): a pri
   const READABLE = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]};
   assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => READABLE)}).problem), / is readable by S-1-1-0, so another account could read what is stored in it, its credentials included; make it a folder only you can read, in Windows PowerShell \(powershell\.exe\): icacls '/);
   assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, READABLE]}).problem), /ch-local\.js is readable by S-1-1-0, so it is not yours alone; make it a file only you can read, in Windows PowerShell \(powershell\.exe\): /);
+  // (each form's words exactly, the lines the shared fixHint's, as every refusal prints them)
+  const {fixHint} = require('../lib/win-acl');
+  const [rh, rb, rl] = [h, path.join(h, 'bin'), path.join(h, 'bin', 'ch-local.js')].map((p) => fs.realpathSync.native(p));
+  const lines = (p, directory) => fixHint(p, READABLE, {directory}).split('\n').map((l) => l.trim()).join(', then ');
+  const said = (acls) => homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => acls}).problem;
+  assert.strictEqual(said([OPEN, PRIVATE, PRIVATE]), `${rh} can be changed by S-1-1-0, so another account could change what runs from it; it may already have been changed: move the home aside and install again`);
+  assert.strictEqual(said([READABLE, PRIVATE, PRIVATE]), `${rh} is readable by S-1-1-0, so another account could read what is stored in it, its credentials included; make it a folder only you can read, in Windows PowerShell (powershell.exe): ${lines(rh, true)}`);
+  assert.strictEqual(said([PRIVATE, READABLE, PRIVATE]), `${rb} is readable by S-1-1-0, so it is not yours alone; make it a folder only you can read, in Windows PowerShell (powershell.exe): ${lines(rb, true)}`);
+  assert.strictEqual(said([PRIVATE, PRIVATE, READABLE]), `${rl} is readable by S-1-1-0, so it is not yours alone; make it a file only you can read, in Windows PowerShell (powershell.exe): ${lines(rl, false)}`);
   // (every SID holding the strongest right, the verb by that right; one able only to read beside one able to change: changeable)
   const TWO = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-5-32-545', rights: 1179817, type: 'Allow', inheritOnly: false}, {sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}, {sid: 'S-1-5-11', rights: 1245631, type: 'Allow', inheritOnly: false}]};
   assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => TWO)}).problem), / can be changed by S-1-1-0 and S-1-5-11, so another account could change what runs from it; /);
