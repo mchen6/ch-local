@@ -6,7 +6,7 @@
 // does), on a tree of this test's own:
 // - a home where the default puts it, under a LOCALAPPDATA, stays private through both grants on AppData and LOCALAPPDATA;
 // - a home directly in a profile, given read, is refused, and the lines the refusal prints, run in Windows PowerShell exactly as
-//   printed, make it private (a group and a SID that names no account: the two Matt's cleanup found icacls /remove can't clear);
+//   printed, make it private (a group and a SID that names no account: the two a cleanup on the owner's machine found icacls /remove can't clear);
 // - given change, it is refused as one that may already have been changed, with no lines.
 // Each grant is to BUILTIN\Users and to a made-up SID that names no account, never to a real account; the CodexSandboxUsers form
 // only under CI, with a local group made and removed here.

@@ -1,5 +1,5 @@
 'use strict';
-// The home on Windows (R-win-codex-sandbox-acl): its default is %LOCALAPPDATA%\countinghouse, never a folder directly in the profile,
+// The home on Windows: its default is %LOCALAPPDATA%\countinghouse, never a folder directly in the profile,
 // where Codex's elevated Windows sandbox gives its CodexSandboxUsers group read access to every folder each time it runs a command.
 // And a home another account can read or change is refused naming who, and whether it can read or change it. Unit-level, by
 // platform: the default from an environment a case gives; the refusal from an ACL a case gives (lib/win-acl.js's shape), on a real
@@ -106,7 +106,7 @@ test('read only by those named, but an inherit-only change right for another: wh
   assert.strictEqual(p.fix, MOVE);
 }));
 
-// Codex, its workspace the profile (Matt's box, Codex 0.172.0): CodexSandboxUsers and a workspace SID that names no account, each
+// Codex, its workspace the profile (seen on the owner's machine, Codex 0.172.0): CodexSandboxUsers and a workspace SID that names no account, each
 // (OI)(CI)(M) on every folder directly in the profile; read only (RX) where it isn't the workspace
 const CODEX = 'MACHINE\\CodexSandboxUsers';
 const CODEX_SID = 'S-1-5-21-9-9-9-1010';

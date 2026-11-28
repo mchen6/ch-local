@@ -324,7 +324,7 @@ function foreignChange(acl) {
 // inherited, this user and SYSTEM, each other SID a rule names removed, and the user made the owner. By SID (no names: they are
 // localized, and a user name is never printed). A SID is removed with .NET's PurgeAccessRules, one SID to a line: icacls /remove
 // leaves a SID that names no account (a Codex sandbox capability), and one call with several /remove switches processes nothing,
-// both saying no error (Matt's box); Get-Acl/Set-Acl need SeSecurityPrivilege (Set-Acl writes the SACL), which a standard user
+// both saying no error (seen on the owner's machine); Get-Acl/Set-Acl need SeSecurityPrivilege (Set-Acl writes the SACL), which a standard user
 // lacks. The Windows legs run the printed lines as printed (test/home-windows-acl.test.js). Single quotes: nothing in a path is
 // expanded. A SID that is not plainly one: no lines.
 // directory: the grants inherit to what is made in it ((OI)(CI)), or
