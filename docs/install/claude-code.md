@@ -82,8 +82,8 @@ if it does, stop and tell the user.
    instead, never the bare `ch-local`: neither way of installing puts it on
    their PATH.
 4. If the `ch-packs` plugin is not installed, first say you'll check for
-   Git and, with the user's yes, run `git --version` (on macOS, this can
-   open Apple's prompt to install the command line tools; say so first). If
+   Git and, with the user's yes, run `git --version` (on macOS, this may
+   first ask to install Apple's command line tools; say so before running it). If
    it fails, tell the user the plugin route needs Git (Windows:
    `winget install --id Git.Git -e --source winget`; macOS:
    `xcode-select --install`; Linux: the distribution's `git` package) and
