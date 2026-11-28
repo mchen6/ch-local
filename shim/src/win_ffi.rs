@@ -27,13 +27,15 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD,
+    THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CreateEventW, GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcess, OpenProcessToken, OpenThread,
+    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, ResumeThread, SetEvent, THREAD_SUSPEND_RESUME,
+    WaitForMultipleObjects, WaitForSingleObject,
 };
 
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
@@ -389,6 +391,53 @@ impl Job {
         // SAFETY: the job's handle is live and owned by self; a failure leaves the child's own kill to follow.
         let _ = unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) };
     }
+}
+
+/// The creation flag that starts a process with its first thread suspended (std's `CommandExt::creation_flags`): it runs
+/// nothing until `resume_threads`, so it can join a job before it can start anything.
+pub const CREATE_SUSPENDED: u32 = windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+/// Resumes the threads of `pid`, a child this process started suspended (it has the one thread it was created with):
+/// an error if none was resumed. The snapshot handle and each thread handle are closed on every path.
+pub fn resume_threads(pid: u32) -> io::Result<()> {
+    // SAFETY: a thread snapshot of the whole system (the pid argument is ignored for threads); the handle, if valid, is
+    // closed below on every path.
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snap.is_null() || snap == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: THREADENTRY32 is plain data; dwSize is set as the API needs.
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<THREADENTRY32>() as u32;
+    let (mut resumed, mut last) = (0u32, None);
+    // SAFETY: snap is a valid snapshot handle and entry a local with dwSize set.
+    let mut ok = unsafe { Thread32First(snap, &mut entry) } != 0;
+    while ok {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: opens a thread by id with only the right to resume it; the handle, if any, is closed below.
+            let t = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if t.is_null() {
+                last = Some(io::Error::last_os_error());
+            } else {
+                // SAFETY: t is a live thread handle opened above with THREAD_SUSPEND_RESUME.
+                if unsafe { ResumeThread(t) } == u32::MAX {
+                    last = Some(io::Error::last_os_error());
+                } else {
+                    resumed += 1;
+                }
+                // SAFETY: t was opened above and is closed once.
+                unsafe { CloseHandle(t) };
+            }
+        }
+        // SAFETY: as above.
+        ok = unsafe { Thread32Next(snap, &mut entry) } != 0;
+    }
+    // SAFETY: snap was opened above and is closed once.
+    unsafe { CloseHandle(snap) };
+    if resumed > 0 {
+        return Ok(());
+    }
+    Err(last.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the process has no thread to resume")))
 }
 
 /// Whether one of this process's standard handles is inheritable (tests).

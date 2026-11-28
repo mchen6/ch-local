@@ -225,18 +225,34 @@ pub fn run(
         if r.stopped {
             return Err("the shim has stopped relaying".into());
         }
-        // (Windows: in a job that kills its tree, made before the spawn so that only the assign sits between the child's
-        // start and its joining it, a gap that remains, though Node's start makes it far shorter than any process it
-        // starts; a job that can't be made, or joined, leaves the child to its own kill)
+        // (Windows: in a job that kills its tree. The child starts suspended, joins the job, and only then runs, so nothing
+        // it starts can be outside it; a job that can't be made, or joined, leaves the child to its own kill)
         #[cfg(windows)]
         let job = crate::win_ffi::Job::kill_on_close().ok();
+        #[cfg(windows)]
+        if job.is_some() {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(crate::win_ffi::CREATE_SUSPENDED);
+        }
         let mut spawned = cmd.spawn().map_err(|e| format!("the conditions child could not be started ({e})"))?;
         #[cfg(all(test, windows))]
         if let Some(pause) = BEFORE_ASSIGN.with(|p| p.get()) {
             std::thread::sleep(pause);
         }
         #[cfg(windows)]
-        let job = job.filter(|j| j.assign(&spawned).is_ok());
+        let job = match job {
+            Some(j) => {
+                let joined = j.assign(&spawned).is_ok();
+                // (started suspended: it runs from here; one that can't be resumed would only wait out its timeout)
+                if let Err(e) = crate::win_ffi::resume_threads(spawned.id()) {
+                    let _ = spawned.kill();
+                    let _ = spawned.wait();
+                    return Err(format!("the conditions child could not be started ({e})"));
+                }
+                joined.then_some(j)
+            }
+            None => None,
+        };
         let stdout = spawned.stdout.take().expect("piped");
         let running = std::sync::Arc::new(std::sync::Mutex::new(Running {
             child: spawned,
