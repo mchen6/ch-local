@@ -66,6 +66,8 @@ One page per client:
 - [Codex CLI](codex.md)
 - [Claude Desktop](claude-desktop.md)
 
+No client has been run on macOS yet; on macOS, install and uninstall are checked automatically (the acceptance run).
+
 Every client runs the same launcher: the Node you have, with
 `~/.countinghouse/bin/ch-local.js session --home ~/.countinghouse`
 (`$COUNTINGHOUSE_HOME` instead of `~/.countinghouse` when it is set). The

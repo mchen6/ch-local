@@ -145,6 +145,20 @@ test('the Claude Code page\'s updates: the read-only check, the user installs, C
     'It carries the skills, the MCP entry and a small launcher script (bin/launch.js) that starts the installed countinghouse. That script runs as you, so the plugin\'s source matters as much as the release\'s; countinghouse itself and your packs come only through the checked upgrade.']) assert.ok(section.includes(s), s);
 });
 
+// The install README's Clients section says no client has been run on macOS
+// (none has: CI's install-and-call test runs there with no client), right
+// after the list of client pages
+test('the install README\'s Clients section says no client has been run on macOS yet, after the client list', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8');
+  const at = page.indexOf('## Clients');
+  assert.ok(at >= 0, 'a Clients section');
+  const next = page.slice(at + 1).search(/^## /m);
+  const section = page.slice(at, next < 0 ? page.length : at + 1 + next).replace(/\s+/g, ' ');
+  const said = section.indexOf('No client has been run on macOS yet; on macOS, install and uninstall are checked automatically (the acceptance run).');
+  assert.ok(said >= 0, section.slice(0, 200));
+  assert.ok(section.indexOf('[Claude Desktop](claude-desktop.md)') < said && said < section.indexOf('Every client runs the same launcher'), 'after the client list');
+});
+
 // Before you start (a person may follow the install page alone): the
 // README's first section says what a person needs and does before
 // any client page: the Node floor the launcher enforces (read from
