@@ -20,16 +20,19 @@ test('check compares against the 22.16 floor', () => {
 test('below the floor: only the install-yourself route, no question asked, nothing fetched', async () => {
   const io = fakeIo({version: 'v20.11.0'});
   assert.strictEqual(await offerNode(io), 'install-yourself');
-  assert.match(io.err, /^ch-local needs Node 22\.16\.0 or later\. Install Node 24 yourself:\n/);
+  // (under bin's own line, which names the version found: the route's header alone)
+  assert.match(io.err, /^Install Node 24 yourself:\n/);
   assert.ok(!/fetch/i.test(io.err) && !/two ways/i.test(io.err) && !/^\s+[12]\. /m.test(io.err), io.err);
   assert.deepStrictEqual(io.asked, []);
   assert.deepStrictEqual(io.fetches, []);
 });
 
-test('every command stops below the floor before doing anything', async () => {
-  const io = fakeIo({answers: ['no'], version: 'v20.11.0'});
+test('every command stops below the floor before doing anything: nothing asked, run or fetched', async () => {
+  const io = fakeIo({version: 'v20.11.0'});
   assert.strictEqual(await main(['install', '--pack', 'ci-failure-triage', '--from', '/nowhere'], io), 1);
   assert.deepStrictEqual(io.execs, []);
+  assert.deepStrictEqual(io.asked, []);
+  assert.deepStrictEqual(io.fetches, []);
   assert.match(io.err, /needs Node 22\.16 or later; this is v20\.11\.0/);
 });
 
@@ -85,8 +88,8 @@ for (const platform of ['darwin', 'win32', 'linux', 'freebsd', 'constructor', '_
     const to = lines.length - 1;
     assert.strictEqual(lines[to], '', 'the route ends the output');
     assert.deepStrictEqual(lines.slice(from, to), Object.prototype.hasOwnProperty.call(BLOCKS, platform) ? BLOCKS[platform] : BLOCKS.other);
-    // (each line of the route fits an 80-column terminal)
-    for (const l of lines.slice(from, to)) assert.ok(l.length <= 80, `${l.length}: ${l}`);
+    // (each line, the header's included, fits an 80-column terminal)
+    for (const l of lines.slice(from - 1, to)) assert.ok(l.length <= 80, `${l.length}: ${l}`);
     // (a command or an address alone on its line: nothing after it)
     for (const l of lines.slice(from, to).filter((x) => x.startsWith('       '))) assert.match(l, /^ {7}(brew install node@24|https:\/\/\S*[^\s,;:.])$/);
     assert.ok(!/winget install OpenJS\.NodeJS\.LTS/.test(io.err) && !/brew install node(?!@24)/.test(io.err), io.err);

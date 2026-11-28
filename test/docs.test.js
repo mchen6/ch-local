@@ -170,6 +170,13 @@ test('install README: the release folder\'s character rule says why it differs f
   assert.ok(flat.includes('`_ / \\ . : @ + = , ~ -` (no `%`, which cmd expands inside double quotes, and `\\` allowed, as Windows paths use it; the agent\'s route on the Claude Code page writes the path with forward slashes instead)'), 'the clause');
 });
 
+// (the launcher offers no fetch of its own Node: the README says what it prints)
+test('the README says what every command does below the Node floor, and offers no fetch', () => {
+  const flat = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+  assert.ok(flat.includes('Every command first checks Node: below 22.16 it says so and prints how to install Node 24 yourself, for your system.'), 'the sentence');
+  assert.ok(!flat.includes('fetch its own'), 'no fetch is offered');
+});
+
 test('every client page with something to add points to Before you start first', () => {
   const pointer = 'First do [Before you start](README.md#before-you-start): Node, the install, the credential.';
   for (const file of ['claude-code.md', 'cursor.md', 'vscode.md', 'codex.md']) {
