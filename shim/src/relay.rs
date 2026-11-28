@@ -2379,10 +2379,15 @@ mod tests {
             lines.iter().any(|l| l.contains("\"id\":7") && l.contains("SESSION_CANT_FALL_BACK")),
             "the held request refused: {lines:?}"
         );
-        // (the connection closed: no message reached the runtime)
+        // (the connection closed: of what the shim sent after the replay,
+        // no frame is a message)
         let mut rest = Vec::new();
         let _ = s.read_to_end(&mut rest);
-        assert!(!rest.iter().any(|b| *b == b'M'), "nothing forwarded");
+        let mut r = std::io::Cursor::new(rest);
+        while let Ok((kind, len)) = frame::read_head(&mut r, BIG) {
+            assert_ne!(kind, Kind::Message, "nothing forwarded");
+            r.set_position(r.position() + u64::from(len));
+        }
         drop(client_in);
         assert!(matches!(done.join().unwrap(), Exit::Refused));
     }
