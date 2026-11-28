@@ -146,6 +146,17 @@ test('the Claude Code page\'s updates: the read-only check, the user installs, C
 });
 
 // Before you start (a person may follow the install page alone): the
+// The install README's Clients section says no client has been run on macOS
+// (business's words, 11-28): the claims audit's table, verification/README.md
+test('the install README\'s Clients section says no client has been run on macOS yet', () => {
+  const page = fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8');
+  const at = page.indexOf('## Clients');
+  assert.ok(at >= 0, 'a Clients section');
+  const next = page.slice(at + 1).search(/^## /m);
+  const section = page.slice(at, next < 0 ? page.length : at + 1 + next).replace(/\s+/g, ' ');
+  assert.ok(section.includes('No client has been run on macOS yet; the macOS steps follow the same install.'), section.slice(0, 200));
+});
+
 // README's first section says what a person needs and does before
 // any client page: the Node floor the launcher enforces (read from
 // lib/node-check.js), Node 24 on every route, the install command as the agent
