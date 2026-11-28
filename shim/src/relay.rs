@@ -858,11 +858,15 @@ impl Relay {
                 // while any are held, a new session or a resumed one: the
                 // runtime takes a replay only once settled, and a session
                 // lost after its settle (announced, so resumed) may never
-                // have read the one sent before. The runtime skips a value
-                // already in effect, so a replay to a session that has it
-                // changes nothing; it is ahead of every held line on this
-                // one connection, and the runtime applies it as it reads
-                // it, before the next frame
+                // have read the one sent before. The runtime applies an
+                // entry only if it is tighter than the value in effect, so
+                // a replay of the session's latest snapshot changes nothing,
+                // and a stale one (a later change not yet read here) can
+                // only tighten again. On a resumed session, whose values the
+                // runtime still holds, records partly lost replay what is
+                // kept, which can only tighten too. It is ahead of every
+                // held line on this one connection, and the runtime applies
+                // it as it reads it, before the next frame
                 if !self.records.is_empty() {
                     let frame = self.records.replay_frame();
                     self.control(&frame);
@@ -1965,13 +1969,8 @@ mod tests {
         welcome(&mut s, "rt1");
         until_op(&mut s, "client");
         settled(&mut s);
-        frame::write_frame(
-            &mut s,
-            Kind::Control,
-            br#"{"op":"record","entry":{"kind":"value","name":"maxOutputBytes","value":1048576}}"#,
-            BIG,
-        )
-        .unwrap();
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"maxOutputBytes":1048576}}"#, BIG)
+            .unwrap();
         thread::sleep(Duration::from_millis(100));
         drop(s);
         (listener, client_in, sink, done)
@@ -1989,20 +1988,17 @@ mod tests {
         }
     }
 
-    /// No connection comes to `listener` within `ms`.
-    fn no_connection_within(listener: &UnixListener, ms: u64) -> bool {
+    /// No connection is waiting on `listener` (it is left blocking).
+    fn no_connection_waiting(listener: &UnixListener) -> bool {
         listener.set_nonblocking(true).unwrap();
-        let until = Instant::now() + Duration::from_millis(ms);
-        while Instant::now() < until {
-            if listener.accept().is_ok() {
-                return false;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        true
+        let none = matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock);
+        listener.set_nonblocking(false).unwrap();
+        none
     }
 
-    const RECORD: &str = r#"[{"kind":"value","name":"maxOutputBytes","value":1048576}]"#;
+    // (the runtime's entry shape: lib/sessions.js snapshot(), one object of
+    // the session's caps)
+    const RECORD: &str = r#"[{"maxOutputBytes":1048576}]"#;
 
     // (the runtime takes a welcomed connection's `client` frame first, and a
     // replay only once the session is settled: shared-runtime design,
@@ -2034,28 +2030,36 @@ mod tests {
     }
 
     // (a runtime that closes a welcomed connection whose first frame isn't
-    // `client`, as countinghouse's does: the session settles once, and no
-    // reattach follows)
+    // `client`, as countinghouse's listener does: the shim attaches once,
+    // settles, and no attach follows; with the replay first, it attached
+    // again and again)
     #[test]
     fn a_refused_resume_holding_records_settles_once_and_does_not_reattach_in_a_loop() {
         let (listener, client_in, _sink, done) = session_with_a_record();
         let (mut s2, _) = listener.accept().unwrap();
         refuse_resume(&mut s2);
         drop(s2);
-        let (mut s3, _) = listener.accept().unwrap();
-        welcome(&mut s3, "rt3");
-        let first = control_payload(&mut s3);
-        if first["op"] != "client" {
-            drop(s3);
-            panic!("the first frame was {first}: the runtime closes this connection, and the shim would attach again");
-        }
+        let mut attaches = 0;
+        let mut s3 = loop {
+            let (mut s, _) = listener.accept().unwrap();
+            attaches += 1;
+            assert!(attaches <= 3, "attached {attaches} times: a reattach loop");
+            welcome(&mut s, &format!("rt{}", attaches + 2));
+            let first = control_payload(&mut s);
+            if first["op"] == "client" {
+                break s;
+            }
+            // (as the runtime: closed, the unsettled session ended)
+            drop(s);
+        };
+        assert_eq!(attaches, 1, "one attach");
         settled(&mut s3);
         assert_eq!(control_payload(&mut s3)["op"], "replay");
-        assert!(no_connection_within(&listener, 1500), "no reattach once settled");
         drop(client_in);
         until_op(&mut s3, "bye");
         drop(s3);
         done.join().unwrap();
+        assert!(no_connection_waiting(&listener), "no attach after the settle");
     }
 
     // (lost after `settled`, before the runtime read the replay: the session
