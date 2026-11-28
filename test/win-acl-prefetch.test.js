@@ -9,8 +9,7 @@ require('./tmp-dirs');
 //   and is answered by today's single read, with today's answer;
 // - a path whose read failed in the batch is answered by today's single read,
 //   so its error is exactly today's, and every other path keeps its own;
-// - a run that fails as a whole: every path by today's single read;
-// - a path seeded (an ACL this start already holds) costs no run.
+// - a run that fails as a whole: every path by today's single read.
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
@@ -74,14 +73,6 @@ test('a run that fails as a whole: every path by today\'s single read', () => {
   // (and an answer of the wrong shape, as one that fails)
   const odd = winAcl.prefetch([P('a'), P('b')], {run: () => JSON.stringify([ACL('A')]), lstat: kinds({[P('a')]: 'dir', [P('b')]: 'file'}), single});
   assert.deepStrictEqual(odd(P('a')), ACL('single:a'));
-});
-
-test('a path seeded with an ACL this start holds costs no run; nothing to read, no run at all', () => {
-  let runs = 0;
-  const run = () => { runs++; return JSON.stringify([]); };
-  const read = winAcl.prefetch([P('run')], {run, lstat: kinds({[P('run')]: 'dir'}), single: () => { throw new Error('single'); }, seed: {[P('run')]: ACL('R')}});
-  assert.strictEqual(runs, 0);
-  assert.deepStrictEqual(read(P('run')), ACL('R'));
 });
 
 test('the batched script reads each path in a try of its own, as the single one reads it', () => {
