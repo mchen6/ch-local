@@ -40,6 +40,20 @@ const REPLAY_ANSWER: Duration = Duration::from_secs(10);
 const TIGHTENINGS_NOT_KEPT: &str = "ch-shim: after a restart, the runtime could not keep the settings this session tightened, so the session stops: restart it";
 /// The same, when no answer to its replay came within REPLAY_ANSWER.
 const TIGHTENINGS_UNANSWERED: &str = "ch-shim: after a restart, the runtime did not say whether it kept the settings this session tightened, so the session stops: restart it";
+/// What a session that lost a record is refused with when the runtime can't
+/// resume it (a daemon death, or a resume refused): a new session can't be
+/// given back a tightening that wasn't kept.
+// (business's words: what happened, then the next step, as
+// SESSION_CANT_FALL_BACK says "restart the session"; "replay" is the shim's)
+const RECORD_LOST: &str = "ch-shim: the runtime couldn't resume this session, and a setting this session tightened couldn't be kept, so the session stops: restart it";
+/// What a session holding tightenings is refused with when the runtime tells
+/// it to run its own (`reason`, the op's, cleaned): a runtime of its own
+/// starts at the file's values, so never looser, it stops.
+fn cant_share_with_tightenings(reason: &str) -> String {
+    format!(
+        "ch-shim: this session can't share the runtime ({reason}), and a runtime of its own wouldn't have the settings this session tightened, so the session stops: restart it"
+    )
+}
 /// Sent after a replayed initialize.
 const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 /// What a legacy (2025-11-25) client is told when the runtime it talks to
@@ -760,9 +774,7 @@ impl Relay {
             // a new session can't be given back a record that wasn't kept:
             // the connection is dropped unused
             drop(a);
-            return self.refuse_session(
-                "ch-shim: the runtime restarted, and this session holds a tightening that couldn't be kept for replay; it can't go on",
-            );
+            return self.refuse_session(RECORD_LOST);
         }
         self.generation += 1;
         // (an answer awaited on a connection now gone: its replay goes again
@@ -998,9 +1010,7 @@ impl Relay {
                 // never looser: a session holding records refuses, as on a
                 // failed.json; with none it runs its own, as before
                 if self.records.holds_any() {
-                    return self.refuse_session(&format!(
-                        "ch-shim: this session can't share the runtime ({reason}), and it holds tightenings a runtime of its own wouldn't have; it can't go on"
-                    ));
+                    return self.refuse_session(&cant_share_with_tightenings(&reason));
                 }
                 // the op's token as given, if it is one, for ch-local's notice;
                 // the shim's own words only for its own failed first frame
@@ -2455,6 +2465,22 @@ mod tests {
         until_op(&mut s, "bye");
         drop(s);
         assert!(matches!(done.join().unwrap(), Exit::Done));
+    }
+
+    // (the words a session holding tightenings is refused with, as business
+    // gave them: what happened, and the next step, as SESSION_CANT_FALL_BACK's
+    // "restart the session"; the refusal itself, Exit::Refused, is pinned by
+    // the record and own-runtime tests)
+    #[test]
+    fn a_session_holding_tightenings_is_refused_in_these_words() {
+        assert_eq!(
+            RECORD_LOST,
+            "ch-shim: the runtime couldn't resume this session, and a setting this session tightened couldn't be kept, so the session stops: restart it"
+        );
+        assert_eq!(
+            cant_share_with_tightenings("token"),
+            "ch-shim: this session can't share the runtime (token), and a runtime of its own wouldn't have the settings this session tightened, so the session stops: restart it"
+        );
     }
 
     #[test]
