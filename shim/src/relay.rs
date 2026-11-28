@@ -33,7 +33,9 @@ use crate::{answer, child};
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
 /// What a session that lost a record is refused with: a new session can't be
 /// given back a tightening that wasn't kept.
-const RECORD_LOST: &str = "ch-shim: the runtime restarted, and this session holds a tightening that couldn't be kept for replay; it can't go on";
+// (business's words: what happened, then the next step, as
+// SESSION_CANT_FALL_BACK says "restart the session"; "replay" is the shim's)
+const RECORD_LOST: &str = "ch-shim: the runtime restarted, and a setting this session tightened couldn't be kept, so the session stops: restart it";
 /// Sent after a replayed initialize.
 const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 /// What a legacy (2025-11-25) client is told when the runtime it talks to
