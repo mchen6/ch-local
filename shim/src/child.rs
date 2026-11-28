@@ -65,27 +65,18 @@ impl Running {
 }
 
 impl Children {
-    /// Kills every child still running and waits for each; none is spawned after this.
+    /// Stops the spawning, then kills every child still running and waits for each; none is spawned after this.
     pub fn kill_all(&self) {
-        self.kill_where(|_| true);
-    }
-
-    /// Stops the spawning, then kills (and waits for) the running children whose pid `which` picks: all for the shim.
-    fn kill_where(&self, which: impl Fn(u32) -> bool) {
-        let picked: Vec<_> = match self.0.lock() {
+        let running: Vec<_> = match self.0.lock() {
             Ok(mut r) => {
                 r.stopped = true;
-                let (kill, keep): (Vec<_>, Vec<_>) =
-                    r.running.drain(..).partition(|c| c.lock().map(|c| which(c.child.id())).unwrap_or(false));
-                r.running = keep;
-                kill
+                std::mem::take(&mut r.running)
             }
             Err(_) => Vec::new(),
         };
-        for c in picked {
-            if let Ok(mut c) = c.lock() {
-                c.kill();
-            }
+        // (a child whose lock a panic poisoned is killed all the same: taken off the list, it is never reached again)
+        for c in running {
+            c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).kill();
         }
     }
 
@@ -227,10 +218,14 @@ pub fn run(
         if r.stopped {
             return Err("the shim has stopped relaying".into());
         }
-        let mut spawned = cmd.spawn().map_err(|e| format!("the conditions child could not be started ({e})"))?;
-        // (Windows: in a job that kills its tree; one that can't be made leaves the child to its own kill)
+        // (Windows: in a job that kills its tree, made before the spawn so that only the assign sits between the child's
+        // start and its joining it, a gap that remains, though Node's start makes it far shorter than any process it
+        // starts; a job that can't be made, or joined, leaves the child to its own kill)
         #[cfg(windows)]
-        let job = crate::win_ffi::Job::kill_on_close().and_then(|j| j.assign(&spawned).map(|()| j)).ok();
+        let job = crate::win_ffi::Job::kill_on_close().ok();
+        let mut spawned = cmd.spawn().map_err(|e| format!("the conditions child could not be started ({e})"))?;
+        #[cfg(windows)]
+        let job = job.filter(|j| j.assign(&spawned).is_ok());
         let stdout = spawned.stdout.take().expect("piped");
         let running = std::sync::Arc::new(std::sync::Mutex::new(Running {
             child: spawned,

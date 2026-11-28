@@ -2527,12 +2527,13 @@ printf '{{"status":"ok","conditions":"no","repo":"run-%s","token":null}}\n' "$((
         fs::write(home.root().join("ch-local.sh"), script).unwrap();
     }
 
-    /// Relay with a short attach (no socket at first: unreachable), roomy enough for a slow machine's handshake.
-    fn start_unreachable(home: Home) -> (UnixStream, Sink, thread::JoinHandle<Exit>) {
+    /// Relay with a short attach (no socket at first: unreachable), roomy enough for a slow machine's handshake; its
+    /// background retries `retry_unit` apart (5, 10, 30, 30 of them).
+    fn start_unreachable(home: Home, retry_unit: Duration) -> (UnixStream, Sink, thread::JoinHandle<Exit>) {
         let timing = Timing {
             attach: Duration::from_secs(1),
             cold_attach: Duration::from_secs(1),
-            retry_unit: Duration::from_millis(100),
+            retry_unit,
             ..Timing::default()
         };
         start_with(home, timing)
@@ -2561,7 +2562,10 @@ printf '{{"status":"ok","conditions":"no","repo":"run-%s","token":null}}\n' "$((
             let (home, sock) = home();
             let (runs, gate) = (home.root().join("runs"), home.root().join("gate"));
             counting_child(&home, &runs, gated.then_some(gate.as_path()));
-            let (mut client_in, sink, done) = start_unreachable(home);
+            // (gated: the first run answers while the shim is unreachable, and no retry may be attaching then, or the
+            // answer, kept outside Unreachable, would be a retry's first frame: the first retry 5 s on, well clear)
+            let unit = if gated { Duration::from_secs(1) } else { Duration::from_millis(100) };
+            let (mut client_in, sink, done) = start_unreachable(home, unit);
             until_unreachable(&mut client_in, &sink);
             if gated {
                 // (the first run answers only now, while the shim is unreachable)

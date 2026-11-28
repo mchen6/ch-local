@@ -57,6 +57,8 @@ for (const code of ['EPERM', 'EACCES']) {
     let ran = false;
     // (the lock named, never the temporary file the link came from)
     await assert.rejects(lock.withLock({home: h}, io, async () => { ran = true; return 0; }), (e) => e.code === code && e.path === file && e.message.includes(file) && !/\.tmp/.test(e.message));
+    // (its words, as the CLI's one line shows them after "ch-local: ")
+    await assert.rejects(lock.withLock({home: h}, clockIo('win32'), async () => 0), (e) => e.message === `${code}: the lock ${file} could not be taken`);
     assert.strictEqual(ran, false);
     assert.ok(io.t >= 10000 && io.t < 12000, `given up at the deadline, on the wait's clock (${io.t})`);
     assert.ok(!/another ch-local/.test(io.err), io.err);
@@ -85,6 +87,8 @@ test('win32: a stale-lock breaker refused EPERM past the deadline fails with tha
   const io = clockIo('win32');
   let ran = false;
   await assert.rejects(lock.withLock({home: h}, io, async () => { ran = true; return 0; }, {wait: true}), (e) => e.code === 'EPERM' && e.path === `${file}.break`);
+  // (its words, as the CLI's one line shows them after "ch-local: ")
+  await assert.rejects(lock.withLock({home: h}, clockIo('win32'), async () => 0, {wait: true}), (e) => e.message === `EPERM: the lock's breaker ${file}.break could not be made`);
   assert.strictEqual(ran, false);
   assert.ok(io.t >= 10000 && io.t < 12000, `given up at the deadline (${io.t})`);
 });

@@ -48,6 +48,9 @@ for (const code of ['EPERM', 'EACCES']) {
     const c = clock();
     let ran = false;
     assert.throws(() => withSettingsLock(where, () => { ran = true; }, {platform: 'win32', now: c.now, sleep: c.sleep}), (e) => e.code === code && e.path === lock && e.message.includes(lock) && !/\.tmp/.test(e.message) && e.cause != null && e.cause.code === code);
+    // (its words, as the CLI's one line shows them after "ch-local: ")
+    const c2 = clock();
+    assert.throws(() => withSettingsLock(where, () => 0, {platform: 'win32', now: c2.now, sleep: c2.sleep}), (e) => e.message === `${code}: the settings lock ${lock} could not be taken`);
     assert.strictEqual(ran, false);
     assert.ok(c.t >= 5000 && c.t < 6000, `given up at the wait's end (${c.t})`);
   });
