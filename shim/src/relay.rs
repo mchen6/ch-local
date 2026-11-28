@@ -255,6 +255,9 @@ pub struct Relay {
     /// runtime is unreachable (its held requests answered) instead of
     /// retried every deadline for ever.
     settle_losses: u32,
+    /// What each request of a refused session is answered with: the
+    /// cant-fall-back answer, or, for a lost tightening, its own.
+    refused_with: fn(&[u8]) -> Vec<u8>,
     give_up: Option<String>,
 }
 
@@ -380,6 +383,7 @@ impl Relay {
             child_queue: std::collections::VecDeque::new(),
             stdout_gone: false,
             settle_losses: 0,
+            refused_with: answer::cant_fall_back,
             give_up: None,
         }
     }
@@ -448,7 +452,7 @@ impl Relay {
             Ev::Stdin(lines::Read::Line(line)) => self.line(line),
             // a refused session's unread line: the refusal, its id unknown
             Ev::Stdin(lines::Read::TooLong(_)) if self.state == State::Refused => {
-                self.say(&answer::cant_fall_back(b"null"))
+                self.say(&(self.refused_with)(b"null"))
             }
             Ev::Stdin(lines::Read::TooLong(_)) => self.say(&answer::too_long(self.limit.get())),
             Ev::Stdin(lines::Read::Eof) => return self.eof(),
@@ -741,6 +745,9 @@ impl Relay {
             // a new session can't be given back a record that wasn't kept:
             // the connection is dropped unused
             drop(a);
+            // (its own answer for the client: a tightening lost, not the
+            // shared runtime failing)
+            self.refused_with = answer::tightenings_lost;
             return self.refuse_session(RECORD_LOST);
         }
         self.generation += 1;
@@ -1210,7 +1217,8 @@ impl Relay {
     /// SESSION_CANT_FALL_BACK; a notification gets nothing.
     fn refuse_line(&mut self, line: &[u8]) {
         if let Some((ids, batch)) = Self::ids_of(&message::classify(line)) {
-            self.answer_each(&ids, batch, answer::cant_fall_back);
+            let refused_with = self.refused_with;
+            self.answer_each(&ids, batch, refused_with);
         }
     }
 

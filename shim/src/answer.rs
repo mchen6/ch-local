@@ -26,7 +26,11 @@ fn one(id: &[u8], may_have_run: bool) -> Vec<u8> {
 /// A session refused because this shim lost one of its tightenings (the
 /// vectors' sessionTighteningsLostAnswer, exact apart from the id).
 pub fn tightenings_lost(id: &[u8]) -> Vec<u8> {
-    cant_fall_back(id)
+    let mut out = Vec::with_capacity(256);
+    out.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":");
+    out.extend_from_slice(id);
+    out.extend_from_slice(b",\"error\":{\"code\":-32603,\"message\":\"countinghouse couldn't keep the settings this session tightened, so the session stops: restart it\",\"data\":{\"countinghouse/code\":\"SESSION_TIGHTENINGS_LOST\",\"retryable\":false}}}");
+    out
 }
 
 /// A mid-session fallback refused because this shim holds records (the
