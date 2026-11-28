@@ -477,14 +477,16 @@ impl Relay {
                         let _ =
                             writeln!(io::stderr(), "ch-shim: the runtime never settled this session; attaching again");
                     }
+                    // The connection is left here and now, as refuse_session leaves one: shut, and its generation ended,
+                    // so whatever its reader had already queued (a late `settled`, whose replay and held lines would go
+                    // to the shut socket and then be crash-answered; a `conditions?`; its own Lost) is ignored. Lost at
+                    // once, never waiting on the reader's Lost, which a shutdown that failed would never bring: the held
+                    // lines wait for the next connection, as on any loss.
                     if let Some(w) = self.writer.as_ref() {
-                        // the reader then ends, and its Lost reattaches
                         let _ = w.shutdown();
                     }
-                    // the connection is left: out of Unsettled at once, so a `settled` the reader had already queued finds
-                    // no connection to open (its replay and held lines would go to the shut socket, and the Lost after it
-                    // crash-answer them); the held lines wait for the next connection, as on any loss
-                    self.state = State::Attaching;
+                    self.generation += 1;
+                    return self.lost("the runtime never settled this session".into());
                 }
             }
             Ev::EarlyClient { frame } => {
@@ -3069,29 +3071,39 @@ printf '{{"status":"ok","conditions":"no","repo":"run-%s","token":null}}\n' "$((
     }
 
     /// A `settled` the reader had already queued when the settle deadline left the connection: the deadline came first, so
-    /// the connection is gone (its writer shut) and the late `settled` must not open it; the held lines stay held for the next
-    /// connection, never written to the shut one and then crash-answered as lost. Driven event by event, so the order is the
-    /// test's, not a race's.
+    /// the connection is gone and the late `settled` must not open it. The records' replay and the held lines are never
+    /// written to the shut connection, the reader's own late Lost crash-answers nothing, and the held lines stay held for the
+    /// next connection. Driven event by event, so the order is the test's, not a race's.
     #[test]
     fn a_settled_queued_behind_the_settle_deadline_leaves_the_held_lines_held() {
-        let (home, _sock) = home();
+        let (home, sock) = home();
+        // (the reattach the loss starts finds a listener, never starting a daemon; it is never answered)
+        let _listener = UnixListener::bind(&sock).unwrap();
+        let sink = Sink::default();
         let mut relay = Relay::new(
             Setup { home, rest: vec![], client_env: vec![], parent: 1, timing: Timing::default() },
-            Out::new(Box::new(Sink::default())),
+            Out::new(Box::new(sink.clone())),
         );
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        relay.first_attach = false;
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
         relay.writer = Some(Box::new(ours));
         relay.generation = 1;
         relay.state = State::Unsettled;
+        assert!(relay.records.record(serde_json::value::RawValue::from_string(r#"{"setting":"x"}"#.into()).unwrap()));
         assert!(relay.held.hold(br#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#.to_vec(), 1 << 20).is_ok());
         assert!(relay.on(Ev::SettleDeadline { generation: 1 }).is_none());
         let raw = br#"{"op":"settled"}"#.to_vec();
         let Ok(Value::Object(op)) = serde_json::from_slice::<Value>(&raw) else { panic!("a settled frame") };
         assert!(relay.on(Ev::Reader { generation: 1, event: reader::Event::Control(op, raw) }).is_none());
-        assert_ne!(relay.state, State::Live, "a settled after the deadline does not open the connection it left");
+        assert!(relay.on(Ev::Reader { generation: 1, event: reader::Event::Lost("ended".into()) }).is_none());
+        assert_eq!(relay.state, State::Attaching, "left at the deadline, attaching again");
+        assert!(relay.writer.is_none(), "the connection is let go at the deadline");
         assert!(!relay.held.is_empty(), "the held line stays held for the next connection");
         assert!(relay.nothing_in_flight(), "nothing was sent on the shut connection");
-        drop(theirs);
+        let mut sent = Vec::new();
+        let _ = theirs.read_to_end(&mut sent);
+        assert!(sent.is_empty(), "no replay frame and no held line reached the shut connection");
+        assert!(sink.lines().is_empty(), "nothing answered to the client as crashed");
     }
 
     #[test]
