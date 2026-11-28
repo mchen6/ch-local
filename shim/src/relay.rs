@@ -198,9 +198,10 @@ enum State {
     Draining,
     Unreachable(String),
     Closing(Instant),
-    /// A mid-session fallback refused (failed.json while holding records):
-    /// every request is answered SESSION_CANT_FALL_BACK until stdin ends,
-    /// then the shim exits non-zero. Nothing attaches again.
+    /// A session refused while holding records (a mid-session failure, a
+    /// session told to run its own runtime, a record lost): every request
+    /// is answered with the refusal's answer (refused_with) until stdin
+    /// ends, then the shim exits non-zero. Nothing attaches again.
     Refused,
 }
 
@@ -285,9 +286,10 @@ pub enum Exit {
         /// answer dropped (#236 section 6, failed.json).
         replay: Option<(Vec<u8>, String)>,
     },
-    /// A mid-session fallback refused: the session held records, and every
-    /// request was answered SESSION_CANT_FALL_BACK until stdin ended. The
-    /// shim exits non-zero.
+    /// A session refused while holding records: every request was answered
+    /// with the refusal's answer (SESSION_CANT_FALL_BACK, or for a lost
+    /// record SESSION_TIGHTENINGS_LOST) until stdin ended. The shim exits
+    /// non-zero.
     Refused,
 }
 
@@ -1192,7 +1194,8 @@ impl Relay {
     /// The session can't go on (never looser): stderr says why; whatever is
     /// in flight on a live connection is crash-answered and the connection
     /// closed (a new generation, so its reader's events are ignored); each
-    /// held and later request is answered SESSION_CANT_FALL_BACK; at stdin's
+    /// held and later request is answered with refused_with (the
+    /// cant-fall-back answer, or one a caller set first); at stdin's
     /// end the shim exits 1.
     fn refuse_session(&mut self, why: &str) -> Option<Exit> {
         let _ = writeln!(io::stderr(), "{why}");
@@ -1214,7 +1217,7 @@ impl Relay {
     }
 
     /// One line of a refused session: each request (a batch's each) answered
-    /// SESSION_CANT_FALL_BACK; a notification gets nothing.
+    /// with refused_with; a notification gets nothing.
     fn refuse_line(&mut self, line: &[u8]) {
         if let Some((ids, batch)) = Self::ids_of(&message::classify(line)) {
             let refused_with = self.refused_with;
@@ -2242,6 +2245,9 @@ mod tests {
             RECORD_LOST,
             "ch-shim: the runtime couldn't resume this session, and a setting this session tightened couldn't be kept, so the session stops: restart it"
         );
+        // (and the wire vector's stderr for it, as the vectors are the contract)
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        assert_eq!(RECORD_LOST, v["sessionTighteningsLostAnswer"]["stderr"].as_str().unwrap());
         assert_eq!(
             cant_share_with_tightenings("token"),
             "ch-shim: this session can't share the runtime (token), and a runtime of its own wouldn't have the settings this session tightened, so the session stops: restart it"
@@ -2281,6 +2287,45 @@ mod tests {
         let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
         // (its own answer: a tightening lost, not the shared runtime failing)
         let want = v["sessionTighteningsLostAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
+        assert_eq!(sink.lines(), [want]);
+    }
+
+    // (a line too long for any connection, in a session refused for a lost
+    // record: its own answer too, with a null id, as the too-long line has)
+    #[test]
+    fn a_too_long_line_in_a_session_refused_for_a_lost_record_gets_the_tightenings_lost_answer() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1"); // maxToRuntime 65536: lines over 61440 are unread
+        until_op(&mut s, "client");
+        settled(&mut s);
+        // (a line's bound is fixed when its read begins: one line now, so the
+        // next read starts under the welcomed bound)
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/x\"}\n").unwrap();
+        let _ = read_m(&mut s);
+        let big = format!(r#"{{"op":"record","entry":"{}"}}"#, "x".repeat(crate::records::MAX_BYTES));
+        frame::write_frame(&mut s, Kind::Control, big.as_bytes(), BIG).unwrap();
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":1}"#, BIG).unwrap();
+        until_op(&mut s, "client");
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        refuse_resume(&mut s2);
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        while frame::read_frame(&mut s3, BIG).is_ok() {}
+        let long = format!("{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"a\",\"params\":\"{}\"}}\n", "x".repeat(70_000));
+        client_in.write_all(long.as_bytes()).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while sink.lines().is_empty() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let want = v["sessionTighteningsLostAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":null");
         assert_eq!(sink.lines(), [want]);
     }
 
