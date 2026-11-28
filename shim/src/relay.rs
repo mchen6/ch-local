@@ -31,6 +31,15 @@ use crate::{answer, child};
 
 /// After the client's stdin ends: answers are relayed this long at most.
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
+/// How long the runtime's answer to a replay (`tightenings`) is waited for
+/// from `settled`; none by then counts as not kept.
+const TIGHTENINGS_WAIT: Duration = Duration::from_secs(10);
+/// A session the runtime says it couldn't keep the tightenings of (after a
+/// replay, or after a runtime restart's restore) is refused with this, as a
+/// record it lost is (business's words).
+const TIGHTENINGS_NOT_KEPT: &str = "ch-shim: after a restart, the runtime could not keep the settings this session tightened, so the session stops: restart it";
+/// The same, when no answer to its replay came within TIGHTENINGS_WAIT.
+const TIGHTENINGS_UNANSWERED: &str = "ch-shim: after a restart, the runtime did not say whether it kept the settings this session tightened, so the session stops: restart it";
 /// What a session that lost a record is refused with when the runtime can't
 /// resume it (a daemon death, or a resume refused): a new session can't be
 /// given back a tightening that wasn't kept.
@@ -125,6 +134,9 @@ pub struct Timing {
     pub first_child: Duration,
     /// How long a welcomed connection waits for that run's answer (FIRST_WAIT).
     pub first_wait: Duration,
+    /// How long, from `settled`, the runtime's answer to a replay is waited
+    /// for, the client's lines held (TIGHTENINGS_WAIT).
+    pub tightenings_wait: Duration,
 }
 
 impl Default for Timing {
@@ -138,6 +150,7 @@ impl Default for Timing {
             barrier: STDOUT_BARRIER,
             first_child: child::FIRST_TIMEOUT,
             first_wait: FIRST_WAIT,
+            tightenings_wait: TIGHTENINGS_WAIT,
         }
     }
 }
@@ -172,6 +185,10 @@ enum Ev {
     /// The first child run's answer (started with the shim, before any connection).
     EarlyClient {
         frame: Vec<u8>,
+    },
+    /// The bound on the runtime's answer to this connection's replay has passed.
+    AnswerDeadline {
+        generation: u64,
     },
 }
 
@@ -255,6 +272,9 @@ pub struct Relay {
     /// runtime is unreachable (its held requests answered) instead of
     /// retried every deadline for ever.
     settle_losses: u32,
+    /// The connection (its generation) whose replay's answer is awaited, the
+    /// client's lines held meanwhile.
+    answer_wait: Option<u64>,
     give_up: Option<String>,
 }
 
@@ -380,6 +400,7 @@ impl Relay {
             child_queue: std::collections::VecDeque::new(),
             stdout_gone: false,
             settle_losses: 0,
+            answer_wait: None,
             give_up: None,
         }
     }
@@ -465,6 +486,13 @@ impl Relay {
             Ev::Reattach => {
                 if self.state == State::Attaching && self.writer.is_none() {
                     self.attach();
+                }
+            }
+            Ev::AnswerDeadline { generation } => {
+                // no answer to this connection's replay in time: not kept
+                if self.answer_wait == Some(generation) && generation == self.generation && self.state == State::Live {
+                    self.answer_wait = None;
+                    return self.refuse_session(TIGHTENINGS_UNANSWERED);
                 }
             }
             Ev::SettleDeadline { generation } => {
@@ -563,25 +591,30 @@ impl Relay {
         }
         match &self.state {
             State::Refused => self.refuse_line(&line),
+            // (awaiting the runtime's answer to a replay: held, as before settled)
+            State::Live if self.answer_wait.is_some() => self.hold(line),
             State::Live => self.forward(line),
             State::Unreachable(why) => {
                 let why = why.clone();
                 self.answer_unreachable(&line, &why);
             }
             State::Closing(_) => {}
-            State::Attaching | State::Unsettled | State::Draining => {
-                // a line this connection could never carry is refused as too
-                // large at once, whatever the state: never held, so never
-                // answered as a held line that "did not run" instead
-                if Self::never_fits(&line, self.to_runtime.message) {
-                    let limit = (self.to_runtime.message as usize).saturating_sub(4096);
-                    self.refuse_too_long(&line, &message::classify(&line), limit);
-                    return;
-                }
-                if let Err(over) = self.held.hold(line, self.to_runtime.message as usize) {
-                    self.overflow(over);
-                }
-            }
+            State::Attaching | State::Unsettled | State::Draining => self.hold(line),
+        }
+    }
+
+    /// A line held until the connection may carry it.
+    fn hold(&mut self, line: Vec<u8>) {
+        // a line this connection could never carry is refused as too large at
+        // once, whatever the state: never held, so never answered as a held
+        // line that "did not run" instead
+        if Self::never_fits(&line, self.to_runtime.message) {
+            let limit = (self.to_runtime.message as usize).saturating_sub(4096);
+            self.refuse_too_long(&line, &message::classify(&line), limit);
+            return;
+        }
+        if let Err(over) = self.held.hold(line, self.to_runtime.message as usize) {
+            self.overflow(over);
         }
     }
 
@@ -744,6 +777,9 @@ impl Relay {
             return self.refuse_session(RECORD_LOST);
         }
         self.generation += 1;
+        // (an answer awaited on a connection now gone: its replay goes again
+        // at this one's settle)
+        self.answer_wait = None;
         self.retries = 0;
         self.to_runtime = a.welcome.to_runtime;
         self.limit.set((a.welcome.to_runtime.message as usize).saturating_sub(4096));
@@ -861,6 +897,30 @@ impl Relay {
         });
     }
 
+    /// The settled connection takes the client's lines: the session's
+    /// initialize replayed first, then every held line; and stdin's end, if
+    /// it came meanwhile.
+    fn release_held(&mut self) -> Option<Exit> {
+        // (only to a live connection: one draining or closing takes nothing)
+        if self.state != State::Live {
+            return None;
+        }
+        // the session is restored (section 6, step 4) before any of the
+        // client's held traffic reaches it
+        if self.reconnecting {
+            self.replay_initialize();
+        }
+        self.reconnecting = false;
+        for line in self.held.take() {
+            self.forward(line);
+        }
+        // stdin ended during the attach (eof deferred it): its end now
+        if self.stdin_done {
+            return self.eof();
+        }
+        None
+    }
+
     fn op(&mut self, op: Map<String, Value>, raw: &[u8]) -> Option<Exit> {
         match op["op"].as_str().unwrap_or("") {
             "settled" if self.state == State::Unsettled => {
@@ -882,19 +942,32 @@ impl Relay {
                 if !self.records.is_empty() {
                     let frame = self.records.replay_frame();
                     self.control(&frame);
+                    // the client's lines wait for the runtime's answer
+                    // (`tightenings`): kept, they go; not kept, or none
+                    // within TIGHTENINGS_WAIT, the session is refused
+                    let (tx, generation, wait) = (self.tx.clone(), self.generation, self.setup.timing.tightenings_wait);
+                    self.answer_wait = Some(generation);
+                    thread::spawn(move || {
+                        thread::sleep(wait);
+                        let _ = tx.send(Ev::AnswerDeadline { generation });
+                    });
+                    return None;
                 }
-                // the session is restored (section 6, step 4) before any of
-                // the client's held traffic reaches it
-                if self.reconnecting {
-                    self.replay_initialize();
+                return self.release_held();
+            }
+            "tightenings" => {
+                let kept = op.get("kept").and_then(Value::as_bool) == Some(true);
+                let replay = op.get("after").and_then(Value::as_str) == Some("replay");
+                if !kept {
+                    // a tightening the runtime couldn't give back (a replay's,
+                    // or a restore's after a runtime restart): refused, as a
+                    // record lost is, rather than run looser in silence
+                    self.answer_wait = None;
+                    return self.refuse_session(TIGHTENINGS_NOT_KEPT);
                 }
-                self.reconnecting = false;
-                for line in self.held.take() {
-                    self.forward(line);
-                }
-                // stdin ended during the attach (eof deferred it): its end now
-                if self.stdin_done {
-                    return self.eof();
+                if replay && self.answer_wait == Some(self.generation) && self.state == State::Live {
+                    self.answer_wait = None;
+                    return self.release_held();
                 }
             }
             "conditions?" => {
@@ -928,7 +1001,13 @@ impl Relay {
                     }
                 }
             }
-            "drain" if self.state == State::Live => self.state = State::Draining,
+            "drain" if self.state == State::Live => {
+                self.state = State::Draining;
+                // (the answer awaited is this connection's, which is going
+                // away: what is held waits for the next one, whose settle
+                // replays again; never refused for a runtime restarting)
+                self.answer_wait = None;
+            }
             "own-runtime" => {
                 let reason: String = op
                     .get("reason")
@@ -1042,6 +1121,9 @@ impl Relay {
     }
 
     fn lost(&mut self, _why: String) -> Option<Exit> {
+        // (an answer awaited on this connection: gone with it, never a
+        // refusal; the next settle replays again)
+        self.answer_wait = None;
         self.writer = None;
         if let State::Closing(_) = self.state {
             return Some(self.finish());
@@ -1106,6 +1188,7 @@ impl Relay {
     }
 
     fn unreachable(&mut self, why: String) {
+        self.answer_wait = None;
         if matches!(self.state, State::Closing(_)) {
             return;
         }
@@ -2090,6 +2173,7 @@ mod tests {
         let (kind, replay, _, _) = next_frame(&mut s3);
         assert_eq!((kind, replay["op"].as_str()), (Kind::Control, Some("replay")), "the replay first: {replay}");
         assert_eq!(replay["entries"], serde_json::from_str::<Value>(RECORD).unwrap());
+        answer(&mut s3, true, "replay");
         let (kind, _, seq, line) = next_frame(&mut s3);
         assert_eq!(kind, Kind::Message, "then the held line");
         assert!(String::from_utf8_lossy(&line).contains("\"id\":7"));
@@ -2114,6 +2198,7 @@ mod tests {
         settled(&mut s3);
         let (kind, replay, _, _) = next_frame(&mut s3);
         assert_eq!((kind, replay["op"].as_str()), (Kind::Control, Some("replay")), "the records first: {replay}");
+        answer(&mut s3, true, "replay");
         let (kind, _, rseq, init) = next_frame(&mut s3);
         let init: Value = serde_json::from_slice(&init).unwrap();
         assert_eq!(
@@ -2187,6 +2272,7 @@ mod tests {
             "the records again on the resumed session, first: {replay}"
         );
         assert_eq!(replay["entries"], serde_json::from_str::<Value>(RECORD).unwrap());
+        answer(&mut s4, true, "replay");
         let (kind, _, seq, line) = next_frame(&mut s4);
         assert_eq!(kind, Kind::Message, "then the held line");
         assert!(String::from_utf8_lossy(&line).contains("\"id\":8"));
@@ -2222,6 +2308,298 @@ mod tests {
         until_op(&mut s2, "bye");
         drop(s2);
         done.join().unwrap();
+    }
+
+    /// The runtime's answer to a replay (or, `after` "restore", to a restore).
+    fn answer(s: &mut UnixStream, kept: bool, after: &str) {
+        let p = format!(r#"{{"op":"tightenings","kept":{kept},"after":"{after}"}}"#);
+        frame::write_frame(s, Kind::Control, p.as_bytes(), BIG).unwrap();
+    }
+
+    /// No frame comes from the shim within `ms` (the socket's own timeout:
+    /// a bound on a wait for nothing, never a sleep that passes on time).
+    fn nothing_within(s: &mut UnixStream, ms: u64) -> bool {
+        s.set_read_timeout(Some(Duration::from_millis(ms))).unwrap();
+        // (a read that times out: nothing came; a byte read means something
+        // did, and the caller's assertion fails on it)
+        let mut b = [0u8; 1];
+        let none = matches!(s.read(&mut b), Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut);
+        s.set_read_timeout(None).unwrap();
+        none
+    }
+
+    /// Waits (bounded) for the client to have `n` lines of output.
+    fn lines_at_least(sink: &Sink, n: usize) -> Vec<String> {
+        let until = Instant::now() + Duration::from_secs(5);
+        while sink.lines().len() < n && Instant::now() < until {
+            thread::sleep(Duration::from_millis(10));
+        }
+        sink.lines()
+    }
+
+    /// A session holding a record, reattached as a new session: client,
+    /// settled, the replay read; a line held meanwhile. -> (the connection,
+    /// the client's input, its output, the relay's end).
+    fn awaiting_the_answer(timing: Timing) -> (UnixStream, UnixStream, Sink, thread::JoinHandle<Exit>) {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"maxOutputBytes":1048576}}"#, BIG)
+            .unwrap();
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":1}"#, BIG).unwrap();
+        until_op(&mut s, "client");
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        refuse_resume(&mut s2);
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        assert_eq!(control_payload(&mut s3)["op"], "client");
+        held(&mut client_in, &sink, b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}\n");
+        settled(&mut s3);
+        assert_eq!(control_payload(&mut s3)["op"], "replay");
+        (s3, client_in, sink, done)
+    }
+
+    // (business's words for the two refusals; the refusal itself is pinned
+    // below by Exit::Refused and the client's answers)
+    #[test]
+    fn the_answers_refusals_are_in_these_words() {
+        assert_eq!(
+            TIGHTENINGS_NOT_KEPT,
+            "ch-shim: after a restart, the runtime could not keep the settings this session tightened, so the session stops: restart it"
+        );
+        assert_eq!(
+            TIGHTENINGS_UNANSWERED,
+            "ch-shim: after a restart, the runtime did not say whether it kept the settings this session tightened, so the session stops: restart it"
+        );
+    }
+
+    #[test]
+    fn a_replay_kept_releases_the_held_lines_only_then() {
+        let (mut s, client_in, _sink, done) = awaiting_the_answer(fast());
+        assert!(nothing_within(&mut s, 300), "the held line waits for the answer");
+        answer(&mut s, true, "replay");
+        let (kind, _, seq, line) = next_frame(&mut s);
+        assert_eq!(kind, Kind::Message, "then the held line");
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":7"));
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":7,"result":{}}"#);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        assert!(matches!(done.join().unwrap(), Exit::Done));
+    }
+
+    #[test]
+    fn a_replay_not_kept_refuses_the_session_and_forwards_nothing() {
+        let (mut s, client_in, sink, done) = awaiting_the_answer(fast());
+        answer(&mut s, false, "replay");
+        let lines = lines_at_least(&sink, 2);
+        assert!(
+            lines.iter().any(|l| l.contains("\"id\":7") && l.contains("SESSION_CANT_FALL_BACK")),
+            "the held request refused: {lines:?}"
+        );
+        // (the connection closed: of what the shim sent after the replay,
+        // no frame is a message)
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+        let mut r = std::io::Cursor::new(rest);
+        while let Ok((kind, len)) = frame::read_head(&mut r, BIG) {
+            assert_ne!(kind, Kind::Message, "nothing forwarded");
+            r.set_position(r.position() + u64::from(len));
+        }
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+    }
+
+    #[test]
+    fn no_answer_within_its_bound_refuses_the_session() {
+        let timing = Timing { tightenings_wait: Duration::from_millis(300), ..fast() };
+        let (s, client_in, sink, done) = awaiting_the_answer(timing);
+        let lines = lines_at_least(&sink, 2);
+        assert!(
+            lines.iter().any(|l| l.contains("\"id\":7") && l.contains("SESSION_CANT_FALL_BACK")),
+            "refused at the bound: {lines:?}"
+        );
+        drop(s);
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+    }
+
+    // (a restore after a runtime restart that couldn't apply a tightening:
+    // told mid-session; a call in flight is crash-answered, as a refusal
+    // answers it, and every later request refused)
+    #[test]
+    fn a_restore_not_kept_mid_session_refuses_it_and_crash_answers_what_is_in_flight() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start_with(home, fast());
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\"}\n").unwrap();
+        let _ = read_m(&mut s);
+        answer(&mut s, false, "restore");
+        let lines = lines_at_least(&sink, 1);
+        assert!(
+            lines.iter().any(|l| l.contains("\"id\":3") && l.contains("RUNTIME_RESTARTED")),
+            "the call in flight crash-answered: {lines:?}"
+        );
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/list\"}\n").unwrap();
+        let lines = lines_at_least(&sink, 2);
+        assert!(
+            lines.iter().any(|l| l.contains("\"id\":4") && l.contains("SESSION_CANT_FALL_BACK")),
+            "a later request refused: {lines:?}"
+        );
+        drop(client_in);
+        drop(s);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+    }
+
+    /// Waits (bounded) for the shim's next connection to `listener`.
+    fn next_connection(listener: &UnixListener) -> UnixStream {
+        listener.set_nonblocking(true).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((s, _)) => {
+                    listener.set_nonblocking(false).unwrap();
+                    s.set_nonblocking(false).unwrap();
+                    return s;
+                }
+                Err(_) if Instant::now() < until => thread::sleep(Duration::from_millis(10)),
+                Err(e) => panic!("the shim never attached again: {e}"),
+            }
+        }
+    }
+
+    /// As awaiting_the_answer, keeping the listener for a reattach.
+    fn awaiting_with_listener(
+        timing: Timing,
+    ) -> (UnixListener, UnixStream, UnixStream, Sink, thread::JoinHandle<Exit>) {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"maxOutputBytes":1048576}}"#, BIG)
+            .unwrap();
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":1}"#, BIG).unwrap();
+        until_op(&mut s, "client");
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        refuse_resume(&mut s2);
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        assert_eq!(control_payload(&mut s3)["op"], "client");
+        held(&mut client_in, &sink, b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}\n");
+        settled(&mut s3);
+        assert_eq!(control_payload(&mut s3)["op"], "replay");
+        (listener, s3, client_in, sink, done)
+    }
+
+    /// The reattach after a loss: resumed, settled, its replay answered kept;
+    /// the held line arrives once, and is answered.
+    fn reattached_and_kept(
+        listener: &UnixListener,
+        client_in: UnixStream,
+        sink: &Sink,
+        done: thread::JoinHandle<Exit>,
+    ) {
+        let mut s4 = next_connection(listener);
+        welcome(&mut s4, "rt4");
+        assert_eq!(control_payload(&mut s4)["op"], "client");
+        settled(&mut s4);
+        assert_eq!(control_payload(&mut s4)["op"], "replay", "the records again on the next connection");
+        answer(&mut s4, true, "replay");
+        let (kind, _, seq, line) = next_frame(&mut s4);
+        assert_eq!(kind, Kind::Message);
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":7"));
+        reply(&mut s4, seq.unwrap(), r#"{"jsonrpc":"2.0","id":7,"result":{}}"#);
+        drop(client_in);
+        until_op(&mut s4, "bye");
+        drop(s4);
+        assert!(matches!(done.join().unwrap(), Exit::Done));
+        assert!(
+            !sink.lines().iter().any(|l| l.contains("SESSION_CANT_FALL_BACK") || l.contains("RUNTIME_RESTARTED")),
+            "{:?}",
+            sink.lines()
+        );
+    }
+
+    // (the connection lost while the answer is awaited, the reattach slower
+    // than the bound: the wait is that connection's, gone with it, never a
+    // refusal; the replay goes again at the next settle)
+    #[test]
+    fn a_connection_lost_while_awaiting_the_answer_is_no_refusal_however_slow_the_reattach() {
+        let timing =
+            Timing { tightenings_wait: Duration::from_millis(200), retry_unit: Duration::from_millis(400), ..fast() };
+        let (listener, s3, client_in, sink, done) = awaiting_with_listener(timing);
+        drop(s3);
+        reattached_and_kept(&listener, client_in, &sink, done);
+    }
+
+    // (a drain while the answer is awaited: nothing goes to the runtime that
+    // is going away, a kept answer there included, and the bound passing
+    // during the drain is no refusal; the next connection takes it all)
+    #[test]
+    fn a_drain_while_awaiting_the_answer_holds_everything_for_the_next_connection() {
+        let timing = Timing { tightenings_wait: Duration::from_millis(200), ..fast() };
+        let (listener, mut s3, client_in, sink, done) = awaiting_with_listener(timing);
+        frame::write_frame(&mut s3, Kind::Control, br#"{"op":"drain"}"#, BIG).unwrap();
+        assert!(nothing_within(&mut s3, 500), "past the bound in the drain: no refusal, nothing sent");
+        answer(&mut s3, true, "replay");
+        assert!(nothing_within(&mut s3, 300), "a kept answer in a drain sends nothing");
+        drop(s3);
+        reattached_and_kept(&listener, client_in, &sink, done);
+    }
+
+    // (any answer not kept is about this connection's session, the only one
+    // the runtime answers on: refused, fail closed, pending or not)
+    #[test]
+    fn a_not_kept_replay_answer_with_none_pending_still_refuses() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (client_in, _sink, done) = start_with(home, fast());
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        answer(&mut s, false, "replay");
+        // (refused: the shim closes the connection; then the client's end)
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+    }
+
+    #[test]
+    fn a_kept_answer_with_no_replay_pending_changes_nothing() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, _sink, done) = start_with(home, fast());
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        answer(&mut s, true, "replay");
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}\n").unwrap();
+        let (seq, line) = read_m(&mut s);
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":5"), "forwarded as before");
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":5,"result":{}}"#);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        assert!(matches!(done.join().unwrap(), Exit::Done));
     }
 
     // (the words a session holding tightenings is refused with, as business
@@ -3792,6 +4170,8 @@ printf '{{"status":"ok","conditions":"no","repo":"run-%s","token":null}}\n' "$((
         if settle {
             until_op(&mut s2, "client");
             settled(&mut s2);
+            // (it holds a record: its replay is answered, kept)
+            answer(&mut s2, true, "replay");
             seen = until_op(&mut s2, "bye");
         } else {
             // never settled: the connection is closed at the settle deadline
