@@ -83,8 +83,8 @@ if it does, stop and tell the user.
    their PATH.
 4. If the `ch-packs` plugin is not installed, first say you'll check for
    Git and, with the user's yes, run `git --version` (on macOS, this may
-   first ask to install Apple's command line tools; say so before running it). If
-   it fails, tell the user the plugin route needs Git (Windows:
+   first ask to install Apple's command line tools; say so before running
+   it). If it fails, tell the user the plugin route needs Git (Windows:
    `winget install --id Git.Git -e --source winget`; macOS:
    `xcode-select --install`; Linux: the distribution's `git` package) and
    that after installing it they restart Claude Code in a new window and ask
