@@ -36,6 +36,14 @@ const CLOSING_GRACE: Duration = Duration::from_secs(10);
 // (business's words: what happened, then the next step, as
 // SESSION_CANT_FALL_BACK says "restart the session"; "replay" is the shim's)
 const RECORD_LOST: &str = "ch-shim: the runtime restarted, and a setting this session tightened couldn't be kept, so the session stops: restart it";
+/// What a session holding tightenings is refused with when the runtime tells
+/// it to run its own (`reason`, the op's, cleaned): a runtime of its own
+/// starts at the file's values, so never looser, it stops.
+fn cant_share_with_tightenings(reason: &str) -> String {
+    format!(
+        "ch-shim: this session can't share the runtime ({reason}), and it holds tightenings a runtime of its own wouldn't have; it can't go on"
+    )
+}
 /// Sent after a replayed initialize.
 const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 /// What a legacy (2025-11-25) client is told when the runtime it talks to
@@ -932,9 +940,7 @@ impl Relay {
                 // never looser: a session holding records refuses, as on a
                 // failed.json; with none it runs its own, as before
                 if self.records.holds_any() {
-                    return self.refuse_session(&format!(
-                        "ch-shim: this session can't share the runtime ({reason}), and it holds tightenings a runtime of its own wouldn't have; it can't go on"
-                    ));
+                    return self.refuse_session(&cant_share_with_tightenings(&reason));
                 }
                 // the op's token as given, if it is one, for ch-local's notice;
                 // the shim's own words only for its own failed first frame
@@ -2217,14 +2223,19 @@ mod tests {
         done.join().unwrap();
     }
 
-    // (the words a session that lost a record is refused with, as business
+    // (the words a session holding tightenings is refused with, as business
     // gave them: what happened, and the next step, as SESSION_CANT_FALL_BACK's
-    // "restart the session")
+    // "restart the session"; the refusal itself, Exit::Refused, is pinned by
+    // the record and own-runtime tests)
     #[test]
-    fn a_session_that_lost_a_record_is_refused_in_these_words() {
+    fn a_session_holding_tightenings_is_refused_in_these_words() {
         assert_eq!(
             RECORD_LOST,
-            "ch-shim: the runtime restarted, and a setting this session tightened couldn't be kept, so the session stops: restart it"
+            "ch-shim: the runtime couldn't resume this session, and a setting this session tightened couldn't be kept, so the session stops: restart it"
+        );
+        assert_eq!(
+            cant_share_with_tightenings("token"),
+            "ch-shim: this session can't share the runtime (token), and a runtime of its own wouldn't have the settings this session tightened, so the session stops: restart it"
         );
     }
 
