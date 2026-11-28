@@ -108,7 +108,8 @@ test('win32: the stale-lock breaker refused EPERM is busy, not an error: the sta
 });
 
 // (lib/settings.js's own loop takes createWhole: a pending name is never taken
-// for the lock there; the refusal is thrown at once, as before)
+// for the lock there; createWhole throws the refusal, and withSettingsLock
+// waits on it until its own deadline: test/settings-lock-win.test.js)
 test('createWhole keeps its answer: true, false, or the refusal thrown, never a pending name taken for the lock', (t) => {
   const h = home();
   const file = path.join(h, 'settings.lock');
