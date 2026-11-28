@@ -92,11 +92,15 @@ test('Windows: a file granted to Users in a private folder is refused for the fi
 
 test('Windows: a batch of [missing, folder] answers [failed, the folder\'s ACL], in that order', WIN, () => {
   const dir = require('./fake-io').tmp('ch-cs-order-');
-  const missing = path.join(dir, 'not-there');
+  // (beside the folder, not in it: a path in a folder listed after it is
+  // never sent, and both must be)
+  const missing = `${dir}-not-there`;
   let out = null;
-  const run = (script, env) => { const text = winAcl.runPowershell(script, env); out = JSON.parse(text); return text; };
+  let sent = null;
+  const run = (script, env) => { sent = env.CH_ACL_FILES.split('\n'); const text = winAcl.runPowershell(script, env); out = JSON.parse(text); return text; };
   const plainStat = {isSymbolicLink: () => false, isFile: () => true, isDirectory: () => false};
   const read = winAcl.prefetch([missing, dir], {run, lstat: () => plainStat, single: () => { throw new Error('a single read'); }});
+  assert.deepStrictEqual(sent, [path.resolve(missing), path.resolve(dir)], 'both paths sent, in order');
   assert.ok(Array.isArray(out) && out.length === 2, JSON.stringify(out));
   assert.strictEqual(out[0].failed, true, JSON.stringify(out[0]));
   assert.ok(out[1].failed !== true && typeof out[1].owner === 'string', JSON.stringify(out[1]));
