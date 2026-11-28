@@ -154,7 +154,7 @@ test('the install README\'s Clients section says no client has been run on macOS
   assert.ok(at >= 0, 'a Clients section');
   const next = page.slice(at + 1).search(/^## /m);
   const section = page.slice(at, next < 0 ? page.length : at + 1 + next).replace(/\s+/g, ' ');
-  const said = section.indexOf('No client has been run on macOS yet; the macOS steps follow the same install.');
+  const said = section.indexOf('No client has been run on macOS yet; on macOS, install and uninstall are checked automatically (the acceptance run).');
   assert.ok(said >= 0, section.slice(0, 200));
   assert.ok(section.indexOf('[Claude Desktop](claude-desktop.md)') < said && said < section.indexOf('Every client runs the same launcher'), 'after the client list');
 });
