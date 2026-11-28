@@ -56,7 +56,11 @@ fn main() -> ExitCode {
         Setup { home: home.clone(), rest: Vec::new(), client_env, parent, timing: Default::default() },
         Out::stdout(),
     );
-    match relay.run(io::stdin()) {
+    let exit = relay.run(io::stdin());
+    // the relay is over: a conditions child still running (the first run, started with the shim) is killed, never left
+    // to outlive the shim or to run beside the session's own runtime
+    ch_shim::child::kill_running();
+    match exit {
         Exit::Done => ExitCode::SUCCESS,
         Exit::OwnRuntime { reason, code, why, held, rest: lines, replay } => {
             eprintln!("{reason}");
