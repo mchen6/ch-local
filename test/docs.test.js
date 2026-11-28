@@ -145,18 +145,21 @@ test('the Claude Code page\'s updates: the read-only check, the user installs, C
     'It carries the skills, the MCP entry and a small launcher script (bin/launch.js) that starts the installed countinghouse. That script runs as you, so the plugin\'s source matters as much as the release\'s; countinghouse itself and your packs come only through the checked upgrade.']) assert.ok(section.includes(s), s);
 });
 
-// Before you start (a person may follow the install page alone): the
 // The install README's Clients section says no client has been run on macOS
-// (business's words, 11-28): the claims audit's table, verification/README.md
-test('the install README\'s Clients section says no client has been run on macOS yet', () => {
+// (none has: CI's install-and-call test runs there with no client), right
+// after the list of client pages
+test('the install README\'s Clients section says no client has been run on macOS yet, after the client list', () => {
   const page = fs.readFileSync(path.join(DOCS, 'README.md'), 'utf8');
   const at = page.indexOf('## Clients');
   assert.ok(at >= 0, 'a Clients section');
   const next = page.slice(at + 1).search(/^## /m);
   const section = page.slice(at, next < 0 ? page.length : at + 1 + next).replace(/\s+/g, ' ');
-  assert.ok(section.includes('No client has been run on macOS yet; the macOS steps follow the same install.'), section.slice(0, 200));
+  const said = section.indexOf('No client has been run on macOS yet; the macOS steps follow the same install.');
+  assert.ok(said >= 0, section.slice(0, 200));
+  assert.ok(section.indexOf('[Claude Desktop](claude-desktop.md)') < said && said < section.indexOf('Every client runs the same launcher'), 'after the client list');
 });
 
+// Before you start (a person may follow the install page alone): the
 // README's first section says what a person needs and does before
 // any client page: the Node floor the launcher enforces (read from
 // lib/node-check.js), Node 24 on every route, the install command as the agent
