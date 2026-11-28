@@ -162,11 +162,21 @@ function homeProblem(home, launcher, {platform = process.platform, fileAcls = nu
       // remove it and install again, L8)
       const a = acls[i];
       if (a != null && typeof a.owner === 'string' && ![a.user, winAcl.SYSTEM, winAcl.ADMINISTRATORS].includes(a.owner)) return {problem: `${why}, ${OPEN}; remove it and install again`};
+      // another account holding more than it may (privateProblem's "accessible by"): every one holding the strongest right, by SID
+      // (no name lookup on the way to a start), and the verb that right takes, as lib/home.js says it: changeable, or readable
+      const open = winAcl.openPrincipals(a);
+      const said = open.length > 0 && why === `${reals[i]} is accessible by ${open[0].sid}`;
+      const change = said && open.some((p) => p.change);
+      const who = said ? open.filter((p) => p.change === change).map((p) => p.sid) : [];
+      const list = who.length <= 1 ? who.join('') : `${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`;
+      const lead = !said ? `${why}, ${OPEN}`
+        : change ? `${reals[i]} can be changed by ${list}, so another account could change what runs from it`
+          : `${reals[i]} is readable by ${list}, ${i === 0 ? 'so another account could read what is stored in it, its credentials included' : 'so it is not yours alone'}`;
       // (anyone else able to change it, or what was made in it: it may already have been changed, so the home is moved aside, never
       // repaired, as lib/home.js has it)
-      if (winAcl.foreignChange(a)) return {problem: `${why}, ${OPEN}; it may already have been changed: move the home aside and install again`};
+      if (winAcl.foreignChange(a)) return {problem: `${lead}; it may already have been changed: move the home aside and install again`};
       const hint = plain(reals[i], 'win32') ? winAcl.fixHint(reals[i], acls[i], {directory}) : null;
-      return {problem: `${why}, ${OPEN}; make it a ${directory ? 'folder' : 'file'} only you can change${hint != null ? `, in Windows PowerShell (powershell.exe): ${hint.split('\n').map((l) => l.trim()).join(', then ')}` : ''}`};
+      return {problem: `${lead}; make it a ${directory ? 'folder' : 'file'} only you can ${said ? 'read' : 'change'}${hint != null ? `, in Windows PowerShell (powershell.exe): ${hint.split('\n').map((l) => l.trim()).join(', then ')}` : ''}`};
     }
   }
   return {launcher: reals[2]};

@@ -353,12 +353,15 @@ test('launch.js\'s home check on Windows (its ACL check, with ACLs given): a pri
   assert.strictEqual(ok.launcher, fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js')), 'the path checked is the one to run');
   assert.strictEqual(calls, 1, 'one PowerShell run for the three');
   // (another able to change it: it may already have been changed, so moved aside, no lines that set its access)
-  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => OPEN)}).problem), /is accessible by S-1-1-0, so another user could change what runs from it; it may already have been changed: move the home aside and install again$/);
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => OPEN)}).problem), / can be changed by S-1-1-0, so another account could change what runs from it; it may already have been changed: move the home aside and install again$/);
   assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, OPEN]}).problem), /move the home aside and install again$/);
   // (read only: the lines, for Windows PowerShell; the launcher's own ACL: "a file", never "a folder")
   const READABLE = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]};
-  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => READABLE)}).problem), /is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change, in Windows PowerShell \(powershell\.exe\): icacls '/);
-  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, READABLE]}).problem), /make it a file only you can change, in Windows PowerShell \(powershell\.exe\): /);
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => READABLE)}).problem), / is readable by S-1-1-0, so another account could read what is stored in it, its credentials included; make it a folder only you can read, in Windows PowerShell \(powershell\.exe\): icacls '/);
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, READABLE]}).problem), /ch-local\.js is readable by S-1-1-0, so it is not yours alone; make it a file only you can read, in Windows PowerShell \(powershell\.exe\): /);
+  // (every SID holding the strongest right, the verb by that right; one able only to read beside one able to change: changeable)
+  const TWO = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-5-32-545', rights: 1179817, type: 'Allow', inheritOnly: false}, {sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}, {sid: 'S-1-5-11', rights: 1245631, type: 'Allow', inheritOnly: false}]};
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => TWO)}).problem), / can be changed by S-1-1-0 and S-1-5-11, so another account could change what runs from it; /);
 });
 
 test('the plugin carries lib/win-acl.js unchanged (launch.js checks a Windows home with it, never with the home\'s own code)', () => {

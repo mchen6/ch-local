@@ -151,19 +151,27 @@ test('CodexSandboxUsers able to read, a Codex sandbox identity able to change: t
 
 // a home under %LOCALAPPDATA% (the default, or any other) not made by install, unprotected, takes Codex's read grant on AppData: moving
 // it under %LOCALAPPDATA% says nothing; install makes a new one that takes nothing from the folders above it
+const INHERITS = "and a folder under AppData inherits it unless ch-local's install made that folder: move it aside and install again, which makes a folder that inherits nothing from the folders above it, then delete the old home (it still holds the stored credentials)";
 test('a home under %LOCALAPPDATA% open to Codex (taking it from AppData): moved aside and installed again, never "point it under %LOCALAPPDATA%"', () => withHome((h) => {
   const rules = [rule(CODEX_SID, CODEX, READ)];
   for (const local of [path.dirname(h), path.dirname(path.dirname(h))]) {
     const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: local});
-    assert.strictEqual(p.why, 'it is readable by MACHINE\\CodexSandboxUsers');
     assert.strictEqual(p.final, true);
     assert.strictEqual(p.fix, null);
-    assert.ok(!/COUNTINGHOUSE_HOME|point it under/.test(p.consequence), p.consequence);
-    assert.match(p.consequence, /, which a folder in it takes unless install made it: move it aside and install again, which makes it a folder that takes nothing from the folders above it, then delete the old home \(it still holds the stored credentials\)$/);
+    assert.strictEqual(openHomeLine(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: local}),
+      `${h} is readable by MACHINE\\CodexSandboxUsers, so another account could read what is stored in it, its credentials included. Codex's Windows sandbox gives that group read access to each folder directly in your profile, AppData included, every time it runs a command, ${INHERITS}`);
   }
   // (a home elsewhere: the Codex line that sends it under %LOCALAPPDATA%)
   const q = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: path.join(h, 'elsewhere')});
   assert.match(q.consequence, /point it under %LOCALAPPDATA%/);
+}));
+
+// Codex started in the profile: its AppData grant is Modify, so a home under it not made by install can be changed, by the group and a
+// Codex sandbox identity: the change words, the inheritance and the move aside
+test('a home under %LOCALAPPDATA% that Codex\'s inherited grant can change: the change words, inherited, moved aside', () => withHome((h) => {
+  const rules = [rule(CODEX_SID, CODEX, MODIFY), rule(WORKSPACE, '', MODIFY)];
+  assert.strictEqual(openHomeLine(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: ENV, principalNames: namesOf(rules), localAppData: path.dirname(h)}),
+    `${h} can be changed by MACHINE\\CodexSandboxUsers and a Codex sandbox identity (${WORKSPACE}), so another account could change what runs from it and read its credentials. Codex's Windows sandbox gives these access to each folder directly in your profile, AppData included, every time it runs a command, ${INHERITS}`);
 }));
 
 // Codex's group able to read, and an account Windows names able to change: that account's change right is the refusal, not Codex's
@@ -194,7 +202,7 @@ test('%LOCALAPPDATA% known from Windows with none in the environment: a home und
   const rules = [rule(CODEX_SID, CODEX, READ)];
   const lookup = (sids) => Object.assign(namesOf(rules)(sids), {localAppData: path.dirname(h)});
   const p = homeOpenProblem(h, {platform: 'win32', fileAcl: () => aclWith(...rules), env: {}, principalNames: lookup});
-  assert.match(p.consequence, /move it aside and install again, which makes it a folder that takes nothing from the folders above it/);
+  assert.match(p.consequence, /move it aside and install again, which makes a folder that inherits nothing from the folders above it/);
 }));
 
 // Windows' known folder decides, the environment's LOCALAPPDATA only when it is unknown: one pointed elsewhere (into the profile, say)

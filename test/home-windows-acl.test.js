@@ -64,7 +64,13 @@ test('a home directly in a profile, given read: refused naming who; the printed 
   assert.ok(p != null, 'not refused');
   assert.ok([`it is readable by BUILTIN\\Users and ${UNNAMED}`, `it is readable by ${UNNAMED} and BUILTIN\\Users`].includes(p.why), p.why);
   const prefix = 'make it a folder only you can read, in Windows PowerShell (powershell.exe): ';
-  assert.ok(p.fix.startsWith(prefix), p.fix);
+  // (the exact text printed, every byte, so a later wording change can't slip past the run below: the folder by its real path, this
+  // user's SID, each other SID purged on a line of its own, in the order the DACL lists them)
+  const real = fs.realpathSync.native(home);
+  const me = require('../lib/win-acl').fileAcl(real).user;
+  const purge = (sid) => `$i = Get-Item -LiteralPath '${real}' -Force; $a = $i.GetAccessControl('Access'); $a.PurgeAccessRules([System.Security.Principal.SecurityIdentifier]'${sid}'); $i.SetAccessControl($a)`;
+  const exact = (a, b) => prefix + [`icacls '${real}' /inheritance:r /grant:r *${me}:(OI)(CI)F *S-1-5-18:(OI)(CI)F`, purge(a), purge(b), `icacls '${real}' /setowner *${me}`].join(', then ');
+  assert.ok([exact(USERS, UNNAMED), exact(UNNAMED, USERS)].includes(p.fix), p.fix);
   const lines = p.fix.slice(prefix.length).split(', then ');
   assert.strictEqual(lines.length, 4, `one line per operation, one per SID: ${p.fix}`);
   for (const line of lines) powershell(line);
@@ -105,7 +111,7 @@ test('this machine\'s CodexSandboxUsers on a home directly in a profile: the Cod
     fs.mkdirSync(under);
     const q = homeOpenProblem(under, {platform: 'win32', localAppData: local});
     assert.match(q.why, /^it is readable by [^ ]+\\CodexSandboxUsers$/);
-    assert.match(q.consequence, /move it aside and install again, which makes it a folder that takes nothing from the folders above it, then delete the old home/);
+    assert.match(q.consequence, /move it aside and install again, which makes a folder that inherits nothing from the folders above it, then delete the old home/);
   } finally {
     if (made) { try { net('localgroup', 'CodexSandboxUsers', '/delete'); } catch (e) { /* left for the runner's teardown */ } }
   }
