@@ -2271,7 +2271,8 @@ mod tests {
         drop(client_in);
         assert!(matches!(done.join().unwrap(), Exit::Refused));
         let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
-        let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
+        // (its own answer: a tightening lost, not the shared runtime failing)
+        let want = v["sessionTighteningsLostAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
         assert_eq!(sink.lines(), [want]);
     }
 
@@ -2309,7 +2310,8 @@ mod tests {
         drop(client_in);
         assert!(matches!(done.join().unwrap(), Exit::Refused));
         let v: Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
-        let want = v["sessionCantFallBackAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
+        // (its own answer: a tightening lost, not the shared runtime failing)
+        let want = v["sessionTighteningsLostAnswer"]["json"].as_str().unwrap().replace("\"id\":7", "\"id\":4");
         assert_eq!(sink.lines(), [want]);
     }
 
