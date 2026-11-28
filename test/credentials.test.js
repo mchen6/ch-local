@@ -397,6 +397,20 @@ test('Windows (win-acl stubbed): reading the store asks the folder\'s and the fi
   assert.strictEqual(bad.seen.single, 0);
 });
 
+test('Windows (win-acl stubbed): a store path the batch could not answer goes to the caller\'s own single read', () => {
+  const h = tmp('ch-cred-winread-');
+  const me = 'S-1-5-21-1-2-3-1001';
+  const mine = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-18', type: 'Allow', rights: 2032127}]};
+  const {privateProblem} = require('../lib/win-acl');
+  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
+  const asked = [];
+  const acl = {privateProblem, fileAcl: (p) => { asked.push(path.resolve(p)); return mine; },
+    prefetch: (paths, opts) => require('../lib/win-acl').prefetch(paths, Object.assign({}, opts, {run: () => { throw new Error('the run failed'); }}))};
+  const got = store.readStore(h, {platform: 'win32', acl});
+  assert.ok(got.modules.size === 1);
+  assert.deepStrictEqual(asked, [path.resolve(h, 'credentials'), path.resolve(h, 'credentials', 'credentials.json')]);
+});
+
 test('Windows (win-acl stubbed): a directory or file whose DACL fails is refused with icacls to fix it; a new directory is made private', () => {
   const h = tmp('ch-cred-win-');
   const me = 'S-1-5-21-1-2-3-1001';

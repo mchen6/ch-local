@@ -48,3 +48,24 @@ test('Windows: a missing file is refused by lstat as before; no ACL read of it',
   assert.throws(() => readPrivateIn(dir, 'secret', 80, 'win32', acl), (e) => e.code === 'ENOENT');
   assert.deepStrictEqual(asked, [path.resolve(dir)]);
 });
+
+// (the medium on part 3: a path the batch couldn't answer goes to the
+// caller's own single read, never win-acl's, which would start PowerShell)
+test('Windows: a path the batch could not answer goes to the caller\'s own single read', () => {
+  const dir = tmp('ch-pf-win-');
+  fs.writeFileSync(path.join(dir, 'secret'), 'abc');
+  const asked = [];
+  const acl = {privateProblem, fileAcl: (p) => { asked.push(path.resolve(p)); return mine; },
+    prefetch: (paths, opts) => require('../lib/win-acl').prefetch(paths, Object.assign({}, opts, {run: () => { throw new Error('the run failed'); }}))};
+  assert.strictEqual(readPrivateIn(dir, 'secret', 80, 'win32', acl).toString(), 'abc');
+  assert.deepStrictEqual(asked, [path.resolve(dir), path.resolve(dir, 'secret')]);
+});
+
+test('Windows: a reader with no prefetch is used as before, two single reads', () => {
+  const dir = tmp('ch-pf-win-');
+  fs.writeFileSync(path.join(dir, 'secret'), 'abc');
+  let single = 0;
+  assert.strictEqual(readPrivateIn(dir, 'secret', 80, 'win32', {privateProblem, fileAcl: () => { single++; return mine; }}).toString(), 'abc');
+  assert.strictEqual(single, 2);
+});
+
