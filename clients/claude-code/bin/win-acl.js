@@ -164,47 +164,56 @@ const FILE_ACLS_EACH_SCRIPT = PRELUDE.concat(ACL_FN, [
 ]).join('\n');
 
 // The ACLs of `paths` read in one PowerShell run, answered one path at a time
-// as fileAcl answers (cold-start part 3: the daemon's first start reads the
-// same folders several times, a run each). -> fileAcl(p).
+// as fileAcl answers (cold-start part 3: a private read asks its folder's and
+// its file's, a run each). -> fileAcl(p).
 // - Each path is lstat'd first, and only a plain file or directory is sent:
 //   no ACL is read through a link found at that lstat (the same gap between
 //   an lstat and the read as today's checks, whose own lstat still runs
-//   first and refuses a link). A link, or a path that
-//   isn't there, is answered by today's single read, with today's answer, and
-//   so is a path under a listed folder that was left out (list a folder
-//   before what is in it, as its checks run).
+//   first and refuses a link). A link, or a path that isn't there, is
+//   answered by the single read, with today's answer, and so is a path under
+//   a listed folder that was left out, a path listed before a folder that
+//   holds it, and a path that differs only by case from one listed earlier.
 // - A path whose read failed in the run (or a run that failed, or answered
-//   in another shape) is answered by today's single read, so its error is
-//   exactly today's, and every other path keeps its own.
-// A reader serves the one sequence it was made for (a first start's checks)
-// and is dropped with it: never kept beyond it, so a later read reads fresh.
-// run, lstat, single: a test's.
-function prefetch(paths, {run = runPowershell, lstat = (p) => fs.lstatSync(p), single = fileAcl} = {}) {
+//   in another shape) is answered by the single read, so its error is
+//   exactly today's, and every other path keeps its own. A run that timed
+//   out is not followed by more: every sent path answers that timeout, so a
+//   refusal comes no later than today's first single read, with its code.
+// A reader serves the one read it was made for and is dropped with it, so a
+// later read reads fresh.
+// run, lstat: a test's; single: the caller's own reader (else fileAcl's export).
+function prefetch(paths, {run = runPowershell, lstat = (p) => fs.lstatSync(p), single = (p) => module.exports.fileAcl(p)} = {}) {
   const known = new Map();
   const plain = [];
   const left = [];
   const under = (r, d) => r.toLowerCase().startsWith(`${d.toLowerCase().replace(/[\\/]+$/, '')}${path.sep}`);
-  for (const p of paths) {
-    const r = path.resolve(p);
+  const all = paths.map((p) => path.resolve(p));
+  for (let i = 0; i < all.length; i++) {
+    const r = all[i];
     if (plain.includes(r) || left.includes(r)) continue;
     // (a path under a listed folder that was left out, a link or missing, is
-    // left out too: its lstat would go through that link)
+    // left out too: its lstat would go through that link; and so is one
+    // whose folder is listed after it, or one an earlier listed path spells
+    // with other case: a folder is judged before what it holds)
     if (left.some((d) => under(r, d))) { left.push(r); continue; }
+    if (all.some((d, j) => (j > i && under(r, d)) || (j < i && d !== r && d.toLowerCase() === r.toLowerCase()))) { left.push(r); continue; }
     let st = null;
     try { st = lstat(r); } catch (e) { st = null; }
     if (st == null || st.isSymbolicLink() || !(st.isFile() || st.isDirectory())) { left.push(r); continue; }
     plain.push(r);
   }
+  let timedOut = null;
   if (plain.length > 0) {
     let out = null;
-    try { out = JSON.parse(run(FILE_ACLS_EACH_SCRIPT, {CH_ACL_FILES: pathList(plain).join('\n')})); } catch (e) { out = null; }
+    try { out = JSON.parse(run(FILE_ACLS_EACH_SCRIPT, {CH_ACL_FILES: pathList(plain).join('\n')})); } catch (e) { out = null; if (e != null && e.code === 'ETIMEDOUT') timedOut = e; }
     if (Array.isArray(out) && out.length === plain.length) {
       plain.forEach((p, i) => { if (out[i] != null && typeof out[i] === 'object' && out[i].failed !== true) known.set(p, out[i]); });
     }
   }
   return (p) => {
     const r = path.resolve(p);
-    return known.has(r) ? known.get(r) : single(p);
+    if (known.has(r)) return known.get(r);
+    if (timedOut != null && plain.includes(r)) throw timedOut;
+    return single(p);
   };
 }
 
