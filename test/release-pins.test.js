@@ -250,11 +250,12 @@ test('floors: optional; each a strict version of a module some pack lists, or of
   // the shipped floors: the redaction and GitHub fixes (A-redact), the
   // credential-leak fixes of 11-21 (report's userinfo, pack 1's step names),
   // the runs list that was lost (access-github), pack 1's fixes of 0.7.2 and
-  // 0.7.3 with the parts' fixes they need, 0.7.4's README of its known
-  // limits, and every part's README true of the release; and the runtime
+  // 0.7.3 with the parts' fixes they need, the known limits in pack 1's
+  // README (0.7.4's of the verdict, 0.7.5's of text outside ASCII in
+  // assertion values); every part's README true of the release; and the runtime
   // whose store refuses a corrupt file it never saw whole, which status's
   // store lines describe (countinghouse 8.0.0)
-  assert.deepStrictEqual(d.floors, {countinghouse: '8.0.0', '@countinghouse/ch-access-github': '0.3.2', '@countinghouse/ch-pack-ci-failure-triage': '0.7.4', '@countinghouse/ch-step-dedupe': '0.1.3',
+  assert.deepStrictEqual(d.floors, {countinghouse: '8.0.0', '@countinghouse/ch-access-github': '0.3.2', '@countinghouse/ch-pack-ci-failure-triage': '0.7.5', '@countinghouse/ch-step-dedupe': '0.1.3',
     '@countinghouse/ch-step-error-patterns': '0.3.1', '@countinghouse/ch-step-failure-signature': '0.2.2', '@countinghouse/ch-step-log-clean': '0.2.5',
     '@countinghouse/ch-step-owner-hint': '0.1.3', '@countinghouse/ch-step-redact': '0.2.5', '@countinghouse/ch-step-report': '0.4.6'});
   assert.strictEqual(problemOf(d), undefined);
@@ -269,8 +270,8 @@ test('floors: optional; each a strict version of a module some pack lists, or of
     // (the runtime has a floor too: its store's refusal of a corrupt file)
     [(x) => { x.pins.countinghouse = Object.assign(pin('7.1.2'), {repository: 'mchen6/countinghouse'}); }, /countinghouse 7\.1\.2 is below its floor 8\.0\.0/],
     [(x) => { x.floors['@countinghouse/ch-shim-linux-x64'] = '1.0.0'; }, /floor for @countinghouse\/ch-shim-linux-x64 names no module/],
-    // (a pack's own module has a floor too: pack 1's README of 0.7.4)
-    [(x) => { x.pins['@countinghouse/ch-pack-ci-failure-triage'] = Object.assign(pin('0.7.3'), {repository: 'mchen6/ch-pack-ci-failure-triage'}); }, /ch-pack-ci-failure-triage 0\.7\.3 is below its floor 0\.7\.4/]
+    // (a pack's own module has a floor too: pack 1's README of 0.7.5)
+    [(x) => { x.pins['@countinghouse/ch-pack-ci-failure-triage'] = Object.assign(pin('0.7.4'), {repository: 'mchen6/ch-pack-ci-failure-triage'}); }, /ch-pack-ci-failure-triage 0\.7\.4 is below its floor 0\.7\.5/]
   ]) {
     const x = shipped();
     mutate(x);
