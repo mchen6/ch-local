@@ -491,3 +491,14 @@ test('A2: the session\'s ACL object carries win-acl\'s checks whatever io gives;
   // (and a real io, with no winAcl at all, still gets win-acl's checks)
   assert.strictEqual(typeof sessionAcl({platform: 'win32'}, layout({COUNTINGHOUSE_HOME: h}, os.homedir)).privateProblem, 'function');
 });
+
+// (part 3: a session's reader keeps its own batch; it carries no prefetch, so
+// a private read or the store read given it uses its fileAcl)
+test('Windows: a session\'s reader carries no prefetch', () => {
+  const {sessionAcl} = require('../lib/session');
+  const h = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-sess-pf-')));
+  roots.push(h);
+  const acl = sessionAcl({platform: 'win32', winAcl: {fileAcl: () => ({})}}, layout({COUNTINGHOUSE_HOME: h}, os.homedir));
+  assert.strictEqual(acl.prefetch, undefined);
+});
+

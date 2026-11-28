@@ -369,6 +369,48 @@ test('Windows (win-acl stubbed): the home\'s own DACL is checked before a write;
   assert.ok(!fs.existsSync(path.join(h, 'credentials')), 'nothing made under a home that failed');
 });
 
+// (cold-start part 3: the folder's ACL and the file's in one PowerShell run,
+// each judged as before)
+test('Windows (win-acl stubbed): reading the store asks the folder\'s and the file\'s ACLs in one prefetch, never a single read; each judged as before', () => {
+  const h = tmp('ch-cred-winread-');
+  const me = 'S-1-5-21-1-2-3-1001';
+  const mine = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-18', type: 'Allow', rights: 2032127}]};
+  const open = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-32-545', type: 'Allow', rights: 1179817}]};
+  const {privateProblem} = require('../lib/win-acl');
+  // (written as this system writes it; only the read is Windows', stubbed)
+  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
+  const dir = path.join(h, 'credentials');
+  const file = path.join(dir, 'credentials.json');
+  const reading = (fileAcl) => {
+    const seen = {prefetched: [], single: 0};
+    return {seen, acl: {privateProblem, fileAcl: () => { seen.single++; return mine; },
+      prefetch: (paths) => { seen.prefetched.push(paths.map((p) => path.resolve(p))); return (p) => (path.resolve(p) === path.resolve(file) ? fileAcl : mine); }}};
+  };
+  const good = reading(mine);
+  const got = store.readStore(h, {platform: 'win32', acl: good.acl});
+  assert.deepStrictEqual(good.seen.prefetched, [[path.resolve(dir), path.resolve(file)]]);
+  assert.strictEqual(good.seen.single, 0, 'no single read');
+  assert.ok(got != null && got.modules != null && got.modules.size === 1, JSON.stringify(got && [...(got.modules || [])]));
+  // (a file another user can reach: refused as before, from the prefetched ACL)
+  const bad = reading(open);
+  assert.throws(() => store.readStore(h, {platform: 'win32', acl: bad.acl}), /is accessible by S-1-5-32-545/);
+  assert.strictEqual(bad.seen.single, 0);
+});
+
+test('Windows (win-acl stubbed): a store path the batch could not answer goes to the caller\'s own single read', () => {
+  const h = tmp('ch-cred-winread-');
+  const me = 'S-1-5-21-1-2-3-1001';
+  const mine = {owner: me, user: me, otherAces: false, rules: [{sid: me, type: 'Allow', rights: 2032127}, {sid: 'S-1-5-18', type: 'Allow', rights: 2032127}]};
+  const {privateProblem} = require('../lib/win-acl');
+  store.bind(h, ACCESS, VAR, {origin: ORIGIN, source: 'stored', value: made()}, {held: require('./store-helpers').FIXTURE_HELD});
+  const asked = [];
+  const acl = {privateProblem, fileAcl: (p) => { asked.push(path.resolve(p)); return mine; },
+    prefetch: (paths, opts) => require('../lib/win-acl').prefetch(paths, Object.assign({}, opts, {run: () => { throw new Error('the run failed'); }}))};
+  const got = store.readStore(h, {platform: 'win32', acl});
+  assert.ok(got.modules.size === 1);
+  assert.deepStrictEqual(asked, [path.resolve(h, 'credentials'), path.resolve(h, 'credentials', 'credentials.json')]);
+});
+
 test('Windows (win-acl stubbed): a directory or file whose DACL fails is refused with icacls to fix it; a new directory is made private', () => {
   const h = tmp('ch-cred-win-');
   const me = 'S-1-5-21-1-2-3-1001';

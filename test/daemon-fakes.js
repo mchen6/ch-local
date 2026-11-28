@@ -14,7 +14,8 @@ const frame = (kind, obj) => { const b = Buffer.from(JSON.stringify(obj)); const
 
 // a fake runtime: writes the secret (0600) in run/daemon, listens on socket,
 // answers each HELLO with a PROVE under that secret -> {close, secret}
-async function fakeRuntime(runDir, socket, {wrongSecret = false} = {}) {
+// onHello: called as each HELLO arrives, before it is answered (a test's)
+async function fakeRuntime(runDir, socket, {wrongSecret = false, onHello = null} = {}) {
   const secret = crypto.randomBytes(32);
   fs.writeFileSync(path.join(runDir, 'secret'), `${secret.toString('hex')}\n`, {mode: 0o600});
   const key = wrongSecret ? crypto.randomBytes(32) : secret;
@@ -26,6 +27,7 @@ async function fakeRuntime(runDir, socket, {wrongSecret = false} = {}) {
       const n = buf.readUInt32BE(1);
       if (buf.length < 5 + n) return;
       const hello = JSON.parse(buf.subarray(5, 5 + n).toString('utf8'));
+      if (typeof onHello === 'function') onHello(hello);
       const nc = Buffer.from(hello.nc, 'base64');
       const ns = crypto.randomBytes(32);
       c.write(frame('P', {ns: ns.toString('base64'), ms: hmac(key, 'ch-server', Buffer.from([1]), nc, ns).toString('base64')}));

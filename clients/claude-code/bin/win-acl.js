@@ -2,7 +2,8 @@
 // Copied from countinghouse lib/win-acl.js at master c274f2f3 (2026-11-15),
 // with countinghouse #275's fileAcls and privateProblem's directory option,
 // unchanged but for powershellPath, which is exported here, and
-// makePrivateDirs, which is ch-local's own; keep the two copies in step.
+// makePrivateDirs, prefetch, FILE_ACLS_EACH_SCRIPT and runCount, which are
+// ch-local's own (cold-start part 3); keep the two copies in step.
 // (Apache-2.0, the same author.) For the private-file checks the native shim
 // makes (lib/private-file.js): the
 // owner and DACL of a file by well-known SID, read with the PowerShell in the
@@ -19,6 +20,7 @@
 // and a minimal environment: no PSModulePath, no profile; the security
 // module is imported from beside that powershell.exe. Every caller fails
 // closed on a throw.
+const fs = require('fs');
 const path = require('path');
 const {execFileSync} = require('child_process');
 
@@ -40,8 +42,13 @@ function windowsDir() {
 // PowerShell in the Windows directory, by its absolute path
 const powershellPath = () => path.win32.join(windowsDir(), 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
+// How many synchronous PowerShell runs this process has made (cold-start
+// part 3's pin: the daemon's first start counts them, on Windows).
+let runs = 0;
+const runCount = () => runs;
 function runPowershell(script, extraEnv = {}, input = '') {
   const root = windowsDir();
+  runs++;
   const system32 = path.win32.join(root, 'System32');
   return execFileSync(powershellPath(),
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
@@ -145,6 +152,69 @@ function fileAcls(files) {
   const acls = JSON.parse(runPowershell(FILE_ACLS_SCRIPT, {CH_ACL_FILES: list.join('\n')}));
   if (!Array.isArray(acls) || acls.length !== list.length) throw new Error('fileAcls: not one ACL per path');
   return acls;
+}
+
+// Several paths' ACLs in one run, each read in a try of its own: a path whose
+// read fails answers {"failed": true} in its place, never hiding another's.
+const FILE_ACLS_EACH_SCRIPT = PRELUDE.concat(ACL_FN, [
+  '$u = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+  '$out = @()',
+  "foreach ($f in ($env:CH_ACL_FILES -split \"`n\")) { try { $out += (A $f).Replace('{\"owner\"', '{\"user\":\"' + $u + '\",\"owner\"') } catch { $out += '{\"failed\":true}' } }",
+  "'[' + ($out -join ',') + ']'"
+]).join('\n');
+
+// The ACLs of `paths` read in one PowerShell run, answered one path at a time
+// as fileAcl answers (cold-start part 3: a private read asks its folder's and
+// its file's, a run each). -> fileAcl(p).
+// - Each path is lstat'd first, and only a plain file or directory is sent:
+//   no ACL is read through a link found at that lstat (the same gap between
+//   an lstat and the read as today's checks, whose own lstat still runs
+//   first and refuses a link). A link, or a path that isn't there, is
+//   answered by the single read, with today's answer, and so is a path under
+//   a listed folder that was left out, a path listed before a folder that
+//   holds it, and a path that differs only by case from one listed earlier.
+// - A path whose read failed in the run (or a run that failed, or answered
+//   in another shape) is answered by the single read, so its error is
+//   exactly today's, and every other path keeps its own. A run that timed
+//   out is not followed by more: every sent path answers that timeout, so a
+//   refusal comes no later than today's first single read, with its code.
+// A reader serves the one read it was made for and is dropped with it, so a
+// later read reads fresh.
+// run, lstat: a test's; single: the caller's own reader (else fileAcl's export).
+function prefetch(paths, {run = runPowershell, lstat = (p) => fs.lstatSync(p), single = (p) => module.exports.fileAcl(p)} = {}) {
+  const known = new Map();
+  const plain = [];
+  const left = [];
+  const under = (r, d) => r.toLowerCase().startsWith(`${d.toLowerCase().replace(/[\\/]+$/, '')}${path.sep}`);
+  const all = paths.map((p) => path.resolve(p));
+  for (let i = 0; i < all.length; i++) {
+    const r = all[i];
+    if (plain.includes(r) || left.includes(r)) continue;
+    // (a path under a listed folder that was left out, a link or missing, is
+    // left out too: its lstat would go through that link; and so is one
+    // whose folder is listed after it, or one an earlier listed path spells
+    // with other case: a folder is judged before what it holds)
+    if (left.some((d) => under(r, d))) { left.push(r); continue; }
+    if (all.some((d, j) => (j > i && under(r, d)) || (j < i && d !== r && d.toLowerCase() === r.toLowerCase()))) { left.push(r); continue; }
+    let st = null;
+    try { st = lstat(r); } catch (e) { st = null; }
+    if (st == null || st.isSymbolicLink() || !(st.isFile() || st.isDirectory())) { left.push(r); continue; }
+    plain.push(r);
+  }
+  let timedOut = null;
+  if (plain.length > 0) {
+    let out = null;
+    try { out = JSON.parse(run(FILE_ACLS_EACH_SCRIPT, {CH_ACL_FILES: pathList(plain).join('\n')})); } catch (e) { out = null; if (e != null && e.code === 'ETIMEDOUT') timedOut = e; }
+    if (Array.isArray(out) && out.length === plain.length) {
+      plain.forEach((p, i) => { if (out[i] != null && typeof out[i] === 'object' && out[i].failed !== true) known.set(p, out[i]); });
+    }
+  }
+  return (p) => {
+    const r = path.resolve(p);
+    if (known.has(r)) return known.get(r);
+    if (timedOut != null && plain.includes(r)) throw timedOut;
+    return single(p);
+  };
 }
 
 // ch-local's own directories on Windows (the daemon's run directory, C4c):
@@ -347,4 +417,4 @@ function fixHint(file, acl, {directory = false} = {}) {
     `  icacls ${p} /setowner *${user}`].join('\n');
 }
 
-module.exports = {windowsDir, powershellPath, runPowershell, runPowershellAsync, fileAcl, fileAcls, makePrivateDirs, createPrivate, createInput, privateProblem, openPrincipals, principalNames, foreignChange, fixHint, PRELUDE, ACL_FN, FILE_ACL_SCRIPT, FILE_ACLS_SCRIPT, PRIVATE_DIRS_SCRIPT, NAMES_SCRIPT, CREATE_SCRIPT, SYSTEM, ADMINISTRATORS, DRIVE_PATH};
+module.exports = {windowsDir, powershellPath, runPowershell, runPowershellAsync, runCount, fileAcl, fileAcls, prefetch, FILE_ACLS_EACH_SCRIPT, makePrivateDirs, createPrivate, createInput, privateProblem, openPrincipals, principalNames, foreignChange, fixHint, PRELUDE, ACL_FN, FILE_ACL_SCRIPT, FILE_ACLS_SCRIPT, PRIVATE_DIRS_SCRIPT, NAMES_SCRIPT, CREATE_SCRIPT, SYSTEM, ADMINISTRATORS, DRIVE_PATH};
