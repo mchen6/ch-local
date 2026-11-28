@@ -379,7 +379,15 @@ test('Windows (win-acl stubbed): a directory or file whose DACL fails is refused
   const acl = (dirAcl) => ({privateProblem, fileAcl: () => dirAcl, makePrivateDirs: (dirs) => { made_ += 1; return dirs.map(() => mine); }});
   assert.strictEqual(store.checkDir(path.join(h, 'credentials'), {platform: 'win32', acl: acl(mine), create: true}), 'ok');
   assert.strictEqual(made_, 1, 'a new directory is made private');
-  assert.throws(() => store.checkDir(path.join(h, 'credentials'), {platform: 'win32', acl: acl(open)}), (e) => /accessible by S-1-5-32-545/.test(e.message) && /icacls ".*credentials" \/inheritance:r/.test(e.message));
+  assert.throws(() => store.checkDir(path.join(h, 'credentials'), {platform: 'win32', acl: acl(open)}), (e) => /accessible by S-1-5-32-545/.test(e.message) && /in Windows PowerShell \(powershell\.exe\):\n  icacls '.*credentials' \/inheritance:r/.test(e.message));
+  // (its words exactly, then the shared lines, one to a line under them)
+  const dir = path.join(h, 'credentials');
+  const {fixHint} = require('../lib/win-acl');
+  assert.throws(() => store.checkDir(dir, {platform: 'win32', acl: acl(open)}), (e) => {
+    assert.strictEqual(e.message, `${privateProblem(dir, open, {directory: true})}; to make it this user's alone, in Windows PowerShell (powershell.exe):\n  ${fixHint(dir, open, {directory: true})}`);
+    assert.ok(e.message.includes(`\n  icacls '${dir}' /inheritance:r /grant:r '*${me}:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F'\n  $i = Get-Item -LiteralPath '${dir}' -Force;`), e.message);
+    return true;
+  });
   assert.throws(() => store.checkDir(path.join(h, 'credentials'), {platform: 'win32', acl: {privateProblem, fileAcl: () => { throw new Error('powershell failed'); }}}), /access list could not be read \(powershell failed\)/);
 });
 

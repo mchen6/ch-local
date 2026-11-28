@@ -122,7 +122,7 @@ test('the setup skill: its frontmatter, the checked sentences verbatim, nothing 
   assert.ok(!/dev-server|countinghouse-dev|section 8/.test(skill));
   // (no credential handed through the conversation: no export of one, no value)
   assert.ok(!/\bexport [A-Z_]+=|GITHUB_TOKEN=|ghp_|github_pat_/.test(skill));
-  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), '553d3900a82367fc52ab4617938f8b37b4f144ed403de72ca5e50f53fb2da077', 'the checked text, byte for byte');
+  assert.strictEqual(require('node:crypto').createHash('sha256').update(skill).digest('hex'), 'c157aef03cb0265b835023dc3c7ce5db411a69b32e96aec9bed3ef71ee51a999', 'the checked text, byte for byte');
 });
 
 test('launch.js without an installed launcher exits non-zero with one line naming the install command', () => {
@@ -152,7 +152,10 @@ test('launch.js: a COUNTINGHOUSE_HOME a terminal would misshow is not printed; t
     assert.strictEqual(r.status, 1);
     assert.match(r.stderr, /\(with COUNTINGHOUSE_HOME set to the folder it names now\)/);
     assert.doesNotMatch(r.stderr, /fake line\)/, 'the value is never printed whole in the hint');
-    r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', env: {...process.env, HOME: base, USERPROFILE: base, COUNTINGHOUSE_HOME: path.join(base, '.countinghouse')}});
+    // (the default home: ~/.countinghouse, on Windows %LOCALAPPDATA%\countinghouse)
+    const local = path.join(base, 'AppData', 'Local');
+    const def = process.platform === 'win32' ? path.join(local, 'countinghouse') : path.join(base, '.countinghouse');
+    r = spawnSync(process.execPath, [LAUNCH, 'start', '--stdio'], {encoding: 'utf8', env: {...process.env, HOME: base, USERPROFILE: base, LOCALAPPDATA: local, COUNTINGHOUSE_HOME: def}});
     assert.strictEqual(r.status, 1);
     assert.match(r.stderr, /install --pack ci-failure-triage$/m, 'the default home: no words');
   } finally {
@@ -184,6 +187,17 @@ test('launch.js and lib/home.js find the launcher at the same path', () => {
   for (const env of [base, {...base, COUNTINGHOUSE_HOME: abs}, {...base, COUNTINGHOUSE_HOME: ''}]) {
     assert.strictEqual(launch.whereIs(env), launcherPath(env), JSON.stringify(env.COUNTINGHOUSE_HOME));
   }
+});
+
+test('launch.js and lib/home.js agree on Windows too: the default under %LOCALAPPDATA%, and a missing LOCALAPPDATA refused alike', () => {
+  const homedir = () => 'C:\\Users\\dev';
+  for (const env of [{LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local'}, {LOCALAPPDATA: 'C:\\x', COUNTINGHOUSE_HOME: 'E:\\ch'}]) {
+    assert.strictEqual(launch.whereIs(env, 'win32', homedir), launcherPath(env, homedir, 'win32'), JSON.stringify(env));
+  }
+  assert.strictEqual(launch.whereIs({LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local'}, 'win32', homedir), 'C:\\Users\\dev\\AppData\\Local\\countinghouse\\bin\\ch-local.js');
+  const words = (fn) => { try { fn(); return null; } catch (e) { return [e.code, e.message]; } };
+  assert.deepStrictEqual(words(() => launch.whereIs({}, 'win32', homedir)), words(() => launcherPath({}, homedir, 'win32')));
+  assert.strictEqual(words(() => launch.whereIs({}, 'win32', homedir))[0], 'HOME_NO_LOCALAPPDATA');
 });
 
 test('launch.js refuses a relative COUNTINGHOUSE_HOME in one line', () => {
@@ -341,9 +355,25 @@ test('launch.js\'s home check on Windows (its ACL check, with ACLs given): a pri
   assert.strictEqual(ok.problem, undefined);
   assert.strictEqual(ok.launcher, fs.realpathSync.native(path.join(h, 'bin', 'ch-local.js')), 'the path checked is the one to run');
   assert.strictEqual(calls, 1, 'one PowerShell run for the three');
-  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => OPEN)}).problem), /is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change: icacls /);
-  // the launcher's own ACL: "a file", never "a folder"
-  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, OPEN]}).problem), /make it a file only you can change/);
+  // (another able to change it: it may already have been changed, so moved aside, no lines that set its access)
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => OPEN)}).problem), / can be changed by S-1-1-0, so another account could change what runs from it; it may already have been changed: move the home aside and install again$/);
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, OPEN]}).problem), /move the home aside and install again$/);
+  // (read only: the lines, for Windows PowerShell; the launcher's own ACL: "a file", never "a folder")
+  const READABLE = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]};
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => READABLE)}).problem), / is readable by S-1-1-0, so another account could read what is stored in it, its credentials included; make it a folder only you can read, in Windows PowerShell \(powershell\.exe\): icacls '/);
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => [PRIVATE, PRIVATE, READABLE]}).problem), /ch-local\.js is readable by S-1-1-0, so it is not yours alone; make it a file only you can read, in Windows PowerShell \(powershell\.exe\): /);
+  // (each form's words exactly, the lines the shared fixHint's, as every refusal prints them)
+  const {fixHint} = require('../lib/win-acl');
+  const [rh, rb, rl] = [h, path.join(h, 'bin'), path.join(h, 'bin', 'ch-local.js')].map((p) => fs.realpathSync.native(p));
+  const lines = (p, directory) => fixHint(p, READABLE, {directory}).split('\n').map((l) => l.trim()).join(', then ');
+  const said = (acls) => homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: () => acls}).problem;
+  assert.strictEqual(said([OPEN, PRIVATE, PRIVATE]), `${rh} can be changed by S-1-1-0, so another account could change what runs from it; it may already have been changed: move the home aside and install again`);
+  assert.strictEqual(said([READABLE, PRIVATE, PRIVATE]), `${rh} is readable by S-1-1-0, so another account could read what is stored in it, its credentials included; make it a folder only you can read, in Windows PowerShell (powershell.exe): ${lines(rh, true)}`);
+  assert.strictEqual(said([PRIVATE, READABLE, PRIVATE]), `${rb} is readable by S-1-1-0, so it is not yours alone; make it a folder only you can read, in Windows PowerShell (powershell.exe): ${lines(rb, true)}`);
+  assert.strictEqual(said([PRIVATE, PRIVATE, READABLE]), `${rl} is readable by S-1-1-0, so it is not yours alone; make it a file only you can read, in Windows PowerShell (powershell.exe): ${lines(rl, false)}`);
+  // (every SID holding the strongest right, the verb by that right; one able only to read beside one able to change: changeable)
+  const TWO = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-5-32-545', rights: 1179817, type: 'Allow', inheritOnly: false}, {sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}, {sid: 'S-1-5-11', rights: 1245631, type: 'Allow', inheritOnly: false}]};
+  assert.match(String(homeProblem(h, path.join(h, 'bin', 'ch-local.js'), {platform: 'win32', fileAcls: (ps) => ps.map(() => TWO)}).problem), / can be changed by S-1-1-0 and S-1-5-11, so another account could change what runs from it; /);
 });
 
 test('the plugin carries lib/win-acl.js unchanged (launch.js checks a Windows home with it, never with the home\'s own code)', () => {

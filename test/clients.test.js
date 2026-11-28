@@ -11,16 +11,20 @@ const {uninstall} = require('../lib/uninstall');
 const {snippet} = require('../lib/snippets');
 const {fakeIo, tmp, FAKE_NODE} = require('./fake-io');
 
-// A user home with ~/.countinghouse installed (bin/ch-local.js present).
+// A user home with the default home installed (bin/ch-local.js present): ~/.countinghouse, on Windows
+// %LOCALAPPDATA%\countinghouse, its LOCALAPPDATA under this user (envOf).
+const WIN = process.platform === 'win32';
+const localOf = (user) => path.join(user, 'AppData', 'Local');
+const envOf = (s) => (WIN ? {LOCALAPPDATA: localOf(s.user)} : {});
 function setup() {
   const user = tmp('ch-user-');
-  const home = path.join(user, '.countinghouse');
+  const home = WIN ? path.join(localOf(user), 'countinghouse') : path.join(user, '.countinghouse');
   fs.mkdirSync(path.join(home, 'bin'), {recursive: true});
   fs.writeFileSync(path.join(home, 'bin', 'ch-local.js'), '');
   fs.writeFileSync(path.join(home, 'installed.json'), JSON.stringify({pack: 'ci-failure-triage', credentials: ['COUNTINGHOUSE_GITHUB_TOKEN', 'GITHUB_TOKEN']}));
   return {user, home, done: () => fs.rmSync(user, {recursive: true, force: true})};
 }
-const io = (s, answers = []) => fakeIo({env: {}, homedir: s.user, answers});
+const io = (s, answers = []) => fakeIo({env: envOf(s), homedir: s.user, answers});
 const entryFor = (s, client) => snippet(client, {node: FAKE_NODE, launcher: path.join(s.home, 'bin', 'ch-local.js'), home: s.home}).text;
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
@@ -74,7 +78,7 @@ test('add refreshes an entry it wrote itself, after a Node upgrade moved the pat
   const s = setup();
   try {
     assert.strictEqual(await add('cursor', io(s)), 0);
-    const later = fakeIo({env: {}, homedir: s.user});
+    const later = fakeIo({env: envOf(s), homedir: s.user});
     later.node = '/opt/node-26/bin/node';
     assert.strictEqual(await add('cursor', later), 0, later.err);
     const file = path.join(s.user, '.cursor', 'mcp.json');
@@ -82,7 +86,7 @@ test('add refreshes an entry it wrote itself, after a Node upgrade moved the pat
     const record = readJson(path.join(s.home, 'installed-clients.json'));
     assert.strictEqual(record.entries.length, 1);
     assert.strictEqual(record.entries[0].entry.command, '/opt/node-26/bin/node');
-    const toml = fakeIo({env: {}, homedir: s.user});
+    const toml = fakeIo({env: envOf(s), homedir: s.user});
     assert.strictEqual(await add('codex', toml), 0);
     toml.node = '/opt/node-26/bin/node';
     assert.strictEqual(await add('codex', toml), 0, toml.err);
@@ -117,7 +121,7 @@ test('a Codex table the user changed is left whole, by add and by uninstall, wit
       assert.strictEqual(await add('codex', io(s)), 0);
       fs.writeFileSync(file, change(fs.readFileSync(file, 'utf8')));
       const changed = fs.readFileSync(file, 'utf8');
-      const again = fakeIo({env: {}, homedir: s.user});
+      const again = fakeIo({env: envOf(s), homedir: s.user});
       again.node = '/opt/node-26/bin/node';
       assert.strictEqual(await add('codex', again), 1, changed);
       assert.match(again.err, /already has a \[mcp_servers\.countinghouse\] table; ch-local leaves it alone/);
@@ -139,7 +143,7 @@ test('a Codex table still ch-local\'s after an editor changed its line ends or i
       const file = codexFile(s);
       assert.strictEqual(await add('codex', io(s)), 0);
       fs.writeFileSync(file, edit(fs.readFileSync(file, 'utf8')));
-      const again = fakeIo({env: {}, homedir: s.user});
+      const again = fakeIo({env: envOf(s), homedir: s.user});
       again.node = '/opt/node-26/bin/node';
       assert.strictEqual(await add('codex', again), 0, `${name}: ${again.err}`);
       assert.ok(fs.readFileSync(file, 'utf8').includes('command = "/opt/node-26/bin/node"'), name);
@@ -247,7 +251,7 @@ test('add rewrites ch-local\'s table in a CRLF file with CRLF line ends', async 
     fs.writeFileSync(file, 'a = 1\r\n');
     assert.strictEqual(await add('codex', io(s)), 0);
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/\r?\n/g, '\r\n'));
-    const again = fakeIo({env: {}, homedir: s.user});
+    const again = fakeIo({env: envOf(s), homedir: s.user});
     again.node = '/opt/node-26/bin/node';
     assert.strictEqual(await add('codex', again), 0, again.err);
     const text = fs.readFileSync(file, 'utf8');
@@ -405,7 +409,7 @@ test('add vscode writes under $COPILOT_HOME when it is set', async () => {
   const s = setup();
   try {
     const copilotHome = path.join(s.user, 'elsewhere-copilot');
-    const f = fakeIo({env: {COPILOT_HOME: copilotHome}, homedir: s.user});
+    const f = fakeIo({env: {...envOf(s), COPILOT_HOME: copilotHome}, homedir: s.user});
     assert.strictEqual(await add('vscode', f), 0, f.err);
     assert.ok(fs.existsSync(path.join(copilotHome, 'mcp-config.json')));
     assert.ok(!fs.existsSync(path.join(s.user, '.copilot', 'mcp-config.json')));

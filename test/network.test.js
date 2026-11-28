@@ -14,7 +14,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {main} = require('../bin/ch-local');
-const {fakeIo, tmp} = require('./fake-io');
+const {fakeIo, tmp, homeUnder} = require('./fake-io');
 
 const LIB = path.join(__dirname, '..', 'lib');
 
@@ -119,7 +119,7 @@ test('snippet, add and uninstall run with the network stubbed to throw', async (
   const saved = globalThis.fetch;
   globalThis.fetch = () => { throw new Error('network call'); };
   try {
-    const home = path.join(user, '.countinghouse');
+    const home = homeUnder(user);
     // (private, as install makes a home)
     fs.mkdirSync(path.join(home, 'bin'), {recursive: true, mode: 0o700});
     fs.chmodSync(home, 0o700);

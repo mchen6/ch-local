@@ -1,6 +1,6 @@
 # Claude Code
 
-`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%USERPROFILE%\.countinghouse\bin\ch-local.js"` in cmd, or `node "$env:USERPROFILE\.countinghouse\bin\ch-local.js"` in PowerShell.
+`ch-local` on this page is `node ~/.countinghouse/bin/ch-local.js` (or `npx @countinghouse/ch-local`) unless you installed it globally. On Windows, `node "%LOCALAPPDATA%\countinghouse\bin\ch-local.js"` in cmd, or `node "$env:LOCALAPPDATA\countinghouse\bin\ch-local.js"` in PowerShell.
 
 ## Add
 
@@ -51,6 +51,15 @@ longer at every start: set `MCP_TIMEOUT` (milliseconds) under `env` in
 (`%USERPROFILE%\.claude\settings.json` on Windows):
 `"env": {"MCP_TIMEOUT": "90000"}`, then restart Claude Code.
 
+**If the plugin says `LOCALAPPDATA is not set`** (Windows). The plugin
+finds your home from `COUNTINGHOUSE_HOME`, else at
+`%LOCALAPPDATA%\countinghouse`, and here Claude Code started it without
+`LOCALAPPDATA`. Set `COUNTINGHOUSE_HOME` to your home's absolute path under
+`env` in `%USERPROFILE%\.claude\settings.json`, for example
+`"env": {"COUNTINGHOUSE_HOME": "C:\\Users\\you\\AppData\\Local\\countinghouse"}`,
+then restart Claude Code. Or add the server by hand (above): that entry
+names its home itself.
+
 ## For an agent: install by conversation
 
 When a user asks you to install countinghouse, follow these steps in order.
@@ -61,7 +70,7 @@ setting, without the user's explicit yes. Never print environment values
 (except the countinghouse home's path), npm configuration, `.npmrc`, or
 anything under the countinghouse home. The home, `<home>`, is
 `$COUNTINGHOUSE_HOME` if set, else `~/.countinghouse`
-(`%USERPROFILE%\.countinghouse` on Windows); before any command uses it,
+(`%LOCALAPPDATA%\countinghouse` on Windows); before any command uses it,
 check that it holds no `$`, backquote, double quote, `!` or line break, and
 if it does, stop and tell the user.
 

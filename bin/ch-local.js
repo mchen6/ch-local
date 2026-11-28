@@ -325,7 +325,8 @@ async function main(argv, io) {
       return await require('../lib/upgrade').upgrade({auto: p.auto, check: p.check}, io);
     }
   } catch (err) {
-    if (err.code === 'HOME_RELATIVE') { io.stderr.write(`ch-local: ${err.message}\n`); return 2; }
+    // (a home that can't be placed: COUNTINGHOUSE_HOME relative, or on Windows no absolute LOCALAPPDATA: one line, exit 2)
+    if (err.code === 'HOME_RELATIVE' || err.code === 'HOME_NO_LOCALAPPDATA') { io.stderr.write(`ch-local: ${err.message}\n`); return 2; }
     throw err;
   }
   return usage();

@@ -264,8 +264,22 @@ test('hintCommand: the npx form names a non-default home on every platform; the 
   const w = {home: 'D:\\ch'};
   assert.strictEqual(hintCommand(w, 'install --pack <name>', 'win32'), '`npx @countinghouse/ch-local install --pack <name>` (with COUNTINGHOUSE_HOME set to "D:\\ch")');
   assert.strictEqual(hintCommand({home: '/home/dev/ch'}, 'status', 'linux'), '`COUNTINGHOUSE_HOME="/home/dev/ch" npx @countinghouse/ch-local status`');
-  assert.strictEqual(hintCommand(layout({}, require('node:os').homedir), 'status', 'linux'), '`npx @countinghouse/ch-local status`', 'the default home');
-  assert.strictEqual(hintCommand(layout({}, require('node:os').homedir), 'status', 'win32'), '`npx @countinghouse/ch-local status`', 'the default home on Windows: no words');
+  // (the default home where this runs: on Windows under this process's LOCALAPPDATA)
+  const here = process.platform === 'win32' ? {LOCALAPPDATA: process.env.LOCALAPPDATA} : {};
+  assert.strictEqual(hintCommand(layout(here, require('node:os').homedir), 'status', 'linux'), '`npx @countinghouse/ch-local status`', 'the default home');
+  // (on Windows the default is %LOCALAPPDATA%\countinghouse: no words for it; ~\.countinghouse there is any other home, and with
+  // no LOCALAPPDATA no home is the default)
+  const saved = process.env.LOCALAPPDATA;
+  try {
+    process.env.LOCALAPPDATA = 'C:\\Users\\dev\\AppData\\Local';
+    assert.strictEqual(hintCommand({home: 'C:\\Users\\dev\\AppData\\Local\\countinghouse'}, 'status', 'win32'), '`npx @countinghouse/ch-local status`', 'the default home on Windows: no words');
+    assert.strictEqual(hintCommand({home: 'c:\\users\\DEV\\appdata\\local\\countinghouse\\'}, 'status', 'win32'), '`npx @countinghouse/ch-local status`', 'case and a trailing separator: still the default');
+    assert.strictEqual(hintCommand({home: 'C:\\Users\\dev\\.countinghouse'}, 'status', 'win32'), '`npx @countinghouse/ch-local status` (with COUNTINGHOUSE_HOME set to "C:\\Users\\dev\\.countinghouse")');
+    delete process.env.LOCALAPPDATA;
+    assert.strictEqual(hintCommand({home: 'C:\\Users\\dev\\AppData\\Local\\countinghouse'}, 'status', 'win32'), '`npx @countinghouse/ch-local status` (with COUNTINGHOUSE_HOME set to "C:\\Users\\dev\\AppData\\Local\\countinghouse")');
+  } finally {
+    if (saved === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = saved;
+  }
   // (the launcher's form names its home: no words, on Windows either)
   const h = tmp('ch-cmdline-hint-');
   fs.mkdirSync(path.join(h, 'bin'));

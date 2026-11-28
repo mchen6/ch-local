@@ -1657,8 +1657,12 @@ test('Windows: install makes a new home private, and refuses an existing one ano
   const ME = 'S-1-5-21-1-2-3-1001';
   const OPEN = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1245631, type: 'Allow', inheritOnly: false}]};
   const PRIVATE = {user: ME, owner: ME, otherAces: false, rules: [{sid: ME, rights: 2032127, type: 'Allow', inheritOnly: false}]};
+  // (a lookup that names none: on a Windows runner Windows' own would name S-1-1-0, in the runner's language)
+  const unnamed = () => ({names: {}, machine: null, localAppData: null});
   assert.strictEqual(unsafeHomeLine(h, 'win32', {fileAcl: () => PRIVATE}), null);
-  assert.match(String(unsafeHomeLine(h, 'win32', {fileAcl: () => OPEN})), /^this home is accessible by S-1-1-0, so another user could change what runs from it; make it a folder only you can change: icacls /);
+  assert.strictEqual(unsafeHomeLine(h, 'win32', {fileAcl: () => OPEN, principalNames: unnamed}), 'this home can be changed by S-1-1-0, so another account could change what runs from it; it may already have been changed: move it aside and install again');
+  const READABLE = {user: ME, owner: ME, otherAces: false, rules: [{sid: 'S-1-1-0', rights: 1179817, type: 'Allow', inheritOnly: false}]};
+  assert.match(String(unsafeHomeLine(h, 'win32', {fileAcl: () => READABLE, principalNames: unnamed})), /^this home is readable by S-1-1-0, so another account could read what is stored in it, its credentials included; make it a folder only you can read, in Windows PowerShell \(powershell\.exe\): icacls '/);
 });
 
 // ... and on Windows itself, the real DACL (the medium on A-home-check, 1:
@@ -1785,8 +1789,8 @@ test('install replaces a launcher that is a link, never writing through it (F8)'
 test('fixHint on a folder grants inheritable full control, so its own files stay reachable (F13)', () => {
   const {fixHint} = require('../lib/win-acl');
   const acl = {user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', rules: [{sid: 'S-1-1-0'}]};
-  assert.match(fixHint('C:\\h', acl, {directory: true}), /\*S-1-5-21-1-2-3-1001:\(OI\)\(CI\)F \*S-1-5-18:\(OI\)\(CI\)F/);
-  assert.match(fixHint('C:\\h\\f', acl), /\*S-1-5-21-1-2-3-1001:F \*S-1-5-18:F/);
+  assert.match(fixHint('C:\\h', acl, {directory: true}), /'\*S-1-5-21-1-2-3-1001:\(OI\)\(CI\)F' '\*S-1-5-18:\(OI\)\(CI\)F'/);
+  assert.match(fixHint('C:\\h\\f', acl), /'\*S-1-5-21-1-2-3-1001:F' '\*S-1-5-18:F'/);
 });
 
 test('only lib/ceiling.js says "the operator\'s ceiling file": an open home is said as the home\'s (F7)', () => {
