@@ -63,8 +63,9 @@ const POLL: Duration = Duration::from_millis(200);
 pub struct Attached {
     pub conn: Box<dyn Conn>,
     pub welcome: Welcome,
-    /// The session is new (no resume token was held, or it was refused):
-    /// the caller sends `replay` with its records.
+    /// The session is new (no resume token was held, or it was refused): a
+    /// session whose records were lost can't be given them back, so the
+    /// caller refuses it (it replays its records on `settled`, new or not).
     pub new_session: bool,
 }
 
