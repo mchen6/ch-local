@@ -1946,11 +1946,12 @@ mod tests {
         auth.get("resume").and_then(Value::as_str).map(String::from)
     }
 
-    #[test]
-    fn a_refused_resume_opens_a_new_session_whose_first_frame_replays_the_records() {
+    /// A session that settled and was given one record, then lost; the
+    /// listener, the client's input, the relay's end.
+    fn session_with_a_record() -> (UnixListener, UnixStream, Sink, thread::JoinHandle<Exit>) {
         let (home, sock) = home();
         let listener = UnixListener::bind(&sock).unwrap();
-        let (client_in, _sink, done) = start(home);
+        let (client_in, sink, done) = start(home);
         let (mut s, _) = listener.accept().unwrap();
         welcome(&mut s, "rt1");
         until_op(&mut s, "client");
@@ -1964,22 +1965,149 @@ mod tests {
         .unwrap();
         thread::sleep(Duration::from_millis(100));
         drop(s);
+        (listener, client_in, sink, done)
+    }
+
+    /// The next frame: a control frame's op and payload, or an M line's body.
+    fn next_frame(s: &mut UnixStream) -> (Kind, Value, Vec<u8>) {
+        let (kind, len) = frame::read_head(s, BIG).unwrap();
+        let mut p = vec![0u8; len as usize];
+        s.read_exact(&mut p).unwrap();
+        match kind {
+            Kind::Control => (kind, serde_json::from_slice(&p).unwrap(), vec![]),
+            Kind::Message => (kind, Value::Null, message::from_runtime(&p).unwrap().1.to_vec()),
+            _ => panic!("{kind:?}"),
+        }
+    }
+
+    /// No connection comes to `listener` within `ms`.
+    fn no_connection_within(listener: &UnixListener, ms: u64) -> bool {
+        listener.set_nonblocking(true).unwrap();
+        let until = Instant::now() + Duration::from_millis(ms);
+        while Instant::now() < until {
+            if listener.accept().is_ok() {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    const RECORD: &str = r#"[{"kind":"value","name":"maxOutputBytes","value":1048576}]"#;
+
+    // (the runtime takes a welcomed connection's `client` frame first, and a
+    // replay only once the session is settled: shared-runtime design,
+    // section 2; countinghouse listener.js. So a new session's records go
+    // after `settled`, ahead of any client line held meanwhile)
+    #[test]
+    fn a_refused_resume_opens_a_new_session_that_sends_client_then_replays_on_settled_before_held_lines() {
+        let (listener, mut client_in, _sink, done) = session_with_a_record();
         let (mut s2, _) = listener.accept().unwrap();
         assert_eq!(refuse_resume(&mut s2).as_deref(), Some("rt1"));
         drop(s2);
         let (mut s3, _) = listener.accept().unwrap();
         assert_eq!(welcome(&mut s3, "rt3"), None, "a new session: no resume");
-        let first = control_payload(&mut s3);
-        assert_eq!(first["op"], "replay");
-        assert_eq!(
-            first["entries"],
-            serde_json::json!([{"kind": "value", "name": "maxOutputBytes", "value": 1048576}])
-        );
-        assert_eq!(control_payload(&mut s3)["op"], "client", "then the client frame");
+        assert_eq!(control_payload(&mut s3)["op"], "client", "the client frame first");
+        // a line the client sends before the settle is held
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
         settled(&mut s3);
+        let (kind, replay, _) = next_frame(&mut s3);
+        assert_eq!((kind, replay["op"].as_str()), (Kind::Control, Some("replay")), "the replay first: {replay}");
+        assert_eq!(replay["entries"], serde_json::from_str::<Value>(RECORD).unwrap());
+        let (kind, _, line) = next_frame(&mut s3);
+        assert_eq!(kind, Kind::Message, "then the held line");
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":7"));
         drop(client_in);
         until_op(&mut s3, "bye");
         drop(s3);
+        done.join().unwrap();
+    }
+
+    // (a runtime that closes a welcomed connection whose first frame isn't
+    // `client`, as countinghouse's does: the session settles once, and no
+    // reattach follows)
+    #[test]
+    fn a_refused_resume_holding_records_settles_once_and_does_not_reattach_in_a_loop() {
+        let (listener, client_in, _sink, done) = session_with_a_record();
+        let (mut s2, _) = listener.accept().unwrap();
+        refuse_resume(&mut s2);
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        let first = control_payload(&mut s3);
+        if first["op"] != "client" {
+            drop(s3);
+            panic!("the first frame was {first}: the runtime closes this connection, and the shim would attach again");
+        }
+        settled(&mut s3);
+        assert_eq!(control_payload(&mut s3)["op"], "replay");
+        assert!(no_connection_within(&listener, 1500), "no reattach once settled");
+        drop(client_in);
+        until_op(&mut s3, "bye");
+        drop(s3);
+        done.join().unwrap();
+    }
+
+    // (lost after `settled`, before the runtime read the replay: the session
+    // was announced, so the next attach resumes it, and the records go again)
+    #[test]
+    fn a_connection_lost_after_settled_resumes_and_replays_again() {
+        let (listener, mut client_in, _sink, done) = session_with_a_record();
+        let (mut s2, _) = listener.accept().unwrap();
+        refuse_resume(&mut s2);
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        assert_eq!(control_payload(&mut s3)["op"], "client");
+        settled(&mut s3);
+        assert_eq!(control_payload(&mut s3)["op"], "replay");
+        drop(s3);
+        let (mut s4, _) = listener.accept().unwrap();
+        assert_eq!(welcome(&mut s4, "rt4").as_deref(), Some("rt3"), "a resume");
+        assert_eq!(control_payload(&mut s4)["op"], "client");
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/list\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        settled(&mut s4);
+        let (kind, replay, _) = next_frame(&mut s4);
+        assert_eq!(
+            (kind, replay["op"].as_str()),
+            (Kind::Control, Some("replay")),
+            "the records again on the resumed session, first: {replay}"
+        );
+        assert_eq!(replay["entries"], serde_json::from_str::<Value>(RECORD).unwrap());
+        let (kind, _, line) = next_frame(&mut s4);
+        assert_eq!(kind, Kind::Message, "then the held line");
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":8"));
+        drop(client_in);
+        until_op(&mut s4, "bye");
+        drop(s4);
+        done.join().unwrap();
+    }
+
+    #[test]
+    fn a_resumed_session_holding_no_records_sends_no_replay() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        thread::sleep(Duration::from_millis(100));
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        assert_eq!(welcome(&mut s2, "rt2").as_deref(), Some("rt1"), "a resume");
+        assert_eq!(control_payload(&mut s2)["op"], "client");
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\"}\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        settled(&mut s2);
+        let (kind, op, line) = next_frame(&mut s2);
+        assert_eq!(kind, Kind::Message, "no replay: the held line comes first ({op})");
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":9"));
+        drop(client_in);
+        until_op(&mut s2, "bye");
+        drop(s2);
         done.join().unwrap();
     }
 
