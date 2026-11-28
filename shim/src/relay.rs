@@ -2447,6 +2447,127 @@ mod tests {
         assert!(matches!(done.join().unwrap(), Exit::Refused));
     }
 
+    /// Waits (bounded) for the shim's next connection to `listener`.
+    fn next_connection(listener: &UnixListener) -> UnixStream {
+        listener.set_nonblocking(true).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((s, _)) => {
+                    listener.set_nonblocking(false).unwrap();
+                    s.set_nonblocking(false).unwrap();
+                    return s;
+                }
+                Err(_) if Instant::now() < until => thread::sleep(Duration::from_millis(10)),
+                Err(e) => panic!("the shim never attached again: {e}"),
+            }
+        }
+    }
+
+    /// As awaiting_the_answer, keeping the listener for a reattach.
+    fn awaiting_with_listener(
+        timing: Timing,
+    ) -> (UnixListener, UnixStream, UnixStream, Sink, thread::JoinHandle<Exit>) {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"maxOutputBytes":1048576}}"#, BIG)
+            .unwrap();
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":1}"#, BIG).unwrap();
+        until_op(&mut s, "client");
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        refuse_resume(&mut s2);
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        assert_eq!(control_payload(&mut s3)["op"], "client");
+        held(&mut client_in, &sink, b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}\n");
+        settled(&mut s3);
+        assert_eq!(control_payload(&mut s3)["op"], "replay");
+        (listener, s3, client_in, sink, done)
+    }
+
+    /// The reattach after a loss: resumed, settled, its replay answered kept;
+    /// the held line arrives once, and is answered.
+    fn reattached_and_kept(
+        listener: &UnixListener,
+        client_in: UnixStream,
+        sink: &Sink,
+        done: thread::JoinHandle<Exit>,
+    ) {
+        let mut s4 = next_connection(listener);
+        welcome(&mut s4, "rt4");
+        assert_eq!(control_payload(&mut s4)["op"], "client");
+        settled(&mut s4);
+        assert_eq!(control_payload(&mut s4)["op"], "replay", "the records again on the next connection");
+        answer(&mut s4, true, "replay");
+        let (kind, _, seq, line) = next_frame(&mut s4);
+        assert_eq!(kind, Kind::Message);
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":7"));
+        reply(&mut s4, seq.unwrap(), r#"{"jsonrpc":"2.0","id":7,"result":{}}"#);
+        drop(client_in);
+        until_op(&mut s4, "bye");
+        drop(s4);
+        assert!(matches!(done.join().unwrap(), Exit::Done));
+        assert!(
+            !sink.lines().iter().any(|l| l.contains("SESSION_CANT_FALL_BACK") || l.contains("RUNTIME_RESTARTED")),
+            "{:?}",
+            sink.lines()
+        );
+    }
+
+    // (the connection lost while the answer is awaited, the reattach slower
+    // than the bound: the wait is that connection's, gone with it, never a
+    // refusal; the replay goes again at the next settle)
+    #[test]
+    fn a_connection_lost_while_awaiting_the_answer_is_no_refusal_however_slow_the_reattach() {
+        let timing =
+            Timing { replay_answer: Duration::from_millis(200), retry_unit: Duration::from_millis(400), ..fast() };
+        let (listener, s3, client_in, sink, done) = awaiting_with_listener(timing);
+        drop(s3);
+        reattached_and_kept(&listener, client_in, &sink, done);
+    }
+
+    // (a drain while the answer is awaited: nothing goes to the runtime that
+    // is going away, a kept answer there included, and the bound passing
+    // during the drain is no refusal; the next connection takes it all)
+    #[test]
+    fn a_drain_while_awaiting_the_answer_holds_everything_for_the_next_connection() {
+        let timing = Timing { replay_answer: Duration::from_millis(200), ..fast() };
+        let (listener, mut s3, client_in, sink, done) = awaiting_with_listener(timing);
+        frame::write_frame(&mut s3, Kind::Control, br#"{"op":"drain"}"#, BIG).unwrap();
+        assert!(nothing_within(&mut s3, 500), "past the bound in the drain: no refusal, nothing sent");
+        answer(&mut s3, true, "replay");
+        assert!(nothing_within(&mut s3, 300), "a kept answer in a drain sends nothing");
+        drop(s3);
+        reattached_and_kept(&listener, client_in, &sink, done);
+    }
+
+    // (any answer not kept is about this connection's session, the only one
+    // the runtime answers on: refused, fail closed, pending or not)
+    #[test]
+    fn a_not_kept_replay_answer_with_none_pending_still_refuses() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (client_in, _sink, done) = start_with(home, fast());
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        answer(&mut s, false, "replay");
+        // (refused: the shim closes the connection; then the client's end)
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+    }
+
     #[test]
     fn a_kept_answer_with_no_replay_pending_changes_nothing() {
         let (home, sock) = home();
