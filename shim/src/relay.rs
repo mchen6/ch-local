@@ -172,6 +172,10 @@ enum Ev {
     EarlyClient {
         frame: Vec<u8>,
     },
+    /// The bound on the runtime's answer to this connection's replay has passed.
+    AnswerDeadline {
+        generation: u64,
+    },
 }
 
 /// The shim's first run of the conditions child, started with the shim so that its cold start overlaps the attach (a daemon's
@@ -254,6 +258,9 @@ pub struct Relay {
     /// runtime is unreachable (its held requests answered) instead of
     /// retried every deadline for ever.
     settle_losses: u32,
+    /// The connection (its generation) whose replay's answer is awaited, the
+    /// client's lines held meanwhile.
+    answer_wait: Option<u64>,
     give_up: Option<String>,
 }
 
@@ -379,6 +386,7 @@ impl Relay {
             child_queue: std::collections::VecDeque::new(),
             stdout_gone: false,
             settle_losses: 0,
+            answer_wait: None,
             give_up: None,
         }
     }
@@ -464,6 +472,13 @@ impl Relay {
             Ev::Reattach => {
                 if self.state == State::Attaching && self.writer.is_none() {
                     self.attach();
+                }
+            }
+            Ev::AnswerDeadline { generation } => {
+                // no answer to this connection's replay in time: not kept
+                if self.answer_wait == Some(generation) && generation == self.generation {
+                    self.answer_wait = None;
+                    return self.refuse_session(TIGHTENINGS_UNANSWERED);
                 }
             }
             Ev::SettleDeadline { generation } => {
@@ -562,25 +577,30 @@ impl Relay {
         }
         match &self.state {
             State::Refused => self.refuse_line(&line),
+            // (awaiting the runtime's answer to a replay: held, as before settled)
+            State::Live if self.answer_wait.is_some() => self.hold(line),
             State::Live => self.forward(line),
             State::Unreachable(why) => {
                 let why = why.clone();
                 self.answer_unreachable(&line, &why);
             }
             State::Closing(_) => {}
-            State::Attaching | State::Unsettled | State::Draining => {
-                // a line this connection could never carry is refused as too
-                // large at once, whatever the state: never held, so never
-                // answered as a held line that "did not run" instead
-                if Self::never_fits(&line, self.to_runtime.message) {
-                    let limit = (self.to_runtime.message as usize).saturating_sub(4096);
-                    self.refuse_too_long(&line, &message::classify(&line), limit);
-                    return;
-                }
-                if let Err(over) = self.held.hold(line, self.to_runtime.message as usize) {
-                    self.overflow(over);
-                }
-            }
+            State::Attaching | State::Unsettled | State::Draining => self.hold(line),
+        }
+    }
+
+    /// A line held until the connection may carry it.
+    fn hold(&mut self, line: Vec<u8>) {
+        // a line this connection could never carry is refused as too large at
+        // once, whatever the state: never held, so never answered as a held
+        // line that "did not run" instead
+        if Self::never_fits(&line, self.to_runtime.message) {
+            let limit = (self.to_runtime.message as usize).saturating_sub(4096);
+            self.refuse_too_long(&line, &message::classify(&line), limit);
+            return;
+        }
+        if let Err(over) = self.held.hold(line, self.to_runtime.message as usize) {
+            self.overflow(over);
         }
     }
 
@@ -745,6 +765,9 @@ impl Relay {
             );
         }
         self.generation += 1;
+        // (an answer awaited on a connection now gone: its replay goes again
+        // at this one's settle)
+        self.answer_wait = None;
         self.retries = 0;
         self.to_runtime = a.welcome.to_runtime;
         self.limit.set((a.welcome.to_runtime.message as usize).saturating_sub(4096));
@@ -862,6 +885,26 @@ impl Relay {
         });
     }
 
+    /// The settled connection takes the client's lines: the session's
+    /// initialize replayed first, then every held line; and stdin's end, if
+    /// it came meanwhile.
+    fn release_held(&mut self) -> Option<Exit> {
+        // the session is restored (section 6, step 4) before any of the
+        // client's held traffic reaches it
+        if self.reconnecting {
+            self.replay_initialize();
+        }
+        self.reconnecting = false;
+        for line in self.held.take() {
+            self.forward(line);
+        }
+        // stdin ended during the attach (eof deferred it): its end now
+        if self.stdin_done {
+            return self.eof();
+        }
+        None
+    }
+
     fn op(&mut self, op: Map<String, Value>, raw: &[u8]) -> Option<Exit> {
         match op["op"].as_str().unwrap_or("") {
             "settled" if self.state == State::Unsettled => {
@@ -883,19 +926,32 @@ impl Relay {
                 if !self.records.is_empty() {
                     let frame = self.records.replay_frame();
                     self.control(&frame);
+                    // the client's lines wait for the runtime's answer
+                    // (`tightenings`): kept, they go; not kept, or none
+                    // within REPLAY_ANSWER, the session is refused
+                    let (tx, generation, wait) = (self.tx.clone(), self.generation, self.setup.timing.replay_answer);
+                    self.answer_wait = Some(generation);
+                    thread::spawn(move || {
+                        thread::sleep(wait);
+                        let _ = tx.send(Ev::AnswerDeadline { generation });
+                    });
+                    return None;
                 }
-                // the session is restored (section 6, step 4) before any of
-                // the client's held traffic reaches it
-                if self.reconnecting {
-                    self.replay_initialize();
+                return self.release_held();
+            }
+            "tightenings" => {
+                let kept = op.get("kept").and_then(Value::as_bool) == Some(true);
+                let replay = op.get("after").and_then(Value::as_str) == Some("replay");
+                if !kept {
+                    // a tightening the runtime couldn't give back (a replay's,
+                    // or a restore's after a runtime restart): refused, as a
+                    // record lost is, rather than run looser in silence
+                    self.answer_wait = None;
+                    return self.refuse_session(TIGHTENINGS_NOT_KEPT);
                 }
-                self.reconnecting = false;
-                for line in self.held.take() {
-                    self.forward(line);
-                }
-                // stdin ended during the attach (eof deferred it): its end now
-                if self.stdin_done {
-                    return self.eof();
+                if replay && self.answer_wait == Some(self.generation) {
+                    self.answer_wait = None;
+                    return self.release_held();
                 }
             }
             "conditions?" => {
@@ -2093,6 +2149,7 @@ mod tests {
         let (kind, replay, _, _) = next_frame(&mut s3);
         assert_eq!((kind, replay["op"].as_str()), (Kind::Control, Some("replay")), "the replay first: {replay}");
         assert_eq!(replay["entries"], serde_json::from_str::<Value>(RECORD).unwrap());
+        answer(&mut s3, true, "replay");
         let (kind, _, seq, line) = next_frame(&mut s3);
         assert_eq!(kind, Kind::Message, "then the held line");
         assert!(String::from_utf8_lossy(&line).contains("\"id\":7"));
@@ -2117,6 +2174,7 @@ mod tests {
         settled(&mut s3);
         let (kind, replay, _, _) = next_frame(&mut s3);
         assert_eq!((kind, replay["op"].as_str()), (Kind::Control, Some("replay")), "the records first: {replay}");
+        answer(&mut s3, true, "replay");
         let (kind, _, rseq, init) = next_frame(&mut s3);
         let init: Value = serde_json::from_slice(&init).unwrap();
         assert_eq!(
@@ -2190,6 +2248,7 @@ mod tests {
             "the records again on the resumed session, first: {replay}"
         );
         assert_eq!(replay["entries"], serde_json::from_str::<Value>(RECORD).unwrap());
+        answer(&mut s4, true, "replay");
         let (kind, _, seq, line) = next_frame(&mut s4);
         assert_eq!(kind, Kind::Message, "then the held line");
         assert!(String::from_utf8_lossy(&line).contains("\"id\":8"));
@@ -3945,6 +4004,8 @@ printf '{{"status":"ok","conditions":"no","repo":"run-%s","token":null}}\n' "$((
         if settle {
             until_op(&mut s2, "client");
             settled(&mut s2);
+            // (it holds a record: its replay is answered, kept)
+            answer(&mut s2, true, "replay");
             seen = until_op(&mut s2, "bye");
         } else {
             // never settled: the connection is closed at the settle deadline
