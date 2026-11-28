@@ -475,11 +475,13 @@ mod tests {
         let dir = std::env::temp_dir();
         let pid = dir.join(format!("ch-shim-early-{}.pid", std::process::id()));
         let script = dir.join(format!("ch-shim-early-{}.js", std::process::id()));
-        // (its first act: a grandchild that would live a minute, its pid written whole; then the child waits as long)
+        // (its first act: a grandchild that would live a minute, its pid written whole; then the child waits as long. Detached,
+        // so it is outside the kill-on-close job Node's libuv keeps for the children it starts: only the shim's job, if the
+        // child was in it when it started the grandchild, ends it with the child)
         std::fs::write(
             &script,
             format!(
-                "const g = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {{}}, 60000)'], {{stdio: 'ignore'}}); \
+                "const g = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {{}}, 60000)'], {{stdio: 'ignore', detached: true}}); \
                  const fs = require('fs'); fs.writeFileSync({p} + '.part', String(g.pid)); fs.renameSync({p} + '.part', {p}); \
                  setTimeout(() => {{}}, 60000);",
                 p = serde_json::to_string(&pid.to_string_lossy()).unwrap()
