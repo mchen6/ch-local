@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // The Windows home against what Codex's elevated Windows sandbox does, on a real DACL: the Windows legs only. Codex gives its
 // CodexSandboxUsers group (OI)(CI)(RX), and where the profile is its workspace the group and a workspace SID that names no account
 // (OI)(CI)(M), as explicit entries on every folder directly in %USERPROFILE%, AppData among them (codex-rs/windows-sandbox-rs

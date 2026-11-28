@@ -1,4 +1,5 @@
 'use strict';
+require('./tmp-dirs');
 // The home on Windows: its default is %LOCALAPPDATA%\countinghouse, never a folder directly in the profile,
 // where Codex's elevated Windows sandbox gives its CodexSandboxUsers group read access to every folder each time it runs a command.
 // And a home another account can read or change is refused naming who, and whether it can read or change it. Unit-level, by
