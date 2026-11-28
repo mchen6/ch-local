@@ -321,6 +321,23 @@ test('L0: a reset whose write fails is recorded as not made: the values before i
   assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'no edit reported: the reset was not made');
 });
 
+test('L0: a session-only change the runtime could not make undoes nothing of the stored values; a failed write for every session undoes its own', async () => {
+  const {outsideEdits} = require('../lib/outside-edits');
+  const home = tmp('ch-home-');
+  const where = layout({COUNTINGHOUSE_HOME: home});
+  assert.strictEqual((await cli(home, 'settings', 'set', 'requestTimeout', '20s')).code, 0);
+  const runtime = (line) => fs.appendFileSync(path.join(home, 'history.jsonl'), JSON.stringify({by: 'settings tool', setting: 'requestTimeout', ...line}) + '\n');
+  // (the runtime's lines, as countinghouse's settings tool writes them: a session's own change that failed carries its
+  // session and no scope; it never touched settings.json, as its success, 'this session', is not recorded either)
+  runtime({change: 'not made', problem: 'EIO', session: 's1'});
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'the 20s set at the terminal still stands');
+  // a change for every session whose rename failed: its line, then the not made carrying the every-session scope, which
+  // undoes it (the file still holds 20s)
+  runtime({old: 20000, new: 15000, session: 's1', scope: 'every session'});
+  runtime({change: 'not made', problem: 'EACCES', session: 's1', scope: 'every session'});
+  assert.deepStrictEqual(outsideEdits(where, readSettings(where)), [], 'the failed write for every session is undone');
+});
+
 test('L0: module.* names are expected and not warned about; any other unknown name still is; every read returns kept', () => {
   const home = tmp('ch-home-');
   const where = layout({COUNTINGHOUSE_HOME: home});
