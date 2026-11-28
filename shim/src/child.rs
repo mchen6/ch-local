@@ -1,11 +1,14 @@
 //! The conditions child (contract 2, section 5): `<node> <chLocal>
-//! conditions --for <client pid> --home <home>`, run once per connection and again for
-//! each `conditions?`, its one JSON line carried as the `client` frame.
+//! conditions --for <client pid> --home <home>`: its first run started with the shim (its answer the first connection's
+//! first `client` frame), then one for a later connection's first frame and for each `conditions?`, its one JSON line
+//! carried as the `client` frame.
 //! - Its environment is the client's (the shim's own), minus every name
 //!   starting `NODE_` or `npm_config_`, so nothing acts in Node before
 //!   ch-local's own code; its working directory is the shim's (the
 //!   client's); stdin and stderr null; at most 4 KiB of stdout read.
-//! - It has 10 s. A child that exits non-zero, times out, or prints
+//! - It has 10 s (its first run 25 s, from the shim's start). Every child is one of its relay's Children, killed when the
+//!   relay ends; on Windows in a job object, so what it starts (PowerShell) goes with it. A child that exits non-zero,
+//!   times out, or prints
 //!   anything but exactly one JSON object line (or one naming `op` or `seq`)
 //!   is a failure, never "no token": a `client` frame with `status:
 //!   "failed"` and the shim's own `why`.
@@ -23,6 +26,76 @@ use serde_json::Value;
 use crate::config::ShimInfo;
 
 pub const TIMEOUT: Duration = Duration::from_secs(10);
+/// The shim's first run of the child starts with the shim, while it attaches, so its bound counts from the shim's start, and
+/// is longer than TIMEOUT: a cold Node (and on Windows a cold PowerShell walking the client's ancestors) now shares the
+/// machine with a daemon's boot. The relay still answers the runtime within its FIRST_WAIT of the runtime's welcome
+/// (relay.rs), whatever is left of this.
+pub const FIRST_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// One relay's conditions children. Each is spawned and registered under one lock, with `stopped`: kill_all (when the
+/// relay ends) reaches every one, a spawn under way included, and none is spawned after it. Each is killed at its own
+/// bound meanwhile. On Windows each runs in a job object that kills its whole tree (Node and the PowerShell it starts) when
+/// the child is killed, and when the job's last handle closes: the shim's exit, a signal's included.
+#[derive(Clone, Default)]
+pub struct Children(std::sync::Arc<std::sync::Mutex<Registered>>);
+
+#[derive(Default)]
+struct Registered {
+    stopped: bool,
+    running: Vec<std::sync::Arc<std::sync::Mutex<Running>>>,
+}
+
+/// A child as it runs, and on Windows its job.
+struct Running {
+    child: std::process::Child,
+    #[cfg(windows)]
+    job: Option<crate::win_ffi::Job>,
+}
+
+impl Running {
+    /// Killed, its tree with it on Windows, and waited for.
+    fn kill(&mut self) {
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.terminate();
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Children {
+    /// Kills every child still running and waits for each; none is spawned after this.
+    pub fn kill_all(&self) {
+        self.kill_where(|_| true);
+    }
+
+    /// Stops the spawning, then kills (and waits for) the running children whose pid `which` picks: all for the shim.
+    fn kill_where(&self, which: impl Fn(u32) -> bool) {
+        let picked: Vec<_> = match self.0.lock() {
+            Ok(mut r) => {
+                r.stopped = true;
+                let (kill, keep): (Vec<_>, Vec<_>) =
+                    r.running.drain(..).partition(|c| c.lock().map(|c| which(c.child.id())).unwrap_or(false));
+                r.running = keep;
+                kill
+            }
+            Err(_) => Vec::new(),
+        };
+        for c in picked {
+            if let Ok(mut c) = c.lock() {
+                c.kill();
+            }
+        }
+    }
+
+    /// Whether no child runs (tests).
+    #[cfg(all(test, unix))]
+    fn none_running(&self) -> bool {
+        self.0.lock().map(|r| r.running.is_empty()).unwrap_or(false)
+    }
+}
+
 const STDOUT_MAX: u64 = 4096;
 
 /// The environment the child gets: `env` minus NODE_* and npm_config_*.
@@ -134,9 +207,10 @@ pub fn run(
     for_pid: u32,
     env: Vec<(OsString, OsString)>,
     timeout: Duration,
+    children: &Children,
 ) -> Result<Vec<u8>, String> {
-    let mut child = Command::new(&shim.node)
-        .arg(&shim.ch_local)
+    let mut cmd = Command::new(&shim.node);
+    cmd.arg(&shim.ch_local)
         .arg("conditions")
         .arg("--for")
         .arg(for_pid.to_string())
@@ -146,10 +220,32 @@ pub fn run(
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("the conditions child could not be started ({e})"))?;
-    let mut stdout = child.stdout.take().expect("piped");
+        .stderr(Stdio::null());
+    // spawned and registered under the one lock, never after kill_all (its relay has ended)
+    let (child, mut stdout) = {
+        let mut r = children.0.lock().map_err(|_| "the conditions children could not be counted".to_string())?;
+        if r.stopped {
+            return Err("the shim has stopped relaying".into());
+        }
+        let mut spawned = cmd.spawn().map_err(|e| format!("the conditions child could not be started ({e})"))?;
+        // (Windows: in a job that kills its tree; one that can't be made leaves the child to its own kill)
+        #[cfg(windows)]
+        let job = crate::win_ffi::Job::kill_on_close().and_then(|j| j.assign(&spawned).map(|()| j)).ok();
+        let stdout = spawned.stdout.take().expect("piped");
+        let running = std::sync::Arc::new(std::sync::Mutex::new(Running {
+            child: spawned,
+            #[cfg(windows)]
+            job,
+        }));
+        r.running.push(running.clone());
+        (running, stdout)
+    };
+    // (off the list once it has exited or been killed)
+    let forget = || {
+        if let Ok(mut r) = children.0.lock() {
+            r.running.retain(|c| !std::sync::Arc::ptr_eq(c, &child));
+        }
+    };
     // read on a thread that sends each chunk as it comes, then None at EOF:
     // the answer is its first line, and a second line refuses it (fail
     // closed). A grandchild that holds the pipe open can't hold the shim:
@@ -174,17 +270,32 @@ pub fn run(
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
-        match child.try_wait() {
+        let waited = match child.lock() {
+            Ok(mut c) => c.child.try_wait(),
+            Err(_) => {
+                forget();
+                return Err("the conditions child could not be waited for".into());
+            }
+        };
+        match waited {
             Ok(Some(st)) => break st,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("the conditions child gave no answer within {} s", timeout.as_secs()));
+                if let Ok(mut c) = child.lock() {
+                    c.kill();
+                }
+                // (shown to the client as the reason its checks could not run: business's words, "setup" since the
+                // child reads more than settings files: hooks, plugins, policy, the client's command line and variables)
+                forget();
+                return Err(format!("the check of the client's setup did not finish within {} s", timeout.as_secs()));
             }
-            Err(e) => return Err(format!("the conditions child could not be waited for ({e})")),
+            Err(e) => {
+                forget();
+                return Err(format!("the conditions child could not be waited for ({e})"));
+            }
         }
     };
+    forget();
     let out = read_answer(&rrx)?;
     if !status.success() {
         return Err(format!("the conditions child exited with {status}"));
@@ -242,9 +353,105 @@ mod tests {
         let p = std::env::temp_dir().join(format!("ch-shim-twolines-{}.sh", std::process::id()));
         std::fs::write(&p, "echo '{\"status\":\"ok\"}'; echo '{\"status\":\"also\"}'\n").unwrap();
         let shim = ShimInfo { node: "/bin/sh".into(), ch_local: p.clone(), env: vec![] };
-        let r = run(&shim, std::path::Path::new("/h"), 1, vec![], TIMEOUT);
+        let r = run(&shim, std::path::Path::new("/h"), 1, vec![], TIMEOUT, &Children::default());
         let _ = std::fs::remove_file(&p);
         assert!(r.as_ref().is_err_and(|w| w.contains("more than one line")), "{r:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_past_its_bound_is_said_in_the_clients_words() {
+        let p = std::env::temp_dir().join(format!("ch-shim-slow-{}.sh", std::process::id()));
+        std::fs::write(&p, "sleep 5\n").unwrap();
+        let shim = ShimInfo { node: "/bin/sh".into(), ch_local: p.clone(), env: vec![] };
+        let r = run(&shim, std::path::Path::new("/h"), 1, vec![], Duration::from_secs(1), &Children::default());
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(r, Err("the check of the client's setup did not finish within 1 s".to_string()));
+    }
+
+    // a run in flight when the relay ends is killed then (main: Children::kill_all), never left to outlive the shim; and
+    // after it no child is spawned at all
+    #[cfg(unix)]
+    #[test]
+    fn a_run_in_flight_is_killed_when_the_relay_ends_and_none_starts_after() {
+        let pid = std::env::temp_dir().join(format!("ch-shim-inflight-{}.pid", std::process::id()));
+        let p = std::env::temp_dir().join(format!("ch-shim-inflight-{}.sh", std::process::id()));
+        std::fs::write(&p, format!("echo $$ > '{}.part' && mv '{0}.part' '{0}'; exec sleep 30\n", pid.display()))
+            .unwrap();
+        let shim = ShimInfo { node: "/bin/sh".into(), ch_local: p.clone(), env: vec![] };
+        let children = Children::default();
+        let (theirs, shim2) = (children.clone(), shim.clone());
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            run(&shim2, std::path::Path::new("/h"), 1, vec![], Duration::from_secs(60), &theirs)
+        });
+        // (the pid file appears whole: written aside, then moved)
+        while !pid.exists() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let child: i32 = std::fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
+        children.kill_all();
+        let r = handle.join().unwrap();
+        assert!(r.is_err(), "{r:?}");
+        assert!(started.elapsed() < Duration::from_secs(10), "it ran on: {:?}", started.elapsed());
+        let gone = rustix::process::test_kill_process(rustix::process::Pid::from_raw(child).unwrap()).is_err();
+        assert!(gone, "the child {child} still runs");
+        assert!(children.none_running());
+        // (stopped: a run asked for after it spawns nothing)
+        let _ = std::fs::remove_file(&pid);
+        let after = run(&shim, std::path::Path::new("/h"), 1, vec![], Duration::from_secs(60), &children);
+        assert_eq!(after, Err("the shim has stopped relaying".to_string()));
+        assert!(!pid.exists(), "a child was spawned after the relay ended");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    // Windows: a child killed takes what it started with it (the job), as the conditions child's PowerShell would be
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_a_killed_child_takes_what_it_started_with_it() {
+        let node = match Command::new("node").args(["-p", "process.execPath"]).output() {
+            Ok(o) => String::from_utf8(o.stdout).unwrap().trim().to_string(),
+            Err(_) => {
+                assert!(std::env::var("CI").is_err(), "node is needed for this test in CI");
+                return;
+            }
+        };
+        let dir = std::env::temp_dir();
+        let pid = dir.join(format!("ch-shim-tree-{}.pid", std::process::id()));
+        let script = dir.join(format!("ch-shim-tree-{}.js", std::process::id()));
+        // (a grandchild that would live a minute; its pid written whole, then the child waits as long)
+        std::fs::write(
+            &script,
+            format!(
+                "const g = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {{}}, 60000)'], {{stdio: 'ignore'}}); \
+                 const fs = require('fs'); fs.writeFileSync({p} + '.part', String(g.pid)); fs.renameSync({p} + '.part', {p}); \
+                 setTimeout(() => {{}}, 60000);",
+                p = serde_json::to_string(&pid.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+        let shim = ShimInfo { node: node.into(), ch_local: script.clone(), env: vec![] };
+        let children = Children::default();
+        let theirs = children.clone();
+        let started = Instant::now();
+        // (the child's environment as a real launch gives it: the client's, filtered)
+        let env = child_env(std::env::vars_os());
+        let handle = std::thread::spawn(move || {
+            run(&shim, std::path::Path::new("C:\\h"), 1, env, Duration::from_secs(60), &theirs)
+        });
+        while !pid.exists() && started.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let grandchild: u32 = std::fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
+        assert!(crate::win_ffi::process_alive(grandchild), "the grandchild never ran");
+        children.kill_all();
+        let _ = handle.join().unwrap();
+        let _ = (std::fs::remove_file(&pid), std::fs::remove_file(&script));
+        let until = Instant::now() + Duration::from_secs(5);
+        while crate::win_ffi::process_alive(grandchild) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!crate::win_ffi::process_alive(grandchild), "what the child started outlived it");
     }
 
     #[cfg(windows)]
@@ -265,7 +472,7 @@ mod tests {
         std::fs::write(&p, "(sleep 30 &) ; echo '{\"status\":\"ok\"}'\n").unwrap();
         let shim = ShimInfo { node: "/bin/sh".into(), ch_local: p.clone(), env: vec![] };
         let started = Instant::now();
-        let r = run(&shim, std::path::Path::new("/h"), 1, vec![], TIMEOUT);
+        let r = run(&shim, std::path::Path::new("/h"), 1, vec![], TIMEOUT, &Children::default());
         assert!(started.elapsed() < Duration::from_secs(2), "held for {:?}", started.elapsed());
         // the line it printed is its answer: read to its newline, not to EOF
         assert_eq!(r.unwrap(), b"{\"status\":\"ok\"}\n");
@@ -300,13 +507,15 @@ mod tests {
         };
         let hang = shim("sleep 30\n");
         let started = Instant::now();
-        let r = run(&hang, Path::new("/h"), 1, vec![], Duration::from_millis(500));
-        assert!(r.is_err_and(|w| w.contains("no answer")));
+        let r = run(&hang, Path::new("/h"), 1, vec![], Duration::from_millis(500), &Children::default());
+        assert!(r.is_err_and(|w| w.contains("did not finish")));
         assert!(started.elapsed() < Duration::from_secs(5));
         let prints = shim("echo \"{\\\"status\\\":\\\"ok\\\",\\\"args\\\":\\\"$*\\\"}\"\n");
-        let out = run(&prints, Path::new("/h"), 42, vec![], TIMEOUT).unwrap();
+        let out = run(&prints, Path::new("/h"), 42, vec![], TIMEOUT, &Children::default()).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "{\"status\":\"ok\",\"args\":\"conditions --for 42 --home /h\"}\n");
         let fails = shim("exit 3\n");
-        assert!(run(&fails, Path::new("/h"), 1, vec![], TIMEOUT).is_err_and(|w| w.contains("exited")));
+        assert!(
+            run(&fails, Path::new("/h"), 1, vec![], TIMEOUT, &Children::default()).is_err_and(|w| w.contains("exited"))
+        );
     }
 }

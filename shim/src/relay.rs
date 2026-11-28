@@ -69,6 +69,11 @@ const QUICK_LOSS: Duration = Duration::from_secs(10);
 const MAX_SETTLE_LOSSES: u32 = 2;
 /// The most conditions? asks waiting for the child.
 const CHILD_QUEUE: usize = 8;
+/// The longest a welcomed connection waits for its first `client` frame from the shim's first child run, the one started with
+/// the shim: within the runtime's own wait for that frame (12 s, countinghouse's session listener), so a child slower than this
+/// is answered failed, as one past its bound always was, never left to the runtime to close.
+const FIRST_WAIT: Duration = Duration::from_secs(10);
+
 /// How long finish() waits for an answer still streaming to stdout.
 const STDOUT_BARRIER: Duration = Duration::from_secs(5);
 /// The relay's event queue: bounded, so the stdin thread (and the reader)
@@ -102,6 +107,10 @@ pub struct Timing {
     pub settle: Duration,
     /// How long the exit waits for an answer still streaming to stdout.
     pub barrier: Duration,
+    /// The bound of the child's first run, from the shim's start (child::FIRST_TIMEOUT).
+    pub first_child: Duration,
+    /// How long a welcomed connection waits for that run's answer (FIRST_WAIT).
+    pub first_wait: Duration,
 }
 
 impl Default for Timing {
@@ -113,6 +122,8 @@ impl Default for Timing {
             closing: CLOSING_GRACE,
             settle: SETTLE_DEADLINE,
             barrier: STDOUT_BARRIER,
+            first_child: child::FIRST_TIMEOUT,
+            first_wait: FIRST_WAIT,
         }
     }
 }
@@ -140,6 +151,29 @@ enum Ev {
     SettleDeadline {
         generation: u64,
     },
+    /// A welcomed connection's wait for the first child run's answer has passed.
+    FirstWait {
+        generation: u64,
+    },
+    /// The first child run's answer (started with the shim, before any connection).
+    EarlyClient {
+        frame: Vec<u8>,
+    },
+}
+
+/// The shim's first run of the conditions child, started with the shim so that its cold start overlaps the attach (a daemon's
+/// boot, on a first start): its answer is the first connection's first `client` frame.
+#[derive(Debug, PartialEq)]
+enum Early {
+    /// Started, no connection waiting for it yet.
+    Running,
+    /// Answered while no connection was welcomed: sent the moment one is, unless the runtime was unreachable meanwhile.
+    Ready(Vec<u8>),
+    /// Started, and this connection (its generation) waits for it.
+    Wanted(u64),
+    /// Its answer sent, or no longer wanted (its wait passed, or the runtime was unreachable): a later connection runs the
+    /// child afresh. It never holds the one child slot: a run given up never delays the next.
+    Spent,
 }
 
 #[derive(Debug, PartialEq)]
@@ -193,6 +227,10 @@ pub struct Relay {
     quick_losses: u32,
     /// The conditions child runs one at a time; what waits for it.
     child_running: bool,
+    /// The first run, started with the shim.
+    early: Early,
+    /// Every conditions child this relay spawns: killed when it ends (main), none spawned after.
+    children: child::Children,
     /// The `why` of this connection's first `client` frame, when it failed
     /// (the conditions child's failure, in the shim's own words).
     first_client_why: Option<String>,
@@ -322,12 +360,19 @@ impl Relay {
             attached_at: None,
             quick_losses: 0,
             child_running: false,
+            early: Early::Spent,
+            children: child::Children::default(),
             first_client_why: None,
             child_queue: std::collections::VecDeque::new(),
             stdout_gone: false,
             settle_losses: 0,
             give_up: None,
         }
+    }
+
+    /// Its conditions children, for main to kill when run returns (Children::kill_all).
+    pub fn children(&self) -> child::Children {
+        self.children.clone()
     }
 
     /// Reads `input` as the client's stdin, and runs until the session ends.
@@ -343,6 +388,11 @@ impl Relay {
                 }
             }
         });
+        // the conditions child's first run starts now, before the attach: it needs only the client's pid and the home, and its
+        // cold start (Node, and on Windows PowerShell walking the client's ancestors) then overlaps the attach instead of
+        // following it. Its answer is still the first thing the runtime hears, and nothing of the client's is forwarded before
+        // the runtime says `settled` (the hold is unchanged).
+        self.start_early();
         self.attach();
         loop {
             let ev = match &self.state {
@@ -417,6 +467,31 @@ impl Relay {
                         // the reader then ends, and its Lost reattaches
                         let _ = w.shutdown();
                     }
+                }
+            }
+            Ev::EarlyClient { frame } => {
+                match std::mem::replace(&mut self.early, Early::Spent) {
+                    // (unreachable meanwhile: an answer kept that long could be stale when a connection comes; the next
+                    // connection runs the child afresh)
+                    Early::Running | Early::Wanted(_) if matches!(self.state, State::Unreachable(_)) => {}
+                    Early::Wanted(g) if g == self.generation && self.writer.is_some() => self.first_frame(frame),
+                    // (no connection, or its connection lost before the answer came: kept for the next welcome)
+                    Early::Running | Early::Wanted(_) => self.early = Early::Ready(frame),
+                    _ => {}
+                }
+            }
+            Ev::FirstWait { generation } => {
+                // (a connection lost meanwhile keeps waiting: its reattach gets a wait of its own)
+                if generation == self.generation && self.writer.is_some() && self.early == Early::Wanted(generation) {
+                    // past the wait: answered failed, as a child past its bound is, so the runtime never closes the
+                    // connection for want of a first frame; the run's own answer, when it comes, is no longer wanted
+                    self.early = Early::Spent;
+                    // (business's words: the real wait, whatever a test sets, since it is the runtime's)
+                    let why = format!(
+                        "the check of the client's setup did not finish in the {} s the shared runtime waits for it",
+                        FIRST_WAIT.as_secs()
+                    );
+                    self.first_frame(child::client_frame(None, Err(why)));
                 }
             }
             Ev::Client { generation, frame } => {
@@ -701,8 +776,51 @@ impl Relay {
             self.control(&frame);
         }
         self.state = if matches!(self.state, State::Closing(_)) { return None } else { State::Unsettled };
-        self.conditions(None);
+        // the first run's answer, if one was started with the shim: at once if it is in, else when it comes, within FIRST_WAIT
+        // of this welcome; with none, a run of this connection's own, as before
+        match std::mem::replace(&mut self.early, Early::Spent) {
+            Early::Ready(frame) => self.first_frame(frame),
+            Early::Running | Early::Wanted(_) => {
+                self.early = Early::Wanted(generation);
+                let (tx, wait) = (self.tx.clone(), self.setup.timing.first_wait);
+                thread::spawn(move || {
+                    thread::sleep(wait);
+                    let _ = tx.send(Ev::FirstWait { generation });
+                });
+            }
+            Early::Spent => self.conditions(None),
+        }
         None
+    }
+
+    /// Starts the conditions child's first run, its bound counted from now (Timing::first_child). It runs beside the one
+    /// child slot, never in it: a later run (a reattach's, a conditions? ask's) never waits for it.
+    fn start_early(&mut self) {
+        self.early = Early::Running;
+        let (tx, home, parent, bound, children) = (
+            self.tx.clone(),
+            self.setup.home.clone(),
+            self.setup.parent,
+            self.setup.timing.first_child,
+            self.children.clone(),
+        );
+        let env = child::child_env(self.setup.client_env.clone());
+        thread::spawn(move || {
+            let printed = match config::read_shim(&home) {
+                Ok(shim) => child::run(&shim, home.root(), parent, env, bound, &children),
+                Err(e) => Err(format!("shim.json: {e}")),
+            };
+            let _ = tx.send(Ev::EarlyClient { frame: child::client_frame(None, printed) });
+        });
+    }
+
+    /// A connection's first `client` frame, sent: its failure is what a conditions-failed hand-over says why with.
+    fn first_frame(&mut self, frame: Vec<u8>) {
+        if let Ok(Value::Object(f)) = serde_json::from_slice::<Value>(&frame) {
+            self.first_client_why = (f.get("status").and_then(Value::as_str) == Some("failed"))
+                .then(|| f.get("why").and_then(Value::as_str).unwrap_or("").to_string());
+        }
+        self.control(&frame);
     }
 
     /// Asks for a run of the conditions child: one runs at a time, at most
@@ -723,12 +841,12 @@ impl Relay {
         }
         let Some(seq) = self.child_queue.pop_front() else { return };
         self.child_running = true;
-        let (tx, generation, home, parent) =
-            (self.tx.clone(), self.generation, self.setup.home.clone(), self.setup.parent);
+        let (tx, generation, home, parent, children) =
+            (self.tx.clone(), self.generation, self.setup.home.clone(), self.setup.parent, self.children.clone());
         let env = child::child_env(self.setup.client_env.clone());
         thread::spawn(move || {
             let printed = match config::read_shim(&home) {
-                Ok(shim) => child::run(&shim, home.root(), parent, env, child::TIMEOUT),
+                Ok(shim) => child::run(&shim, home.root(), parent, env, child::TIMEOUT, &children),
                 Err(e) => Err(format!("shim.json: {e}")),
             };
             let _ = tx.send(Ev::Client { generation, frame: child::client_frame(seq, printed) });
@@ -973,6 +1091,10 @@ impl Relay {
         }
         for line in self.held.take() {
             self.answer_unreachable(&line, &why);
+        }
+        // (an early answer kept: dropped, since a connection after this could be minutes later)
+        if matches!(self.early, Early::Ready(_)) {
+            self.early = Early::Spent;
         }
         self.state = State::Unreachable(why);
         let wait = self.setup.timing.retry_unit * RETRIES[self.retries.min(RETRIES.len() - 1)] as u32;
@@ -1946,17 +2068,15 @@ mod tests {
     #[test]
     fn unreachable_answers_each_request_then_a_background_retry_attaches() {
         let (home, sock) = home();
-        // no socket yet; the stand-in daemon (the conditions script) starts
-        // nothing, so the attach gives up at its (short) budget
+        // no socket yet; the stand-in daemon (the conditions script) starts nothing, so the attach gives up at its budget.
+        // A budget roomy enough for a slow machine's handshake on the retry; each wait gated on what is seen, not a sleep
         let (client_in, input) = UnixStream::pair().unwrap();
         let sink = Sink::default();
         let timing = Timing {
-            attach: Duration::from_millis(400),
-            cold_attach: Duration::from_millis(400),
+            attach: Duration::from_secs(2),
+            cold_attach: Duration::from_secs(2),
             retry_unit: Duration::from_millis(100),
-            closing: CLOSING_GRACE,
-            settle: SETTLE_DEADLINE,
-            barrier: STDOUT_BARRIER,
+            ..Timing::default()
         };
         let relay = Relay::new(
             Setup { home, rest: vec![], client_env: vec![], parent: 1, timing },
@@ -1964,9 +2084,12 @@ mod tests {
         );
         let mut client_in = client_in;
         let done = thread::spawn(move || relay.run(input));
-        thread::sleep(Duration::from_millis(700));
         client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n").unwrap();
-        thread::sleep(Duration::from_millis(100));
+        // (held while the attach runs, then answered once the shim is unreachable)
+        let until = Instant::now() + Duration::from_secs(20);
+        while sink.lines().is_empty() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(20));
+        }
         let answered: Value = serde_json::from_str(&sink.lines()[0]).unwrap();
         assert_eq!((answered["id"].as_u64(), answered["error"]["code"].as_i64()), (Some(1), Some(-32603)));
         assert!(
@@ -1975,7 +2098,7 @@ mod tests {
                 .unwrap()
                 .starts_with("countinghouse could not reach its shared runtime (")
         );
-        // the runtime appears; the retry (500 ms on) attaches
+        // the runtime appears; a retry attaches
         let listener = UnixListener::bind(&sock).unwrap();
         let (mut s, _) = listener.accept().unwrap();
         welcome(&mut s, "rt1");
@@ -2016,6 +2139,277 @@ mod tests {
         done.join().unwrap();
         let a: Value = serde_json::from_str(&sink.lines()[0]).unwrap();
         assert_eq!((a["id"].as_u64(), a["error"]["data"]["mayHaveRun"].as_bool()), (Some(4), Some(false)));
+    }
+
+    /// The conditions child's script: `body`, then the usual ok line.
+    fn child_script(home: &Home, body: &str) {
+        let ok = r#"echo '{"status":"ok","conditions":"no","repo":null,"token":null}'"#;
+        fs::write(home.root().join("ch-local.sh"), format!("{body}\n{ok}\n")).unwrap();
+    }
+
+    // the child's first run starts with the shim, before the attach is done: it overlaps a daemon's boot instead of following
+    // it; its answer is still the first frame the runtime hears, and the hold is unchanged
+    #[test]
+    fn the_conditions_child_runs_while_the_shim_attaches() {
+        let (home, sock) = home();
+        let mark = home.root().join("child-started");
+        child_script(&home, &format!(": > '{}'", mark.display()));
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (client_in, _sink, done) = start(home);
+        let (mut s, _) = listener.accept().unwrap();
+        // (the runtime has not welcomed the shim yet: the child already ran)
+        until_file(&mark);
+        assert!(mark.exists(), "the conditions child had not started before the runtime's welcome");
+        welcome(&mut s, "rt1");
+        let first = control_payload(&mut s);
+        assert_eq!((first["op"].as_str(), first["status"].as_str()), (Some("client"), Some("ok")), "{first}");
+        assert!(first.get("seq").is_none(), "the first frame: {first}");
+        settled(&mut s);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+    }
+
+    /// Waits (bounded) until `f` exists.
+    fn until_file(f: &std::path::Path) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while !f.exists() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A child script that, on its first run only (the marker `first`), waits until `gate` exists, then answers; a later
+    /// run answers at once. Writes `done` once the first run has answered.
+    fn gated_child(home: &Home, first: &std::path::Path, gate: &std::path::Path, done: &std::path::Path) {
+        child_script(
+            home,
+            &format!(
+                "if [ ! -e '{f}' ]; then : > '{f}'; while [ ! -e '{g}' ]; do sleep 0.02; done; : > '{d}'; fi",
+                f = first.display(),
+                g = gate.display(),
+                d = done.display()
+            ),
+        );
+    }
+
+    // a first run slower than the wait after the welcome: answered failed then (within the runtime's own 12 s), never left
+    // for the runtime to close the connection; its late answer is not sent
+    #[test]
+    fn a_first_run_not_in_within_the_wait_after_the_welcome_is_answered_failed() {
+        let (home, sock) = home();
+        let (first, gate, answered) =
+            (home.root().join("first"), home.root().join("gate"), home.root().join("answered"));
+        gated_child(&home, &first, &gate, &answered);
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { first_wait: Duration::from_millis(300), ..Timing::default() };
+        let (client_in, _sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        welcome(&mut s, "rt1");
+        let failed = control_payload(&mut s);
+        assert_eq!((failed["op"].as_str(), failed["status"].as_str()), (Some("client"), Some("failed")), "{failed}");
+        assert_eq!(
+            failed["why"].as_str(),
+            Some("the check of the client's setup did not finish in the 10 s the shared runtime waits for it"),
+            "{failed}"
+        );
+        // (the first run answers now: never sent; the next control frame is the answer to an ask)
+        fs::write(&gate, "").unwrap();
+        until_file(&answered);
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":7}"#, BIG).unwrap();
+        let next = control_payload(&mut s);
+        assert_eq!(next["seq"].as_u64(), Some(7), "the late first answer was sent: {next}");
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+    }
+
+    // the failed first frame's why reaches the hand-over as the client's reason
+    #[test]
+    fn a_first_run_past_the_wait_hands_over_with_its_why() {
+        let (home, sock) = home();
+        let (first, gate, answered) =
+            (home.root().join("first"), home.root().join("gate"), home.root().join("answered"));
+        gated_child(&home, &first, &gate, &answered);
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { first_wait: Duration::from_millis(300), ..Timing::default() };
+        let (client_in, _sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        let failed = control_payload(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"own-runtime","reason":"conditions-failed"}"#, BIG)
+            .unwrap();
+        let Exit::OwnRuntime { code, why, .. } = done.join().unwrap() else { panic!("not handed over") };
+        assert_eq!((code.as_deref(), why.as_deref()), (Some("conditions-failed"), failed["why"].as_str()));
+        fs::write(&gate, "").unwrap();
+        drop(client_in);
+    }
+
+    // a first run given up at the wait after the welcome holds no slot: a conditions? ask after it runs at once, never
+    // behind the run still going
+    #[test]
+    fn a_first_run_given_up_never_holds_up_a_later_run() {
+        let (home, sock) = home();
+        let (first, gate, answered) =
+            (home.root().join("first"), home.root().join("gate"), home.root().join("answered"));
+        gated_child(&home, &first, &gate, &answered);
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { first_wait: Duration::from_millis(300), ..Timing::default() };
+        let (client_in, _sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        // (an answer that never comes fails the test, never hangs it)
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        welcome(&mut s, "rt1");
+        assert_eq!(control_payload(&mut s)["status"], "failed", "the first frame, at the wait");
+        settled(&mut s);
+        // (the first run still waits at its gate: the ask's own run answers regardless)
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":5}"#, BIG).unwrap();
+        let c = control_payload(&mut s);
+        assert_eq!((c["seq"].as_u64(), c["status"].as_str()), (Some(5), Some("ok")), "{c}");
+        assert!(!answered.exists(), "the first run answered first: the ask waited for it");
+        fs::write(&gate, "").unwrap();
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+    }
+
+    /// A child script that counts its conditions runs (the script is the stand-in daemon too, whose starts are not
+    /// counted) and says the count in its repo field; with `gate`, the first run waits until it exists.
+    fn counting_child(home: &Home, runs: &std::path::Path, gate: Option<&std::path::Path>) {
+        let wait = gate.map_or(String::new(), |g| {
+            format!(
+                "[ \"$1\" = conditions ] && [ ! -s '{r}' ] && while [ ! -e '{g}' ]; do sleep 0.02; done\n",
+                r = runs.display(),
+                g = g.display()
+            )
+        });
+        let script = format!(
+            r#"{wait}[ "$1" = conditions ] && echo x >> '{0}'
+printf '{{"status":"ok","conditions":"no","repo":"run-%s","token":null}}\n' "$(( $(wc -l < '{0}') ))"
+"#,
+            runs.display()
+        );
+        fs::write(home.root().join("ch-local.sh"), script).unwrap();
+    }
+
+    /// Relay with a short attach (no socket at first: unreachable), roomy enough for a slow machine's handshake.
+    fn start_unreachable(home: Home) -> (UnixStream, Sink, thread::JoinHandle<Exit>) {
+        let timing = Timing {
+            attach: Duration::from_secs(1),
+            cold_attach: Duration::from_secs(1),
+            retry_unit: Duration::from_millis(100),
+            ..Timing::default()
+        };
+        start_with(home, timing)
+    }
+
+    /// Writes a request and waits (bounded) for its answer: the shim is unreachable once it is answered.
+    fn until_unreachable(client_in: &mut UnixStream, sink: &Sink) {
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}\n").unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        while sink.lines().is_empty() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            sink.lines().first().is_some_and(|l| l.contains("could not reach its shared runtime")),
+            "{:?}",
+            sink.lines()
+        );
+    }
+
+    // an early answer kept while the runtime could not be reached is never a later connection's first frame: that one is
+    // a fresh run's (the client's setup may have changed meanwhile); kept before the shim was unreachable, or arriving
+    // while it is
+    #[test]
+    fn an_early_answer_kept_while_unreachable_is_dropped_for_a_fresh_run() {
+        for gated in [false, true] {
+            let (home, sock) = home();
+            let (runs, gate) = (home.root().join("runs"), home.root().join("gate"));
+            counting_child(&home, &runs, gated.then_some(gate.as_path()));
+            let (mut client_in, sink, done) = start_unreachable(home);
+            until_unreachable(&mut client_in, &sink);
+            if gated {
+                // (the first run answers only now, while the shim is unreachable)
+                fs::write(&gate, "").unwrap();
+                until_file(&runs);
+            }
+            let listener = UnixListener::bind(&sock).unwrap();
+            let (mut s, _) = listener.accept().unwrap();
+            welcome(&mut s, "rt1");
+            let first = control_payload(&mut s);
+            assert_eq!(first["repo"].as_str(), Some("run-2"), "gated {gated}: a fresh run, not the one kept: {first}");
+            settled(&mut s);
+            drop(client_in);
+            until_op(&mut s, "bye");
+            drop(s);
+            done.join().unwrap();
+        }
+    }
+
+    // an early answer that comes after its connection was lost, before the reattach, is kept for the reattach: no second
+    // cold run
+    #[test]
+    fn an_early_answer_after_a_lost_connection_is_kept_for_the_reattach() {
+        let (home, sock) = home();
+        let (runs, gate) = (home.root().join("runs"), home.root().join("gate"));
+        counting_child(&home, &runs, Some(&gate));
+        let listener = UnixListener::bind(&sock).unwrap();
+        let timing = Timing { retry_unit: Duration::from_millis(50), ..Timing::default() };
+        let (client_in, _sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        // (lost before the first run answers; it answers now, with no connection)
+        drop(s);
+        fs::write(&gate, "").unwrap();
+        until_file(&runs);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        let first = control_payload(&mut s);
+        assert_eq!(first["repo"].as_str(), Some("run-1"), "the kept answer, no second run: {first}");
+        settled(&mut s);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        done.join().unwrap();
+    }
+
+    // stdin at EOF at once: the relay ends in microseconds; killing its children then (as main does) leaves none running,
+    // the first run's spawn under way included, and none spawned after
+    #[test]
+    fn a_relay_ended_at_once_leaves_no_child_after_kill_all() {
+        let (home, _sock) = home();
+        let pid = home.root().join("child.pid");
+        // (only the conditions run writes it: the script is the stand-in daemon too, which outlives the shim by design)
+        child_script(
+            &home,
+            &format!(
+                "[ \"$1\" = conditions ] || exit 0; echo $$ > '{p}.part' && mv '{p}.part' '{p}'; exec sleep 30",
+                p = pid.display()
+            ),
+        );
+        let (client_in, input) = UnixStream::pair().unwrap();
+        drop(client_in);
+        let relay = Relay::new(
+            Setup { home, rest: vec![], client_env: vec![], parent: 1, timing: Timing::default() },
+            Out::new(Box::new(Sink::default())),
+        );
+        let children = relay.children();
+        let _ = relay.run(input);
+        children.kill_all();
+        // (a child spawned before the kill wrote its pid, and is gone; none spawned after writes one)
+        let until = Instant::now() + Duration::from_secs(2);
+        while !pid.exists() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(20));
+        }
+        if let Ok(p) = fs::read_to_string(&pid) {
+            let p: i32 = p.trim().parse().unwrap();
+            let gone = rustix::process::test_kill_process(rustix::process::Pid::from_raw(p).unwrap()).is_err();
+            assert!(gone, "the child {p} outlived the relay");
+        }
     }
 
     // #236 section 5, ch-local #60: why the session runs its own reaches

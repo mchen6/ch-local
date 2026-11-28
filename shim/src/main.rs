@@ -51,12 +51,23 @@ fn main() -> ExitCode {
         eprintln!("{}", ch_shim::failed::startup_line(r));
         return exit_of(relay::own_runtime_inherited(&home, &[]));
     }
+    // Windows: CreateProcessW is called with handle inheritance on, and the conditions child is now the relay's first
+    // spawn: the client's pipes (the shim's stdio) must not reach it, or what it starts, which would keep the client from
+    // seeing EOF while they run. Each child's own stdio is set as the child needs it.
+    if let Err(e) = ch_shim::process::keep_stdio_from_children() {
+        eprintln!("ch-shim: the client's pipes could not be kept from what the shim starts ({e})");
+    }
     let client_env = std::env::vars_os().collect();
     let relay = Relay::new(
         Setup { home: home.clone(), rest: Vec::new(), client_env, parent, timing: Default::default() },
         Out::stdout(),
     );
-    match relay.run(io::stdin()) {
+    let children = relay.children();
+    let exit = relay.run(io::stdin());
+    // the relay is over: a conditions child still running (the first run, started with the shim) is killed, and none is
+    // spawned after, never left to outlive the shim or to run beside the session's own runtime
+    children.kill_all();
+    match exit {
         Exit::Done => ExitCode::SUCCESS,
         Exit::OwnRuntime { reason, code, why, held, rest: lines, replay } => {
             eprintln!("{reason}");

@@ -338,6 +338,59 @@ pub fn stdio_not_inherited() -> io::Result<()> {
     Ok(())
 }
 
+/// A job object that kills every process in it when it is terminated, and when its last handle closes (the shim's exit,
+/// however it ends): the conditions child and whatever it starts (its PowerShell) go together.
+pub struct Job(OwnedHandle);
+
+impl Job {
+    pub fn kill_on_close() -> io::Result<Job> {
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+        };
+        // SAFETY: no attributes and no name (both null): an anonymous job this process alone holds.
+        let h = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+        if h.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: h is a fresh handle this process owns; OwnedHandle closes it once.
+        let job = Job(unsafe { OwnedHandle::from_raw_handle(h) });
+        // SAFETY: a plain C struct of integers and counters: all zero is valid (no limits).
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: info is a local of exactly the size given, read only for the call.
+        let ok = unsafe {
+            SetInformationJobObject(
+                job.0.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                &info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(job)
+    }
+
+    /// Puts `child` (and what it starts from now on) in the job.
+    pub fn assign(&self, child: &std::process::Child) -> io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        // SAFETY: both handles are live and owned (the job by self, the process by child) for the call.
+        if unsafe { AssignProcessToJobObject(self.0.as_raw_handle(), child.as_raw_handle()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Kills every process in the job.
+    pub fn terminate(&self) {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        // SAFETY: the job's handle is live and owned by self; a failure leaves the child's own kill to follow.
+        let _ = unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) };
+    }
+}
+
 /// Whether one of this process's standard handles is inheritable (tests).
 #[cfg(test)]
 pub fn stdio_inheritable(which: u32) -> Option<bool> {
