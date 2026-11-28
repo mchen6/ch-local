@@ -250,9 +250,9 @@ test('floors: optional; each a strict version of a module some pack lists, or of
   // the shipped floors: the redaction and GitHub fixes (A-redact), the
   // credential-leak fixes of 11-21 (report's userinfo, pack 1's step names),
   // the runs list that was lost (access-github), pack 1's fixes of 0.7.2 and
-  // 0.7.3 with the parts' fixes they need, 0.7.4's README of its known
-  // limits and 0.7.5's of what a failed assertion's values withhold, and
-  // every part's README true of the release; and the runtime
+  // 0.7.3 with the parts' fixes they need, the known limits in pack 1's
+  // README (0.7.4's of the verdict, 0.7.5's of text outside ASCII in
+  // assertion values); every part's README true of the release; and the runtime
   // whose store refuses a corrupt file it never saw whole, which status's
   // store lines describe (countinghouse 8.0.0)
   assert.deepStrictEqual(d.floors, {countinghouse: '8.0.0', '@countinghouse/ch-access-github': '0.3.2', '@countinghouse/ch-pack-ci-failure-triage': '0.7.5', '@countinghouse/ch-step-dedupe': '0.1.3',

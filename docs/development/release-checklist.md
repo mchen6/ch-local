@@ -188,8 +188,9 @@ The checks are grouped. Within a group, the order doesn't matter.
         runs are listed a few at a time, a rate limit stops every GitHub
         call, a refusal of the runtime's own fails the call named, and the
         owner hint says when it was refused (#35); its README states the
-        known limits of the new-or-recurring verdict (#36), and what a failed
-        assertion's values withhold (#38). 0.7.5 is built
+        known limits of the new-or-recurring verdict (#36), and that a token
+        outside ASCII in a failed assertion's values or its own line is shown
+        as <withheld> (#38). 0.7.5 is built
         against its parts as its own repository pins them; the later
         versions of redact, log-clean, dedupe and owner-hint change their
         READMEs only.
