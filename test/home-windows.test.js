@@ -86,7 +86,8 @@ test('the lines: icacls for inheritance, the grants and the owner; each other SI
   const two = aclWith(rule('S-1-5-32-545', 'BUILTIN\\Users', READ), rule(WORKSPACE, '', READ));
   const lines = fixHint("C:\\Users\\o'brien\\$x", two, {directory: true}).split('\n').map((l) => l.trim());
   assert.deepStrictEqual(lines, [
-    `icacls 'C:\\Users\\o''brien\\$x' /inheritance:r /grant:r *${USER}:(OI)(CI)F *S-1-5-18:(OI)(CI)F`,
+    // (each grant in single quotes: PowerShell would run an unquoted (OI) as a command, as the Windows legs found)
+    `icacls 'C:\\Users\\o''brien\\$x' /inheritance:r /grant:r '*${USER}:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F'`,
     "$i = Get-Item -LiteralPath 'C:\\Users\\o''brien\\$x' -Force; $a = $i.GetAccessControl('Access'); $a.PurgeAccessRules([System.Security.Principal.SecurityIdentifier]'S-1-5-32-545'); $i.SetAccessControl($a)",
     `$i = Get-Item -LiteralPath 'C:\\Users\\o''brien\\$x' -Force; $a = $i.GetAccessControl('Access'); $a.PurgeAccessRules([System.Security.Principal.SecurityIdentifier]'${WORKSPACE}'); $i.SetAccessControl($a)`,
     `icacls 'C:\\Users\\o''brien\\$x' /setowner *${USER}`]);
@@ -117,6 +118,13 @@ test('changeable by this machine\'s CodexSandboxUsers and a Codex sandbox identi
   assert.strictEqual(p.fix, null);
   assert.strictEqual(p.final, true);
   assert.strictEqual(line(h, rules), `${h} can be changed by MACHINE\\CodexSandboxUsers and a Codex sandbox identity (${WORKSPACE}), so another account could change what runs from it and read its credentials. Codex's Windows sandbox gives these access to each folder directly in your profile every time it runs a command, so removing it by hand does not last: unset COUNTINGHOUSE_HOME, or point it under %LOCALAPPDATA%, then install again and delete the old home (it still holds the stored credentials)`);
+}));
+
+// the group named first, then a Codex sandbox identity, whatever order the DACL lists them in (as business passed it)
+test('Codex\'s group and a Codex sandbox identity: the group named first, whatever the DACL\'s order', () => withHome((h) => {
+  for (const rules of [[rule(WORKSPACE, '', MODIFY), rule(CODEX_SID, CODEX, MODIFY)], [rule(CODEX_SID, CODEX, MODIFY), rule(WORKSPACE, '', MODIFY)]]) {
+    assert.strictEqual(problem(h, rules).why, `it can be changed by MACHINE\\CodexSandboxUsers and a Codex sandbox identity (${WORKSPACE})`);
+  }
 }));
 
 test('readable by this machine\'s CodexSandboxUsers alone: the Codex line, read', () => withHome((h) => {

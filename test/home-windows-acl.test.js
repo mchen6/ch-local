@@ -74,7 +74,7 @@ test('a home directly in a profile, given read: refused naming who; the printed 
   const real = fs.realpathSync.native(home);
   const me = require('../lib/win-acl').fileAcl(real).user;
   const purge = (sid) => `$i = Get-Item -LiteralPath '${real}' -Force; $a = $i.GetAccessControl('Access'); $a.PurgeAccessRules([System.Security.Principal.SecurityIdentifier]'${sid}'); $i.SetAccessControl($a)`;
-  const exact = (a, b) => prefix + [`icacls '${real}' /inheritance:r /grant:r *${me}:(OI)(CI)F *S-1-5-18:(OI)(CI)F`, purge(a), purge(b), `icacls '${real}' /setowner *${me}`].join(', then ');
+  const exact = (a, b) => prefix + [`icacls '${real}' /inheritance:r /grant:r '*${me}:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F'`, purge(a), purge(b), `icacls '${real}' /setowner *${me}`].join(', then ');
   assert.ok([exact(USERS, UNNAMED), exact(UNNAMED, USERS)].includes(p.fix), p.fix);
   const lines = p.fix.slice(prefix.length).split(', then ');
   assert.strictEqual(lines.length, 4, `one line per operation, one per SID: ${p.fix}`);

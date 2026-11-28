@@ -1787,8 +1787,8 @@ test('install replaces a launcher that is a link, never writing through it (F8)'
 test('fixHint on a folder grants inheritable full control, so its own files stay reachable (F13)', () => {
   const {fixHint} = require('../lib/win-acl');
   const acl = {user: 'S-1-5-21-1-2-3-1001', owner: 'S-1-5-21-1-2-3-1001', rules: [{sid: 'S-1-1-0'}]};
-  assert.match(fixHint('C:\\h', acl, {directory: true}), /\*S-1-5-21-1-2-3-1001:\(OI\)\(CI\)F \*S-1-5-18:\(OI\)\(CI\)F/);
-  assert.match(fixHint('C:\\h\\f', acl), /\*S-1-5-21-1-2-3-1001:F \*S-1-5-18:F/);
+  assert.match(fixHint('C:\\h', acl, {directory: true}), /'\*S-1-5-21-1-2-3-1001:\(OI\)\(CI\)F' '\*S-1-5-18:\(OI\)\(CI\)F'/);
+  assert.match(fixHint('C:\\h\\f', acl), /'\*S-1-5-21-1-2-3-1001:F' '\*S-1-5-18:F'/);
 });
 
 test('only lib/ceiling.js says "the operator\'s ceiling file": an open home is said as the home\'s (F7)', () => {
