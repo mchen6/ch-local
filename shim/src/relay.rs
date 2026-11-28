@@ -1959,33 +1959,69 @@ mod tests {
         auth.get("resume").and_then(Value::as_str).map(String::from)
     }
 
-    /// A session that settled and was given one record, then lost; the
-    /// listener, the client's input, the relay's end.
-    fn session_with_a_record() -> (UnixListener, UnixStream, Sink, thread::JoinHandle<Exit>) {
+    /// Short waits for the replay tests: a quick loss's backoff and the
+    /// closing grace in tenths of a second.
+    fn fast() -> Timing {
+        Timing { retry_unit: Duration::from_millis(100), closing: Duration::from_millis(500), ..Timing::default() }
+    }
+
+    /// A session that settled and was given one record, then lost (a legacy
+    /// one first sent `initialize`, answered); the listener, the client's
+    /// input, its output, the relay's end.
+    fn session_with_a_record(legacy: bool) -> (UnixListener, UnixStream, Sink, thread::JoinHandle<Exit>) {
         let (home, sock) = home();
         let listener = UnixListener::bind(&sock).unwrap();
-        let (client_in, sink, done) = start(home);
+        let (mut client_in, sink, done) = start_with(home, fast());
         let (mut s, _) = listener.accept().unwrap();
         welcome(&mut s, "rt1");
         until_op(&mut s, "client");
         settled(&mut s);
+        if legacy {
+            client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}\n").unwrap();
+            let (seq, _) = read_m(&mut s);
+            reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":0,"result":{"v":1}}"#);
+        }
         frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"maxOutputBytes":1048576}}"#, BIG)
             .unwrap();
-        thread::sleep(Duration::from_millis(100));
+        // (the record taken: an op's effect is seen only through what follows,
+        // so the connection's end comes after a frame the shim answers)
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":1}"#, BIG).unwrap();
+        until_op(&mut s, "client");
         drop(s);
         (listener, client_in, sink, done)
     }
 
-    /// The next frame: a control frame's op and payload, or an M line's body.
-    fn next_frame(s: &mut UnixStream) -> (Kind, Value, Vec<u8>) {
+    /// The next frame: its kind, a control frame's payload, an M line's seq
+    /// and body.
+    fn next_frame(s: &mut UnixStream) -> (Kind, Value, Option<u64>, Vec<u8>) {
         let (kind, len) = frame::read_head(s, BIG).unwrap();
         let mut p = vec![0u8; len as usize];
         s.read_exact(&mut p).unwrap();
         match kind {
-            Kind::Control => (kind, serde_json::from_slice(&p).unwrap(), vec![]),
-            Kind::Message => (kind, Value::Null, message::from_runtime(&p).unwrap().1.to_vec()),
+            Kind::Control => (kind, serde_json::from_slice(&p).unwrap(), None, vec![]),
+            Kind::Message => {
+                let (seq, body) = message::from_runtime(&p).unwrap();
+                (kind, Value::Null, seq, body.to_vec())
+            }
             _ => panic!("{kind:?}"),
         }
+    }
+
+    /// `line` sent while the connection is unsettled, and known held: a line
+    /// too long for any connection follows it, which the shim answers itself
+    /// at once, and the lines are read in order (a bounded wait on that
+    /// answer, never a sleep).
+    fn held(client_in: &mut UnixStream, sink: &Sink, line: &[u8]) {
+        let before = sink.lines().len();
+        client_in.write_all(line).unwrap();
+        let mut long = vec![b'x'; 70_000];
+        long.push(b'\n');
+        client_in.write_all(&long).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while sink.lines().len() <= before && Instant::now() < until {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(sink.lines().len() > before, "the too-long line was never answered");
     }
 
     /// No connection is waiting on `listener` (it is left blocking).
@@ -1996,55 +2032,108 @@ mod tests {
         none
     }
 
+    /// The server side of a handshake that refuses a resume, as the runtime
+    /// does for a session that ended: Some(token) welcomed as a new session,
+    /// None refused.
+    fn new_session_only(s: &mut UnixStream, token: &str) -> Option<()> {
+        let sk = secret::parse(format!("{}\n", "07".repeat(32)).as_bytes()).unwrap();
+        let (_, hello) = frame::read_frame(s, BIG).unwrap();
+        let hello: Value = serde_json::from_slice(&hello).unwrap();
+        let nc: [u8; 32] = B64.decode(hello["nc"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let ns = [9u8; 32];
+        let prove =
+            format!("{{\"ns\":\"{}\",\"ms\":\"{}\"}}", B64.encode(ns), B64.encode(mac::server_proof(&sk, 1, &nc, &ns)));
+        frame::write_frame(s, Kind::Prove, prove.as_bytes(), BIG).unwrap();
+        let (_, auth) = frame::read_frame(s, BIG).unwrap();
+        let auth: Value = serde_json::from_slice(&auth).unwrap();
+        if auth.get("resume").is_some() {
+            frame::write_frame(s, Kind::Refused, br#"{"code":"RESUME_REFUSED","message":"m"}"#, BIG).unwrap();
+            return None;
+        }
+        let w = format!(
+            r#"{{"session":"s","resumeToken":"{token}","runtimeVersion":"8.0.0","maxToRuntime":65536,"maxToShim":65536}}"#
+        );
+        frame::write_frame(s, Kind::Welcome, w.as_bytes(), BIG).unwrap();
+        Some(())
+    }
+
     // (the runtime's entry shape: lib/sessions.js snapshot(), one object of
     // the session's caps)
     const RECORD: &str = r#"[{"maxOutputBytes":1048576}]"#;
 
     // (the runtime takes a welcomed connection's `client` frame first, and a
     // replay only once the session is settled: shared-runtime design,
-    // section 2; countinghouse listener.js. So a new session's records go
-    // after `settled`, ahead of any client line held meanwhile)
+    // "Holding until settled" and the replay row; countinghouse listener.js.
+    // So the records go after `settled`, ahead of any client line held
+    // meanwhile)
     #[test]
     fn a_refused_resume_opens_a_new_session_that_sends_client_then_replays_on_settled_before_held_lines() {
-        let (listener, mut client_in, _sink, done) = session_with_a_record();
+        let (listener, mut client_in, sink, done) = session_with_a_record(false);
         let (mut s2, _) = listener.accept().unwrap();
         assert_eq!(refuse_resume(&mut s2).as_deref(), Some("rt1"));
         drop(s2);
         let (mut s3, _) = listener.accept().unwrap();
         assert_eq!(welcome(&mut s3, "rt3"), None, "a new session: no resume");
         assert_eq!(control_payload(&mut s3)["op"], "client", "the client frame first");
-        // a line the client sends before the settle is held
-        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}\n").unwrap();
-        thread::sleep(Duration::from_millis(100));
+        held(&mut client_in, &sink, b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}\n");
         settled(&mut s3);
-        let (kind, replay, _) = next_frame(&mut s3);
+        let (kind, replay, _, _) = next_frame(&mut s3);
         assert_eq!((kind, replay["op"].as_str()), (Kind::Control, Some("replay")), "the replay first: {replay}");
         assert_eq!(replay["entries"], serde_json::from_str::<Value>(RECORD).unwrap());
-        let (kind, _, line) = next_frame(&mut s3);
+        let (kind, _, seq, line) = next_frame(&mut s3);
         assert_eq!(kind, Kind::Message, "then the held line");
         assert!(String::from_utf8_lossy(&line).contains("\"id\":7"));
+        reply(&mut s3, seq.unwrap(), r#"{"jsonrpc":"2.0","id":7,"result":{}}"#);
         drop(client_in);
         until_op(&mut s3, "bye");
         drop(s3);
         done.join().unwrap();
     }
 
-    // (a runtime that closes a welcomed connection whose first frame isn't
-    // `client`, as countinghouse's listener does: the shim attaches once,
-    // settles, and no attach follows; with the replay first, it attached
-    // again and again)
+    // (a legacy session: its records go ahead of its replayed initialize, so
+    // the session is restored with its tightenings before anything runs)
     #[test]
-    fn a_refused_resume_holding_records_settles_once_and_does_not_reattach_in_a_loop() {
-        let (listener, client_in, _sink, done) = session_with_a_record();
+    fn a_legacy_session_replays_its_records_before_its_initialize() {
+        let (listener, client_in, _sink, done) = session_with_a_record(true);
         let (mut s2, _) = listener.accept().unwrap();
         refuse_resume(&mut s2);
         drop(s2);
-        let mut attaches = 0;
-        let mut s3 = loop {
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        assert_eq!(control_payload(&mut s3)["op"], "client");
+        settled(&mut s3);
+        let (kind, replay, _, _) = next_frame(&mut s3);
+        assert_eq!((kind, replay["op"].as_str()), (Kind::Control, Some("replay")), "the records first: {replay}");
+        let (kind, _, rseq, init) = next_frame(&mut s3);
+        let init: Value = serde_json::from_slice(&init).unwrap();
+        assert_eq!(
+            (kind, init["id"].as_str(), init["method"].as_str()),
+            (Kind::Message, Some("ch-shim-replay-1"), Some("initialize")),
+            "then the replayed initialize"
+        );
+        reply(&mut s3, rseq.unwrap(), r#"{"jsonrpc":"2.0","id":"ch-shim-replay-1","result":{"v":1}}"#);
+        drop(client_in);
+        until_op(&mut s3, "bye");
+        drop(s3);
+        done.join().unwrap();
+    }
+
+    // (a runtime that refuses a resume of a session that ended, and closes a
+    // welcomed connection whose first frame isn't `client`, as countinghouse's
+    // does: one new session, settled, and no attach after; with the replay
+    // first, every new session was closed, its resume refused, and a new one
+    // opened again, so the bound below is what such a loop meets)
+    #[test]
+    fn a_refused_resume_holding_records_settles_once_and_does_not_reattach_in_a_loop() {
+        let (listener, client_in, _sink, done) = session_with_a_record(false);
+        let mut sessions = 0;
+        let mut live = loop {
             let (mut s, _) = listener.accept().unwrap();
-            attaches += 1;
-            assert!(attaches <= 3, "attached {attaches} times: a reattach loop");
-            welcome(&mut s, &format!("rt{}", attaches + 2));
+            if new_session_only(&mut s, &format!("rt{}", sessions + 2)).is_none() {
+                continue;
+            }
+            sessions += 1;
+            assert!(sessions <= 3, "{sessions} new sessions: a reattach loop");
             let first = control_payload(&mut s);
             if first["op"] == "client" {
                 break s;
@@ -2052,12 +2141,12 @@ mod tests {
             // (as the runtime: closed, the unsettled session ended)
             drop(s);
         };
-        assert_eq!(attaches, 1, "one attach");
-        settled(&mut s3);
-        assert_eq!(control_payload(&mut s3)["op"], "replay");
+        assert_eq!(sessions, 1, "one new session");
+        settled(&mut live);
+        assert_eq!(control_payload(&mut live)["op"], "replay");
         drop(client_in);
-        until_op(&mut s3, "bye");
-        drop(s3);
+        until_op(&mut live, "bye");
+        drop(live);
         done.join().unwrap();
         assert!(no_connection_waiting(&listener), "no attach after the settle");
     }
@@ -2066,7 +2155,7 @@ mod tests {
     // was announced, so the next attach resumes it, and the records go again)
     #[test]
     fn a_connection_lost_after_settled_resumes_and_replays_again() {
-        let (listener, mut client_in, _sink, done) = session_with_a_record();
+        let (listener, mut client_in, sink, done) = session_with_a_record(false);
         let (mut s2, _) = listener.accept().unwrap();
         refuse_resume(&mut s2);
         drop(s2);
@@ -2079,19 +2168,19 @@ mod tests {
         let (mut s4, _) = listener.accept().unwrap();
         assert_eq!(welcome(&mut s4, "rt4").as_deref(), Some("rt3"), "a resume");
         assert_eq!(control_payload(&mut s4)["op"], "client");
-        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/list\"}\n").unwrap();
-        thread::sleep(Duration::from_millis(100));
+        held(&mut client_in, &sink, b"{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/list\"}\n");
         settled(&mut s4);
-        let (kind, replay, _) = next_frame(&mut s4);
+        let (kind, replay, _, _) = next_frame(&mut s4);
         assert_eq!(
             (kind, replay["op"].as_str()),
             (Kind::Control, Some("replay")),
             "the records again on the resumed session, first: {replay}"
         );
         assert_eq!(replay["entries"], serde_json::from_str::<Value>(RECORD).unwrap());
-        let (kind, _, line) = next_frame(&mut s4);
+        let (kind, _, seq, line) = next_frame(&mut s4);
         assert_eq!(kind, Kind::Message, "then the held line");
         assert!(String::from_utf8_lossy(&line).contains("\"id\":8"));
+        reply(&mut s4, seq.unwrap(), r#"{"jsonrpc":"2.0","id":8,"result":{}}"#);
         drop(client_in);
         until_op(&mut s4, "bye");
         drop(s4);
@@ -2102,22 +2191,23 @@ mod tests {
     fn a_resumed_session_holding_no_records_sends_no_replay() {
         let (home, sock) = home();
         let listener = UnixListener::bind(&sock).unwrap();
-        let (mut client_in, _sink, done) = start(home);
+        let (mut client_in, sink, done) = start_with(home, fast());
         let (mut s, _) = listener.accept().unwrap();
         welcome(&mut s, "rt1");
         until_op(&mut s, "client");
         settled(&mut s);
-        thread::sleep(Duration::from_millis(100));
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":1}"#, BIG).unwrap();
+        until_op(&mut s, "client");
         drop(s);
         let (mut s2, _) = listener.accept().unwrap();
         assert_eq!(welcome(&mut s2, "rt2").as_deref(), Some("rt1"), "a resume");
         assert_eq!(control_payload(&mut s2)["op"], "client");
-        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\"}\n").unwrap();
-        thread::sleep(Duration::from_millis(100));
+        held(&mut client_in, &sink, b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\"}\n");
         settled(&mut s2);
-        let (kind, op, line) = next_frame(&mut s2);
+        let (kind, op, seq, line) = next_frame(&mut s2);
         assert_eq!(kind, Kind::Message, "no replay: the held line comes first ({op})");
         assert!(String::from_utf8_lossy(&line).contains("\"id\":9"));
+        reply(&mut s2, seq.unwrap(), r#"{"jsonrpc":"2.0","id":9,"result":{}}"#);
         drop(client_in);
         until_op(&mut s2, "bye");
         drop(s2);
