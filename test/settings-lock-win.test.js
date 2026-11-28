@@ -47,7 +47,7 @@ for (const code of ['EPERM', 'EACCES']) {
     t.mock.method(fs, 'linkSync', (a, b) => { if (b === lock) throw refused(code, a, b); return real(a, b); });
     const c = clock();
     let ran = false;
-    assert.throws(() => withSettingsLock(where, () => { ran = true; }, {platform: 'win32', now: c.now, sleep: c.sleep}), (e) => e.code === code && e.path === lock && e.message.includes(lock) && !/\.tmp/.test(e.message));
+    assert.throws(() => withSettingsLock(where, () => { ran = true; }, {platform: 'win32', now: c.now, sleep: c.sleep}), (e) => e.code === code && e.path === lock && e.message.includes(lock) && !/\.tmp/.test(e.message) && e.cause != null && e.cause.code === code);
     assert.strictEqual(ran, false);
     assert.ok(c.t >= 5000 && c.t < 6000, `given up at the wait's end (${c.t})`);
   });
@@ -79,6 +79,7 @@ test('a lock that is there to the link but gone to the stat, again and again: th
   const c = clock();
   assert.throws(() => withSettingsLock(where, () => 0, {platform: 'linux', now: c.now, sleep: c.sleep}), {code: 'SETTINGS_BUSY'});
   assert.ok(c.t >= 5000 && c.t < 6000, `${c.t}`);
+  assert.ok(stats > 0, 'the stat ran');
 });
 
 test('win32: a stat refused EPERM on the lock (its name being deleted) is busy; past the wait, that error', (t) => {
@@ -93,4 +94,42 @@ test('win32: a stat refused EPERM on the lock (its name being deleted) is busy; 
   const c = clock();
   assert.throws(() => withSettingsLock(where, () => 0, {platform: 'win32', now: c.now, sleep: c.sleep}), (e) => e.code === 'EPERM' && e.path === lock);
   assert.ok(c.t >= 5000 && c.t < 6000, `${c.t}`);
+  assert.ok(stats > 0, 'the stat ran');
 });
+
+// (the medium on this change: the stale branch kept no deadline)
+test('a stale lock that cannot be removed: the wait ends at its deadline, SETTINGS_BUSY, never a spin', (t) => {
+  const {where, lock} = setup();
+  const real = fs.linkSync;
+  let links = 0;
+  t.mock.method(fs, 'linkSync', (a, b) => { if (b === lock) { if (++links > 100000) throw new Error('a loop with no deadline'); throw Object.assign(new Error('EEXIST'), {code: 'EEXIST'}); } return real(a, b); });
+  const realStat = fs.statSync;
+  t.mock.method(fs, 'statSync', (p, o) => (p === lock ? {mtimeMs: Date.now() - 120000, ino: 7} : realStat(p, o)));
+  const realRm = fs.rmSync;
+  let removes = 0;
+  t.mock.method(fs, 'rmSync', (p, o) => { if (p === lock) { removes++; throw refused('EPERM', p); } return realRm(p, o); });
+  const c = clock();
+  assert.throws(() => withSettingsLock(where, () => 0, {platform: 'linux', now: c.now, sleep: c.sleep}), {code: 'SETTINGS_BUSY'});
+  assert.ok(removes > 0, 'the stale lock was tried');
+  assert.ok(c.t >= 5000 && c.t < 6000, `${c.t}`);
+});
+
+test('a stat that fails otherwise (not a release, not a pending name) is that error at once', (t) => {
+  const {where, lock} = setup();
+  const real = fs.linkSync;
+  t.mock.method(fs, 'linkSync', (a, b) => { if (b === lock) throw Object.assign(new Error('EEXIST'), {code: 'EEXIST'}); return real(a, b); });
+  const realStat = fs.statSync;
+  t.mock.method(fs, 'statSync', (p, o) => { if (p === lock) throw refused('EACCES', p); return realStat(p, o); });
+  const c = clock();
+  assert.throws(() => withSettingsLock(where, () => 0, {platform: 'linux', now: c.now, sleep: c.sleep}), (e) => e.code === 'EACCES');
+  assert.strictEqual(c.sleeps, 0);
+});
+
+test('a wait of 0 with the lock held: SETTINGS_BUSY with no sleep (start\'s event loop never stalls)', () => {
+  const {where, lock} = setup();
+  fs.writeFileSync(lock, JSON.stringify({pid: process.pid, at: 'held'}));
+  const c = clock();
+  assert.throws(() => withSettingsLock(where, () => 0, {waitMs: 0, now: c.now, sleep: c.sleep}), {code: 'SETTINGS_BUSY'});
+  assert.strictEqual(c.sleeps, 0);
+});
+
