@@ -20,12 +20,16 @@ const lock = require('../lib/lock');
 
 const LINUX = {skip: process.platform !== 'linux' && 'a holder here is judged from /proc on Linux'};
 const home = () => tmp('ch-lockwin-');
-const refused = (code, p) => Object.assign(new Error(`${code}: operation not permitted, '${p}'`), {code, path: p});
+// (as Node's own: a link's error names its source, the temporary file, in
+// path, and the lock in dest; an exclusive create's names its file in path)
+const refused = (code, p, dest = undefined) => Object.assign(new Error(`${code}: operation not permitted, '${p}'${dest != null ? ` -> '${dest}'` : ''}`), dest != null ? {code, path: p, dest} : {code, path: p});
 const clockIo = (platform) => {
   const io = Object.assign(fakeIo({}), {lockPlatform: platform});
   io.t = 0;
   io.lockNow = () => io.t;
-  io.lockSleep = async (ms) => { io.t += ms; };
+  // (a wait past a minute on this clock is one that would never end: failed
+  // here, never left to run until the heap is gone)
+  io.lockSleep = async (ms) => { io.t += ms; if (io.t > 60000) throw new Error(`waited ${io.t} ms on the wait's clock: a wait that never ends`); };
   return io;
 };
 
@@ -34,7 +38,7 @@ test('win32: a lock name being deleted (link refused EPERM) is busy, not an erro
   const file = path.join(h, 'packs.lock');
   let refusals = 3;
   const real = fs.linkSync;
-  t.mock.method(fs, 'linkSync', (a, b) => { if (b === file && refusals > 0) { refusals--; throw refused('EPERM', b); } return real(a, b); });
+  t.mock.method(fs, 'linkSync', (a, b) => { if (b === file && refusals > 0) { refusals--; throw refused('EPERM', a, b); } return real(a, b); });
   const io = clockIo('win32');
   let ran = false;
   assert.strictEqual(await lock.withLock({home: h}, io, async () => { ran = true; return 0; }), 0, io.err);
@@ -48,10 +52,11 @@ for (const code of ['EPERM', 'EACCES']) {
     const h = home();
     const file = path.join(h, 'packs.lock');
     const real = fs.linkSync;
-    t.mock.method(fs, 'linkSync', (a, b) => { if (b === file) throw refused(code, b); return real(a, b); });
+    t.mock.method(fs, 'linkSync', (a, b) => { if (b === file) throw refused(code, a, b); return real(a, b); });
     const io = clockIo('win32');
     let ran = false;
-    await assert.rejects(lock.withLock({home: h}, io, async () => { ran = true; return 0; }), (e) => e.code === code && e.path === file);
+    // (the lock named, never the temporary file the link came from)
+    await assert.rejects(lock.withLock({home: h}, io, async () => { ran = true; return 0; }), (e) => e.code === code && e.path === file && e.message.includes(file) && !/\.tmp/.test(e.message));
     assert.strictEqual(ran, false);
     assert.ok(io.t >= 10000 && io.t < 12000, `given up at the deadline, on the wait's clock (${io.t})`);
     assert.ok(!/another ch-local/.test(io.err), io.err);
@@ -62,10 +67,26 @@ test('elsewhere, a link refused EPERM is an error at once, as before', async (t)
   const h = home();
   const file = path.join(h, 'packs.lock');
   const real = fs.linkSync;
-  t.mock.method(fs, 'linkSync', (a, b) => { if (b === file) throw refused('EPERM', b); return real(a, b); });
+  t.mock.method(fs, 'linkSync', (a, b) => { if (b === file) throw refused('EPERM', a, b); return real(a, b); });
   const io = clockIo('linux');
   await assert.rejects(lock.withLock({home: h}, io, async () => 0), (e) => e.code === 'EPERM');
   assert.strictEqual(io.t, 0, 'no wait');
+});
+
+test('win32: a stale-lock breaker refused EPERM past the deadline fails with that error and the breaker\'s path, even while waiting: never forever', LINUX, async (t) => {
+  const h = home();
+  const file = path.join(h, 'packs.lock');
+  fs.writeFileSync(file, `${JSON.stringify({pid: 4194301, host: lock.lockHost(), at: 'gone'})}\n`);
+  const real = fs.writeFileSync;
+  t.mock.method(fs, 'writeFileSync', (p, data, opts) => {
+    if (p === `${file}.break`) throw refused('EPERM', p);
+    return real(p, data, opts);
+  });
+  const io = clockIo('win32');
+  let ran = false;
+  await assert.rejects(lock.withLock({home: h}, io, async () => { ran = true; return 0; }, {wait: true}), (e) => e.code === 'EPERM' && e.path === `${file}.break`);
+  assert.strictEqual(ran, false);
+  assert.ok(io.t >= 10000 && io.t < 12000, `given up at the deadline (${io.t})`);
 });
 
 test('win32: the stale-lock breaker refused EPERM is busy, not an error: the stale lock is cleared at a later look', LINUX, async (t) => {
@@ -96,7 +117,7 @@ test('createWhole keeps its answer: true, false, or the refusal thrown, never a 
   assert.strictEqual(lock.createWhole(file, mine), false);
   fs.rmSync(file, {force: true});
   const real = fs.linkSync;
-  t.mock.method(fs, 'linkSync', (a, b) => { if (b === file) throw refused('EPERM', b); return real(a, b); });
+  t.mock.method(fs, 'linkSync', (a, b) => { if (b === file) throw refused('EPERM', a, b); return real(a, b); });
   assert.throws(() => lock.createWhole(file, mine), (e) => e.code === 'EPERM');
   assert.ok(!fs.existsSync(file));
 });
@@ -106,13 +127,15 @@ test('createWhole keeps its answer: true, false, or the refusal thrown, never a 
 // second ch-local takes the lock. Whether the name stays delete-pending (EPERM
 // until the handle closes) or is freed at once (POSIX delete semantics, newer
 // NTFS) is the filesystem's: the lock is taken either way, and the work runs.
-// The handle closes at the wait's first step, on its own clock.
+// The handle closes at the wait's first step, on its own clock. On a runner
+// whose filesystem frees the name at once this case does not reach the
+// pending path (it says which it saw); the stubbed cases above are the ones
+// that prove that path.
 test('Windows, a real delete-pending lock file: the next ch-local takes the lock once the other handle closes, never an error', {skip: process.platform !== 'win32' && 'a real Windows filesystem'}, async () => {
   const h = home();
   const file = path.join(h, 'packs.lock');
   fs.writeFileSync(file, `${JSON.stringify({pid: process.pid, host: lock.lockHost(), at: 'held'})}\n`);
-  let fd = fs.openSync(file, 'r');
-  fs.rmSync(file, {force: true});
+  let fd = null;
   const io = Object.assign(fakeIo({}), {lockPlatform: 'win32'});
   io.t = 0;
   io.lockNow = () => io.t;
@@ -120,6 +143,8 @@ test('Windows, a real delete-pending lock file: the next ch-local takes the lock
   io.lockSleep = async (ms) => { io.t += ms; steps++; if (fd != null) { fs.closeSync(fd); fd = null; } };
   let ran = false;
   try {
+    fd = fs.openSync(file, 'r');
+    fs.rmSync(file, {force: true});
     assert.strictEqual(await lock.withLock({home: h}, io, async () => { ran = true; return 0; }), 0, io.err);
   } finally {
     if (fd != null) fs.closeSync(fd);
