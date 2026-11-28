@@ -54,6 +54,18 @@ test('a link, or a path that is not there, is never sent: answered by today\'s s
   assert.deepStrictEqual(asked, [P('link'), P('gone')]);
 });
 
+test('a path under a listed folder that is a link (or missing) is never sent: no ACL read through a linked folder', () => {
+  const runs = [];
+  const run = (script, env) => { runs.push(env.CH_ACL_FILES.split('\n')); return JSON.stringify([ACL('O')]); };
+  const asked = [];
+  const single = (p) => { asked.push(p); return ACL(`single:${path.basename(p)}`); };
+  // (lstat of the file goes through the linked folder and finds a file)
+  const read = winAcl.prefetch([P('jdir'), P('jdir/secret'), P('other')], {run, lstat: kinds({[P('jdir')]: 'link', [P('jdir/secret')]: 'file', [P('other')]: 'file'}), single});
+  assert.deepStrictEqual(runs, [[P('other')]]);
+  assert.deepStrictEqual(read(P('other')), ACL('O'));
+  assert.deepStrictEqual(read(P('jdir/secret')), ACL('single:secret'));
+});
+
 test('a run that fails as a whole: every path by today\'s single read', () => {
   const run = () => { throw new Error('powershell did not start'); };
   const single = (p) => ACL(`single:${path.basename(p)}`);

@@ -167,7 +167,9 @@ const FILE_ACLS_EACH_SCRIPT = PRELUDE.concat(ACL_FN, [
 // same folders several times, a run each). -> fileAcl(p).
 // - Each path is lstat'd first, and only a plain file or directory is sent:
 //   no ACL is ever read through a link, even to look. A link, or a path that
-//   isn't there, is answered by today's single read, with today's answer.
+//   isn't there, is answered by today's single read, with today's answer, and
+//   so is a path under a listed folder that was left out (list a folder
+//   before what is in it, as its checks run).
 // - A path whose read failed in the run (or a run that failed, or answered
 //   in another shape) is answered by today's single read, so its error is
 //   exactly today's, and every other path keeps its own.
@@ -180,12 +182,17 @@ function prefetch(paths, {run = runPowershell, lstat = (p) => fs.lstatSync(p), s
   const known = new Map();
   for (const [p, acl] of Object.entries(seed)) if (acl != null) known.set(path.resolve(p), acl);
   const plain = [];
+  const left = [];
+  const under = (r, d) => r.toLowerCase().startsWith(`${d.toLowerCase().replace(/[\\/]+$/, '')}${path.sep}`);
   for (const p of paths) {
     const r = path.resolve(p);
     if (known.has(r) || plain.includes(r)) continue;
+    // (a path under a listed folder that was left out, a link or missing, is
+    // left out too: its lstat would go through that link)
+    if (left.some((d) => under(r, d))) { left.push(r); continue; }
     let st = null;
     try { st = lstat(r); } catch (e) { st = null; }
-    if (st == null || st.isSymbolicLink() || !(st.isFile() || st.isDirectory())) continue;
+    if (st == null || st.isSymbolicLink() || !(st.isFile() || st.isDirectory())) { left.push(r); continue; }
     plain.push(r);
   }
   if (plain.length > 0) {
