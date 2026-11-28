@@ -33,12 +33,12 @@ use crate::{answer, child};
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
 /// How long the runtime's answer to a replay (`tightenings`) is waited for
 /// from `settled`; none by then counts as not kept.
-const REPLAY_ANSWER: Duration = Duration::from_secs(10);
+const TIGHTENINGS_WAIT: Duration = Duration::from_secs(10);
 /// A session the runtime says it couldn't keep the tightenings of (after a
 /// replay, or after a runtime restart's restore) is refused with this, as a
 /// record it lost is (business's words).
 const TIGHTENINGS_NOT_KEPT: &str = "ch-shim: after a restart, the runtime could not keep the settings this session tightened, so the session stops: restart it";
-/// The same, when no answer to its replay came within REPLAY_ANSWER.
+/// The same, when no answer to its replay came within TIGHTENINGS_WAIT.
 const TIGHTENINGS_UNANSWERED: &str = "ch-shim: after a restart, the runtime did not say whether it kept the settings this session tightened, so the session stops: restart it";
 /// What a session that lost a record is refused with when the runtime can't
 /// resume it (a daemon death, or a resume refused): a new session can't be
@@ -135,8 +135,8 @@ pub struct Timing {
     /// How long a welcomed connection waits for that run's answer (FIRST_WAIT).
     pub first_wait: Duration,
     /// How long, from `settled`, the runtime's answer to a replay is waited
-    /// for, the client's lines held (REPLAY_ANSWER).
-    pub replay_answer: Duration,
+    /// for, the client's lines held (TIGHTENINGS_WAIT).
+    pub tightenings_wait: Duration,
 }
 
 impl Default for Timing {
@@ -150,7 +150,7 @@ impl Default for Timing {
             barrier: STDOUT_BARRIER,
             first_child: child::FIRST_TIMEOUT,
             first_wait: FIRST_WAIT,
-            replay_answer: REPLAY_ANSWER,
+            tightenings_wait: TIGHTENINGS_WAIT,
         }
     }
 }
@@ -490,7 +490,7 @@ impl Relay {
             }
             Ev::AnswerDeadline { generation } => {
                 // no answer to this connection's replay in time: not kept
-                if self.answer_wait == Some(generation) && generation == self.generation {
+                if self.answer_wait == Some(generation) && generation == self.generation && self.state == State::Live {
                     self.answer_wait = None;
                     return self.refuse_session(TIGHTENINGS_UNANSWERED);
                 }
@@ -901,6 +901,10 @@ impl Relay {
     /// initialize replayed first, then every held line; and stdin's end, if
     /// it came meanwhile.
     fn release_held(&mut self) -> Option<Exit> {
+        // (only to a live connection: one draining or closing takes nothing)
+        if self.state != State::Live {
+            return None;
+        }
         // the session is restored (section 6, step 4) before any of the
         // client's held traffic reaches it
         if self.reconnecting {
@@ -940,8 +944,8 @@ impl Relay {
                     self.control(&frame);
                     // the client's lines wait for the runtime's answer
                     // (`tightenings`): kept, they go; not kept, or none
-                    // within REPLAY_ANSWER, the session is refused
-                    let (tx, generation, wait) = (self.tx.clone(), self.generation, self.setup.timing.replay_answer);
+                    // within TIGHTENINGS_WAIT, the session is refused
+                    let (tx, generation, wait) = (self.tx.clone(), self.generation, self.setup.timing.tightenings_wait);
                     self.answer_wait = Some(generation);
                     thread::spawn(move || {
                         thread::sleep(wait);
@@ -961,7 +965,7 @@ impl Relay {
                     self.answer_wait = None;
                     return self.refuse_session(TIGHTENINGS_NOT_KEPT);
                 }
-                if replay && self.answer_wait == Some(self.generation) {
+                if replay && self.answer_wait == Some(self.generation) && self.state == State::Live {
                     self.answer_wait = None;
                     return self.release_held();
                 }
@@ -997,7 +1001,13 @@ impl Relay {
                     }
                 }
             }
-            "drain" if self.state == State::Live => self.state = State::Draining,
+            "drain" if self.state == State::Live => {
+                self.state = State::Draining;
+                // (the answer awaited is this connection's, which is going
+                // away: what is held waits for the next one, whose settle
+                // replays again; never refused for a runtime restarting)
+                self.answer_wait = None;
+            }
             "own-runtime" => {
                 let reason: String = op
                     .get("reason")
@@ -1111,6 +1121,9 @@ impl Relay {
     }
 
     fn lost(&mut self, _why: String) -> Option<Exit> {
+        // (an answer awaited on this connection: gone with it, never a
+        // refusal; the next settle replays again)
+        self.answer_wait = None;
         self.writer = None;
         if let State::Closing(_) = self.state {
             return Some(self.finish());
@@ -1175,6 +1188,7 @@ impl Relay {
     }
 
     fn unreachable(&mut self, why: String) {
+        self.answer_wait = None;
         if matches!(self.state, State::Closing(_)) {
             return;
         }
@@ -2404,7 +2418,7 @@ mod tests {
 
     #[test]
     fn no_answer_within_its_bound_refuses_the_session() {
-        let timing = Timing { replay_answer: Duration::from_millis(300), ..fast() };
+        let timing = Timing { tightenings_wait: Duration::from_millis(300), ..fast() };
         let (s, client_in, sink, done) = awaiting_the_answer(timing);
         let lines = lines_at_least(&sink, 2);
         assert!(
@@ -2527,7 +2541,7 @@ mod tests {
     #[test]
     fn a_connection_lost_while_awaiting_the_answer_is_no_refusal_however_slow_the_reattach() {
         let timing =
-            Timing { replay_answer: Duration::from_millis(200), retry_unit: Duration::from_millis(400), ..fast() };
+            Timing { tightenings_wait: Duration::from_millis(200), retry_unit: Duration::from_millis(400), ..fast() };
         let (listener, s3, client_in, sink, done) = awaiting_with_listener(timing);
         drop(s3);
         reattached_and_kept(&listener, client_in, &sink, done);
@@ -2538,7 +2552,7 @@ mod tests {
     // during the drain is no refusal; the next connection takes it all)
     #[test]
     fn a_drain_while_awaiting_the_answer_holds_everything_for_the_next_connection() {
-        let timing = Timing { replay_answer: Duration::from_millis(200), ..fast() };
+        let timing = Timing { tightenings_wait: Duration::from_millis(200), ..fast() };
         let (listener, mut s3, client_in, sink, done) = awaiting_with_listener(timing);
         frame::write_frame(&mut s3, Kind::Control, br#"{"op":"drain"}"#, BIG).unwrap();
         assert!(nothing_within(&mut s3, 500), "past the bound in the drain: no refusal, nothing sent");
