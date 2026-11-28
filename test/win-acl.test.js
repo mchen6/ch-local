@@ -16,7 +16,7 @@ const ace = (sid, rights = FULL, extra = {}) => Object.assign({sid, rights, type
 const priv = () => ({user: USER, owner: USER, otherAces: false, rules: [ace(USER), ace(winAcl.SYSTEM)]});
 
 test('the PowerShell it runs names no cmdlet (a lookup rebuilds the module cache, and would load module code)', () => {
-  for (const name of ['FILE_ACL_SCRIPT', 'FILE_ACLS_SCRIPT', 'PRIVATE_DIRS_SCRIPT', 'CREATE_SCRIPT', 'NAMES_SCRIPT']) {
+  for (const name of ['FILE_ACL_SCRIPT', 'FILE_ACLS_SCRIPT', 'PRIVATE_DIRS_SCRIPT', 'CREATE_SCRIPT', 'NAMES_SCRIPT', 'FILE_ACLS_EACH_SCRIPT']) {
     const code = winAcl[name].replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
     assert.doesNotMatch(code, /\b[A-Z][a-z]+-[A-Z][A-Za-z]+\b/, name);
   }
