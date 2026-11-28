@@ -1032,6 +1032,9 @@ test('start --own-runtime tells why the session runs its own runtime: token, cre
     [['--own-runtime-reason', 'credential'], /^a pack credential in this session's environment isn't the shared runtime's, so it runs its own runtime$/],
     [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'the conditions check timed out after 10 s\u202e\n\u2028'], /^the client checks could not run \(the conditions check timed out after 10 s   \), so this session runs its own runtime$/],
     [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', 'gh\u00ad hid\u{e0041}\u{e0042}den\ufff9 text'], /^the client checks could not run \(gh  hid  den  text\), so this session runs its own runtime$/],
+    // (the shim's two time-outs, as it hands them over: its words end to end in the client's line)
+    [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', "the check of the client's setup did not finish within 25 s"], /^the client checks could not run \(the check of the client's setup did not finish within 25 s\), so this session runs its own runtime$/],
+    [['--own-runtime-reason', 'conditions-failed', '--own-runtime-why', "the check of the client's setup did not finish in the 10 s the shared runtime waits for it"], /^the client checks could not run \(the check of the client's setup did not finish in the 10 s the shared runtime waits for it\), so this session runs its own runtime$/],
     [['--own-runtime-reason', 'later-reason'], /^this session can't share the runtime \(later-reason\), so it runs its own$/],
     [['--own-runtime-reason', 'Bad Reason!'], /^this session can't share the runtime, so it runs its own$/]
   ];

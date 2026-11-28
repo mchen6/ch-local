@@ -74,10 +74,9 @@ impl Children {
             }
             Err(_) => Vec::new(),
         };
+        // (a child whose lock a panic poisoned is killed all the same: taken off the list, it is never reached again)
         for c in running {
-            if let Ok(mut c) = c.lock() {
-                c.kill();
-            }
+            c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).kill();
         }
     }
 
@@ -220,7 +219,8 @@ pub fn run(
             return Err("the shim has stopped relaying".into());
         }
         // (Windows: in a job that kills its tree, made before the spawn so that only the assign sits between the child's
-        // start and its joining it; one that can't be made, or joined, leaves the child to its own kill)
+        // start and its joining it, a gap that remains, though Node's start makes it far shorter than any process it
+        // starts; a job that can't be made, or joined, leaves the child to its own kill)
         #[cfg(windows)]
         let job = crate::win_ffi::Job::kill_on_close().ok();
         let mut spawned = cmd.spawn().map_err(|e| format!("the conditions child could not be started ({e})"))?;

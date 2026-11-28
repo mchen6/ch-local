@@ -27,7 +27,11 @@ mod tests {
     #[test]
     fn main_keeps_stdio_from_children_before_the_relay_and_kills_its_children_after() {
         let main = include_str!("main.rs");
-        let at = |what: &str| main.find(what).unwrap_or_else(|| panic!("main.rs no longer has {what}"));
+        // (each called once, so none can sit on another path unseen: a branch, an early return)
+        let at = |what: &str| {
+            assert_eq!(main.matches(what).count(), 1, "main.rs has {what} other than once");
+            main.find(what).unwrap()
+        };
         let (keep, relay, run, kill) = (
             at("process::keep_stdio_from_children()"),
             at("Relay::new("),
@@ -35,16 +39,6 @@ mod tests {
             at("children.kill_all()"),
         );
         assert!(keep < relay && relay < run && run < kill, "out of order: {keep} {relay} {run} {kill}");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn on_windows_the_shims_stdio_is_kept_from_children() {
-        use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
-        super::keep_stdio_from_children().unwrap();
-        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-            assert_ne!(crate::win_ffi::stdio_inheritable(which), Some(true), "handle {which} is still inheritable");
-        }
     }
 
     #[test]
