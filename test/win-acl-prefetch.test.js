@@ -75,6 +75,41 @@ test('a run that fails as a whole: every path by today\'s single read', () => {
   assert.deepStrictEqual(odd(P('a')), ACL('single:a'));
 });
 
+// (the Reviewer's high read of part 3: a whole run that timed out is no
+// slower to a refusal than today's first single read, with today's code)
+test('a whole run that timed out: every sent path answers that timeout, no further run', () => {
+  let runs = 0;
+  const timedOut = Object.assign(new Error('spawnSync powershell.exe ETIMEDOUT'), {code: 'ETIMEDOUT'});
+  const run = () => { runs++; throw timedOut; };
+  let single = 0;
+  const read = winAcl.prefetch([P('a'), P('a/b')], {run, lstat: kinds({[P('a')]: 'dir', [P('a/b')]: 'file'}), single: () => { single++; return ACL('S'); }});
+  assert.throws(() => read(P('a')), (e) => e === timedOut);
+  assert.throws(() => read(P('a/b')), (e) => e === timedOut);
+  assert.strictEqual(runs, 1);
+  assert.strictEqual(single, 0, 'no single read after a timeout');
+});
+
+test('a child listed before its folder, or a path differing only by case from one listed, is never sent', () => {
+  const runs = [];
+  const run = (script, env) => { const l = env.CH_ACL_FILES.split('\n'); runs.push(l); return JSON.stringify(l.map((x) => ACL(path.basename(x)))); };
+  const asked = [];
+  const single = (p) => { asked.push(p); return ACL(`single:${path.basename(p)}`); };
+  const lstat = () => st('file');
+  const read = winAcl.prefetch([P('dir/file'), P('dir'), P('Other'), P('other')], {run, lstat, single});
+  assert.deepStrictEqual(runs, [[P('dir'), P('Other')]]);
+  assert.deepStrictEqual(read(P('dir/file')), ACL('single:file'));
+  assert.deepStrictEqual(read(P('other')), ACL('single:other'));
+  assert.deepStrictEqual(read(P('dir')), ACL('dir'));
+});
+
+test('with no single read given, the fallback is win-acl\'s exported fileAcl (a stub of it is used)', (t) => {
+  const asked = [];
+  t.mock.method(winAcl, 'fileAcl', (p) => { asked.push(p); return ACL('stub'); });
+  const read = winAcl.prefetch([P('a')], {run: () => 'not json', lstat: kinds({[P('a')]: 'dir'})});
+  assert.deepStrictEqual(read(P('a')), ACL('stub'));
+  assert.deepStrictEqual(asked, [P('a')]);
+});
+
 test('the batched script reads each path in a try of its own, as the single one reads it', () => {
   assert.match(winAcl.FILE_ACLS_EACH_SCRIPT, /foreach \(\$f in .*\) \{ try \{ .*\(A \$f\).* \} catch \{ .*failed.* \} \}/);
   assert.ok(winAcl.FILE_ACLS_EACH_SCRIPT.includes(winAcl.ACL_FN.join('\n')), 'the same ACL function: the same objects');

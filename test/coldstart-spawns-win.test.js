@@ -10,6 +10,10 @@ require('./tmp-dirs');
 //   and the secret's in one run (two before).
 // - A private read in a private folder: one run (two before).
 // - Reading the credential store: one run (two before).
+// - Attribution, on real PowerShell: a file granted to Users in a private
+//   folder is refused for the file, in one run; a batch of [missing, folder]
+//   answers [failed, the folder's ACL], in that order.
+// On Windows a missing precondition fails the case, never skips it.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -71,3 +75,33 @@ test('Windows: reading the credential store takes one PowerShell run', WIN, () =
   assert.ok(got.modules.size === 1);
   assert.strictEqual(winAcl.runCount() - before, 1);
 });
+
+test('Windows: a file granted to Users in a private folder is refused for the file, in one PowerShell run', WIN, () => {
+  const {readPrivateIn} = require('../lib/private-file');
+  const dir = path.join(require('./fake-io').tmp('ch-cs-attr-'), 'run');
+  winAcl.makePrivateDirs([dir], [dir]);
+  const file = path.join(dir, 'secret');
+  fs.writeFileSync(file, 'abc');
+  const granted = require('node:child_process').spawnSync('icacls', [file, '/grant', '*S-1-5-32-545:(R)'], {encoding: 'utf8', windowsHide: true});
+  assert.strictEqual(granted.status, 0, `icacls: ${granted.stdout}${granted.stderr}`);
+  const before = winAcl.runCount();
+  assert.throws(() => readPrivateIn(dir, 'secret', 80), (e) => e.message.includes(file) && /accessible by S-1-5-32-545/.test(e.message) && !e.message.startsWith(`${dir} `));
+  say(`a refused private read: ${winAcl.runCount() - before} run(s)`);
+  assert.strictEqual(winAcl.runCount() - before, 1);
+});
+
+test('Windows: a batch of [missing, folder] answers [failed, the folder\'s ACL], in that order', WIN, () => {
+  const dir = require('./fake-io').tmp('ch-cs-order-');
+  const missing = path.join(dir, 'not-there');
+  let out = null;
+  const run = (script, env) => { const text = winAcl.runPowershell(script, env); out = JSON.parse(text); return text; };
+  const plainStat = {isSymbolicLink: () => false, isFile: () => true, isDirectory: () => false};
+  const read = winAcl.prefetch([missing, dir], {run, lstat: () => plainStat, single: () => { throw new Error('a single read'); }});
+  assert.ok(Array.isArray(out) && out.length === 2, JSON.stringify(out));
+  assert.strictEqual(out[0].failed, true, JSON.stringify(out[0]));
+  assert.ok(out[1].failed !== true && typeof out[1].owner === 'string', JSON.stringify(out[1]));
+  assert.deepStrictEqual(read(dir), out[1]);
+  assert.deepStrictEqual(read(dir), winAcl.fileAcl(dir));
+  say('a batch of [missing, folder]: [failed, ACL]');
+});
+
