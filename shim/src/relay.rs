@@ -31,6 +31,15 @@ use crate::{answer, child};
 
 /// After the client's stdin ends: answers are relayed this long at most.
 const CLOSING_GRACE: Duration = Duration::from_secs(10);
+/// How long the runtime's answer to a replay (`tightenings`) is waited for
+/// from `settled`; none by then counts as not kept.
+const REPLAY_ANSWER: Duration = Duration::from_secs(10);
+/// A session the runtime says it couldn't keep the tightenings of (after a
+/// replay, or after a runtime restart's restore) is refused with this, as a
+/// record it lost is (business's words).
+const TIGHTENINGS_NOT_KEPT: &str = "ch-shim: after a restart, the runtime could not keep the settings this session tightened, so the session stops: restart it";
+/// The same, when no answer to its replay came within REPLAY_ANSWER.
+const TIGHTENINGS_UNANSWERED: &str = "ch-shim: after a restart, the runtime did not say whether it kept the settings this session tightened, so the session stops: restart it";
 /// Sent after a replayed initialize.
 const INITIALIZED: &[u8] = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 /// What a legacy (2025-11-25) client is told when the runtime it talks to
@@ -111,6 +120,9 @@ pub struct Timing {
     pub first_child: Duration,
     /// How long a welcomed connection waits for that run's answer (FIRST_WAIT).
     pub first_wait: Duration,
+    /// How long, from `settled`, the runtime's answer to a replay is waited
+    /// for, the client's lines held (REPLAY_ANSWER).
+    pub replay_answer: Duration,
 }
 
 impl Default for Timing {
@@ -124,6 +136,7 @@ impl Default for Timing {
             barrier: STDOUT_BARRIER,
             first_child: child::FIRST_TIMEOUT,
             first_wait: FIRST_WAIT,
+            replay_answer: REPLAY_ANSWER,
         }
     }
 }
@@ -2212,6 +2225,172 @@ mod tests {
         until_op(&mut s2, "bye");
         drop(s2);
         done.join().unwrap();
+    }
+
+    /// The runtime's answer to a replay (or, `after` "restore", to a restore).
+    fn answer(s: &mut UnixStream, kept: bool, after: &str) {
+        let p = format!(r#"{{"op":"tightenings","kept":{kept},"after":"{after}"}}"#);
+        frame::write_frame(s, Kind::Control, p.as_bytes(), BIG).unwrap();
+    }
+
+    /// No frame comes from the shim within `ms` (the socket's own timeout:
+    /// a bound on a wait for nothing, never a sleep that passes on time).
+    fn nothing_within(s: &mut UnixStream, ms: u64) -> bool {
+        s.set_read_timeout(Some(Duration::from_millis(ms))).unwrap();
+        // (a read that times out: nothing came; a byte read means something
+        // did, and the caller's assertion fails on it)
+        let mut b = [0u8; 1];
+        let none = matches!(s.read(&mut b), Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut);
+        s.set_read_timeout(None).unwrap();
+        none
+    }
+
+    /// Waits (bounded) for the client to have `n` lines of output.
+    fn lines_at_least(sink: &Sink, n: usize) -> Vec<String> {
+        let until = Instant::now() + Duration::from_secs(5);
+        while sink.lines().len() < n && Instant::now() < until {
+            thread::sleep(Duration::from_millis(10));
+        }
+        sink.lines()
+    }
+
+    /// A session holding a record, reattached as a new session: client,
+    /// settled, the replay read; a line held meanwhile. -> (the connection,
+    /// the client's input, its output, the relay's end).
+    fn awaiting_the_answer(timing: Timing) -> (UnixStream, UnixStream, Sink, thread::JoinHandle<Exit>) {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start_with(home, timing);
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"record","entry":{"maxOutputBytes":1048576}}"#, BIG)
+            .unwrap();
+        frame::write_frame(&mut s, Kind::Control, br#"{"op":"conditions?","seq":1}"#, BIG).unwrap();
+        until_op(&mut s, "client");
+        drop(s);
+        let (mut s2, _) = listener.accept().unwrap();
+        refuse_resume(&mut s2);
+        drop(s2);
+        let (mut s3, _) = listener.accept().unwrap();
+        welcome(&mut s3, "rt3");
+        assert_eq!(control_payload(&mut s3)["op"], "client");
+        held(&mut client_in, &sink, b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}\n");
+        settled(&mut s3);
+        assert_eq!(control_payload(&mut s3)["op"], "replay");
+        (s3, client_in, sink, done)
+    }
+
+    // (business's words for the two refusals; the refusal itself is pinned
+    // below by Exit::Refused and the client's answers)
+    #[test]
+    fn the_answers_refusals_are_in_these_words() {
+        assert_eq!(
+            TIGHTENINGS_NOT_KEPT,
+            "ch-shim: after a restart, the runtime could not keep the settings this session tightened, so the session stops: restart it"
+        );
+        assert_eq!(
+            TIGHTENINGS_UNANSWERED,
+            "ch-shim: after a restart, the runtime did not say whether it kept the settings this session tightened, so the session stops: restart it"
+        );
+    }
+
+    #[test]
+    fn a_replay_kept_releases_the_held_lines_only_then() {
+        let (mut s, client_in, _sink, done) = awaiting_the_answer(fast());
+        assert!(nothing_within(&mut s, 300), "the held line waits for the answer");
+        answer(&mut s, true, "replay");
+        let (kind, _, seq, line) = next_frame(&mut s);
+        assert_eq!(kind, Kind::Message, "then the held line");
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":7"));
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":7,"result":{}}"#);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        assert!(matches!(done.join().unwrap(), Exit::Done));
+    }
+
+    #[test]
+    fn a_replay_not_kept_refuses_the_session_and_forwards_nothing() {
+        let (mut s, client_in, sink, done) = awaiting_the_answer(fast());
+        answer(&mut s, false, "replay");
+        let lines = lines_at_least(&sink, 2);
+        assert!(
+            lines.iter().any(|l| l.contains("\"id\":7") && l.contains("SESSION_CANT_FALL_BACK")),
+            "the held request refused: {lines:?}"
+        );
+        // (the connection closed: no message reached the runtime)
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+        assert!(!rest.iter().any(|b| *b == b'M'), "nothing forwarded");
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+    }
+
+    #[test]
+    fn no_answer_within_its_bound_refuses_the_session() {
+        let timing = Timing { replay_answer: Duration::from_millis(300), ..fast() };
+        let (s, client_in, sink, done) = awaiting_the_answer(timing);
+        let lines = lines_at_least(&sink, 2);
+        assert!(
+            lines.iter().any(|l| l.contains("\"id\":7") && l.contains("SESSION_CANT_FALL_BACK")),
+            "refused at the bound: {lines:?}"
+        );
+        drop(s);
+        drop(client_in);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+    }
+
+    // (a restore after a runtime restart that couldn't apply a tightening:
+    // told mid-session; a call in flight is crash-answered, as a refusal
+    // answers it, and every later request refused)
+    #[test]
+    fn a_restore_not_kept_mid_session_refuses_it_and_crash_answers_what_is_in_flight() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, sink, done) = start_with(home, fast());
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\"}\n").unwrap();
+        let _ = read_m(&mut s);
+        answer(&mut s, false, "restore");
+        let lines = lines_at_least(&sink, 1);
+        assert!(
+            lines.iter().any(|l| l.contains("\"id\":3") && l.contains("RUNTIME_RESTARTED")),
+            "the call in flight crash-answered: {lines:?}"
+        );
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/list\"}\n").unwrap();
+        let lines = lines_at_least(&sink, 2);
+        assert!(
+            lines.iter().any(|l| l.contains("\"id\":4") && l.contains("SESSION_CANT_FALL_BACK")),
+            "a later request refused: {lines:?}"
+        );
+        drop(client_in);
+        drop(s);
+        assert!(matches!(done.join().unwrap(), Exit::Refused));
+    }
+
+    #[test]
+    fn a_kept_answer_with_no_replay_pending_changes_nothing() {
+        let (home, sock) = home();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (mut client_in, _sink, done) = start_with(home, fast());
+        let (mut s, _) = listener.accept().unwrap();
+        welcome(&mut s, "rt1");
+        until_op(&mut s, "client");
+        settled(&mut s);
+        answer(&mut s, true, "replay");
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}\n").unwrap();
+        let (seq, line) = read_m(&mut s);
+        assert!(String::from_utf8_lossy(&line).contains("\"id\":5"), "forwarded as before");
+        reply(&mut s, seq.unwrap(), r#"{"jsonrpc":"2.0","id":5,"result":{}}"#);
+        drop(client_in);
+        until_op(&mut s, "bye");
+        drop(s);
+        assert!(matches!(done.join().unwrap(), Exit::Done));
     }
 
     #[test]
