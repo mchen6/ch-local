@@ -23,6 +23,16 @@ fn one(id: &[u8], may_have_run: bool) -> Vec<u8> {
     out
 }
 
+/// A session refused because this shim lost one of its tightenings (the
+/// vectors' sessionTighteningsLostAnswer, exact apart from the id).
+pub fn tightenings_lost(id: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(256);
+    out.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":");
+    out.extend_from_slice(id);
+    out.extend_from_slice(b",\"error\":{\"code\":-32603,\"message\":\"countinghouse couldn't keep the settings this session tightened, so the session stops: restart it\",\"data\":{\"countinghouse/code\":\"SESSION_TIGHTENINGS_LOST\",\"retryable\":false}}}");
+    out
+}
+
 /// A mid-session fallback refused because this shim holds records (the
 /// vectors' sessionCantFallBackAnswer, exact apart from the id).
 pub fn cant_fall_back(id: &[u8]) -> Vec<u8> {
@@ -146,6 +156,19 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
         let t = &v["tooLongLineAnswer"];
         assert_eq!(too_long(t["limit"].as_u64().unwrap() as usize), t["json"].as_str().unwrap().as_bytes());
+    }
+
+    // (business's words for a session refused because it lost one of its
+    // tightenings: its own answer, not the cant-fall-back one)
+    #[test]
+    fn the_tightenings_lost_answer_is_the_vectors_in_these_words() {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../tests/vectors/contract-2.json")).unwrap();
+        let want = v["sessionTighteningsLostAnswer"]["json"].as_str().unwrap();
+        assert_eq!(String::from_utf8(tightenings_lost(b"7")).unwrap(), want);
+        assert_eq!(
+            want,
+            r#"{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"countinghouse couldn't keep the settings this session tightened, so the session stops: restart it","data":{"countinghouse/code":"SESSION_TIGHTENINGS_LOST","retryable":false}}}"#
+        );
     }
 
     #[test]
