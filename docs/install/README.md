@@ -31,7 +31,9 @@
    and why only on the machine that built it:
    [Before the first release](claude-code.md#before-the-first-release-a-prepared-local-release)).
    `<dir>` is an absolute path that uses only ASCII letters, digits, spaces
-   and `_ / \ . : @ + = , ~ -`:
+   and `_ / \ . : @ + = , ~ -` (no `%`, which cmd expands inside double
+   quotes, and `\` allowed, as Windows paths use it; the agent's route on the
+   Claude Code page writes the path with forward slashes instead):
 
        CH_LOCAL_DEV=1 node '<dir>/ch-local/bin/ch-local.js' install --pack ci-failure-triage --from '<dir>/release' --unreleased-pins '<dir>/pins.json'
 

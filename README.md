@@ -120,9 +120,8 @@ Three facts you can check on your own machine, with your home as `<home>`:
 - **Usage is recorded on this machine**, in `<home>/store/usage`. `node <home>/app/node_modules/countinghouse/bin/countinghouse-usage.js --usageDir <home>/store/usage` prints the report outside any conversation (`--since 7d`, `--groupBy tool`, `--json` or `--csv`).
 
 `<home>` is `$COUNTINGHOUSE_HOME` (an absolute path) or `~/.countinghouse` (`%LOCALAPPDATA%\countinghouse` on Windows). Every
-command first checks Node: below 22.16 it says so and offers two ways on, to
-install Node 24 yourself or to let ch-local fetch its own; that fetch is not
-built yet, so a yes is refused and nothing is downloaded.
+command first checks Node: below 22.16 it says so and prints how to install
+Node 24 yourself, for your system.
 
 Part of the countinghouse client packs. Each package has its own repository. The family's design and plan are in
 [ch-packs](https://github.com/mchen6/ch-packs) (public); the end-to-end acceptance test, which installs every package and calls the
