@@ -11,6 +11,15 @@ pub fn parent_pid() -> Option<u32> {
     return crate::win_ffi::parent_pid();
 }
 
+/// Windows: the shim's own stdin, stdout and stderr made non-inheritable, so nothing it starts holds the client's pipes
+/// (CreateProcessW runs with handle inheritance on); a child's own stdio is set for it. Elsewhere nothing to do.
+pub fn keep_stdio_from_children() -> std::io::Result<()> {
+    #[cfg(windows)]
+    return crate::win_ffi::stdio_not_inherited();
+    #[cfg(not(windows))]
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

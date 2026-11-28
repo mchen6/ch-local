@@ -1212,7 +1212,8 @@ net.createServer((s) => {
             crate::relay::Setup {
                 home,
                 rest: vec![],
-                client_env: vec![],
+                // (the client's environment, as a real launch gives the shim: the child needs one to start)
+                client_env: std::env::vars_os().collect(),
                 parent: std::process::id(),
                 timing: Default::default(),
             },
