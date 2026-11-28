@@ -481,6 +481,10 @@ impl Relay {
                         // the reader then ends, and its Lost reattaches
                         let _ = w.shutdown();
                     }
+                    // the connection is left: out of Unsettled at once, so a `settled` the reader had already queued finds
+                    // no connection to open (its replay and held lines would go to the shut socket, and the Lost after it
+                    // crash-answer them); the held lines wait for the next connection, as on any loss
+                    self.state = State::Attaching;
                 }
             }
             Ev::EarlyClient { frame } => {
@@ -3062,6 +3066,32 @@ printf '{{"status":"ok","conditions":"no","repo":"run-%s","token":null}}\n' "$((
         until_op(&mut s2, "bye");
         drop(s2);
         done.join().unwrap();
+    }
+
+    /// A `settled` the reader had already queued when the settle deadline left the connection: the deadline came first, so
+    /// the connection is gone (its writer shut) and the late `settled` must not open it; the held lines stay held for the next
+    /// connection, never written to the shut one and then crash-answered as lost. Driven event by event, so the order is the
+    /// test's, not a race's.
+    #[test]
+    fn a_settled_queued_behind_the_settle_deadline_leaves_the_held_lines_held() {
+        let (home, _sock) = home();
+        let mut relay = Relay::new(
+            Setup { home, rest: vec![], client_env: vec![], parent: 1, timing: Timing::default() },
+            Out::new(Box::new(Sink::default())),
+        );
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        relay.writer = Some(Box::new(ours));
+        relay.generation = 1;
+        relay.state = State::Unsettled;
+        assert!(relay.held.hold(br#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#.to_vec(), 1 << 20).is_ok());
+        assert!(relay.on(Ev::SettleDeadline { generation: 1 }).is_none());
+        let raw = br#"{"op":"settled"}"#.to_vec();
+        let Ok(Value::Object(op)) = serde_json::from_slice::<Value>(&raw) else { panic!("a settled frame") };
+        assert!(relay.on(Ev::Reader { generation: 1, event: reader::Event::Control(op, raw) }).is_none());
+        assert_ne!(relay.state, State::Live, "a settled after the deadline does not open the connection it left");
+        assert!(!relay.held.is_empty(), "the held line stays held for the next connection");
+        assert!(relay.nothing_in_flight(), "nothing was sent on the shut connection");
+        drop(theirs);
     }
 
     #[test]
